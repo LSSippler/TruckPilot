@@ -1,0 +1,150 @@
+# ============================================================
+# TruckPilot - Kombiniertes Menü (Pre-Setup + Live-Test)
+# ============================================================
+
+function Show-Menu {
+    Clear-Host
+    Write-Host "==============================================" -ForegroundColor Cyan
+    Write-Host "          TruckPilot - Hauptmenü" -ForegroundColor Cyan
+    Write-Host "==============================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  1. Pre-ETS2 Setup (vor dem Spielstart)" -ForegroundColor White
+    Write-Host "  2. Live-Test starten (nach ETS2-Start)" -ForegroundColor White
+    Write-Host "  3. Beides nacheinander ausführen" -ForegroundColor White
+    Write-Host "  4. Beenden" -ForegroundColor White
+    Write-Host ""
+}
+
+function Run-PreSetup {
+    Write-Host "`n=== Pre-ETS2 Setup ===" -ForegroundColor Cyan
+
+    if (-not (Test-Path "C:\Program Files\vJoy\x64\vJoyInterface.dll")) {
+        Write-Host "[FEHLER] vJoy nicht gefunden!" -ForegroundColor Red
+        return
+    }
+    Write-Host "[OK] vJoy gefunden" -ForegroundColor Green
+
+    # === Sicheres Cleanup (nur bekannte Build-Prozesse) ===
+    Write-Host "[INFO] Beende alle relevanten Prozesse..." -ForegroundColor Yellow
+    $procs = @("cargo", "rustc", "rust-analyzer", "cl", "link", "mspdbsrv", "rc")
+    foreach ($p in $procs) {
+        try {
+            Get-Process -Name $p -ErrorAction SilentlyContinue | 
+                Where-Object { $_.Id -ne $PID } | 
+                Stop-Process -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
+
+    Write-Host "[INFO] Lösche target-Ordner..." -ForegroundColor Yellow
+    cmd /c "rd /s /q target" 2>$null
+    Start-Sleep -Seconds 3
+
+    Write-Host "[INFO] Warte 8 Sekunden..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 8
+
+    Write-Host "[INFO] cargo clean..." -ForegroundColor Yellow
+    cargo clean
+
+    Write-Host "[INFO] Baue Rust-Projekt (Release)..." -ForegroundColor Yellow
+    cargo build --release
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[FEHLER] Build fehlgeschlagen!" -ForegroundColor Red
+        return
+    }
+    Write-Host "[OK] Rust-Build erfolgreich" -ForegroundColor Green
+
+    # DLL installieren
+    Write-Host "[INFO] Installiere Telemetrie-DLL..." -ForegroundColor Yellow
+    if (Test-Path ".\TruckPilot.TelemetryDLL\install_dll.ps1") {
+        & ".\TruckPilot.TelemetryDLL\install_dll.ps1"
+    }
+
+    # graph.json erzeugen
+    if (-not (Test-Path "output\graph.json")) {
+        Write-Host "[INFO] Erzeuge graph.json..." -ForegroundColor Yellow
+        dotnet run --project TruckPilot.NET\TruckPilot.CLI -- --hashfs-sectors "C:\temp\ets2_sectors" | Out-Null
+    }
+    Write-Host "[OK] Pre-Setup abgeschlossen`n" -ForegroundColor Green
+}
+
+function Run-LiveTest {
+    Write-Host "`n=== Live-Test wird gestartet ===" -ForegroundColor Cyan
+
+    $ets2 = Get-Process -Name "eurotrucks2" -ErrorAction SilentlyContinue
+    if (-not $ets2) {
+        Write-Host "[WARN] ETS2 läuft nicht. Bitte starte ETS2 und setze dich in einen Lkw." -ForegroundColor Yellow
+        Read-Host "Drücke Enter, wenn du bereit bist"
+    }
+
+    try {
+        $routeOutput = .\scripts\pick_route_uids.ps1 -GraphPath "output\graph.json" 2>&1
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[FEHLER] pick_route_uids.ps1 ist fehlgeschlagen!" -ForegroundColor Red
+            $routeOutput | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            return
+        }
+
+        $startLine = $routeOutput | Select-String "Start UID:"
+        $goalLine  = $routeOutput | Select-String "Goal UID:"
+
+        if (-not $startLine -or -not $goalLine) {
+            Write-Host "[FEHLER] Konnte Start- oder Goal-UID nicht finden!" -ForegroundColor Red
+            Write-Host "Ausgabe:"
+            $routeOutput | ForEach-Object { Write-Host $_ }
+            return
+        }
+
+        $startUid = ($startLine.Line -split ":")[1].Trim()
+        $goalUid  = ($goalLine.Line  -split ":")[1].Trim()
+
+    } catch {
+        Write-Host "[FEHLER] $($_.Exception.Message)" -ForegroundColor Red
+        return
+    }
+
+    Write-Host "Start: $startUid" -ForegroundColor Green
+    Write-Host "Goal:  $goalUid"  -ForegroundColor Green
+    Write-Host ""
+
+    # Autopilot in neuem Fenster starten
+    $GraphPath = "output\graph.json"
+    $cmd = "cargo run --release --bin truckpilot -- --graph-json `"$GraphPath`" --start $startUid --goal $goalUid --vjoy-device 1 -v"
+
+    Write-Host "[INFO] Starte Autopilot in einem neuen Fenster..." -ForegroundColor Yellow
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmd
+
+    Write-Host "[OK] Autopilot wurde in einem neuen Fenster gestartet." -ForegroundColor Green
+}
+
+# ==================== HAUPTMENÜ ====================
+
+while ($true) {
+    Show-Menu
+    $choice = Read-Host "Bitte Auswahl treffen (1-4)"
+
+    switch ($choice) {
+        "1" { Run-PreSetup }
+        "2" { Run-LiveTest }
+        "3" { 
+            Run-PreSetup
+            Write-Host "`n>>> Jetzt bitte ETS2 starten und im Lkw sitzen <<<" -ForegroundColor Yellow
+            Read-Host "Drücke Enter, wenn ETS2 bereit ist"
+            Run-LiveTest 
+        }
+        "4" { 
+            Write-Host "Auf Wiedersehen!" -ForegroundColor Cyan
+            break
+        }
+        default { 
+            Write-Host "Ungültige Eingabe!" -ForegroundColor Red 
+        }
+    }
+
+    Write-Host ""
+    Read-Host "Drücke Enter um zurück zum Menü zu kommen"
+}
+
+Write-Host ""
+Read-Host "Drücke Enter zum Schließen des Fensters..."

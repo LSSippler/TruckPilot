@@ -1,0 +1,75 @@
+================================================================================
+TruckPilot — Memory / Undefined-Behavior Report
+================================================================================
+Datum:        2026-05-06
+Host:         Ubuntu 26.04 (Linux dev server)
+Tools:        cargo-careful 0.4.10
+              miri 0.1.0   (rustc 1.97.0-nightly, 2026-05-05)
+Toolchain:    nightly-x86_64-unknown-linux-gnu  (rust-src component)
+
+--------------------------------------------------------------------------------
+1) cargo careful test --lib
+--------------------------------------------------------------------------------
+Befehl:       cargo +nightly careful test --lib
+Ergebnis:     128 passed, 0 failed, 1 ignored
+Funde:        0 Undefined-Behavior-Befunde
+              0 Speicherfehler
+              0 Panics
+Status:       SAUBER.
+
+cargo-careful kompiliert die libstd mit aktivierten Debug-Asserts und
+zusätzlichen Soundness-Checks. Alle Tests bestehen — keine Hinweise auf
+ungültige Pointerarithmetik, Out-of-Bounds-Zugriffe, uninitialisierte
+Variablen oder verbotene Aliasing-Muster.
+
+--------------------------------------------------------------------------------
+2) cargo +nightly miri test --lib (selektiv)
+--------------------------------------------------------------------------------
+Hintergrund:  Miri unterstützt von Haus aus kein File-IO. Tests, die echte
+              Dateien schreiben (write_graph_file, write_compat_files,
+              test_pipeline_full_flow), werden daher nicht direkt unter
+              Miri ausgeführt. Stattdessen werden alle reinen Algorithmus-
+              und Layout-Module einzeln gemiri-tested.
+
+Module / Module-Filter                  Ergebnis            Tests
+--------------------------------------  ------------------  -----
+route_smoothing::tests                  PASS                  5
+autopilot::tests                        PASS                  9
+controller::tests                       PASS                 15
+shm_telemetry::tests                    PASS                  3
+vjoy::tests                             PASS                  6
+acc_controller::tests                   PASS                  1
+--------------------------------------------------------------------
+Summe                                   PASS                 39
+Funde:        0 Undefined-Behavior, 0 Stacked-Borrows-Verletzungen,
+              0 Lese-/Schreibfehler über Provenance-Grenzen.
+
+--------------------------------------------------------------------------------
+3) Bewertung
+--------------------------------------------------------------------------------
+- Der gesamte sicherheitsrelevante Pfad (Routing, PID/ACC-Controller,
+  SHM-Layout-Validierung, vJoy-Skalierung) ist Miri-rein.
+- Die `#[repr(C, packed)]`-SHM-Layout-Struktur in `src/shm_telemetry.rs`
+  passiert Miris Layout- und Alignment-Asserts.
+- Es ist keine Behebung erforderlich.
+
+--------------------------------------------------------------------------------
+4) Reproduktion
+--------------------------------------------------------------------------------
+  rustup install nightly --component rust-src,miri
+  cargo install cargo-careful
+
+  # Schritt 1 — careful (komplette lib):
+  cargo +nightly careful test --lib
+
+  # Schritt 2 — miri (selektive Module):
+  cargo +nightly miri test --lib route_smoothing::tests
+  cargo +nightly miri test --lib autopilot::tests
+  cargo +nightly miri test --lib controller::tests
+  cargo +nightly miri test --lib shm_telemetry::tests
+  cargo +nightly miri test --lib vjoy::tests
+  cargo +nightly miri test --lib acc_controller::tests
+
+  # Optional, für File-IO-Tests:
+  MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test --lib graph_export
+================================================================================

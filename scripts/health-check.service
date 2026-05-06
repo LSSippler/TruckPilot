@@ -1,0 +1,15 @@
+[Unit]
+Description=TruckPilot Health Check Endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/geekom/TruckPilot/scripts/health_server.py
+Restart=always
+RestartSec=10
+User=geekom
+WorkingDirectory=/home/geekom/TruckPilot
+
+[Install]
+WantedBy=multi-user.target

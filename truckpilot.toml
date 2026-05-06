@@ -1,0 +1,60 @@
+# TruckPilot default configuration
+#
+# All values below match the built-in defaults in src/config.rs.
+
+[steering]
+# Proportional gain for heading error correction (recommended 0.1..2.0).
+kp = 0.8
+# Integral gain for compensating steady-state steering drift (recommended 0.0..0.5).
+ki = 0.1
+# Derivative gain for damping fast heading changes (recommended 0.0..1.0).
+kd = 0.3
+# Absolute cap for integral contribution to avoid windup (recommended 0.1..10.0).
+integral_limit = 2.0
+# Look-ahead distance in meters used for route heading target (recommended 5.0..200.0).
+look_ahead_distance = 50.0
+
+[speed]
+# Proportional gain for speed controller (recommended 0.1..2.0).
+kp = 0.5
+# Integral gain for speed controller (recommended 0.0..0.5).
+ki = 0.1
+# Derivative gain for speed controller (recommended 0.0..1.0).
+kd = 0.05
+# Absolute cap for speed integral term (recommended 1.0..50.0).
+integral_limit = 10.0
+# Speed used when no valid navigation speed limit is available, in km/h (recommended 10.0..130.0).
+fallback_speed_kmh = 80.0
+
+[routing]
+# Route optimization mode: "distance" or "eta".
+cost_mode = "distance"
+# If true, prefers edges with higher speed limits during planning.
+prefer_speed = false
+# If true, applies Catmull-Rom route smoothing before steering.
+smooth_route = true
+# Number of Catmull-Rom interpolation subdivisions per segment (valid range 1..1000).
+subdivisions = 4
+
+[telemetry]
+# ETS2 telemetry HTTP endpoint used as fallback when SHM is unavailable.
+url = "http://localhost:25555/api/ets2/telemetry"
+# If true, disables telemetry polling and skips autopilot live loop.
+disabled = false
+
+[acc]
+# Enable adaptive cruise control speed limiting.
+enabled = false
+# Desired minimum distance to lead vehicle in meters.
+target_distance_m = 50.0
+# ACC PID proportional gain.
+kp = 0.8
+# ACC PID integral gain.
+ki = 0.02
+# ACC PID derivative gain.
+kd = 0.2
+
+[logging]
+# Reserved section for future logging options.
+# Not currently consumed by src/config.rs.
+verbose = false

@@ -1,0 +1,32 @@
+[package]
+name = "truckpilot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+siphasher = "1"
+clap = { version = "4", features = ["derive"] }
+ureq = "3"
+miniz_oxide = "0.8"
+thiserror = "2"
+zip = "2"
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[workspace]
+members = ["crates/telemetry_dll"]
+
+[[bin]]
+name = "telemetry_diag"
+path = "src/bin/telemetry_diag.rs"
+
+[[bin]]
+name = "vjoy_test"
+path = "src/bin/vjoy_test.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"

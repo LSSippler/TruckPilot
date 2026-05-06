@@ -1,0 +1,10 @@
+^C:\USERS\SIPPLER\DOCUMENTS\TRUCKPILOT\TRUCKPILOT.TELEMETRYDLL\BUILD\CMAKEFILES\DC9E28683D66F9013307A1553718EEF8\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL -BC:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL/build/truckpilot_telemetry.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

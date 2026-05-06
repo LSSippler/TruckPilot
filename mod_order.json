@@ -1,0 +1,47 @@
+{
+  "base_game_files": ["base_map.scs"],
+  "mod_descriptors": [
+    {
+      "name": "ProMods EU Map",
+      "file": "promods-eu-map-v281.scs",
+      "order": 10,
+      "is_map_mod": true,
+      "is_enabled": true
+    },
+    {
+      "name": "ProMods EU Def",
+      "file": "promods-eu-def-v281.scs",
+      "order": 11,
+      "is_map_mod": true,
+      "is_enabled": true
+    },
+    {
+      "name": "ProMods MA DefMap",
+      "file": "promods-ma-defmap-v101.scs",
+      "order": 20,
+      "is_map_mod": true,
+      "is_enabled": true
+    },
+    {
+      "name": "ProMods ME DefMap",
+      "file": "promods-me-defmap-v281.scs",
+      "order": 30,
+      "is_map_mod": true,
+      "is_enabled": true
+    },
+    {
+      "name": "ProMods TGS DefMap",
+      "file": "promods-tgs-defmap-v160.scs",
+      "order": 40,
+      "is_map_mod": true,
+      "is_enabled": true
+    },
+    {
+      "name": "ProMods Connector EU-MA",
+      "file": "cnx-pm-eu-v281-ma-v101.scs",
+      "order": 999,
+      "is_map_mod": true,
+      "is_enabled": true
+    }
+  ]
+}

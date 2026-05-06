@@ -1,0 +1,8 @@
+node { uid: 0x1 position: (0,0,0) }
+node { uid: 0x2 position: (1000,0,0) }
+node { uid: 0x3 position: (2000,1000,0) }
+node { uid: 0x4 position: (3000,0,0) }
+road { uid: 0xA name: "r1" look_token: "a" nodes: (0x1, 0x2) speed_limit: 80.0 lane_count_forward: 1 lane_count_backward: 1 }
+road { uid: 0xB name: "r2" look_token: "b" nodes: (0x2, 0x3) speed_limit: 80.0 lane_count_forward: 1 lane_count_backward: 1 }
+road { uid: 0xC name: "r3" look_token: "c" nodes: (0x3, 0x4) speed_limit: 80.0 lane_count_forward: 1 lane_count_backward: 1 }
+road { uid: 0xD name: "r4" look_token: "d" nodes: (0x2, 0x4) speed_limit: 120.0 lane_count_forward: 1 lane_count_backward: 1 }

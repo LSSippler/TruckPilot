@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["catmull_rom_point","smooth_route"]};

@@ -1,0 +1,2 @@
+[console_scripts]
+ets2-hashfs = ets2_hashfs.__main__:main

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["apply_acc","apply_routing","apply_speed","apply_steering","apply_telemetry","parse_bool","strip_unquoted_comment"],"struct":["AccConfig","RoutingConfig","SpeedConfig","SteeringConfig","TelemetryConfig","TruckPilotConfig"]};

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ets2-hashfs"
+version = "0.1.0"
+description = "Python HashFS v2 reader for ETS2 .scs archives"
+readme = "ets2_hashfs/README.md"
+requires-python = ">=3.9"
+authors = [{ name = "TruckPilot" }]
+license = { text = "MIT" }
+keywords = ["ets2", "hashfs", "scs", "parser"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[project.scripts]
+ets2-hashfs = "ets2_hashfs.__main__:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ets2_hashfs*"]

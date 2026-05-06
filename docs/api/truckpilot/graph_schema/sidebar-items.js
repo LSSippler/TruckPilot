@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CompatGraph","CompatGraphEdge","CompatNode","CompatRoad","CompatRoadLook","GraphData","GraphEdge","GraphMetrics","GraphNode","QualityMeta","QualityReport"]};

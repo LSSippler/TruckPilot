@@ -1,0 +1,42 @@
+================================================================================
+TruckPilot — Sicherheits-Audit
+================================================================================
+Datum:        2026-05-06
+Tool:         cargo-audit v0.22.1
+Datenbank:    RustSec Advisory DB (1067 Advisories geladen)
+Scan-Umfang:  192 Crate-Abhängigkeiten (Cargo.lock)
+
+--------------------------------------------------------------------------------
+Ergebnis
+--------------------------------------------------------------------------------
+Befehl:        cargo audit
+Funde:         0 Vulnerabilities
+Warnungen:     0 (auch mit --deny warnings sauber)
+Exit-Code:     0
+
+Befehl:        cargo audit --deny warnings
+Funde:         0 Vulnerabilities, 0 Warnungen, 0 unmaintained-Crates
+Exit-Code:     0
+
+--------------------------------------------------------------------------------
+Bewertung
+--------------------------------------------------------------------------------
+Status:        SAUBER — keine bekannten Sicherheitslücken.
+
+Es gibt keine kritischen, hohen, mittleren oder niedrigen Severity-Funde.
+Es sind keine "unmaintained" Crates im Dependency-Tree.
+
+--------------------------------------------------------------------------------
+Maßnahmen
+--------------------------------------------------------------------------------
+Keine Aktualisierungen erforderlich. Empfehlung: `cargo audit` regelmäßig
+in der CI laufen lassen (siehe .github/workflows/ci.yml).
+
+--------------------------------------------------------------------------------
+Reproduktion
+--------------------------------------------------------------------------------
+  cargo install cargo-audit --locked
+  cargo audit
+  cargo audit --deny warnings
+
+================================================================================

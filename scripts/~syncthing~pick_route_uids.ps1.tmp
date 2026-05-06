@@ -1,0 +1,58 @@
+param(
+    [string]$GraphPath = "output\graph.json"
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path $GraphPath)) {
+    Write-Host "[ERROR] graph.json not found: $GraphPath" -ForegroundColor Red
+    exit 1
+}
+
+try {
+    $json = Get-Content -Raw $GraphPath | ConvertFrom-Json
+
+    $startUid = $null
+    $goalUid = $null
+
+    # Versuche zuerst über Edges
+    $edges = $json.edges
+    if (-not $edges) { $edges = $json.Edges }
+
+    if ($edges -and $edges.Count -gt 0) {
+        $firstEdge = $edges[0]
+        $startUid = $firstEdge.from_node_uid
+        $goalUid  = $firstEdge.to_node_uid
+        if (-not $startUid) { $startUid = $firstEdge.FromNodeUid }
+        if (-not $goalUid)  { $goalUid  = $firstEdge.ToNodeUid }
+    }
+
+    # Fallback: Erster und letzter Node
+    if (-not $startUid -or -not $goalUid) {
+        $nodes = $json.nodes
+        if (-not $nodes) { $nodes = $json.Nodes }
+
+        if ($nodes -and $nodes.Count -ge 2) {
+            $startUid = $nodes[0].uid
+            $goalUid  = $nodes[-1].uid
+            if (-not $startUid) { $startUid = $nodes[0].Uid }
+            if (-not $goalUid)  { $goalUid  = $nodes[-1].Uid }
+        }
+    }
+
+    if (-not $startUid -or -not $goalUid) {
+        throw "No usable nodes or edges found in graph file."
+    }
+
+    Write-Host "Start UID: $startUid"
+    Write-Host "Goal UID:  $goalUid"
+    Write-Host ""
+    Write-Host "PowerShell vars:" -ForegroundColor Cyan
+    Write-Host "`$start = $startUid"
+    Write-Host "`$goal  = $goalUid"
+
+} catch {
+    $errMsg = $_.Exception.Message
+    Write-Host "[ERROR] Failed to parse $GraphPath`: $errMsg" -ForegroundColor Red
+    exit 1
+}

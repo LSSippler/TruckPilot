@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SIP_KEY_A","SIP_KEY_B"],"fn":["build_graph","build_graph_timed","compute_graph_metrics","euclidean_3d","hash_edge_uid","largest_component_fraction","log_graph_metrics","make_edge","unique_lane_uid","write_graph_file","write_quality_report"],"struct":["EdgeParams"]};

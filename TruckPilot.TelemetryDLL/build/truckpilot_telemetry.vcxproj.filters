@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Sippler\Documents\TruckPilot\TruckPilot.TelemetryDLL\src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Sippler\Documents\TruckPilot\TruckPilot.TelemetryDLL\src\shared_memory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Sippler\Documents\TruckPilot\TruckPilot.TelemetryDLL\src\channels.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Sippler\Documents\TruckPilot\TruckPilot.TelemetryDLL\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{A9B89987-FF7F-3C9D-9600-167F1FF6F1E3}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

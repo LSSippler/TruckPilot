@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["VJOY_AXIS_CENTER","VJOY_AXIS_MAX","VJOY_AXIS_MIN"],"fn":["compute_y_axis","enumerate_vjoy_devices","enumerate_vjoy_devices_impl","scale_brake","scale_steering","scale_throttle"],"struct":["ConsoleOutput","JoystickPositionV3"],"trait":["ControlOutput"]};

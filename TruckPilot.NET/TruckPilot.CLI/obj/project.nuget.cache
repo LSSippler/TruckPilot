@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "1F/ijhK8ymk=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\Sippler\\Documents\\TruckPilot\\TruckPilot.NET\\TruckPilot.CLI\\TruckPilot.CLI.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Sippler\\.nuget\\packages\\system.commandline\\2.0.7\\system.commandline.2.0.7.nupkg.sha512",
+    "C:\\Users\\Sippler\\.nuget\\packages\\system.io.pipelines\\10.0.7\\system.io.pipelines.10.0.7.nupkg.sha512",
+    "C:\\Users\\Sippler\\.nuget\\packages\\system.text.encodings.web\\10.0.7\\system.text.encodings.web.10.0.7.nupkg.sha512",
+    "C:\\Users\\Sippler\\.nuget\\packages\\system.text.json\\10.0.7\\system.text.json.10.0.7.nupkg.sha512"
+  ],
+  "logs": []
+}

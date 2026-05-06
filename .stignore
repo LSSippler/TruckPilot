@@ -1,0 +1,6 @@
+// Ignore Python virtualenv (Symlinks machen Probleme auf Windows)
+.venv/
+// Ignore build artifacts (nicht benötigt auf PC)
+target/
+// Ignore Node modules (frisch installieren auf PC)
+node_modules/

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="offline_red">#FFEA4335</color>
+    <color name="on_primary">#FFFFFFFF</color>
+    <color name="on_surface">#FF202124</color>
+    <color name="on_surface_variant">#FF5F6368</color>
+    <color name="online_green">#FF34A853</color>
+    <color name="primary">#FF1A73E8</color>
+    <color name="surface">#FFF8F9FA</color>
+    <string name="app_name">Server Monitor</string>
+    <string name="btn_start">Überwachung starten</string>
+    <string name="btn_stop">Stoppen</string>
+    <string name="channel_service_desc">Hintergrunddienst-Status</string>
+    <string name="channel_service_name">Überwachungsdienst</string>
+    <string name="channel_status_desc">Benachrichtigungen wenn der Server offline/online geht</string>
+    <string name="channel_status_name">Server-Status</string>
+    <string name="error_empty_url">Bitte gib eine Server-Adresse ein</string>
+    <string name="error_notification_permission">Ohne Benachrichtigungs-Berechtigung können Offline-/Online-Meldungen nicht angezeigt werden.</string>
+    <string name="hint_server_url">Server-Adresse (z.B. 100.103.91.121:8080)</string>
+    <string name="interval_seconds">Prüfintervall: %1$d Sekunden</string>
+    <string name="notif_offline_body">%1$s ist nicht mehr erreichbar</string>
+    <string name="notif_offline_title">🔴 Server offline</string>
+    <string name="notif_online_body">%1$s ist wieder erreichbar</string>
+    <string name="notif_online_title">🟢 Server wieder online</string>
+    <string name="service_monitoring">Überwache %1$s</string>
+    <string name="service_starting">Überwachung startet…</string>
+    <string name="status_checking">Prüfe…</string>
+    <string name="status_offline">Offline ✗</string>
+    <string name="status_online">Online ✓</string>
+    <string name="status_stopped">Überwachung gestoppt</string>
+    <style name="Theme.ServerMonitor" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/on_surface_variant</item>
+    </style>
+</resources>

@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: truckpilot
+created: 2026-05-05T15:13:09Z

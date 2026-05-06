@@ -1,0 +1,29 @@
+services:
+  truckpilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: truckpilot:1.0
+    container_name: truckpilot
+    # Bind-mount your real graph.json over the synthetic one shipped in
+    # the image. Comment out if you only want to use the built-in graph.
+    volumes:
+      - ./output:/app/output:ro
+    # Default command runs the A* benchmark on the (mounted) graph.json.
+    command: ["/app/benchmark", "/app/output/graph.json"]
+
+  graph-stats:
+    image: truckpilot:1.0
+    profiles: ["tools"]
+    volumes:
+      - ./output:/app/output:ro
+    entrypoint: ["/app/graph_stats"]
+    command: ["/app/output/graph.json"]
+
+  route-stress:
+    image: truckpilot:1.0
+    profiles: ["tools"]
+    volumes:
+      - ./output:/app/output:ro
+    entrypoint: ["/app/route_stress"]
+    command: ["/app/output/graph.json"]

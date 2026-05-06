@@ -1,0 +1,80 @@
+{
+  "_meta": {
+    "description": "Sample routes for TruckPilot. The first two entries reference UIDs that exist in the synthetic 'output/graph.json' shipped with the repo (uid=1 and uid=2) and therefore work out-of-the-box with `cargo run -- --graph-json output/graph.json --start <start> --goal <goal>`. Entries 3..10 use realistic ETS2 base-map UIDs as placeholders — they are intended as a template you copy/adjust against your own full map export.",
+    "schema_version": "1.0.0",
+    "graph_source_synthetic": "output/graph.json",
+    "graph_source_realmap": "output/graph.json (after running the .NET map export against base_map.scs)"
+  },
+  "routes": [
+    {
+      "name": "Synthetic Smoke 0x1 -> 0x2",
+      "start": "0x1",
+      "goal":  "0x2",
+      "distance_km": 0.12,
+      "notes": "Sanity-check route that exists in the in-repo synthetic graph.json. Use to verify cargo run wiring without a real map."
+    },
+    {
+      "name": "Synthetic Reverse 0x2 -> 0x1",
+      "start": "0x2",
+      "goal":  "0x1",
+      "distance_km": 0.12,
+      "notes": "Reverse direction — currently fails on the synthetic graph because only a single forward edge exists. Useful to verify no-route handling."
+    },
+    {
+      "name": "Calais - Duisburg",
+      "start": "0x4A1A8C200001",
+      "goal":  "0x4A1A8C200042",
+      "distance_km": 350,
+      "notes": "Replace UIDs with realmap values via scripts/pick_route_uids.ps1."
+    },
+    {
+      "name": "Berlin - Hamburg",
+      "start": "0x4A1A8C200080",
+      "goal":  "0x4A1A8C2000C0",
+      "distance_km": 290,
+      "notes": "Northern Germany cross-country."
+    },
+    {
+      "name": "Munich - Vienna",
+      "start": "0x4A1A8C200100",
+      "goal":  "0x4A1A8C200140",
+      "distance_km": 430,
+      "notes": "Bavarian/Austrian autobahn."
+    },
+    {
+      "name": "Paris - Marseille",
+      "start": "0x4A1A8C200180",
+      "goal":  "0x4A1A8C2001C0",
+      "distance_km": 770,
+      "notes": "Long-haul French autoroute."
+    },
+    {
+      "name": "Madrid - Barcelona",
+      "start": "0x4A1A8C200200",
+      "goal":  "0x4A1A8C200240",
+      "distance_km": 620,
+      "notes": "Spanish mainline."
+    },
+    {
+      "name": "Amsterdam - Brussels",
+      "start": "0x4A1A8C200280",
+      "goal":  "0x4A1A8C2002C0",
+      "distance_km": 210,
+      "notes": "Benelux short-haul."
+    },
+    {
+      "name": "London - Manchester",
+      "start": "0x4A1A8C200300",
+      "goal":  "0x4A1A8C200340",
+      "distance_km": 320,
+      "notes": "UK motorway test, requires the UK DLC graph."
+    },
+    {
+      "name": "Stockholm - Goteborg",
+      "start": "0x4A1A8C200380",
+      "goal":  "0x4A1A8C2003C0",
+      "distance_km": 470,
+      "notes": "Scandinavian highway, requires the Scandinavia DLC graph."
+    }
+  ]
+}

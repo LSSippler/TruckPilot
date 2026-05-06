@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["truckpilot",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.95.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"truckpilot/autopilot/enum.CostMode.html\" title=\"enum truckpilot::autopilot::CostMode\">CostMode</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.95.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"truckpilot/autopilot_loop/enum.TelemetrySource.html\" title=\"enum truckpilot::autopilot_loop::TelemetrySource\">TelemetrySource</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.95.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"truckpilot/shm_telemetry/struct.ShmTelemetryLayout.html\" title=\"struct truckpilot::shm_telemetry::ShmTelemetryLayout\">ShmTelemetryLayout</a>",0]]],["truckpilot",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.95.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"enum\" href=\"truckpilot/autopilot/enum.CostMode.html\" title=\"enum truckpilot::autopilot::CostMode\">CostMode</a>",0],["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/1.95.0/core/marker/trait.Copy.html\" title=\"trait core::marker::Copy\">Copy</a> for <a class=\"struct\" href=\"truckpilot/shm_telemetry/struct.ShmTelemetryLayout.html\" title=\"struct truckpilot::shm_telemetry::ShmTelemetryLayout\">ShmTelemetryLayout</a>",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[916,611]}

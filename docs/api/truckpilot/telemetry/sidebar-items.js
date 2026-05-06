@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["fetch_telemetry"],"struct":["TelemetryData","TruckFloatValues","TruckPlacement"]};

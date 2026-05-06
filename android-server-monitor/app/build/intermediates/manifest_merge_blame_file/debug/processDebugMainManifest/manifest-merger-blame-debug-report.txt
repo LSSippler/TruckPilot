@@ -1,0 +1,166 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.truckpilot.servermonitor"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="35" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:4:5-67
+11-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:4:22-64
+12    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+12-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:5:5-79
+12-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:5:22-76
+13    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+13-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:6:5-77
+13-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:6:22-74
+14    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+14-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:7:5-89
+14-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:7:22-86
+15    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+15-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:8:5-77
+15-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:8:22-74
+16    <uses-permission android:name="android.permission.WAKE_LOCK" />
+16-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:9:5-68
+16-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:9:22-65
+17
+18    <permission
+18-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:22:5-24:47
+19        android:name="com.truckpilot.servermonitor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+19-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:23:9-81
+20        android:protectionLevel="signature" />
+20-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:24:9-44
+21
+22    <uses-permission android:name="com.truckpilot.servermonitor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+22-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:26:5-97
+22-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:26:22-94
+23
+24    <application
+24-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:11:5-40:19
+25        android:name="com.truckpilot.servermonitor.ServerMonitorApp"
+25-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:12:9-41
+26        android:allowBackup="false"
+26-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:13:9-36
+27        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+27-->[androidx.core:core:1.15.0] /home/geekom/.gradle/caches/8.11.1/transforms/21db0778de166bcbbc4981f0ea6f007f/transformed/core-1.15.0/AndroidManifest.xml:28:18-86
+28        android:debuggable="true"
+29        android:extractNativeLibs="false"
+30        android:icon="@mipmap/ic_launcher"
+30-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:14:9-43
+31        android:label="@string/app_name"
+31-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:15:9-41
+32        android:networkSecurityConfig="@xml/network_security_config"
+32-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:17:9-69
+33        android:supportsRtl="true"
+33-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:16:9-35
+34        android:theme="@style/Theme.ServerMonitor" >
+34-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:18:9-51
+35        <activity
+35-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:20:9-29:20
+36            android:name="com.truckpilot.servermonitor.MainActivity"
+36-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:21:13-41
+37            android:exported="true"
+37-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:22:13-36
+38            android:launchMode="singleTop"
+38-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:23:13-43
+39            android:parentActivityName="com.truckpilot.servermonitor.MainActivity" >
+39-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:24:13-55
+40            <intent-filter>
+40-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:25:13-28:29
+41                <action android:name="android.intent.action.MAIN" />
+41-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:26:17-69
+41-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:26:25-66
+42
+43                <category android:name="android.intent.category.LAUNCHER" />
+43-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:27:17-77
+43-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:27:27-74
+44            </intent-filter>
+45        </activity>
+46
+47        <service
+47-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:31:9-38:19
+48            android:name="com.truckpilot.servermonitor.MonitorService"
+48-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:32:13-43
+49            android:exported="false"
+49-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:33:13-37
+50            android:foregroundServiceType="specialUse" >
+50-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:34:13-55
+51            <property
+51-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:35:13-37:64
+52                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+52-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:36:17-76
+53                android:value="continuous_server_monitoring" />
+53-->/home/geekom/TruckPilot/android-server-monitor/app/src/main/AndroidManifest.xml:37:17-61
+54        </service>
+55
+56        <provider
+56-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:24:9-32:20
+57            android:name="androidx.startup.InitializationProvider"
+57-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:25:13-67
+58            android:authorities="com.truckpilot.servermonitor.androidx-startup"
+58-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:26:13-68
+59            android:exported="false" >
+59-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:27:13-37
+60            <meta-data
+60-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:29:13-31:52
+61                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+61-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:30:17-75
+62                android:value="androidx.startup" />
+62-->[androidx.emoji2:emoji2:1.3.0] /home/geekom/.gradle/caches/8.11.1/transforms/6d8bc302aeb654f3acf235860b2b4666/transformed/emoji2-1.3.0/AndroidManifest.xml:31:17-49
+63            <meta-data
+63-->[androidx.lifecycle:lifecycle-process:2.8.7] /home/geekom/.gradle/caches/8.11.1/transforms/03d2d127a3867e3b8734821d05495128/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:29:13-31:52
+64                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+64-->[androidx.lifecycle:lifecycle-process:2.8.7] /home/geekom/.gradle/caches/8.11.1/transforms/03d2d127a3867e3b8734821d05495128/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:30:17-78
+65                android:value="androidx.startup" />
+65-->[androidx.lifecycle:lifecycle-process:2.8.7] /home/geekom/.gradle/caches/8.11.1/transforms/03d2d127a3867e3b8734821d05495128/transformed/lifecycle-process-2.8.7/AndroidManifest.xml:31:17-49
+66            <meta-data
+66-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:29:13-31:52
+67                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+67-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:30:17-85
+68                android:value="androidx.startup" />
+68-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:31:17-49
+69        </provider>
+70
+71        <receiver
+71-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:34:9-52:20
+72            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+72-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:35:13-76
+73            android:directBootAware="false"
+73-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:36:13-44
+74            android:enabled="true"
+74-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:37:13-35
+75            android:exported="true"
+75-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:38:13-36
+76            android:permission="android.permission.DUMP" >
+76-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:39:13-57
+77            <intent-filter>
+77-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:40:13-42:29
+78                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+78-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:41:17-91
+78-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:41:25-88
+79            </intent-filter>
+80            <intent-filter>
+80-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:43:13-45:29
+81                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+81-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:44:17-85
+81-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:44:25-82
+82            </intent-filter>
+83            <intent-filter>
+83-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:46:13-48:29
+84                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+84-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:47:17-88
+84-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:47:25-85
+85            </intent-filter>
+86            <intent-filter>
+86-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:49:13-51:29
+87                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+87-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:50:17-95
+87-->[androidx.profileinstaller:profileinstaller:1.4.0] /home/geekom/.gradle/caches/8.11.1/transforms/809868ef6dd6e542aafb89c7e24742fe/transformed/profileinstaller-1.4.0/AndroidManifest.xml:50:25-92
+88            </intent-filter>
+89        </receiver>
+90    </application>
+91
+92</manifest>
