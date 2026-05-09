@@ -99,12 +99,91 @@ pub fn load_and_build(order: &ModLoadOrder, cache_dir: Option<&Path>) -> Result<
     let mut archives: Vec<Box<dyn Archive>> = Vec::new();
     for entry in &order.entries {
         match open_scs_archive(&entry.path) {
-            Ok(arc) => archives.push(arc),
+            Ok(arc) => {
+                if entry.name == "base_map.scs" {
+                    if let Some(hashfs) = arc.as_any().downcast_ref::<HashFsArchive>() {
+                        info!(
+                            "base_map.scs index: {} entries — listing first 20",
+                            hashfs.entries().len()
+                        );
+                        for (i, (hash, dir_entry)) in
+                            hashfs.entries().iter().take(20).enumerate()
+                        {
+                            info!(
+                                "  entry {i}: hash={hash:016x} size={}",
+                                dir_entry.size
+                            );
+                        }
+                    }
+                }
+                archives.push(arc);
+            }
             Err(e) => warn!("  Skipping {}: {e}", entry.name),
         }
     }
 
     info!("Archive phase done in {:.1} ms", t_archives.elapsed().as_secs_f64() * 1000.0);
+
+    // ── debug probe: hash known paths and check archive containment ──
+    {
+        use crate::cityhash::cityhash64;
+
+        let test_paths = [
+            "map/europe.mbd",
+            "map/europe/sec+0000+0000.base",
+            "map/europe/sec-0001-0001.base",
+            "map/europe.sii",
+            "def/world/road.sii",
+            "version.txt",
+        ];
+
+        for path in &test_paths {
+            let hash = cityhash64(path.as_bytes());
+            let mut found_in = vec![];
+            for archive in &archives {
+                if archive.contains(path) {
+                    found_in.push(
+                        archive
+                            .path()
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                    );
+                }
+            }
+            info!(
+                "test path '{}' hash={:016x} found_in={:?}",
+                path, hash, found_in
+            );
+        }
+
+        // Probe a real read + parse on the first sector that any archive contains.
+        for archive in &mut archives {
+            if archive.contains("map/europe/sec+0000+0000.base") {
+                match archive.read_path("map/europe/sec+0000+0000.base") {
+                    Ok(data) => {
+                        info!(
+                            "read OK from {}: {} bytes",
+                            archive.path().file_name().unwrap().to_string_lossy(),
+                            data.len()
+                        );
+                        match crate::sector::parse_sector(&data) {
+                            Ok(s) => info!(
+                                "  parsed: {} nodes, {} roads, {} prefabs",
+                                s.nodes.len(),
+                                s.roads.len(),
+                                s.prefabs.len()
+                            ),
+                            Err(e) => info!("  parse FAILED: {:?}", e),
+                        }
+                        break;
+                    }
+                    Err(e) => info!("read FAILED: {:?}", e),
+                }
+            }
+        }
+    }
 
     if let Some(cache_dir) = cache_dir {
         let hashes: Vec<[u8; 32]> = archives.iter().map(|a| a.file_hash()).collect();

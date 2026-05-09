@@ -390,6 +390,12 @@ impl HashFsArchive {
         self.index.get(&hash)
     }
 
+    /// Iterate `(hash, &DirEntry)` over every indexed file in the archive.
+    /// Crate-internal — used by `mod_loader` for debug listings.
+    pub(crate) fn entries(&self) -> &FxHashMap<u64, DirEntry> {
+        &self.index
+    }
+
     /// Return the salt used for path hashing in this archive.
     pub fn salt(&self) -> u16 {
         self.salt
