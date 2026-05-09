@@ -1,0 +1,4 @@
+Sector fixtures live in this directory. They are NOT committed because
+they're derived from copyrighted ETS2 binary data. Generate them via:
+
+    ETS2_DIR="..." cargo test --release --test extract_fixtures -- --ignored --nocapture

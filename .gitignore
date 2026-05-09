@@ -28,6 +28,11 @@ truckpilot_bundle.txt
 *.tmp
 ~syncthing~*
 
+# Map-parser test fixtures — extracted from a local ETS2 install,
+# regenerated via `cargo test --test extract_fixtures -- --ignored`.
+# Not committed because the bytes are derived from copyrighted ETS2 data.
+crates/map-parser/tests/fixtures/*.bin
+
 # AI assistant history (per-user, not for the repo)
 .aider*
 .claude/settings.local.json
