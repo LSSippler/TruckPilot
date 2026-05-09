@@ -1,13 +1,20 @@
 //! Smoke test against a real ETS2 `base.scs` archive.
 //!
-//! The path is taken from `TRUCKPILOT_BASE_SCS` so the test stays
-//! plattform-neutral; without the env var the test skips silently.
+//! Marked `#[ignore]` because:
+//!   - It needs a 9+ GB game file and the `TRUCKPILOT_BASE_SCS` env var.
+//!   - Even when present, the SHA-256 cache-key computation alone takes
+//!     ~15 s in release / ~130 s in debug (see `perf(hashfs):` commit).
+//!     That's not acceptable for the default `cargo test` loop.
 //!
-//! Run (PowerShell):
+//! Default test workflow:
+//!   cargo test                                    # fast, unit tests only
+//!   cargo test -- --ignored                       # include this test
+//!   cargo test --release -- --ignored             # CI / pre-release
 //!
+//! Run explicitly (PowerShell):
 //! ```powershell
 //! $env:TRUCKPILOT_BASE_SCS = "C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2\base.scs"
-//! cargo test --release -p truckpilot-map-parser --test real_archive_test -- --nocapture
+//! cargo test --release -p truckpilot-map-parser --test real_archive_test -- --ignored --nocapture
 //! ```
 //!
 //! What this verifies end-to-end:
@@ -37,6 +44,7 @@ fn fixture_path() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "needs TRUCKPILOT_BASE_SCS pointing at a real ETS2 base.scs (9+ GB); ~15 s release / ~130 s debug"]
 fn end_to_end_real_archive() {
     // Surface parser tracing under `cargo test -- --nocapture`.
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
