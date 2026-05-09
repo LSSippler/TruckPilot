@@ -39,6 +39,15 @@ pub struct GraphEdge {
     pub lanes: u8,
     /// Direction tag: "forward", "backward", "prefab".
     pub direction: String,
+    /// DLC-guard byte propagated from the source road (0 = no DLC required).
+    /// Prefab-derived edges default to 0.
+    pub dlc_guard: u8,
+    /// `true` when the underlying road is hidden from the in-game UI map.
+    /// Prefab-derived edges default to `false`.
+    pub is_hidden: bool,
+    /// `true` when the underlying road is flagged "GPS-avoid".
+    /// Prefab-derived edges default to `false`.
+    pub gps_avoid: bool,
 }
 
 /// A prefab (junction/intersection) in the graph.
@@ -150,6 +159,9 @@ impl GraphBuilder {
                     speed_limit_kmh: speed,
                     lanes: road.lanes_forward,
                     direction: "forward".into(),
+                    dlc_guard: road.dlc_guard,
+                    is_hidden: road.is_hidden,
+                    gps_avoid: road.gps_avoid,
                 });
                 edge_uid += 1;
             }
@@ -163,6 +175,9 @@ impl GraphBuilder {
                     speed_limit_kmh: speed,
                     lanes: road.lanes_backward,
                     direction: "backward".into(),
+                    dlc_guard: road.dlc_guard,
+                    is_hidden: road.is_hidden,
+                    gps_avoid: road.gps_avoid,
                 });
                 edge_uid += 1;
             }
@@ -181,6 +196,9 @@ impl GraphBuilder {
                         speed_limit_kmh: speed,
                         lanes: 1,
                         direction: dir.into(),
+                        dlc_guard: road.dlc_guard,
+                        is_hidden: road.is_hidden,
+                        gps_avoid: road.gps_avoid,
                     });
                     edge_uid += 1;
                 }
@@ -282,6 +300,10 @@ mod tests {
                 lanes_forward: 1,
                 lanes_backward: 1,
                 look_token: 0,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_type_token: 0,
             }],
             vec![],
         ));
@@ -340,6 +362,10 @@ mod tests {
                 lanes_forward: 1,
                 lanes_backward: 0,
                 look_token: 0,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_type_token: 0,
             }],
             vec![],
         ));
@@ -363,6 +389,10 @@ mod tests {
                 lanes_forward: 1,
                 lanes_backward: 0,
                 look_token: 0,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_type_token: 0,
             }],
             vec![],
         ));

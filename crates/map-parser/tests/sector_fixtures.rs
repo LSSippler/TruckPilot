@@ -1,9 +1,9 @@
 //! Sanity tests for the binary fixtures produced by `extract_fixtures.rs`.
 //!
-//! All tests are `#[ignore]`d for now: the current Road parser cannot read
-//! the variable-length `DataPayload` trailer that follows every Road, so
-//! these tests are expected to fail. They will be enabled once Phase 5.6
-//! lands the full Road parser.
+//! These tests run end-to-end: they take a real `.base` sector extracted
+//! from `base_map.scs` and feed it through `parse_sector`, verifying that
+//! Phase 5.6's full Road parser walks the variable-length DataPayload
+//! correctly and recovers the expected number of roads / prefabs.
 //!
 //! Fixtures are NOT committed to the repo — generate them locally:
 //!
@@ -40,7 +40,6 @@ fn load_fixture(name: &str) -> Option<Vec<u8>> {
 }
 
 #[test]
-#[ignore = "Phase 5.6: Road DataPayload parser not yet implemented"]
 fn parse_simple_road_sector() {
     let Some(data) = load_fixture("simple_road_sector.bin") else {
         return;
@@ -61,7 +60,6 @@ fn parse_simple_road_sector() {
 }
 
 #[test]
-#[ignore = "Phase 5.6: Road DataPayload parser not yet implemented"]
 fn parse_multi_road_sector() {
     let Some(data) = load_fixture("multi_road_sector.bin") else {
         return;
@@ -81,7 +79,6 @@ fn parse_multi_road_sector() {
 }
 
 #[test]
-#[ignore = "Phase 5.6: Road DataPayload parser not yet implemented"]
 fn parse_road_with_prefab_sector() {
     let Some(data) = load_fixture("road_with_prefab_sector.bin") else {
         return;

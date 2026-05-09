@@ -212,6 +212,8 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
     let t_sectors = Instant::now();
     let mut builder = GraphBuilder::new();
     let mut sector_count = 0usize;
+    let mut total_roads = 0usize;
+    let mut next_road_milestone = 500usize;
 
     // 1. Collect all unique file paths from all archives.
     // For ZIPs, this is a full file list. For HashFS, it's the probed paths.
@@ -260,6 +262,15 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
             let Some(data) = data else { continue };
             match parse_sector(&data) {
                 Ok(sector) => {
+                    total_roads += sector.roads.len();
+                    while total_roads >= next_road_milestone {
+                        info!(
+                            "  ...{} roads parsed across {} sectors",
+                            total_roads,
+                            sector_count + 1
+                        );
+                        next_road_milestone += 500;
+                    }
                     builder.merge_sector(sector);
                     sector_count += 1;
                 }
@@ -271,8 +282,9 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
     }
 
     info!(
-        "Sector phase done: {} sectors parsed in {:.1} ms",
+        "Sector phase done: {} sectors parsed, {} roads extracted in {:.1} ms",
         sector_count,
+        total_roads,
         t_sectors.elapsed().as_secs_f64() * 1000.0
     );
 

@@ -11,6 +11,7 @@ pub mod error;
 pub mod graph;
 pub mod hashfs;
 pub mod mod_loader;
+pub mod road_full;
 pub mod sector;
 pub mod signs;
 pub mod zip_archive;

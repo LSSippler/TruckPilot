@@ -16,7 +16,7 @@ use crate::error::ParseError;
 use crate::graph::MapGraph;
 
 /// Increment when the `MapGraph` schema changes to invalidate old caches.
-const PARSER_VERSION: u32 = 2; // Bumped for bincode v2 migration
+const PARSER_VERSION: u32 = 3; // Bumped: GraphEdge gained dlc_guard/is_hidden/gps_avoid (Phase 5.6)
 const BINCODE_CONFIG: Configuration = bincode::config::standard();
 
 /// On-disk cache envelope.

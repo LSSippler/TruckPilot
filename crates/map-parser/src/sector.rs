@@ -21,9 +21,12 @@
 //! All values are little-endian.
 
 use std::io::{Cursor, Read};
-use tracing::{debug, instrument};
+
+use binrw::BinRead;
+use tracing::{debug, instrument, warn};
 
 use crate::error::ParseError;
+use crate::road_full::{RoadDataPayload, RoadFixedHeader};
 
 // ---------------------------------------------------------------------------
 // Public item types (field layout kept stable so graph.rs / signs.rs compile)
@@ -51,6 +54,14 @@ pub struct RawRoad {
     pub lanes_forward: u8,
     pub lanes_backward: u8,
     pub look_token: u32,
+    /// DLC-guard byte from the fixed header — 0 = no DLC required.
+    pub dlc_guard: u8,
+    /// `true` when the road is hidden from the in-game UI map.
+    pub is_hidden: bool,
+    /// `true` when the road is flagged "GPS-avoid" (routing should penalise it).
+    pub gps_avoid: bool,
+    /// Token identifying the road type (look/category).  0 for legacy/sized roads.
+    pub road_type_token: u64,
 }
 
 /// A prefab (intersection / junction template).
@@ -117,35 +128,6 @@ const ITEM_TYPE_CURVE: u32 = 44;
 const ITEM_TYPE_CUTSCENE: u32 = 46;
 const ITEM_TYPE_VISIBILITY_AREA: u32 = 48;
 
-/// Total bytes consumed by a Road item after the item_type field (version 895+).
-///
-/// Layout of the 273-byte block (offsets within `buf`):
-/// ```text
-///   0x000 8   uid (kdop_uid)
-///   0x008 40  kdop_bounds
-///   0x030 4   kdop_flag1..4 (u8 × 4)
-///   0x034 1   view_distance
-///   0x035 4   road_flag1..4 (u8 × 4)
-///   0x039 88  11 × token (u64)
-///   0x091 4   right_terrain_coef (f32)
-///   0x095 8   token (u64)
-///   0x09D 4   left_terrain_coef (f32)
-///   0x0A1 24  3 × token (u64)
-///   0x0B9 60  3 × (token u64 + i16 + token u64 + i16)  // 20 B each
-///   0x0F5 4   right_height_offset (i32)   ← previously misread as start_node_uid
-///   0x0F9 4   left_height_offset (i32)
-///   0x0FD 8   backward_node_uid (u64)     ← actual start node UID
-///   0x105 8   forward_node_uid (u64)      ← actual end node UID
-///   0x10D 4   length (f32)
-/// ```
-const ROAD_BLOCK_SIZE: usize = 0x111;
-/// Byte offset of the **backward** (start) node UID — the kdop+terrain+offset
-/// header is 0xFD bytes long.
-const ROAD_START_NODE_OFFSET: usize = 0xFD;
-/// Byte offset of the **forward** (end) node UID — directly after the
-/// backward node.
-const ROAD_END_NODE_OFFSET: usize = 0x105;
-
 /// Hard cap on `item_count` / `node_count` to reject corrupt headers up front.
 const MAX_LIST_COUNT: u32 = 2_000_000;
 
@@ -170,8 +152,14 @@ const MAX_PASCAL_STRING_LEN: u64 = 1_048_576;
 #[instrument(skip(data), fields(bytes = data.len()))]
 pub fn parse_sector(data: &[u8]) -> Result<ParsedSector, ParseError> {
     if let Some(sector) = try_parse_sized_sector(data) {
+        debug!(
+            roads = sector.roads.len(),
+            nodes = sector.nodes.len(),
+            "sized-format sector parsed"
+        );
         return Ok(sector);
     }
+    debug!("falling back to legacy sector parser");
     parse_sector_legacy(data)
 }
 
@@ -410,6 +398,10 @@ fn parse_sized_road(cur: &mut Cursor<&[u8]>) -> Result<RawRoad, ParseError> {
         lanes_forward,
         lanes_backward,
         look_token: 0,
+        dlc_guard: 0,
+        is_hidden: false,
+        gps_avoid: false,
+        road_type_token: 0,
     })
 }
 
@@ -455,31 +447,66 @@ fn parse_node_f64(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
 // Item parsers
 // ---------------------------------------------------------------------------
 
+/// Parse one Type-3 (Road) item via the full binrw struct pipeline:
+/// 265-byte fixed header followed by the variable-length data payload.
+///
+/// On binrw failure we emit a `warn!` carrying the cursor position
+/// (relative to the road start) and return `Err`, which aborts the
+/// surrounding sector.  Aborting the sector is safer than guessing — a
+/// desynced cursor would corrupt every following item.
 fn parse_road(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), ParseError> {
-    let mut buf = [0u8; ROAD_BLOCK_SIZE];
-    cur.read_exact(&mut buf)
-        .map_err(|e| ParseError::Binary(format!("road item: {e}")))?;
+    let road_start = cur.position();
 
-    let uid = u64::from_le_bytes(buf[0..8].try_into().unwrap());
-    let node_a = u64::from_le_bytes(
-        buf[ROAD_START_NODE_OFFSET..ROAD_START_NODE_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    let node_b = u64::from_le_bytes(
-        buf[ROAD_END_NODE_OFFSET..ROAD_END_NODE_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
+    let header = RoadFixedHeader::read(cur).map_err(|e| {
+        let consumed = cur.position().saturating_sub(road_start);
+        warn!(
+            road_start,
+            consumed,
+            "Road fixed header parse failed at byte +{consumed} of road body: {e}"
+        );
+        ParseError::Binary(format!(
+            "road fixed header at +{consumed} bytes: {e}"
+        ))
+    })?;
+
+    let payload_start = cur.position();
+    let _payload = RoadDataPayload::read(cur).map_err(|e| {
+        let consumed = cur.position().saturating_sub(payload_start);
+        // Diagnostic: print the first 32 bytes the payload parser tried to walk.
+        let buf = cur.get_ref();
+        let payload_idx = payload_start as usize;
+        let preview_end = (payload_idx + 32).min(buf.len());
+        let preview: Vec<String> = buf
+            .get(payload_idx..preview_end)
+            .unwrap_or(&[])
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
+        warn!(
+            uid = header.uid,
+            payload_start,
+            consumed,
+            preview = preview.join(" ").as_str(),
+            "Road data payload parse failed: {e}"
+        );
+        ParseError::Binary(format!(
+            "road payload (uid={:#x}) at +{consumed} bytes: {e}",
+            header.uid
+        ))
+    })?;
 
     sector.roads.push(RawRoad {
-        uid,
-        node_a,
-        node_b,
+        uid: header.uid,
+        node_a: header.start_node_uid,
+        node_b: header.end_node_uid,
         speed_limit_kmh: 0,
         lanes_forward: 0,
         lanes_backward: 0,
         look_token: 0,
+        dlc_guard: header.dlc_guard,
+        is_hidden: header.is_hidden(),
+        gps_avoid: header.gps_avoid(),
+        road_type_token: header.road_type,
     });
     Ok(())
 }
@@ -1258,19 +1285,44 @@ mod tests {
         write_u32(buf, 0);                 // flags
     }
 
-    /// Append a road item (type tag + 273 bytes) to buf.
+    /// Append a road item (type tag + 265-byte fixed header + minimal payload) to buf.
+    ///
+    /// Layout written:
+    ///   • 4 B item_type = ITEM_TYPE_ROAD
+    ///   • 265 B fixed header (zeros except uid at +0, start at +0xF5, end at +0xFD)
+    ///   • Variable payload — every list count = 0, every scalar zero. The
+    ///     resulting payload size depends on the per-side fixed-size block plus
+    ///     the eight u32 list-count prefixes plus four trailing edge_look u64s.
     fn append_road(buf: &mut Vec<u8>, uid: u64, node_a: u64, node_b: u64) {
         write_u32(buf, ITEM_TYPE_ROAD); // type
-        let start = buf.len();
-        buf.extend_from_slice(&[0u8; ROAD_BLOCK_SIZE]);
-        // uid at offset 0
-        buf[start..start + 8].copy_from_slice(&uid.to_le_bytes());
-        // node_a at ROAD_START_NODE_OFFSET
-        buf[start + ROAD_START_NODE_OFFSET..start + ROAD_START_NODE_OFFSET + 8]
+
+        // 265-byte fixed header
+        let header_start = buf.len();
+        buf.extend_from_slice(&[0u8; 0x109]);
+        buf[header_start..header_start + 8].copy_from_slice(&uid.to_le_bytes());
+        buf[header_start + 0xF5..header_start + 0xF5 + 8]
             .copy_from_slice(&node_a.to_le_bytes());
-        // node_b at ROAD_END_NODE_OFFSET
-        buf[start + ROAD_END_NODE_OFFSET..start + ROAD_END_NODE_OFFSET + 8]
+        buf[header_start + 0xFD..header_start + 0xFD + 8]
             .copy_from_slice(&node_b.to_le_bytes());
+
+        // Minimal payload — overlay token, two zero-payload sides, center material
+        // block, center vegetation, four no-detail vegetation u16s, vegetation
+        // sphere count = 0, six list-count u32 = 0, four trailing edge_look u64s.
+        // Per-side block size: 24 (models) + 2 (terrain_size) + 48 (vegetation) +
+        // 8 (sidewalk_material) + 20 (terrain_quad_data with all-zero counts) = 102 B.
+        buf.extend_from_slice(&[0u8; 8]);  // overlay_token u64
+        buf.extend_from_slice(&[0u8; 102]); // right side
+        buf.extend_from_slice(&[0u8; 102]); // left side
+        buf.extend_from_slice(&[0u8; 8]);   // center_material u64
+        buf.extend_from_slice(&[0u8; 4]);   // center_material_color [u8;4]
+        buf.extend_from_slice(&[0u8; 2]);   // center_material_rotation u16
+        buf.extend_from_slice(&[0u8; 4]);   // random_seed u32
+        buf.extend_from_slice(&[0u8; 4]);   // previous_length f32
+        buf.extend_from_slice(&[0u8; 12]);  // CenterVegetation
+        buf.extend_from_slice(&[0u8; 8]);   // 4 × no_detail_vegetation u16
+        buf.extend_from_slice(&[0u8; 4]);   // vegetation_sphere_count u32 = 0
+        buf.extend_from_slice(&[0u8; 24]);  // 6 × list-count u32 = 0
+        buf.extend_from_slice(&[0u8; 32]);  // 4 × trailing edge_look u64
     }
 
     #[test]
