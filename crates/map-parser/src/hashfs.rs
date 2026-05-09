@@ -45,9 +45,9 @@ use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
 use miniz_oxide::inflate::decompress_to_vec_zlib;
-use sha2::{Digest, Sha256};
 use tracing::{debug, info, trace, warn};
 
+use crate::archive::archive_identity_hash;
 use crate::error::ParseError;
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -252,23 +252,11 @@ impl HashFsArchive {
             .map_err(|e| ParseError::Io(format!("metadata {:?}: {e}", &path)))?;
         let t_open = t_start.elapsed();
 
-        // SHA-256 for cache keying
-        let t_sha_start = Instant::now();
-        let file_hash = {
-            let mut f = std::fs::File::open(&path)?;
-            let mut hasher = Sha256::new();
-            let mut buf = vec![0u8; 65536];
-            loop {
-                let n = f.read(&mut buf)
-                    .map_err(|e| ParseError::Io(format!("hash read: {e}")))?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-            }
-            hasher.finalize().into()
-        };
-        let t_sha = t_sha_start.elapsed();
+        // Cheap identity hash: path + mtime + size, NOT content. See
+        // `archive::archive_identity_hash` for the rationale.
+        let t_id_start = Instant::now();
+        let file_hash = archive_identity_hash(&path)?;
+        let t_id = t_id_start.elapsed();
 
         // Memory-map large files, read small ones
         let t_storage_start = Instant::now();
@@ -321,11 +309,11 @@ impl HashFsArchive {
         let t_index = t_index_start.elapsed();
 
         info!(
-            "HashFS open timings ({} MB): open={:?} sha256={:?} storage={:?} \
+            "HashFS open timings ({} MB): open={:?} identity={:?} storage={:?} \
              header={:?} inflate_tables={:?} build_index={:?} total={:?}",
             file_len / 1_048_576,
             t_open,
-            t_sha,
+            t_id,
             t_storage,
             t_header,
             t_inflate,
