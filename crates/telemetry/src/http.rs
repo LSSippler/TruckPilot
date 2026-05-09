@@ -83,6 +83,10 @@ impl From<FunbitTelemetry> for Telemetry {
             nav_speed_limit_kmh: f.navigation_speed_limit.unwrap_or(-1.0),
             lead_vehicle_distance_m: -1.0,
             accel_longitudinal: -1.0,
+            // Funbit JSON does not expose fuel/odometer; surface as
+            // sentinel so plugins fall back to their own defaults.
+            fuel_liters: -1.0,
+            odometer_km: -1.0,
         }
     }
 }
@@ -115,5 +119,17 @@ mod tests {
         let raw: FunbitTelemetry = serde_json::from_str(json).unwrap();
         let t: Telemetry = raw.into();
         assert_eq!(t.nav_speed_limit_kmh, -1.0);
+    }
+
+    #[test]
+    fn fuel_and_odometer_become_sentinel() {
+        let json = r#"{
+            "truckPlacement": { "x": 0.0, "y": 0.0, "z": 0.0, "heading": 0.0 },
+            "truckFloatValues": { "speed": 0.0 }
+        }"#;
+        let raw: FunbitTelemetry = serde_json::from_str(json).unwrap();
+        let t: Telemetry = raw.into();
+        assert_eq!(t.fuel_liters, -1.0);
+        assert_eq!(t.odometer_km, -1.0);
     }
 }

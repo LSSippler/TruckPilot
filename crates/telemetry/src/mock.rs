@@ -48,6 +48,8 @@ pub fn fixture_telemetry() -> Telemetry {
         nav_speed_limit_kmh: 80.0,
         lead_vehicle_distance_m: -1.0,
         accel_longitudinal: -1.0,
+        fuel_liters: 320.0,
+        odometer_km: 12_345.0,
     }
 }
 

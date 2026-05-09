@@ -155,6 +155,10 @@ fn layout_to_telemetry(l: ShmTelemetryLayout) -> Telemetry {
             -1.0
         },
         accel_longitudinal: l.local_acceleration[0],
+        // SHM is the authoritative source for fuel/odometer; both are
+        // always present in the layout. Plain copy.
+        fuel_liters: l.fuel_liters,
+        odometer_km: l.odometer_km,
     }
 }
 
@@ -319,6 +323,8 @@ mod tests {
         assert_eq!(t.nav_speed_limit_kmh, 80.0);
         assert_eq!(t.lead_vehicle_distance_m, -1.0);
         assert!((t.accel_longitudinal - -0.5).abs() < 1e-6);
+        assert_eq!(t.fuel_liters, 200.0);
+        assert_eq!(t.odometer_km, 100.0);
     }
 
     #[test]

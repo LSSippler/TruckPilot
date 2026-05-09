@@ -138,6 +138,8 @@ mod tests {
             nav_speed_limit_kmh: nav_limit,
             lead_vehicle_distance_m: -1.0,
             accel_longitudinal: -1.0,
+            fuel_liters: -1.0,
+            odometer_km: -1.0,
         }
     }
 

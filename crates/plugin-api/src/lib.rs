@@ -50,6 +50,12 @@ pub struct Telemetry {
     pub lead_vehicle_distance_m: f32,
     /// Longitudinal acceleration in m/s². `-1.0` = not available.
     pub accel_longitudinal: f32,
+    /// Current fuel level in litres. `-1.0` = not available
+    /// (e.g. HTTP fallback source — Funbit JSON does not expose fuel).
+    pub fuel_liters: f64,
+    /// Total odometer reading in km. `-1.0` = not available
+    /// (e.g. HTTP fallback source).
+    pub odometer_km: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,13 +127,30 @@ pub struct ControlRequest {
 ///
 /// ## Standard keys
 ///
-/// | Key                    | Writer          | Reader(s)        | Format        |
-/// |------------------------|-----------------|------------------|---------------|
-/// | `acc.speed_cap_kmh`    | acc             | speed-controller | f64 as string |
-/// | `router.waypoints`     | router          | lane-keeper      | JSON `[[x,z]]`|
-/// | `router.active`        | router          | lane-keeper      | "true"/"false"|
-/// | `sign.speed_limit_kmh` | sign-reader     | speed-controller | f64 as string |
-/// | `vjoy.device_id`       | core/config     | vjoy-output      | u32 as string |
+/// | Key                              | Writer          | Reader(s)                | Format        |
+/// |----------------------------------|-----------------|--------------------------|---------------|
+/// | `acc.speed_cap_kmh`              | acc             | speed-controller         | f64 as string |
+/// | `router.waypoints`               | router          | lane-keeper              | JSON `[[x,z]]`|
+/// | `router.active`                  | router          | lane-keeper              | "true"/"false"|
+/// | `sign.speed_limit_kmh`           | sign-reader     | speed-controller         | f64 as string |
+/// | `vjoy.device_id`                 | core/config     | vjoy-output              | u32 as string |
+/// | `telemetry.available`            | core            | any                      | "true"/"false"|
+/// | `telemetry.position_x/y/z`       | core            | any                      | f64 as string |
+/// | `telemetry.heading`              | core            | any                      | f64 as string |
+/// | `telemetry.pitch`                | core            | any                      | f64 as string |
+/// | `telemetry.roll`                 | core            | any                      | f64 as string |
+/// | `telemetry.speed_ms`             | core            | any                      | f64 as string |
+/// | `telemetry.engine_rpm`           | core            | any                      | f64 as string |
+/// | `telemetry.cruise_control_kmh`   | core            | any                      | f64 as string |
+/// | `telemetry.nav_speed_limit_kmh`  | core            | any                      | f64 as string |
+/// | `telemetry.lead_vehicle_distance_m` | core         | acc                      | f64 as string |
+/// | `telemetry.accel_longitudinal`   | core            | acc                      | f64 as string |
+/// | `telemetry.fuel_liters`          | core            | fuel-stops, stats-logger | f64 as string |
+/// | `telemetry.odometer_km`          | core            | stats-logger             | f64 as string |
+///
+/// `telemetry.*` keys with sentinel `-1.0` are written by removing the
+/// key (so `get_f64` returns `None`); plugins must treat absence as
+/// "not available" rather than zero.
 #[derive(Debug, Clone, Default)]
 pub struct SharedBlackboard(Arc<Mutex<HashMap<String, String>>>);
 
