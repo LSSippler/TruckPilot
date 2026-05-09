@@ -129,6 +129,80 @@ pub(crate) struct DirEntry {
     pub(crate) flags: u32,
 }
 
+// ── Directory listing ───────────────────────────────────────────────
+
+/// One item in a HashFS v2 directory listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirItem {
+    /// Item name. Subdirectories are stored with a leading `/` in the
+    /// archive — we strip it here and set `is_dir = true` instead.
+    pub name: String,
+    /// `true` if the item is a subdirectory.
+    pub is_dir: bool,
+}
+
+/// Parse a HashFS v2 directory listing.
+///
+/// Layout (verified empirically against ETS2 1.55 `base.scs`):
+///
+/// ```text
+///   0x00      4   item_count   u32 LE
+///   0x04      N   sizes        u8 per item — string length in bytes
+///   0x04+N    *   names        all item strings concatenated, no separators
+/// ```
+///
+/// Items beginning with `/` are subdirectories; the leading slash is removed
+/// from `DirItem::name` and signalled via `is_dir`.
+pub fn parse_directory_listing(data: &[u8]) -> Result<Vec<DirItem>, ParseError> {
+    if data.len() < 4 {
+        return Err(ParseError::Archive(format!(
+            "directory listing too short: {} bytes",
+            data.len()
+        )));
+    }
+    let item_count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+
+    let sizes_start = 4;
+    let names_start = sizes_start + item_count;
+    if names_start > data.len() {
+        return Err(ParseError::Archive(format!(
+            "directory listing too short for {item_count} sizes: {} bytes",
+            data.len()
+        )));
+    }
+
+    let sizes = &data[sizes_start..names_start];
+    let total_name_bytes: usize = sizes.iter().map(|&s| s as usize).sum();
+    if names_start + total_name_bytes > data.len() {
+        return Err(ParseError::Archive(format!(
+            "directory listing truncated: needed {} name bytes, have {}",
+            total_name_bytes,
+            data.len() - names_start
+        )));
+    }
+
+    let mut items = Vec::with_capacity(item_count);
+    let mut cursor = names_start;
+    for &len in sizes {
+        let raw = &data[cursor..cursor + len as usize];
+        cursor += len as usize;
+
+        let raw_str = std::str::from_utf8(raw).map_err(|e| {
+            ParseError::Archive(format!(
+                "directory listing item is not UTF-8: {e}"
+            ))
+        })?;
+
+        let (is_dir, name) = match raw_str.strip_prefix('/') {
+            Some(rest) => (true, rest.to_string()),
+            None => (false, raw_str.to_string()),
+        };
+        items.push(DirItem { name, is_dir });
+    }
+
+    Ok(items)
+}
+
 // ── HashFsArchive ───────────────────────────────────────────────────
 
 /// An opened `.scs` archive (SCS HashFS v2 format).
@@ -749,6 +823,41 @@ mod tests {
         assert_eq!(entry.size, 250);
         assert_eq!(entry.compressed_size, 100);
         assert!(entry.flags & FLAG_COMPRESSED != 0);
+    }
+
+    #[test]
+    fn test_parse_directory_listing_empty() {
+        // item_count=0, no sizes, no names.
+        let data = [0u8; 4];
+        let items = parse_directory_listing(&data).expect("empty listing should parse");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_parse_directory_listing_mixed() {
+        // item_count = 3:
+        //   "/foo" (subdir)   length=4
+        //   "bar.sii" (file)  length=7
+        //   "/baz" (subdir)   length=4
+        let mut data = Vec::new();
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&[4u8, 7u8, 4u8]); // sizes
+        data.extend_from_slice(b"/foo");
+        data.extend_from_slice(b"bar.sii");
+        data.extend_from_slice(b"/baz");
+
+        let items = parse_directory_listing(&data).expect("listing should parse");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], DirItem { name: "foo".into(), is_dir: true });
+        assert_eq!(items[1], DirItem { name: "bar.sii".into(), is_dir: false });
+        assert_eq!(items[2], DirItem { name: "baz".into(), is_dir: true });
+    }
+
+    #[test]
+    fn test_parse_directory_listing_truncated() {
+        // item_count = 5 but no sizes follow.
+        let data = 5u32.to_le_bytes();
+        assert!(parse_directory_listing(&data).is_err());
     }
 
     #[test]
