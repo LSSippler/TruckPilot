@@ -21,22 +21,20 @@ const V: u32 = CoreMessage::VERSION;
 
 /// Start the IPC WebSocket server on `127.0.0.1:8765`.
 ///
+/// `tx` is the broadcast channel that `main::run_daemon` produces real
+/// `CoreMessage::Telemetry` frames into. The IPC server simply
+/// forwards every message to all connected UI clients via
+/// [`handle_connection`].
+///
 /// When the `mock_telemetry` cargo feature is enabled, a synthetic
-/// sine-wave producer is spawned so the UI can be developed without
-/// ETS2 running. The feature is **off** by default — see
-/// `crates/core/Cargo.toml`.
-pub async fn start_ipc_server(manager: SharedManager) {
+/// sine-wave producer is *also* spawned into the same channel so the
+/// UI can be developed without ETS2 running. The feature is **off**
+/// by default — see `crates/core/Cargo.toml`.
+pub async fn start_ipc_server(manager: SharedManager, tx: broadcast::Sender<CoreMessage>) {
     let addr = "127.0.0.1:8765";
     let listener = TcpListener::bind(addr).await.expect("bind websocket");
     info!("IPC WebSocket server listening on {}", addr);
 
-    let (tx, _rx) = broadcast::channel::<CoreMessage>(256);
-
-    // TODO(Phase 6): wire the real telemetry reader from
-    // `main::run_daemon` into `tx` here so connected UI clients get
-    // live `CoreMessage::Telemetry` frames. Until that lands the
-    // channel only carries plugin-event / list-update messages
-    // unless `mock_telemetry` is compiled in.
     spawn_mock_telemetry(tx.clone());
 
     while let Ok((stream, _)) = listener.accept().await {

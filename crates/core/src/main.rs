@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+use tokio::sync::broadcast;
+
 use tracing::{info, warn};
+use truckpilot_ipc_protocol::{CoreMessage, TelemetrySnapshot};
 use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 
 mod ipc;
@@ -493,7 +496,21 @@ async fn run_daemon() {
     // see. Used by `publish_telemetry_to_blackboard` each tick.
     let blackboard = manager.blackboard.clone();
     let manager = Arc::new(Mutex::new(manager));
-    tokio::spawn(ipc::start_ipc_server(manager.clone()));
+
+    // Broadcast channel that carries `CoreMessage`s out to every
+    // connected UI client. Producers: this loop (real telemetry frames)
+    // and, when the `mock_telemetry` feature is on, a sine-wave task
+    // inside `ipc::start_ipc_server`. Capacity 256 absorbs short UI
+    // stalls without dropping frames.
+    let (ipc_tx, _ipc_rx) = broadcast::channel::<CoreMessage>(256);
+    tokio::spawn(ipc::start_ipc_server(manager.clone(), ipc_tx.clone()));
+
+    #[cfg(feature = "mock_telemetry")]
+    warn!(
+        "mock_telemetry feature is ENABLED — real telemetry IPC push is also \
+         disabled to avoid two producers racing on the same channel. \
+         Disable this feature for production."
+    );
 
     // Watchdog: a u64 heartbeat (microseconds since `daemon_start`)
     // that the control loop bumps every tick. If it goes stale beyond
@@ -506,6 +523,13 @@ async fn run_daemon() {
     tokio::spawn(watchdog_loop(heartbeat.clone(), daemon_start));
 
     let mut last_log = Instant::now();
+    // 50 ms IPC throttle: matches the 20 Hz cadence the UI subscribes
+    // at; never sends more than one telemetry frame per UI render
+    // cycle even though the control loop ticks at 50 Hz. Only used on
+    // the real-telemetry path; gated to silence `unused` warnings
+    // when `mock_telemetry` is on.
+    #[cfg(not(feature = "mock_telemetry"))]
+    let mut last_ipc_push = Instant::now();
     let mut output = ControlOutput::default();
 
     info!("Running — press Ctrl+C to stop");
@@ -521,6 +545,24 @@ async fn run_daemon() {
         // see fresh `telemetry.*` values when their `tick` runs. The
         // blackboard has its own Mutex; no contention with the manager.
         publish_telemetry_to_blackboard(telemetry.as_ref(), &blackboard);
+
+        // IPC broadcast: real telemetry → UI clients, gated to one
+        // frame per 50 ms. Compile-time off when `mock_telemetry` is
+        // enabled so the synthetic stream from `ipc::spawn_mock_telemetry`
+        // is the sole producer.
+        #[cfg(not(feature = "mock_telemetry"))]
+        if let Some(t) = telemetry.as_ref() {
+            if last_ipc_push.elapsed() >= Duration::from_millis(50) {
+                // `broadcast::Sender::send` returns `Err` when there are
+                // no receivers — which is the normal state until a UI
+                // connects. Discard.
+                let _ = ipc_tx.send(CoreMessage::Telemetry {
+                    v: CoreMessage::VERSION,
+                    data: snapshot_from(t),
+                });
+                last_ipc_push = Instant::now();
+            }
+        }
 
         let mut mgr = manager.lock().await;
         mgr.process_reloads();
@@ -705,6 +747,30 @@ fn set_or_remove(bb: &SharedBlackboard, key: &str, value: f64) {
         bb.remove(key);
     } else {
         bb.set(key, value.to_string());
+    }
+}
+
+/// Project a `Telemetry` frame into the `TelemetrySnapshot` carried by
+/// `CoreMessage::Telemetry`.
+///
+/// `TelemetrySnapshot` is intentionally narrower than `Telemetry`: it
+/// carries only the six fields the UI's telemetry tab consumes today.
+/// Extending the snapshot (pitch/roll/fuel/odometer/etc.) is a Phase 7
+/// concern — it requires bumping `PROTOCOL_VERSION` in the IPC crate
+/// and updating the TS-side mirror in `crates/ui/src/lib/types.ts`.
+///
+/// Only the real-IPC-push path calls this; the synthetic mock stream
+/// in `ipc.rs` constructs its own snapshot inline. Hence the
+/// `dead_code` allowance under `mock_telemetry`.
+#[cfg_attr(feature = "mock_telemetry", allow(dead_code))]
+fn snapshot_from(t: &Telemetry) -> TelemetrySnapshot {
+    TelemetrySnapshot {
+        position: t.position,
+        heading: t.heading,
+        speed_ms: t.speed_ms,
+        engine_rpm: t.engine_rpm,
+        cruise_control_kmh: t.cruise_control_kmh,
+        nav_speed_limit_kmh: t.nav_speed_limit_kmh,
     }
 }
 
