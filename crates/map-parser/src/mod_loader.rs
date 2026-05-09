@@ -162,9 +162,12 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
     
     info!("Found {} total unique files. {} files were overridden by mods.", all_paths.len(), override_count);
 
+    // Sector binary format lives in `*.base`. Other extensions (`.aux`,
+    // `.data`, `.desc`) and prefab files use different layouts and would
+    // produce spurious empty parses.
     let sector_paths: Vec<String> = all_paths
         .into_iter()
-        .filter(|p| p.starts_with("map/") && (p.contains("/sec") || p.contains("/pfab")))
+        .filter(|p| p.ends_with(".base"))
         .collect();
 
     if !sector_paths.is_empty() {
