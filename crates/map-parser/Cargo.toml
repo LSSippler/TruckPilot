@@ -1,0 +1,27 @@
+[package]
+name = "truckpilot-map-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+binrw          = { workspace = true }
+postcard       = { workspace = true }
+bincode        = "2.0.0-rc.3"
+zip            = "2.1"
+sha2           = { workspace = true }
+miniz_oxide    = "0.8"
+memmap2        = "0.9"
+rustc-hash     = "2"
+thiserror      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+
+[[bin]]
+name = "map-probe"
+path = "src/bin/map_probe.rs"

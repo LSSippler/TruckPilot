@@ -39,12 +39,12 @@
 //!   0x0C..0x10  u32  offset_block — absolute data offset = offset_block * 16
 //! ```
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
 use miniz_oxide::inflate::decompress_to_vec_zlib;
+use rustc_hash::FxHashMap;
 use tracing::{debug, info, trace, warn};
 
 use crate::archive::archive_identity_hash;
@@ -213,7 +213,7 @@ pub struct HashFsArchive {
     pub file_hash: [u8; 32],
     salt: u16,
     /// Hash → entry metadata.
-    index: HashMap<u64, DirEntry>,
+    index: FxHashMap<u64, DirEntry>,
     storage: Storage,
 }
 
@@ -557,10 +557,13 @@ fn inflate_table(
 
 /// Build the hash → `DirEntry` index by walking each entry's metadata
 /// records in `index2` until a data part (kind 0x80) is found.
-fn build_index(entry_data: &[u8], metadata_data: &[u8]) -> HashMap<u64, DirEntry> {
+fn build_index(entry_data: &[u8], metadata_data: &[u8]) -> FxHashMap<u64, DirEntry> {
     const ENTRY_SIZE: usize = 16;
     let count = entry_data.len() / ENTRY_SIZE;
-    let mut index = HashMap::with_capacity(count);
+    // FxHash over an already-CityHash64 key avoids re-running SipHash over
+    // bytes that are already a high-quality hash. SipHash here is purely
+    // overhead — there is no DoS surface for archive entries.
+    let mut index = FxHashMap::with_capacity_and_hasher(count, Default::default());
 
     let mut resolve_failed = 0usize;
     let mut size_zero_filtered = 0usize;
