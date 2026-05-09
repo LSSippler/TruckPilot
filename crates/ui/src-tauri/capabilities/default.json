@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to the main and dashboard windows.",
+  "windows": ["main", "dashboard-window"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:window:default",
+    "core:window:allow-create",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-write-text-file",
+    "shell:default"
+  ]
+}

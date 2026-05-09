@@ -1,32 +1,45 @@
-[package]
-name = "truckpilot"
+[workspace]
+members = [
+    "crates/plugin-api",
+    "crates/core",
+    "crates/telemetry",
+    "crates/telemetry-dll",
+    "crates/ipc-protocol",
+    "crates/map-parser",
+    "crates/diag",
+    "crates/ui/src-tauri",
+    "crates/plugins/hello-world",
+    "crates/plugins/router",
+    "crates/plugins/lane-keeper",
+    "crates/plugins/speed-controller",
+    "crates/plugins/acc",
+    "crates/plugins/vjoy-output",
+    "crates/plugins/sign-reader",
+    "crates/plugins/sign-vision",
+    "crates/plugins/lane-changer",
+    "crates/plugins/fuel-stops",
+    "crates/plugins/break-planner",
+    "crates/plugins/stats-logger",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["TruckPilot Contributors"]
+license = "MIT"
+repository = "https://github.com/geekom/TruckPilot"
 
-[dependencies]
+[workspace.dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-siphasher = "1"
-clap = { version = "4", features = ["derive"] }
-ureq = "3"
-miniz_oxide = "0.8"
-thiserror = "2"
+binrw = "0.14"
+postcard = { version = "1", features = ["alloc"] }
+sha2 = "0.10"
 zip = "2"
-
-[dev-dependencies]
-wiremock = "0.6"
-
-[workspace]
-members = ["crates/telemetry_dll"]
-
-[[bin]]
-name = "telemetry_diag"
-path = "src/bin/telemetry_diag.rs"
-
-[[bin]]
-name = "vjoy_test"
-path = "src/bin/vjoy_test.rs"
-
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
+thiserror = "1"
+tauri = "2"
+tauri-build = "2"

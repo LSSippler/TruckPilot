@@ -1,0 +1,27 @@
+[package]
+name = "truckpilot-telemetry-dll"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ETS2 native telemetry plugin DLL — writes live truck data to shared memory"
+
+# Produces truckpilot_telemetry.dll (Windows) for ETS2's plugins/ folder.
+# On Linux this compiles as a cdylib stub (`.so`) — only the test
+# harness runs there.
+#
+# Note: we deliberately do NOT advertise `rlib` here. The reader-side
+# crate `truckpilot-telemetry` already builds a Rust library with the
+# same lib-output filename (`libtruckpilot_telemetry.rlib`); having a
+# second `rlib` from this crate would collide on disk
+# (cargo issue rust-lang/cargo#6313, future hard error). Unit tests
+# inside this crate still work — `cargo test` builds them against a
+# transient test-only lib that is never written under the conflicting
+# filename.
+[lib]
+name = "truckpilot_telemetry"
+crate-type = ["cdylib"]
+
+# No external dependencies — pure Win32 FFI + std.
+[dependencies]

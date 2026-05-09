@@ -1,0 +1,16 @@
+# Example offsets file for ETS2 memory reading.
+# Real offsets are version-specific and need to be reverse-engineered
+# against eurotrucks2.exe. This file is purely a template.
+#
+# Static offsets are added to the module base address.
+# Pattern offsets are scanned for at startup (not yet implemented).
+
+[[versions]]
+version = "1.50.2"
+# position = { kind = "static", offset = 0x12345678 }
+# heading  = { kind = "static", offset = 0x12345680 }
+# speed    = { kind = "pattern", signature = "48 8B 05 ?? ?? ?? ??" }
+# rpm      = { kind = "static", offset = 0x12345690 }
+# cruise_control = { kind = "static", offset = 0x123456A0 }
+# nav_speed_limit = { kind = "static", offset = 0x123456B0 }
+# nav_waypoints = [0x10, 0x20, 0x08]

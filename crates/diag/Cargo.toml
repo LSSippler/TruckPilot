@@ -1,0 +1,33 @@
+[package]
+name = "truckpilot-diag"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TruckPilot diagnostic tool — checks all subsystems before a live run"
+
+[[bin]]
+name = "truckpilot-diag"
+path = "src/main.rs"
+
+[dependencies]
+truckpilot-telemetry = { path = "../telemetry" }
+truckpilot-map-parser = { path = "../map-parser" }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json       = { workspace = true }
+
+# HTTP check
+ureq = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+] }

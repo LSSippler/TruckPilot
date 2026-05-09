@@ -1,0 +1,45 @@
+[package]
+name = "truckpilot-telemetry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+truckpilot-plugin-api = { path = "../plugin-api" }
+ureq = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+toml = "0.8"
+thiserror = "1"
+# Only the runtime handle is needed: `read_telemetry_async` calls
+# `tokio::task::spawn_blocking` to keep the sync memory/SHM/HTTP reads
+# off the async executor.
+tokio = { version = "1", default-features = false, features = ["rt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_System_Memory",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_ProcessStatus",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "telemetry-probe"
+path = "src/bin/telemetry_probe.rs"
+
+[[bin]]
+name = "shm-sim"
+path = "src/bin/shm_sim.rs"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "hello-world"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+tracing    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }

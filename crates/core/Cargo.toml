@@ -1,0 +1,36 @@
+[package]
+name = "truckpilot-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "truckpilot-core"
+path = "src/main.rs"
+
+[features]
+# Default: no synthetic telemetry. The IPC server only forwards telemetry
+# coming from the real telemetry source (see Phase 6 wiring in
+# `crates/core/src/main.rs`).
+default = []
+# Enable the synthetic sine-wave telemetry stream in `ipc.rs`. Useful for
+# UI development without ETS2 running. Never enable in production builds.
+mock_telemetry = []
+
+[dependencies]
+truckpilot-plugin-api = { path = "../plugin-api" }
+truckpilot-telemetry  = { path = "../telemetry" }
+truckpilot-ipc-protocol = { path = "../ipc-protocol" }
+truckpilot-map-parser = { path = "../map-parser" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libloading = "0.8"
+notify = "6"
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = "0.21"
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = "0.3"
+dirs = "5.0"

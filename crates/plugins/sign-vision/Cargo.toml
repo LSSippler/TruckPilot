@@ -1,0 +1,27 @@
+[package]
+name = "truckpilot-plugin-sign-vision"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+
+# ONNX runtime — optional, only linked when the model file is present.
+# Feature-gated so the plugin compiles without ort installed.
+# Use ort = "1" (stable) or "2-rc" when available.
+[features]
+default = []
+onnx = ["ort"]
+
+[dependencies.ort]
+version = "2.0.0-rc.12"
+optional = true

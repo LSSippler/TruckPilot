@@ -1,0 +1,397 @@
+================================================================================
+TruckPilot — Bedienungsanleitung
+================================================================================
+
+Wie alles zusammenhaengt und wie du dich mit Autopilot + Map-Parser verbindest.
+Reihenfolge wichtig — Schritt fuer Schritt durchgehen.
+
+
+================================================================================
+1. UEBERBLICK — was redet mit was?
+================================================================================
+
+  +----------+         +----------------+        +----------------+
+  |   ETS2   |  ---->  | Telemetry-DLL  |  ----> | SharedMemory   |
+  | (Spiel)  |         | (im ETS2-Bin)  |        | TruckPilotTele |
+  +----------+         +----------------+        +-------+--------+
+                                                         |
+                                                         v
+  +-------------------+      WebSocket       +--------------------------+
+  |   truckpilot-ui   | <==================> |    truckpilot-core       |
+  | (Tauri-Desktop)   |  ws://127.0.0.1:8765 |  - Plugin-Host           |
+  +-------------------+                      |  - IPC-Server            |
+                                             |  - Map-Parser            |
+                                             |  - Route-Planer          |
+                                             |  - Autopilot-Loop        |
+                                             +-----------+--------------+
+                                                         |
+                                                         v
+                                             +--------------------------+
+                                             |   vJoy (virt. Joystick)  |
+                                             |  -> Steuert ETS2 zurueck |
+                                             +--------------------------+
+
+Drei Prozesse:
+  1. ETS2 mit eingebauter Telemetry-DLL (liefert Truck-Daten)
+  2. truckpilot-core — der Daemon (Plugins, Routing, IPC)
+  3. truckpilot-ui   — die Desktop-App (Anzeige + Steuerung)
+
+Die Desktop-App geht NIE direkt an die Telemetrie. Alles laeuft ueber den
+Daemon. Die App spricht nur mit dem Daemon (WebSocket).
+
+
+================================================================================
+2. EINMALIGES SETUP (build + install)
+================================================================================
+
+Voraussetzungen:
+  - Rust toolchain (rustup)
+  - Node.js 18+ und npm
+  - Auf Windows: vJoy installiert (https://sourceforge.net/projects/vjoystick/)
+    - Mindestens 1 vJoy-Geraet konfiguriert (Device 1 ist Default)
+    - Achsen X, Y, RZ aktiviert (Lenkung, Gas, Bremse)
+  - ETS2 lokal installiert (Steam-Pfad wird automatisch erkannt)
+
+
+  --- 2.1  Workspace bauen --------------------------------------------------
+
+    cd C:\Users\Sippler\Documents\TruckPilot
+    cargo build --release --workspace --exclude truckpilot-diag
+
+  Das ergibt unter target\release\ unter anderem:
+    - truckpilot-core.exe       (Daemon + CLI-Tools)
+    - truckpilot_ui.exe         (Tauri-Shell, wird durch UI-Build erzeugt)
+    - die Plugin-DLLs (hello-world, lane-keeper, vjoy-output, ...)
+
+
+  --- 2.2  Telemetry-DLL fuer ETS2 bauen + installieren ---------------------
+
+  Die DLL muss als Windows-DLL kompiliert werden, damit ETS2 sie laedt:
+
+    cargo build --release -p truckpilot-telemetry-dll \
+                 --target x86_64-pc-windows-msvc
+
+  Ergebnis liegt in:
+    target\x86_64-pc-windows-msvc\release\truckpilot_telemetry.dll
+
+  Diese DLL kopierst du nach:
+    <Steam>\steamapps\common\Euro Truck Simulator 2\bin\win_x64\plugins\
+       truckpilot_telemetry.dll
+
+  WICHTIG:
+   - Falls der Ordner "plugins" nicht existiert, lege ihn an.
+   - ETS2 startet die DLL automatisch beim naechsten Spiel-Start.
+   - Pruefe mit  cargo run -p truckpilot-diag  (sobald repariert)
+     oder im Task-Manager, ob die SharedMemory-Region "TruckPilotTelemetry"
+     existiert sobald ETS2 laeuft.
+
+
+  --- 2.3  Plugin-DLLs ins Plugin-Verzeichnis legen --------------------------
+
+  Der Daemon sucht Plugins in einem ./plugins/-Ordner relativ zu seinem
+  Working Directory. Beim ersten Start wird der Ordner automatisch angelegt.
+
+  Kopiere die kompilierten Plugin-DLLs aus target\release\ in den Ordner
+  neben truckpilot-core.exe, z.B.:
+
+    target\release\plugins\
+      hello_world.dll
+      router.dll
+      lane_keeper.dll
+      speed_controller.dll
+      acc.dll
+      vjoy_output.dll       <-- MUSS ZULETZT LADEN ("letztes wins")
+      sign_reader.dll
+      lane_changer.dll
+      fuel_stops.dll
+      break_planner.dll
+      stats_logger.dll
+
+  Nicht jedes Plugin musst du gleichzeitig laufen lassen — du kannst sie
+  spaeter in der UI einzeln togglen.
+
+
+  --- 2.4  UI-Frontend installieren -----------------------------------------
+
+    cd crates\ui
+    npm install
+
+  Bei Fehlern kannst du gezielt:
+    npm run typecheck     (TypeScript pruefen)
+    npm run lint          (ESLint)
+    npm run test          (Vitest)
+
+  Damit ist das Setup fertig.
+
+
+================================================================================
+3. MAP PARSEN  — graph.json bauen
+================================================================================
+
+Bevor du Routen planst oder den Autopiloten nutzt, MUSS einmal die ETS2-Karte
+geparst werden. Das Ergebnis ist eine graph.json im aktuellen Verzeichnis.
+
+  cd C:\Users\Sippler\Documents\TruckPilot\target\release
+  truckpilot-core.exe parse-map ^
+      --ets2-dir "C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2"
+
+Optional Mods dazumischen:
+  truckpilot-core.exe parse-map ^
+      --ets2-dir "..." ^
+      --mods-dir "C:\Users\<DU>\Documents\Euro Truck Simulator 2\mod"
+
+Was passiert:
+  - .scs-Archive aus ETS2 (und ggf. Mods) werden gelesen
+  - Sektoren-Files werden geparst
+  - Knoten/Kanten werden zu einem Graph zusammengesetzt
+  - Datei "graph.json" wird im aktuellen Verzeichnis gespeichert
+  - Am Ende werden 5 Beispiel-Knoten-UIDs ausgegeben — die brauchst du
+    fuer route/autopilot.
+
+Beispielausgabe:
+  === Map Parse Result ===
+    Nodes  : 1234567
+    Edges  : 2345678
+    Prefabs: 12345
+    Signs  : 34567
+    Time   : 18.3s
+    Saved  : graph.json (95234567 bytes)
+
+Das Parsen kann je nach System 10-60 Sekunden dauern, mit grossen Map-Mods
+auch mehrere Minuten.
+
+Wenn du spaeter Mods aenderst → parse-map nochmal laufen lassen.
+
+
+================================================================================
+4. ROUTEN PLANEN  (zum Testen, ohne Autopilot)
+================================================================================
+
+  truckpilot-core.exe route ^
+      --from 0x123ABC456DEF7890 ^
+      --to   0xFEDCBA9876543210
+
+UIDs in hex (mit 0x) oder dezimal. Ergebnis:
+  - Anzahl Wegpunkte
+  - Erste 5 Koordinaten
+  - Berechnungszeit (A* mit Luftlinien-Heuristik, ueblich <100ms)
+
+Wenn "No route found" kommt: pruefen, dass beide UIDs in graph.json existieren
+(z.B. mit  type graph.json | findstr <uid> ).
+
+
+================================================================================
+5. DAEMON STARTEN  (fuer UI + Plugin-Betrieb)
+================================================================================
+
+Im normalen Betrieb startest du den Daemon und die UI getrennt. Der Daemon
+oeffnet WebSocket auf 127.0.0.1:8765 und laedt alle Plugins aus ./plugins/.
+
+  cd target\release
+  truckpilot-core.exe daemon
+
+Was du siehst:
+  TruckPilot Core — daemon mode
+  Loaded N plugin(s)
+  IPC WebSocket server listening on 127.0.0.1:8765
+  Running — press Ctrl+C to stop
+  Tick — steering=0.00 throttle=0.00 brake=0.00 (plugins=N)
+
+Solange ETS2 + Telemetry-DLL laufen, bekommt der Daemon Live-Daten und
+schickt sie als Telemetrie-Stream (20 Hz) an alle WebSocket-Clients.
+
+
+================================================================================
+6. UI STARTEN  (Desktop-App)
+================================================================================
+
+In einem ZWEITEN Terminal:
+
+  cd C:\Users\Sippler\Documents\TruckPilot\crates\ui
+  npm run tauri dev
+
+Beim ersten Start wird der Tauri-Shell-Prozess kompiliert (kann eine Minute
+dauern). Danach oeffnet sich das App-Fenster. Du solltest in der Statusleiste
+unten sehen:
+
+   o  Connected o core v1.0           ws://localhost:8765
+
+Wenn rot/orange:
+  - Daemon laeuft nicht?  -> truckpilot-core.exe daemon starten
+  - Anderer Port belegt?  -> netstat -ano | findstr 8765
+  - Klick auf "Retry now" rechts unten in der Statusleiste
+
+
+  --- 6.1  Tabs in der UI ---------------------------------------------------
+
+  Dashboard    — Live-Speed, Heading, Position, aktive Plugins
+  Plugins      — Plugins toggeln, neu laden, Reihenfolge per Drag&Drop,
+                 Settings via JSON-Schema-Form (kommt vom Plugin selbst)
+  Mods         — Mod-Liste, Apply, Build-Progress, Cache leeren
+                 (Service im Daemon ist Stub, antwortet "not_implemented")
+  PID Tuning   — Live-Slider fuer Steering / ACC / Lane-Keeper, Plot
+                 (Schreiben antwortet aktuell "not_implemented")
+  Settings     — Theme, Auto-Connect, Hotkeys, ETS2-Pfad
+                 -> Button "Auto-detect": parst HKCU\Software\Valve\Steam
+                    + libraryfolders.vdf und sucht App-ID 227300
+  Logs         — Live-Stream vom Daemon, Filter Level/Plugin/Suche, Export
+
+  Zweites Fenster fuer 2. Monitor:
+    Topbar-Button "Pop out dashboard (F2)"  oder Hotkey  F2
+    -> oeffnet read-only Vollbild-Telemetrie
+
+
+================================================================================
+7. AUTOPILOT  — drei Wege ihn zu fahren
+================================================================================
+
+  --- 7.1  Standalone CLI-Autopilot (einfachster Test) ----------------------
+
+  Eigenstaendige Loop, ohne UI, ohne Plugin-Stack. Liest Telemetrie direkt
+  aus dem Shared Memory, plant A* auf graph.json, gibt jede Sekunde die
+  geplanten Steer/Throttle/Brake-Werte aus. Sendet sie aktuell NICHT an
+  vJoy — das macht der Plugin-Stack (siehe 7.2).
+
+    truckpilot-core.exe autopilot ^
+        --from 0x123ABC456DEF7890 ^
+        --to   0xFEDCBA9876543210 ^
+        --vjoy-device 1
+
+  Erwartete Ausgabe sekuendlich:
+    wp=12/3450 speed=58.3km/h steer=-0.04 thr=0.40 brk=0.00
+
+  Gut fuers Debugging der Wegpunkt-Logik. Wenn "No telemetry — waiting
+  for ETS2 + DLL..." dauerhaft erscheint: ETS2 nicht offen oder DLL nicht
+  installiert (siehe 2.2).
+
+
+  --- 7.2  Plugin-Stack-Autopilot (richtige Steuerung ueber vJoy) -----------
+
+  Im Daemon-Modus uebernehmen die Plugins die Arbeit:
+
+    1. router          plant die Route, schreibt Wegpunkte aufs Blackboard
+    2. lane-keeper     liest Position + Wegpunkte, berechnet Lenkung
+    3. speed-controller   Throttle/Brake fuer Zielgeschwindigkeit
+    4. acc                Adaptive Cruise (haelt Abstand zu Vordermann)
+    5. sign-reader        liest Verkehrsschilder, schreibt Tempolimit aufs BB
+    6. vjoy-output     LIEST steering/throttle/brake aus dem ControlOutput
+                          und schreibt sie in die vJoy-Achsen
+                          MUSS DAS LETZTE PLUGIN IN DER REIHE SEIN
+
+  Vorgehen:
+    a) Daemon starten (siehe 5.)
+    b) UI starten (siehe 6.)
+    c) Tab "Plugins" oeffnen
+    d) Reihenfolge per Drag&Drop:  router  lane-keeper  speed-controller
+       acc  sign-reader  vjoy-output (ganz unten)
+    e) Plugins enablen (Switch rechts)
+    f) ETS2 starten, in einem Truck sitzen, Lenkrad-Eingabe in ETS2 auf das
+       vJoy-Geraet umstellen (Optionen -> Steuerung -> vJoy-Achsen mappen)
+    g) router-Plugin braucht eine Route. Aktuell ist die UI fuer das
+       Router-Setzen noch nicht verdrahtet — es kommt vom Settings-Form
+       des router-Plugins (Tab Plugins -> router auswaehlen -> from/to
+       eintragen, Save).
+
+  Sicherheit:
+    - Der vjoy-output sendet nur, wenn aktiviert
+    - Hotkey "Disengage" (Default F6) sollte ALLE Werte auf 0 setzen
+      (Implementation noch in Arbeit — bis dahin: Plugin im UI deaktivieren
+       oder Daemon mit Ctrl+C beenden)
+
+
+  --- 7.3  PID-Tuning waehrend der Fahrt -----------------------------------
+
+  Tab "PID Tuning" zeigt drei Profile (steering, acc, lane_keeper). Slider
+  Kp/Ki/Kd/Output-Limit aendern und "Save" — wird zurzeit als
+  "not_implemented" geechot, weil der Tuning-Service im Daemon noch fehlt.
+  Workaround: PID-Werte ueber das jeweilige Plugin-Settings-Form setzen
+  (Tab Plugins -> lane-keeper -> Settings -> Kp/Ki/Kd).
+
+
+================================================================================
+8. TYPISCHER ABLAUF FUER EINE FAHRT
+================================================================================
+
+  1.  ETS2 ist installiert, vJoy installiert, Telemetry-DLL kopiert.
+  2.  Einmal Karte parsen:
+        truckpilot-core.exe parse-map --ets2-dir "<ETS2>"
+  3.  Terminal A:
+        cd target\release
+        truckpilot-core.exe daemon
+  4.  Terminal B:
+        cd crates\ui
+        npm run tauri dev
+  5.  ETS2 starten, in einen Truck einsteigen, vJoy als Lenkrad mappen.
+  6.  In der UI: Tab Plugins, vjoy-output ans Ende ziehen, alle gewuenschten
+      Plugins aktivieren.
+  7.  Im router-Plugin (Tab Plugins -> router) Start- und Ziel-UID setzen
+      (UIDs aus parse-map oder graph.json).
+  8.  Wenn Statusleiste gruen + Telemetrie auf dem Dashboard laeuft, ist
+      alles verbunden. Lkw rollt, Lenkrad bewegt sich.
+  9.  F2 oeffnet ein zweites read-only Dashboard fuer einen 2. Monitor.
+
+
+================================================================================
+9. FEHLER-CHECKLISTE
+================================================================================
+
+  Statusleiste rot, "Reconnecting..."
+    -> Daemon nicht gestartet, oder Port 8765 belegt.
+       netstat -ano | findstr 8765    zum Pruefen.
+
+  Dashboard zeigt "No telemetry yet" obwohl ETS2 laeuft
+    -> Telemetry-DLL nicht in <ETS2>\bin\win_x64\plugins\
+    -> Falsche Architektur (32-bit-DLL fuer 64-bit-ETS2)
+    -> ETS2 nach DLL-Install neu starten
+
+  Plugins laden nicht
+    -> Daemon hat ./plugins/ angelegt, aber leer. DLLs reinkopieren.
+    -> DLL-Name muss auf .dll enden, kein .pdb mit reinkopieren.
+    -> Plugin von gleicher Rust-Version gebaut wie Core (kein Hot-Reload!)
+
+  Autopilot lenkt in die falsche Richtung
+    -> Wegpunkt-Suche umgekehrt? Pruefen mit:
+         truckpilot-core.exe route --from <A> --to <B>
+       Wenn "No route found": graph.json zu alt, parse-map nochmal.
+    -> Heading-Konvention: 0 = Nord, positiv = im Uhrzeigersinn.
+       Wenn das Plugin das anders interpretiert, Vorzeichen in Plugin-
+       Settings (steering_sign o.ae.) drehen.
+
+  Auto-Detect findet ETS2 nicht
+    -> Steam nicht ueber Standardpfad installiert?
+       Manuell in Settings -> ETS2-Verzeichnis -> Browse... waehlen.
+    -> ETS2 bei Steam ueber "Verschieben" auf andere Library?
+       libraryfolders.vdf wird gelesen, sollte klappen — sonst manuell.
+
+  vJoy reagiert nicht
+    -> vJoy-Device Nummer falsch (Default 1, im vjoy-output-Plugin
+       konfigurierbar)
+    -> ETS2 muss vJoy als Eingabegeraet erkannt haben (im Spiel-
+       Steuerungsmenue Achsen neu zuweisen)
+
+
+================================================================================
+10. WICHTIGE PFADE ZUM NACHSCHLAGEN
+================================================================================
+
+  Cargo-Workspace .................. C:\Users\Sippler\Documents\TruckPilot\
+  Daemon-Binary .................... target\release\truckpilot-core.exe
+  Plugin-Verzeichnis ............... target\release\plugins\
+  Map-Output (graph.json) .......... aktuelles Verzeichnis beim parse-map
+  Telemetry-DLL Ziel ............... <ETS2>\bin\win_x64\plugins\
+                                       truckpilot_telemetry.dll
+  ETS2 Default ..................... C:\Program Files (x86)\Steam\
+                                       steamapps\common\Euro Truck Simulator 2
+  ETS2-Mods Default ................ Dokumente\Euro Truck Simulator 2\mod
+  IPC-Adresse ...................... ws://127.0.0.1:8765
+  IPC-Protokoll-Quelle ............. crates\ipc-protocol\src\lib.rs
+  TS-Spiegel ....................... crates\ui\src\lib\types.ts
+  Sync-Pruefer ..................... crates\ui\scripts\sync-ipc-types.mjs
+
+  CLI-Hilfe:
+    truckpilot-core.exe --help
+
+
+================================================================================
+ENDE
+================================================================================

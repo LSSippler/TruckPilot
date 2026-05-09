@@ -3,3 +3,56 @@
 # Added by cargo
 
 /target
+
+# .NET build outputs (never commit these)
+TruckPilot.NET/**/bin/
+TruckPilot.NET/**/obj/
+TruckPilot.TelemetryDLL/build/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+
+# Stack traces / temporary logs
+*.log
+live_test_*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Misc temporary
+truckpilot_bundle.txt
+*.tmp
+~syncthing~*
+
+# AI assistant history (per-user, not for the repo)
+.aider*
+.claude/settings.local.json
+.opencode/
+
+# Operator-local one-off scripts (kept on disk, not in VCS)
+featherless-models.json
+fallback_proxy.py
+test-fallbacks.sh
+test-models.sh
+test-results.md
+
+# Frontend build outputs / deps
+crates/ui/node_modules/
+crates/ui/dist/
+crates/ui/.svelte-kit/
+crates/ui/build/
+node_modules/
+
+# Compiled plugin DLLs / SOs at top-level (built artifacts)
+plugins/*.so
+plugins/*.dll
+plugins/*.dylib
+
+# Old-Rust-1.x experimentation
+hashfs_reader/target/
+
+# Android Gradle wrapper artifacts handled per-project

@@ -1,0 +1,17 @@
+[package]
+name = "truckpilot-plugin-sign-reader"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+truckpilot-map-parser  = { path = "../../map-parser" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
