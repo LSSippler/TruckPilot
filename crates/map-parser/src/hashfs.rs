@@ -240,6 +240,9 @@ impl HashFsArchive {
     /// For large archives (>100 MB) the file is memory-mapped via
     /// `memmap2`. Smaller files are read entirely into memory.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ParseError> {
+        use std::time::Instant;
+        let t_start = Instant::now();
+
         let path = path.as_ref().to_path_buf();
         let file = std::fs::File::open(&path)?;
 
@@ -247,8 +250,10 @@ impl HashFsArchive {
             .metadata()
             .map(|m| m.len())
             .map_err(|e| ParseError::Io(format!("metadata {:?}: {e}", &path)))?;
+        let t_open = t_start.elapsed();
 
         // SHA-256 for cache keying
+        let t_sha_start = Instant::now();
         let file_hash = {
             let mut f = std::fs::File::open(&path)?;
             let mut hasher = Sha256::new();
@@ -263,8 +268,10 @@ impl HashFsArchive {
             }
             hasher.finalize().into()
         };
+        let t_sha = t_sha_start.elapsed();
 
         // Memory-map large files, read small ones
+        let t_storage_start = Instant::now();
         let storage = if file_len > LARGE_FILE_THRESHOLD {
             let mmap = unsafe {
                 Mmap::map(&file).map_err(|e| ParseError::Io(format!("mmap: {e}")))?
@@ -275,10 +282,13 @@ impl HashFsArchive {
             (&mut &file).read_to_end(&mut buf)?;
             Storage::Buffer(buf)
         };
+        let t_storage = t_storage_start.elapsed();
 
         // ── parse header ──
+        let t_header_start = Instant::now();
         let header = parse_header(&storage, &path)?;
         let salt = header.salt;
+        let t_header = t_header_start.elapsed();
 
         info!(
             "HashFS {:?}: {} entries, entry_table @{} len={}, metadata_table @{} len={}, salt=0x{salt:04X}",
@@ -291,6 +301,7 @@ impl HashFsArchive {
         );
 
         // ── read + zlib-inflate index1 (entry table) and index2 (metadata) ──
+        let t_inflate_start = Instant::now();
         let entry_data = inflate_table(
             &storage,
             header.entry_table_start,
@@ -303,8 +314,24 @@ impl HashFsArchive {
             header.metadata_table_compressed_size,
             "metadata_table",
         )?;
+        let t_inflate = t_inflate_start.elapsed();
 
+        let t_index_start = Instant::now();
         let index = build_index(&entry_data, &metadata_data);
+        let t_index = t_index_start.elapsed();
+
+        info!(
+            "HashFS open timings ({} MB): open={:?} sha256={:?} storage={:?} \
+             header={:?} inflate_tables={:?} build_index={:?} total={:?}",
+            file_len / 1_048_576,
+            t_open,
+            t_sha,
+            t_storage,
+            t_header,
+            t_inflate,
+            t_index,
+            t_start.elapsed()
+        );
 
         debug!(
             "Opened HashFS {:?}: {} entries",
