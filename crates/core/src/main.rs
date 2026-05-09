@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use tracing::{info, warn};
-use truckpilot_plugin_api::ControlOutput;
+use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 
 mod ipc;
 mod plugin_manager;
@@ -487,6 +487,11 @@ async fn run_daemon() {
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());
 
+    // Pull a clone of the shared blackboard *before* the manager moves
+    // into the Arc<Mutex>. `SharedBlackboard` wraps an `Arc<Mutex<…>>`,
+    // so this clone keeps pointing at the same inner map the plugins
+    // see. Used by `publish_telemetry_to_blackboard` each tick.
+    let blackboard = manager.blackboard.clone();
     let manager = Arc::new(Mutex::new(manager));
     tokio::spawn(ipc::start_ipc_server(manager.clone()));
 
@@ -510,6 +515,12 @@ async fn run_daemon() {
         // doc comment in `crates/telemetry/src/lib.rs` for the rationale.
         // Reading before locking the manager keeps the lock window small.
         let telemetry = truckpilot_telemetry::read_telemetry_async().await;
+
+        // Mirror the frame onto the blackboard *before* taking the
+        // manager lock so plugins like `fuel-stops` and `stats-logger`
+        // see fresh `telemetry.*` values when their `tick` runs. The
+        // blackboard has its own Mutex; no contention with the manager.
+        publish_telemetry_to_blackboard(telemetry.as_ref(), &blackboard);
 
         let mut mgr = manager.lock().await;
         mgr.process_reloads();
@@ -607,4 +618,178 @@ fn apply_vjoy_failsafe() {
         failsafe.throttle,
         failsafe.brake,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry → Blackboard bridge
+// ---------------------------------------------------------------------------
+
+/// All `telemetry.*` keys the daemon may write to the blackboard.
+/// Used by [`publish_telemetry_to_blackboard`] to wipe stale values
+/// when telemetry becomes unavailable. Order matches `Telemetry`'s
+/// field declaration so it's easy to keep in sync if the struct grows.
+const TELEMETRY_BLACKBOARD_KEYS: &[&str] = &[
+    "telemetry.position_x",
+    "telemetry.position_y",
+    "telemetry.position_z",
+    "telemetry.heading",
+    "telemetry.pitch",
+    "telemetry.roll",
+    "telemetry.speed_ms",
+    "telemetry.engine_rpm",
+    "telemetry.cruise_control_kmh",
+    "telemetry.nav_speed_limit_kmh",
+    "telemetry.lead_vehicle_distance_m",
+    "telemetry.accel_longitudinal",
+    "telemetry.fuel_liters",
+    "telemetry.odometer_km",
+];
+
+/// Mirror the current telemetry frame onto the shared blackboard so
+/// plugins can consume it via `bb.get_f64("telemetry.fuel_liters")`
+/// etc. — without holding a `&Telemetry` reference.
+///
+/// **Sentinel handling.** Fields that use the `-1.0 = not available`
+/// convention (`nav_speed_limit_kmh`, `lead_vehicle_distance_m`,
+/// `accel_longitudinal`, `fuel_liters`, `odometer_km`) are **removed**
+/// from the blackboard rather than written as the literal string
+/// `"-1"`. Plugins must therefore treat a missing key as "not
+/// available", not as zero. See the Standard-keys doc table in
+/// `truckpilot_plugin_api`.
+///
+/// When `telemetry` is `None`, `telemetry.available` is set to
+/// `"false"` and every other `telemetry.*` key is removed so a stalled
+/// source can't leave plugins reading stale frames.
+fn publish_telemetry_to_blackboard(t: Option<&Telemetry>, bb: &SharedBlackboard) {
+    let Some(t) = t else {
+        bb.set("telemetry.available", "false");
+        for key in TELEMETRY_BLACKBOARD_KEYS {
+            bb.remove(key);
+        }
+        return;
+    };
+
+    bb.set("telemetry.available", "true");
+    bb.set("telemetry.position_x", t.position[0].to_string());
+    bb.set("telemetry.position_y", t.position[1].to_string());
+    bb.set("telemetry.position_z", t.position[2].to_string());
+    bb.set("telemetry.heading", t.heading.to_string());
+    bb.set("telemetry.pitch", t.pitch.to_string());
+    bb.set("telemetry.roll", t.roll.to_string());
+    bb.set("telemetry.speed_ms", t.speed_ms.to_string());
+    bb.set("telemetry.engine_rpm", t.engine_rpm.to_string());
+    bb.set(
+        "telemetry.cruise_control_kmh",
+        t.cruise_control_kmh.to_string(),
+    );
+
+    set_or_remove(bb, "telemetry.nav_speed_limit_kmh", t.nav_speed_limit_kmh);
+    set_or_remove(
+        bb,
+        "telemetry.lead_vehicle_distance_m",
+        f64::from(t.lead_vehicle_distance_m),
+    );
+    set_or_remove(
+        bb,
+        "telemetry.accel_longitudinal",
+        f64::from(t.accel_longitudinal),
+    );
+    set_or_remove(bb, "telemetry.fuel_liters", t.fuel_liters);
+    set_or_remove(bb, "telemetry.odometer_km", t.odometer_km);
+}
+
+/// Write `value` as an `f64` string to `bb[key]`, or remove the key
+/// entirely if the value is the `-1.0` sentinel ("not available").
+fn set_or_remove(bb: &SharedBlackboard, key: &str, value: f64) {
+    if value < 0.0 {
+        bb.remove(key);
+    } else {
+        bb.set(key, value.to_string());
+    }
+}
+
+#[cfg(test)]
+mod telemetry_blackboard_tests {
+    use super::*;
+
+    fn fake_telemetry() -> Telemetry {
+        Telemetry {
+            position: [100.0, 5.0, -50.0],
+            heading: 0.5,
+            pitch: 0.0,
+            roll: 0.0,
+            speed_ms: 22.222,
+            engine_rpm: 1500.0,
+            cruise_control_kmh: 80.0,
+            nav_speed_limit_kmh: 80.0,
+            lead_vehicle_distance_m: -1.0,
+            accel_longitudinal: -1.0,
+            fuel_liters: 320.0,
+            odometer_km: 12_345.0,
+        }
+    }
+
+    #[test]
+    fn writes_available_true_with_frame() {
+        let bb = SharedBlackboard::new();
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        assert_eq!(bb.get("telemetry.available").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn writes_position_and_speed() {
+        let bb = SharedBlackboard::new();
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        assert_eq!(bb.get_f64("telemetry.position_x"), Some(100.0));
+        assert_eq!(bb.get_f64("telemetry.position_y"), Some(5.0));
+        assert_eq!(bb.get_f64("telemetry.position_z"), Some(-50.0));
+        assert_eq!(bb.get_f64("telemetry.speed_ms"), Some(22.222));
+        assert_eq!(bb.get_f64("telemetry.engine_rpm"), Some(1500.0));
+    }
+
+    #[test]
+    fn writes_fuel_and_odometer_when_present() {
+        let bb = SharedBlackboard::new();
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        assert_eq!(bb.get_f64("telemetry.fuel_liters"), Some(320.0));
+        assert_eq!(bb.get_f64("telemetry.odometer_km"), Some(12_345.0));
+    }
+
+    #[test]
+    fn skips_sentinels_for_optional_fields() {
+        let bb = SharedBlackboard::new();
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        // `lead_vehicle_distance_m` and `accel_longitudinal` are -1.0
+        // in the fixture → key must NOT be present.
+        assert_eq!(bb.get("telemetry.lead_vehicle_distance_m"), None);
+        assert_eq!(bb.get("telemetry.accel_longitudinal"), None);
+    }
+
+    #[test]
+    fn none_marks_unavailable_and_clears_keys() {
+        let bb = SharedBlackboard::new();
+        // Pre-seed the blackboard from a good frame.
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        assert!(bb.get("telemetry.speed_ms").is_some());
+
+        // Now the source goes dead — every field must be wiped, and
+        // `available` flipped to false.
+        publish_telemetry_to_blackboard(None, &bb);
+        assert_eq!(bb.get("telemetry.available").as_deref(), Some("false"));
+        for key in TELEMETRY_BLACKBOARD_KEYS {
+            assert!(
+                bb.get(key).is_none(),
+                "key {key} should have been removed when telemetry went None"
+            );
+        }
+    }
+
+    #[test]
+    fn re_publish_after_none_repopulates() {
+        let bb = SharedBlackboard::new();
+        publish_telemetry_to_blackboard(None, &bb);
+        publish_telemetry_to_blackboard(Some(&fake_telemetry()), &bb);
+        assert_eq!(bb.get("telemetry.available").as_deref(), Some("true"));
+        assert_eq!(bb.get_f64("telemetry.fuel_liters"), Some(320.0));
+    }
 }
