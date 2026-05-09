@@ -1,14 +1,25 @@
 // Quick test: parse real base_map.scs
-use std::path::Path;
+//
+// Path is taken from the `TRUCKPILOT_BASE_SCS` env var; on a fresh checkout
+// the test will skip silently. Example (PowerShell):
+//   $env:TRUCKPILOT_BASE_SCS = "C:\...\base_map.scs"
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[test]
 fn test_real_base_map_scs() {
-    let path = Path::new("/home/geekom/ETS2/ETS2 Game Data/base_map.scs");
-    if !path.exists() {
-        eprintln!("base_map.scs not found, skipping");
+    let path = match std::env::var("TRUCKPILOT_BASE_SCS") {
+        Ok(s) => PathBuf::from(s),
+        Err(_) => {
+            eprintln!("TRUCKPILOT_BASE_SCS not set, skipping");
+            return;
+        }
+    };
+    if !path.is_file() {
+        eprintln!("base_map.scs not found at {:?}, skipping", path);
         return;
     }
+    let path = path.as_path();
 
     // Open archive
     let mut archive = match truckpilot::ets2_parser::scs_reader::ScsArchive::open(path) {
