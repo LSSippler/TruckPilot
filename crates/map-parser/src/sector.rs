@@ -26,7 +26,7 @@ use binrw::BinRead;
 use tracing::{debug, instrument, warn};
 
 use crate::error::ParseError;
-use crate::road_full::{RoadDataPayload, RoadFixedHeader};
+use crate::road_full::RoadFixedHeader;
 
 // ---------------------------------------------------------------------------
 // Public item types (field layout kept stable so graph.rs / signs.rs compile)
@@ -183,55 +183,332 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
     }
     debug!("{item_count} items");
 
-    for _ in 0..item_count {
-        let item_type = read_u32(&mut cur)?;
-        match item_type {
-            ITEM_TYPE_ROAD => parse_road(&mut cur, &mut sector)?,
-            ITEM_TYPE_PREFAB => parse_prefab(&mut cur, &mut sector)?,
-            ITEM_TYPE_TERRAIN => skip_terrain(&mut cur)?,
-            ITEM_TYPE_BUILDINGS => skip_buildings(&mut cur)?,
-            ITEM_TYPE_MODEL => skip_model(&mut cur)?,
-            ITEM_TYPE_COMPANY => skip_company(&mut cur)?,
-            ITEM_TYPE_SERVICE => skip_service(&mut cur)?,
-            ITEM_TYPE_CUT_PLANE => skip_cut_plane(&mut cur)?,
-            ITEM_TYPE_CITY => skip_city(&mut cur)?,
-            ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(&mut cur)?,
-            ITEM_TYPE_FERRY => skip_ferry(&mut cur)?,
-            ITEM_TYPE_GARAGE => skip_garage(&mut cur)?,
-            ITEM_TYPE_TRIGGER => skip_trigger(&mut cur)?,
-            ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(&mut cur)?,
-            ITEM_TYPE_SIGN => skip_sign(&mut cur)?,
-            ITEM_TYPE_BUS_STOP => skip_bus_stop(&mut cur)?,
-            ITEM_TYPE_TRAFFIC_AREA => skip_traffic_area(&mut cur)?,
-            ITEM_TYPE_BEZIER_PATCH => skip_bezier_patch(&mut cur)?,
-            ITEM_TYPE_TRAJECTORY => skip_trajectory(&mut cur)?,
-            ITEM_TYPE_MAP_AREA => skip_map_area(&mut cur)?,
-            ITEM_TYPE_FAR_MODEL => skip_far_model(&mut cur)?,
-            ITEM_TYPE_CURVE => skip_curve(&mut cur)?,
-            ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur)?,
-            ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur)?,
-            other => {
-                return Err(ParseError::Binary(format!(
-                    "unsupported item type {other}"
-                )));
+    let mut all_items_parsed = true;
+    for idx in 0..item_count as usize {
+        // Phase 5.8: any read error here means the previous handler desynced
+        // the cursor — accept whatever we already collected as a partial
+        // sector instead of dropping every parsed Road/Prefab.
+        let item_type = match read_u32(&mut cur) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("sector item #{idx} type read failed: {e} — partial sector accepted");
+                all_items_parsed = false;
+                break;
+            }
+        };
+        let dispatch_result: Result<(), ParseError> = match item_type {
+            ITEM_TYPE_ROAD => parse_road(&mut cur, &mut sector),
+            ITEM_TYPE_PREFAB => parse_prefab(&mut cur, &mut sector),
+            ITEM_TYPE_TERRAIN => skip_terrain(&mut cur),
+            ITEM_TYPE_BUILDINGS => skip_buildings(&mut cur),
+            ITEM_TYPE_MODEL => skip_model(&mut cur),
+            ITEM_TYPE_COMPANY => skip_company(&mut cur),
+            ITEM_TYPE_SERVICE => skip_service(&mut cur),
+            ITEM_TYPE_CUT_PLANE => skip_cut_plane(&mut cur),
+            ITEM_TYPE_CITY => skip_city(&mut cur),
+            ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(&mut cur),
+            ITEM_TYPE_FERRY => skip_ferry(&mut cur),
+            ITEM_TYPE_GARAGE => skip_garage(&mut cur),
+            ITEM_TYPE_TRIGGER => skip_trigger(&mut cur),
+            ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(&mut cur),
+            ITEM_TYPE_SIGN => skip_sign(&mut cur),
+            ITEM_TYPE_BUS_STOP => skip_bus_stop(&mut cur),
+            ITEM_TYPE_TRAFFIC_AREA => skip_traffic_area(&mut cur),
+            ITEM_TYPE_BEZIER_PATCH => skip_bezier_patch(&mut cur),
+            ITEM_TYPE_TRAJECTORY => skip_trajectory(&mut cur),
+            ITEM_TYPE_MAP_AREA => skip_map_area(&mut cur),
+            ITEM_TYPE_FAR_MODEL => skip_far_model(&mut cur),
+            ITEM_TYPE_CURVE => skip_curve(&mut cur),
+            ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur),
+            ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur),
+            other => Err(ParseError::Binary(format!(
+                "unsupported item type {other}"
+            ))),
+        };
+        if let Err(e) = dispatch_result {
+            warn!(
+                "sector item #{idx} (type={item_type}) failed: {e} — partial sector accepted"
+            );
+            all_items_parsed = false;
+            break;
+        }
+    }
+
+    // Trailing node section.
+    if all_items_parsed {
+        let node_count = read_u32(&mut cur)?;
+        if node_count > MAX_LIST_COUNT {
+            return Err(ParseError::Binary(format!(
+                "implausible node_count {node_count}"
+            )));
+        }
+        debug!("{node_count} nodes");
+        for _ in 0..node_count {
+            sector.nodes.push(parse_node(&mut cur)?);
+        }
+    } else {
+        // Phase 5.8 recovery: rebuild the node section from the sector tail.
+        // Layout (TruckLib + ts-map): items… | node_count u32 | nodes(56·N)
+        //                                    | vis_count u32  | vis_uids(8·M)
+        // We sweep plausible (M, N) and accept the first arrangement whose
+        // counts add up to the remaining bytes after the items section.
+        recover_nodes_from_tail(data, &mut sector);
+    }
+
+    Ok(sector)
+}
+
+/// Tail-rebuild used after partial-item parsing — see `parse_sector_legacy`.
+/// Tries to identify the trailing node block by matching the equation
+/// `count_pos + 4 + N*56 + 4 + M*8 == data.len()` for plausible `N`/`M`.
+fn recover_nodes_from_tail(data: &[u8], sector: &mut ParsedSector) {
+    /// Per-record size for a 56-byte legacy node.
+    const NODE_BYTES: usize = 56;
+    const MAX_N: usize = 4096;
+    const MAX_M: usize = 4096;
+
+    let total = data.len();
+    // The fixed sector header is 16 bytes; the smallest plausible tail starts
+    // a few bytes into the file. Scan from the end for an `(M, N)` pair that
+    // perfectly accounts for the remaining bytes — favour the largest plausible
+    // anchor (longest tail) so we don't accept a tiny (0,0) layout when a
+    // bigger one fits.
+    for m in 0..=MAX_M {
+        let vis_block = 4 + m * 8;
+        if vis_block > total {
+            break;
+        }
+        let vis_count_pos = total - vis_block;
+        if vis_count_pos < 4 + 16 {
+            continue;
+        }
+        let vis_count = u32::from_le_bytes([
+            data[vis_count_pos],
+            data[vis_count_pos + 1],
+            data[vis_count_pos + 2],
+            data[vis_count_pos + 3],
+        ]);
+        if vis_count as usize != m {
+            continue;
+        }
+
+        let nodes_end = vis_count_pos;
+        for n in 0..=MAX_N {
+            let block = 4 + n * NODE_BYTES;
+            if block > nodes_end {
+                break;
+            }
+            let count_pos = nodes_end - block;
+            if count_pos < 16 {
+                break;
+            }
+            let count_at = u32::from_le_bytes([
+                data[count_pos],
+                data[count_pos + 1],
+                data[count_pos + 2],
+                data[count_pos + 3],
+            ]);
+            if count_at as usize != n {
+                continue;
+            }
+
+            // Plausibility: every parsed UID should look like an ETS2 v907
+            // node uid (high u16 typically `0x0029` or similar). We require
+            // at least 50 % of the parsed UIDs to be non-zero, which rejects
+            // accidental all-zero matches.
+            let mut cur = Cursor::new(&data[count_pos + 4..nodes_end]);
+            let mut tmp = Vec::with_capacity(n);
+            let mut nonzero = 0usize;
+            let mut ok = true;
+            for _ in 0..n {
+                match parse_node(&mut cur) {
+                    Ok(node) => {
+                        if node.uid != 0 {
+                            nonzero += 1;
+                        }
+                        tmp.push(node);
+                    }
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && (n == 0 || nonzero * 2 >= n) {
+                sector.nodes.extend(tmp);
+                return;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5.8 audit walker — instrumented version of the legacy dispatch loop.
+// ---------------------------------------------------------------------------
+
+/// One item that was successfully walked during an audit.
+#[derive(Debug, Clone)]
+pub struct AuditedItem {
+    /// Zero-based index inside the sector's item list.
+    pub index: usize,
+    /// Raw `item_type` u32 read from the sector.
+    pub item_type: u32,
+    /// Static name of the matched handler (`"road"`, `"prefab"`, …).
+    pub kind_name: &'static str,
+    /// Absolute offset (from the sector start) at which the item's `item_type`
+    /// field was read.
+    pub start_offset: usize,
+    /// Absolute offset at which the item's body ended (== where the next
+    /// item's `item_type` should be read from).
+    pub end_offset: usize,
+}
+
+/// Failure record produced when the audit walker can't make progress.
+#[derive(Debug, Clone)]
+pub struct AuditFailure {
+    /// Index of the item that failed (i.e. the (N+1)-th item if N items were
+    /// already consumed successfully).
+    pub item_index: usize,
+    /// The raw u32 that was read where an `item_type` was expected. Often 0
+    /// or garbage when the previous handler desynced the cursor.
+    pub raw_type: u32,
+    /// Absolute offset where the bad u32 was read from.
+    pub error_offset: usize,
+    /// Human-readable error description.
+    pub error_msg: String,
+}
+
+/// Per-sector audit report — every item handled, and the failure (if any).
+#[derive(Debug, Clone)]
+pub struct AuditReport {
+    /// `item_count` field from the sector header.
+    pub item_count: u32,
+    /// Items the walker consumed successfully, in order.
+    pub items: Vec<AuditedItem>,
+    /// The first failure, if any. `None` means the entire item list parsed
+    /// cleanly.
+    pub failure: Option<AuditFailure>,
+    /// Total sector data length (bytes).
+    pub data_len: usize,
+}
+
+/// Walk a sector's item dispatch loop, recording every successful item and
+/// the first failure. Reuses the same skip/parse handlers as the production
+/// parser so the audit reflects exactly what `parse_sector_legacy` would do.
+///
+/// Does NOT walk the trailing node section — Phase 5.8 only investigates
+/// item-handler alignment.
+pub fn audit_sector(data: &[u8]) -> AuditReport {
+    let mut cur = Cursor::new(data);
+    let mut report = AuditReport {
+        item_count: 0,
+        items: Vec::new(),
+        failure: None,
+        data_len: data.len(),
+    };
+
+    // 16-byte header: version u32 + game_id u64 + map_version u32
+    if read_u32(&mut cur).is_err() || read_u64(&mut cur).is_err() || read_u32(&mut cur).is_err() {
+        report.failure = Some(AuditFailure {
+            item_index: 0,
+            raw_type: 0,
+            error_offset: 0,
+            error_msg: "sector header truncated".into(),
+        });
+        return report;
+    }
+
+    let item_count = match read_u32(&mut cur) {
+        Ok(c) => c,
+        Err(e) => {
+            report.failure = Some(AuditFailure {
+                item_index: 0,
+                raw_type: 0,
+                error_offset: cur.position() as usize,
+                error_msg: format!("item_count read failed: {e}"),
+            });
+            return report;
+        }
+    };
+    if item_count > MAX_LIST_COUNT {
+        report.failure = Some(AuditFailure {
+            item_index: 0,
+            raw_type: 0,
+            error_offset: cur.position().saturating_sub(4) as usize,
+            error_msg: format!("implausible item_count {item_count}"),
+        });
+        return report;
+    }
+    report.item_count = item_count;
+
+    let mut throwaway = ParsedSector::default();
+    for idx in 0..item_count as usize {
+        let pos_before_type = cur.position() as usize;
+        let item_type = match read_u32(&mut cur) {
+            Ok(t) => t,
+            Err(e) => {
+                report.failure = Some(AuditFailure {
+                    item_index: idx,
+                    raw_type: 0,
+                    error_offset: pos_before_type,
+                    error_msg: format!("item_type u32 read failed: {e}"),
+                });
+                return report;
+            }
+        };
+
+        let result: Result<&'static str, ParseError> = match item_type {
+            ITEM_TYPE_ROAD => parse_road(&mut cur, &mut throwaway).map(|_| "road"),
+            ITEM_TYPE_PREFAB => parse_prefab(&mut cur, &mut throwaway).map(|_| "prefab"),
+            ITEM_TYPE_TERRAIN => skip_terrain(&mut cur).map(|_| "terrain"),
+            ITEM_TYPE_BUILDINGS => skip_buildings(&mut cur).map(|_| "buildings"),
+            ITEM_TYPE_MODEL => skip_model(&mut cur).map(|_| "model"),
+            ITEM_TYPE_COMPANY => skip_company(&mut cur).map(|_| "company"),
+            ITEM_TYPE_SERVICE => skip_service(&mut cur).map(|_| "service"),
+            ITEM_TYPE_CUT_PLANE => skip_cut_plane(&mut cur).map(|_| "cut_plane"),
+            ITEM_TYPE_CITY => skip_city(&mut cur).map(|_| "city"),
+            ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(&mut cur).map(|_| "map_overlay"),
+            ITEM_TYPE_FERRY => skip_ferry(&mut cur).map(|_| "ferry"),
+            ITEM_TYPE_GARAGE => skip_garage(&mut cur).map(|_| "garage"),
+            ITEM_TYPE_TRIGGER => skip_trigger(&mut cur).map(|_| "trigger"),
+            ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(&mut cur).map(|_| "fuel_pump"),
+            ITEM_TYPE_SIGN => skip_sign(&mut cur).map(|_| "sign"),
+            ITEM_TYPE_BUS_STOP => skip_bus_stop(&mut cur).map(|_| "bus_stop"),
+            ITEM_TYPE_TRAFFIC_AREA => skip_traffic_area(&mut cur).map(|_| "traffic_area"),
+            ITEM_TYPE_BEZIER_PATCH => skip_bezier_patch(&mut cur).map(|_| "bezier_patch"),
+            ITEM_TYPE_TRAJECTORY => skip_trajectory(&mut cur).map(|_| "trajectory"),
+            ITEM_TYPE_MAP_AREA => skip_map_area(&mut cur).map(|_| "map_area"),
+            ITEM_TYPE_FAR_MODEL => skip_far_model(&mut cur).map(|_| "far_model"),
+            ITEM_TYPE_CURVE => skip_curve(&mut cur).map(|_| "curve"),
+            ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur).map(|_| "cutscene"),
+            ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur).map(|_| "visibility_area"),
+            other => Err(ParseError::Binary(format!("unsupported item type {other}"))),
+        };
+
+        match result {
+            Ok(name) => {
+                let end_offset = cur.position() as usize;
+                report.items.push(AuditedItem {
+                    index: idx,
+                    item_type,
+                    kind_name: name,
+                    start_offset: pos_before_type,
+                    end_offset,
+                });
+            }
+            Err(e) => {
+                report.failure = Some(AuditFailure {
+                    item_index: idx,
+                    raw_type: item_type,
+                    error_offset: pos_before_type,
+                    error_msg: format!("{e}"),
+                });
+                return report;
             }
         }
     }
 
-    // Nodes
-    let node_count = read_u32(&mut cur)?;
-    if node_count > MAX_LIST_COUNT {
-        return Err(ParseError::Binary(format!(
-            "implausible node_count {node_count}"
-        )));
-    }
-    debug!("{node_count} nodes");
-
-    for _ in 0..node_count {
-        sector.nodes.push(parse_node(&mut cur)?);
-    }
-
-    Ok(sector)
+    report
 }
 
 /// Attempt the sized-format parse. Returns `None` if the header doesn't look
@@ -469,31 +746,13 @@ fn parse_road(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), 
         ))
     })?;
 
-    let payload_start = cur.position();
-    let _payload = RoadDataPayload::read(cur).map_err(|e| {
-        let consumed = cur.position().saturating_sub(payload_start);
-        // Diagnostic: print the first 32 bytes the payload parser tried to walk.
-        let buf = cur.get_ref();
-        let payload_idx = payload_start as usize;
-        let preview_end = (payload_idx + 32).min(buf.len());
-        let preview: Vec<String> = buf
-            .get(payload_idx..preview_end)
-            .unwrap_or(&[])
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect();
-        warn!(
-            uid = header.uid,
-            payload_start,
-            consumed,
-            preview = preview.join(" ").as_str(),
-            "Road data payload parse failed: {e}"
-        );
-        ParseError::Binary(format!(
-            "road payload (uid={:#x}) at +{consumed} bytes: {e}",
-            header.uid
-        ))
-    })?;
+    // Phase 5.7: ETS2 v907 `base_map.scs` does NOT carry a variable
+    // RoadDataPayload after the 265-byte fixed header (verified empirically
+    // via `truckpilot-road-dump`). The cursor is already correctly positioned
+    // at the next item / node section. The `RoadDataPayload` struct is kept
+    // in `road_full.rs` as documented format reference for editor-saved
+    // sectors that may use it.
+    let _ = road_start; // silence unused-warning, kept for diagnostic context
 
     sector.roads.push(RawRoad {
         uid: header.uid,

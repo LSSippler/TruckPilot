@@ -25,3 +25,7 @@ tracing-subscriber = { workspace = true }
 [[bin]]
 name = "map-probe"
 path = "src/bin/map_probe.rs"
+
+[[bin]]
+name = "truckpilot-road-dump"
+path = "src/bin/road_dump.rs"

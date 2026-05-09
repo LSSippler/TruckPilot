@@ -61,3 +61,10 @@ plugins/*.dylib
 hashfs_reader/target/
 
 # Android Gradle wrapper artifacts handled per-project
+
+graph.json
+hashes.txt
+parse_full.txt
+
+# Phase 5.x diagnostic dumps written by `truckpilot-road-dump` etc.
+outputs/
