@@ -78,49 +78,110 @@ fn end_to_end_real_archive() {
         "root listing parsed to zero items — listing format is wrong"
     );
 
-    println!("\n=== empirical CityHash showdown ===");
-    // Three real top-level paths from the listing above. For each, compare
-    // OUR rust impl vs TruckLib's CityHash.cs (computed offline via dotnet
-    // run against TruckLib/HashFs/CityHash.cs). Whichever value lives in
-    // the entry index is the algorithm base.scs actually uses.
-    //
-    // TruckLib values were computed using TruckLib.HashFs CityHash.CityHash64
-    // (utf-8 bytes) directly via `dotnet run` — see commit message.
-    let trucklib_vectors: &[(&str, u64)] = &[
-        ("automat", 0x56BC42EECBC73F2F),
-        ("def",     0x2C6F469EFB31C45A),
-        ("map",     0x3543EC1D70156653),
-    ];
-    let index = archive.list_hashes();
-    let index_set: std::collections::HashSet<u64> = index.into_iter().collect();
-    let mut our_hits = 0;
-    let mut tl_hits = 0;
-    for (s, tl_hash) in trucklib_vectors {
-        let our_hash =
-            truckpilot_map_parser::hashfs::scs_path_hash(archive.salt(), s);
-        let our_in = index_set.contains(&our_hash);
-        let tl_in = index_set.contains(tl_hash);
-        if our_in { our_hits += 1; }
-        if tl_in { tl_hits += 1; }
-        println!(
-            "  {:>10}  ours=0x{:016X} {:5}  trucklib=0x{:016X} {:5}",
-            format!("{:?}", s),
-            our_hash, if our_in { "HIT" } else { "miss" },
-            tl_hash, if tl_in { "HIT" } else { "miss" },
-        );
-    }
+    // (2) Dynamic lookup: pick the first subdirectory from the root
+    //     listing and verify the full chain (CityHash → index → inflate
+    //     → directory listing parse) works for an arbitrary path. This
+    //     stays robust across ETS2 versions: whichever dir comes first
+    //     in the archive's own root listing is the test target.
+    let first_subdir = items
+        .iter()
+        .find(|i| i.is_dir)
+        .map(|i| i.name.clone())
+        .expect("root listing has no subdirectories — unexpected for base.scs");
+    println!("\n=== dynamic subdirectory lookup: {:?} ===", first_subdir);
+    assert!(
+        archive.contains(&first_subdir),
+        "subdirectory {:?} from root listing is not in the index — \
+         CityHash + lookup chain still broken",
+        first_subdir
+    );
+    let sub_bytes = archive
+        .read_path(&first_subdir)
+        .unwrap_or_else(|e| panic!("read subdir {:?}: {e}", first_subdir));
+    let sub_items = parse_directory_listing(&sub_bytes)
+        .expect("subdirectory listing must parse");
     println!(
-        "Summary: ours={}/{} hits, trucklib={}/{} hits",
-        our_hits, trucklib_vectors.len(), tl_hits, trucklib_vectors.len()
+        "  /{} listing: {} bytes → {} items",
+        first_subdir,
+        sub_bytes.len(),
+        sub_items.len()
+    );
+    for it in sub_items.iter().take(5) {
+        println!("    {}{}", if it.is_dir { "/" } else { "" }, it.name);
+    }
+    if sub_items.len() > 5 {
+        println!("    ... ({} more)", sub_items.len() - 5);
+    }
+    assert!(
+        !sub_items.is_empty(),
+        "subdirectory {:?} parsed to zero items — listing format wrong \
+         at depth > 0?",
+        first_subdir
     );
 
-    // The decisive assertion: at least one of the three real paths must
-    // produce a hash that is actually in the archive's index. If TruckLib
-    // wins, we know to port its CityHash. If neither wins, neither
-    // algorithm matches what base.scs uses and we need a third reference.
-    assert!(
-        our_hits > 0 || tl_hits > 0,
-        "neither our CityHash nor TruckLib's matched any of the three known \
-         paths in base.scs — both algorithms are wrong relative to the archive"
+    // (3) Dynamic file read: walk one level deeper to find a regular file
+    //     and read it. Bounded so we don't accidentally scan the whole
+    //     archive.
+    if let Some(file_path) = first_leaf_file(&mut archive, &first_subdir, &sub_items) {
+        let bytes = archive
+            .read_path(&file_path)
+            .unwrap_or_else(|e| panic!("read leaf file {:?}: {e}", file_path));
+        println!("\nleaf file {:?}: {} bytes", file_path, bytes.len());
+        assert!(!bytes.is_empty(), "leaf file inflated to zero bytes");
+    } else {
+        eprintln!(
+            "\nno leaf file found within depth budget — diagnostic only, \
+             not a failure"
+        );
+    }
+
+    // (4) Regression sentinel: even though the test is now version-agnostic
+    //     for its primary path, keep an empirical anchor so future CityHash
+    //     regressions surface immediately. "automat" is present in stock
+    //     base.scs across every ETS2 1.x version we know of, with hash
+    //     0x56BC42EECBC73F2F.
+    const AUTOMAT_HASH: u64 = 0x56BC42EECBC73F2F;
+    let our_automat =
+        truckpilot_map_parser::hashfs::scs_path_hash(archive.salt(), "automat");
+    assert_eq!(
+        our_automat, AUTOMAT_HASH,
+        "regression: cityhash64(\"automat\") drifted away from TruckLib"
     );
+    assert!(
+        archive.list_hashes().contains(&AUTOMAT_HASH),
+        "regression: \"automat\" no longer found in base.scs — either \
+         the archive structure changed or our hash silently broke"
+    );
+}
+
+/// Walk the directory tree starting at `subdir` and return the path of
+/// the first regular (non-directory) item found. Bounded depth so we
+/// never iterate the whole archive.
+fn first_leaf_file(
+    archive: &mut HashFsArchive,
+    subdir: &str,
+    items: &[truckpilot_map_parser::DirItem],
+) -> Option<String> {
+    let mut stack: Vec<(String, Vec<truckpilot_map_parser::DirItem>)> =
+        vec![(subdir.to_string(), items.to_vec())];
+    let mut visited = 0usize;
+
+    while let Some((dir, listing)) = stack.pop() {
+        visited += 1;
+        if visited > 32 {
+            return None;
+        }
+        if let Some(leaf) = listing.iter().find(|i| !i.is_dir) {
+            return Some(format!("{}/{}", dir, leaf.name));
+        }
+        for item in listing.iter().filter(|i| i.is_dir) {
+            let child = format!("{}/{}", dir, item.name);
+            if let Ok(bytes) = archive.read_path(&child) {
+                if let Ok(child_items) = parse_directory_listing(&bytes) {
+                    stack.push((child, child_items));
+                }
+            }
+        }
+    }
+    None
 }
