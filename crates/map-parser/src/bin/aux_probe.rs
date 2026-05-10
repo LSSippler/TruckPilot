@@ -61,12 +61,15 @@ struct AuxReport {
     base_path: String,
     aux_size: usize,
     base_node_count: usize,
+    base_item_count: usize,
     head_hex: String,
     tail_hex: String,
     raw_offsets_scanned: usize,
     unique_fingerprint_uids: usize,
-    same_sector: Vec<u64>,
-    cross_sector: Vec<(u64, u32)>,
+    same_node: Vec<u64>,
+    same_item: Vec<u64>,
+    cross_node: Vec<(u64, u32)>,
+    cross_item: Vec<(u64, u32)>,
     unresolved: Vec<u64>,
 }
 
@@ -237,38 +240,76 @@ fn main() {
     );
 
     // ----- Pass 1: parse every .base -----------------------------------
+    //
+    // Build two global lookups:
+    //   * `node_to_sector`: only RawNode.uid — for "this is a node" tagging.
+    //   * `world_uid_to_sector`: nodes ∪ road UIDs ∪ road endpoints ∪
+    //     prefab UIDs ∪ prefab node refs ∪ sign UIDs — for "this UID is
+    //     known to live somewhere in .base" tagging.
+    //
+    // Per-sector local mirrors so we can split same-sector vs cross-sector.
 
-    let mut node_to_sector: HashMap<u64, u32> = HashMap::with_capacity(1_000_000);
+    let mut node_to_sector: HashMap<u64, u32> = HashMap::with_capacity(200_000);
+    let mut world_uid_to_sector: HashMap<u64, u32> = HashMap::with_capacity(2_000_000);
     let mut local_nodes: Vec<HashSet<u64>> = Vec::with_capacity(base_paths.len());
+    let mut local_world: Vec<HashSet<u64>> = Vec::with_capacity(base_paths.len());
     let mut parsed_ok: Vec<bool> = Vec::with_capacity(base_paths.len());
 
     for (sid, path) in base_paths.iter().enumerate() {
         let Ok(data) = archive.read_path(path) else {
             local_nodes.push(HashSet::new());
+            local_world.push(HashSet::new());
             parsed_ok.push(false);
             continue;
         };
         match parse_sector(&data) {
             Ok(parsed) => {
-                let mut set = HashSet::with_capacity(parsed.nodes.len());
+                let mut node_set = HashSet::with_capacity(parsed.nodes.len());
+                let mut world_set = HashSet::with_capacity(parsed.nodes.len() * 4);
+                let sid32 = sid as u32;
                 for n in &parsed.nodes {
-                    node_to_sector.insert(n.uid, sid as u32);
-                    set.insert(n.uid);
+                    node_to_sector.insert(n.uid, sid32);
+                    world_uid_to_sector.insert(n.uid, sid32);
+                    node_set.insert(n.uid);
+                    world_set.insert(n.uid);
                 }
-                local_nodes.push(set);
+                for r in &parsed.roads {
+                    world_uid_to_sector.insert(r.uid, sid32);
+                    world_uid_to_sector.insert(r.node_a, sid32);
+                    world_uid_to_sector.insert(r.node_b, sid32);
+                    world_set.insert(r.uid);
+                    world_set.insert(r.node_a);
+                    world_set.insert(r.node_b);
+                }
+                for p in &parsed.prefabs {
+                    world_uid_to_sector.insert(p.uid, sid32);
+                    world_set.insert(p.uid);
+                    for &nu in &p.nodes {
+                        world_uid_to_sector.insert(nu, sid32);
+                        world_set.insert(nu);
+                    }
+                }
+                for s in &parsed.signs {
+                    world_uid_to_sector.insert(s.uid, sid32);
+                    world_set.insert(s.uid);
+                }
+                local_nodes.push(node_set);
+                local_world.push(world_set);
                 parsed_ok.push(true);
             }
             Err(_) => {
                 local_nodes.push(HashSet::new());
+                local_world.push(HashSet::new());
                 parsed_ok.push(false);
             }
         }
     }
     eprintln!(
-        "parsed {}/{} sectors, global node-uid pool = {}",
+        "parsed {}/{} sectors, node pool = {}, full world-uid pool = {}",
         parsed_ok.iter().filter(|b| **b).count(),
         base_paths.len(),
-        node_to_sector.len()
+        node_to_sector.len(),
+        world_uid_to_sector.len()
     );
 
     // ----- Pass 2: pick N samples whose .base parsed -------------------
@@ -316,34 +357,46 @@ fn main() {
             }
         }
 
-        let local = &local_nodes[*sid];
-        let mut same_sector = Vec::new();
-        let mut cross_sector = Vec::new();
+        let local_node = &local_nodes[*sid];
+        let local_w = &local_world[*sid];
+        let mut same_node = Vec::new();
+        let mut same_item = Vec::new();
+        let mut cross_node = Vec::new();
+        let mut cross_item = Vec::new();
         let mut unresolved = Vec::new();
         for &uid in &seen {
-            if local.contains(&uid) {
-                same_sector.push(uid);
+            if local_node.contains(&uid) {
+                same_node.push(uid);
+            } else if local_w.contains(&uid) {
+                same_item.push(uid);
             } else if let Some(other_sid) = node_to_sector.get(&uid) {
-                cross_sector.push((uid, *other_sid));
+                cross_node.push((uid, *other_sid));
+            } else if let Some(other_sid) = world_uid_to_sector.get(&uid) {
+                cross_item.push((uid, *other_sid));
             } else {
                 unresolved.push(uid);
             }
         }
-        same_sector.sort_unstable();
-        cross_sector.sort_unstable();
+        same_node.sort_unstable();
+        same_item.sort_unstable();
+        cross_node.sort_unstable();
+        cross_item.sort_unstable();
         unresolved.sort_unstable();
 
         reports.push(AuxReport {
             aux_path: aux.clone(),
             base_path: base.clone(),
             aux_size: data.len(),
-            base_node_count: local.len(),
+            base_node_count: local_node.len(),
+            base_item_count: local_w.len() - local_node.len(),
             head_hex,
             tail_hex,
             raw_offsets_scanned: offsets_scanned,
             unique_fingerprint_uids: seen.len(),
-            same_sector,
-            cross_sector,
+            same_node,
+            same_item,
+            cross_node,
+            cross_item,
             unresolved,
         });
     }
@@ -362,32 +415,38 @@ fn main() {
     );
     let _ = writeln!(out, "Total `.aux`:      {}", aux_paths.len());
     let _ = writeln!(out, "Global node pool:  {}", node_to_sector.len());
+    let _ = writeln!(out, "Global world pool: {} (nodes ∪ road/prefab/sign UIDs ∪ road/prefab node refs)", world_uid_to_sector.len());
     let _ = writeln!(out, "Samples requested: {}", args.sample_count);
     let _ = writeln!(out, "Samples produced:  {}", reports.len());
-    let _ = writeln!(out, "UID fingerprint:   high u16 == 0x0029 (v907 node-uid)");
+    let _ = writeln!(out, "UID fingerprint:   high u16 == 0x0029 (v907 world-uid prefix)");
     let _ = writeln!(out);
 
     let mut total_unique = 0usize;
-    let mut total_same = 0usize;
-    let mut total_cross = 0usize;
+    let mut total_same_node = 0usize;
+    let mut total_same_item = 0usize;
+    let mut total_cross_node = 0usize;
+    let mut total_cross_item = 0usize;
     let mut total_unresolved = 0usize;
 
     for r in &reports {
         let _ = writeln!(out, "------------------------------------------------------------");
         let _ = writeln!(out, "## {}", r.aux_path);
-        let _ = writeln!(out, "    companion .base       : {}", r.base_path);
-        let _ = writeln!(out, "    .aux size             : {} bytes", r.aux_size);
-        let _ = writeln!(out, "    .base node count      : {}", r.base_node_count);
-        let _ = writeln!(out, "    byte offsets scanned  : {}", r.raw_offsets_scanned);
+        let _ = writeln!(out, "    companion .base        : {}", r.base_path);
+        let _ = writeln!(out, "    .aux size              : {} bytes", r.aux_size);
+        let _ = writeln!(out, "    .base node count       : {}", r.base_node_count);
+        let _ = writeln!(out, "    .base item count (other): {}", r.base_item_count);
+        let _ = writeln!(out, "    byte offsets scanned   : {}", r.raw_offsets_scanned);
         let _ = writeln!(
             out,
-            "    fingerprint matches   : {} unique u64 values",
+            "    fingerprint matches    : {} unique u64 values",
             r.unique_fingerprint_uids
         );
         let _ = writeln!(out, "    classification:");
-        let _ = writeln!(out, "      same-sector  : {}", r.same_sector.len());
-        let _ = writeln!(out, "      cross-sector : {}", r.cross_sector.len());
-        let _ = writeln!(out, "      unresolved   : {}", r.unresolved.len());
+        let _ = writeln!(out, "      same-sector node     : {}", r.same_node.len());
+        let _ = writeln!(out, "      same-sector item     : {}", r.same_item.len());
+        let _ = writeln!(out, "      cross-sector node    : {}", r.cross_node.len());
+        let _ = writeln!(out, "      cross-sector item    : {}", r.cross_item.len());
+        let _ = writeln!(out, "      unresolved           : {}", r.unresolved.len());
         let _ = writeln!(out);
         let _ = writeln!(out, "    head (first 64 bytes):");
         out.push_str(&r.head_hex);
@@ -395,9 +454,9 @@ fn main() {
         let _ = writeln!(out, "    tail (last 64 bytes):");
         out.push_str(&r.tail_hex);
         let _ = writeln!(out);
-        if !r.cross_sector.is_empty() {
-            let _ = writeln!(out, "    cross-sector samples (uid -> other sector index):");
-            for (uid, sid) in r.cross_sector.iter().take(10) {
+        if !r.cross_node.is_empty() {
+            let _ = writeln!(out, "    cross-sector node samples (uid -> other sector):");
+            for (uid, sid) in r.cross_node.iter().take(10) {
                 let other = base_paths
                     .get(*sid as usize)
                     .map(String::as_str)
@@ -406,9 +465,20 @@ fn main() {
             }
             let _ = writeln!(out);
         }
-        if !r.same_sector.is_empty() {
-            let _ = writeln!(out, "    same-sector samples (first 5):");
-            for uid in r.same_sector.iter().take(5) {
+        if !r.cross_item.is_empty() {
+            let _ = writeln!(out, "    cross-sector item samples (uid -> other sector):");
+            for (uid, sid) in r.cross_item.iter().take(10) {
+                let other = base_paths
+                    .get(*sid as usize)
+                    .map(String::as_str)
+                    .unwrap_or("?");
+                let _ = writeln!(out, "      {uid:#018x} -> sid {sid} ({other})");
+            }
+            let _ = writeln!(out);
+        }
+        if !r.same_item.is_empty() {
+            let _ = writeln!(out, "    same-sector item samples (first 5):");
+            for uid in r.same_item.iter().take(5) {
                 let _ = writeln!(out, "      {uid:#018x}");
             }
             let _ = writeln!(out);
@@ -422,21 +492,27 @@ fn main() {
         }
 
         total_unique += r.unique_fingerprint_uids;
-        total_same += r.same_sector.len();
-        total_cross += r.cross_sector.len();
+        total_same_node += r.same_node.len();
+        total_same_item += r.same_item.len();
+        total_cross_node += r.cross_node.len();
+        total_cross_item += r.cross_item.len();
         total_unresolved += r.unresolved.len();
     }
 
     let _ = writeln!(out, "============================================================");
     let _ = writeln!(out, "## Aggregate ({} samples)", reports.len());
-    let _ = writeln!(out, "    unique fingerprint uids : {total_unique}");
-    let _ = writeln!(out, "    same-sector             : {total_same}");
-    let _ = writeln!(out, "    cross-sector            : {total_cross}");
-    let _ = writeln!(out, "    unresolved              : {total_unresolved}");
+    let _ = writeln!(out, "    unique fingerprint uids  : {total_unique}");
+    let _ = writeln!(out, "    same-sector node         : {total_same_node}");
+    let _ = writeln!(out, "    same-sector item         : {total_same_item}");
+    let _ = writeln!(out, "    cross-sector node        : {total_cross_node}");
+    let _ = writeln!(out, "    cross-sector item        : {total_cross_item}");
+    let _ = writeln!(out, "    unresolved               : {total_unresolved}");
     let _ = writeln!(out);
 
-    let cross_share = if total_unique > 0 {
-        100.0 * total_cross as f64 / total_unique as f64
+    let total_cross = total_cross_node + total_cross_item;
+    let total_resolved = total_same_node + total_same_item + total_cross;
+    let resolved_share = if total_unique > 0 {
+        100.0 * total_resolved as f64 / total_unique as f64
     } else {
         0.0
     };
@@ -445,44 +521,65 @@ fn main() {
     } else {
         0.0
     };
+    let cross_node_share = if total_unique > 0 {
+        100.0 * total_cross_node as f64 / total_unique as f64
+    } else {
+        0.0
+    };
 
     let _ = writeln!(out, "## Verdict");
-    if total_cross >= 5 && cross_share >= 20.0 {
+    if total_cross_node >= 5 && cross_node_share >= 10.0 {
         let _ = writeln!(
             out,
-            "→ STRONGLY SUPPORTED ({total_cross} cross-sector hits, {cross_share:.1}% of fingerprint uids)."
+            "→ STRONGLY SUPPORTED — {total_cross_node} cross-sector NODE hits ({cross_node_share:.1}%)."
         );
         let _ = writeln!(
             out,
-            "→ `.aux` likely carries cross-sector node references. Build a real `.aux` parser next."
+            "→ `.aux` carries cross-sector node references. Build a real `.aux` parser → routing fix."
         );
-    } else if total_cross > 0 {
+    } else if total_cross_item >= 50 && resolved_share >= 20.0 {
         let _ = writeln!(
             out,
-            "→ PARTIAL ({total_cross} cross hits, {cross_share:.1}% — above the ~0.8/file noise floor but below the 20% threshold)."
-        );
-        let _ = writeln!(
-            out,
-            "→ Worth a closer look but might be incidental matches. Consider a wider sample (--samples 30) before committing to a parser."
-        );
-    } else if total_unresolved > 50 {
-        let _ = writeln!(
-            out,
-            "→ INDETERMINATE — many fingerprint matches ({total_unique}, {unresolved_share:.1}% unresolved) but none resolve to known nodes."
+            "→ ITEM-LAYER ({total_cross_item} cross-sector item hits, {resolved_share:.1}% resolved overall)."
         );
         let _ = writeln!(
             out,
-            "→ Could be (a) random false positives, or (b) UIDs of cross-sector nodes whose .base failed to parse. Compare against the {} unparsed-sector list.",
-            base_paths.len() - parsed_ok.iter().filter(|b| **b).count()
+            "→ `.aux` references items (signs/roads/prefabs) in OTHER sectors — visibility/LOD layer, not direct routing topology."
+        );
+        let _ = writeln!(
+            out,
+            "→ Routing-relevant only via prefab indirection. Recommend (C3) prefab `.ppd` next."
+        );
+    } else if total_resolved >= 50 && resolved_share >= 20.0 {
+        let _ = writeln!(
+            out,
+            "→ LOCAL-ONLY ({total_same_node} same-node + {total_same_item} same-item, {resolved_share:.1}% resolved)."
+        );
+        let _ = writeln!(
+            out,
+            "→ `.aux` references its OWN sector's items — visibility/LOD or item-extension data. Not a cross-sector layer."
+        );
+        let _ = writeln!(
+            out,
+            "→ Move on: (C2) road handler or (C3) prefab `.ppd`."
+        );
+    } else if total_unresolved > 50 && unresolved_share >= 90.0 {
+        let _ = writeln!(
+            out,
+            "→ EXTERNAL UID FAMILY — {total_unique} fingerprint matches but {unresolved_share:.1}% unresolved against full world pool."
+        );
+        let _ = writeln!(
+            out,
+            "→ `.aux` UIDs reference a fourth source (`.data`/`.desc` companions, def files, model tokens). Routing-relevant only via prefab `.ppd` (recommend C3)."
         );
     } else {
         let _ = writeln!(
             out,
-            "→ REJECTED ({total_cross} cross, {total_unique} fingerprint matches total — close to the noise floor)."
+            "→ REJECTED — {total_unique} fingerprint matches, near noise floor."
         );
         let _ = writeln!(
             out,
-            "→ `.aux` does not appear to carry node UIDs. Move on to (C2) road handler or (C3) prefab `.ppd`."
+            "→ Move on to (C2) road handler or (C3) prefab `.ppd`."
         );
     }
 
