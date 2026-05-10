@@ -68,3 +68,15 @@ parse_full.txt
 
 # Phase 5.x diagnostic dumps written by `truckpilot-road-dump` etc.
 outputs/
+
+# Diagnostic/tool-generated files at repo root (legacy locations)
+parse_output.txt
+road_dump_*.txt
+skip_audit*.txt
+sector_audit*.txt
+uid_resolution*.txt
+aux_inspection*.txt
+*.bak
+
+# Obsidian Vault — komplett ignoriert, Notizen sind privat und lokal
+docs/vault/
