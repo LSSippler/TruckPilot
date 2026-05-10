@@ -1161,7 +1161,23 @@ fn skip_traffic_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 39 — BezierPatch. Ref: `skip_bezier_patch` lines 698-706.
+/// Type 39 — BezierPatch.
+///
+/// Phase 5.20 investigation. The legacy 117-byte handler under-reads but
+/// tail-recovery rescues 270/282 sectors cleanly. A full TruckLib
+/// `BezierPatchSerializer` rewrite was attempted (kdop + 16 vec3
+/// ControlPoints + Tesselation + Node + Seed + 4 Vegetation entries +
+/// VegetationSpheres list + TerrainQuadData) and field-aligned for the
+/// common empty-patch case (313 bytes), but v907 diverges from TruckLib
+/// for non-empty patches (huge counts read as garbage; cf. Phases 5.6,
+/// 5.7, 5.16 for prior TruckLib drifts). The full rewrite produced the
+/// same 12 audit failures and slightly regressed graph metrics.
+///
+/// Decision: keep the legacy handler. Bezier patches carry no road or
+/// prefab connectivity (terrain visualisation only), so the 12 sectors
+/// with bezier-tail garbage do not affect routing. v907 layout details
+/// remain open. See `outputs/bezier_format_notes.md` for the partial
+/// reverse-engineering notes.
 fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
     let _ = read_u64(cur)?;
