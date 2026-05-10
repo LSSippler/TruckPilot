@@ -73,3 +73,7 @@ path = "src/bin/buildings_audit.rs"
 [[bin]]
 name = "truckpilot-bezier-audit"
 path = "src/bin/bezier_audit.rs"
+
+[[bin]]
+name = "truckpilot-ferry-diag"
+path = "src/bin/ferry_diag.rs"

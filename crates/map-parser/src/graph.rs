@@ -9,7 +9,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
 
-use crate::sector::{ParsedSector, RawNode, RawPrefab, RawRoad};
+use crate::sector::{ParsedSector, RawFerry, RawNode, RawPrefab, RawRoad};
 use crate::signs::TrafficSign;
 
 // ---------------------------------------------------------------------------
@@ -90,6 +90,7 @@ pub struct GraphBuilder {
     roads: Vec<RawRoad>,
     raw_prefabs: Vec<RawPrefab>,
     raw_signs: Vec<crate::sector::RawSign>,
+    ferries: Vec<RawFerry>,
     sectors_merged: usize,
 }
 
@@ -108,6 +109,7 @@ impl GraphBuilder {
         self.roads.extend(sector.roads);
         self.raw_prefabs.extend(sector.prefabs);
         self.raw_signs.extend(sector.signs);
+        self.ferries.extend(sector.ferries);
         self.sectors_merged += 1;
     }
 
@@ -252,6 +254,75 @@ impl GraphBuilder {
             }
         }
 
+        // Phase 5.22 — Ferry-derived clique edges.
+        //
+        // Ferry items (Type 19) carry a `port_token` (hash of the port unit
+        // name from `/def/ferry.sii`). All ferries sharing the same
+        // `port_token` belong to the same route — bidirectional edges form
+        // a fully-connected clique between their nodes. This is the only
+        // *natural* cross-sector connectivity in v907 maps.
+        let mut ferry_groups: HashMap<u64, Vec<u64>> = HashMap::new();
+        let mut ferries_skipped_zero = 0usize;
+        let mut ferries_skipped_missing_node = 0usize;
+        for ferry in &self.ferries {
+            if ferry.port_token == 0 || ferry.node_uid == 0 {
+                ferries_skipped_zero += 1;
+                continue;
+            }
+            if !node_lookup.contains_key(&ferry.node_uid) {
+                warn!(
+                    "Ferry {} references node {} not in lookup",
+                    ferry.uid, ferry.node_uid
+                );
+                ferries_skipped_missing_node += 1;
+                continue;
+            }
+            ferry_groups
+                .entry(ferry.port_token)
+                .or_default()
+                .push(ferry.node_uid);
+        }
+        let ferry_group_count = ferry_groups.len();
+        let mut ferry_edges_count = 0usize;
+        let mut ferry_groups_with_edges = 0usize;
+        for nodes in ferry_groups.values() {
+            if nodes.len() < 2 {
+                continue;
+            }
+            ferry_groups_with_edges += 1;
+            for i in 0..nodes.len() {
+                let Some(a) = node_lookup.get(&nodes[i]) else { continue };
+                for j in (i + 1)..nodes.len() {
+                    let Some(b) = node_lookup.get(&nodes[j]) else { continue };
+                    let dist = euclidean_3d(a, b);
+                    for (from, to) in [(nodes[i], nodes[j]), (nodes[j], nodes[i])] {
+                        edges.push(GraphEdge {
+                            uid: edge_uid,
+                            from,
+                            to,
+                            distance_m: dist,
+                            speed_limit_kmh: None,
+                            lanes: 1,
+                            direction: "ferry".into(),
+                            dlc_guard: 0,
+                            is_hidden: false,
+                            gps_avoid: false,
+                        });
+                        edge_uid += 1;
+                        ferry_edges_count += 1;
+                    }
+                }
+            }
+        }
+        info!(
+            "Ferry edges: {} from {} groups ({} with >=2 nodes); ferries skipped: {} zero, {} missing-node",
+            ferry_edges_count,
+            ferry_group_count,
+            ferry_groups_with_edges,
+            ferries_skipped_zero,
+            ferries_skipped_missing_node
+        );
+
         // Process prefabs
         let prefabs: Vec<Prefab> = self.raw_prefabs.into_iter().map(|p| Prefab {
             uid: p.uid,
@@ -311,6 +382,7 @@ mod tests {
             roads,
             prefabs,
             signs: vec![],
+            ferries: vec![],
             recovered_nodes_count: 0,
         }
     }

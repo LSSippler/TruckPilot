@@ -73,6 +73,22 @@ pub struct RawPrefab {
     pub nodes: Vec<u64>,
 }
 
+/// A ferry/train item (Type 19). Phase 5.22 — items sharing a `port_token`
+/// belong to the same ferry route; the graph builder turns each port-token
+/// group into a fully-connected clique of bidirectional `direction="ferry"`
+/// edges, which is the only natural cross-sector connectivity in v907 maps.
+#[derive(Debug, Clone)]
+pub struct RawFerry {
+    pub uid: u64,
+    /// Hash/ID of the port unit name from `/def/ferry.sii`. Same token across
+    /// all ferry items of the same route.
+    pub port_token: u64,
+    /// UID of the linked harbour prefab (0 = none).
+    pub prefab_uid: u64,
+    /// UID of the graph node at the ferry port location (0 = unset).
+    pub node_uid: u64,
+}
+
 /// A traffic sign attached to the road network.
 #[derive(Debug, Clone)]
 pub struct RawSign {
@@ -95,6 +111,8 @@ pub struct ParsedSector {
     pub roads: Vec<RawRoad>,
     pub prefabs: Vec<RawPrefab>,
     pub signs: Vec<RawSign>,
+    /// Ferry/train items (Type 19). Phase 5.22 cross-sector connectivity.
+    pub ferries: Vec<RawFerry>,
     /// Diagnostic counter — how many of `nodes` were rebuilt by
     /// `recover_nodes_from_tail` after a partial-item failure (Phase 5.8
     /// recovery path). `0` when the standard parse-trailing-nodes path ran.
@@ -212,7 +230,7 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
             ITEM_TYPE_CUT_PLANE => skip_cut_plane(&mut cur),
             ITEM_TYPE_CITY => skip_city(&mut cur),
             ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(&mut cur),
-            ITEM_TYPE_FERRY => skip_ferry(&mut cur),
+            ITEM_TYPE_FERRY => parse_ferry(&mut cur, &mut sector),
             ITEM_TYPE_GARAGE => skip_garage(&mut cur),
             ITEM_TYPE_TRIGGER => skip_trigger(&mut cur),
             ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(&mut cur),
@@ -613,6 +631,9 @@ fn try_parse_sized_sector(data: &[u8]) -> Option<ParsedSector> {
                 if let Ok(prefab) = parse_sized_prefab(&mut cur) {
                     sector.prefabs.push(prefab);
                 }
+            }
+            ITEM_TYPE_FERRY => {
+                let _ = parse_ferry(&mut cur, &mut sector);
             }
             _ => { /* unknown — skip via item_end */ }
         }
@@ -1035,7 +1056,31 @@ fn skip_map_overlay(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 19 — Ferry. Ref: `skip_ferry` lines 780-789.
+/// Type 19 — Ferry. Phase 5.22 captures port_token + node_uid for
+/// cross-sector clique-edge generation in [`crate::graph::GraphBuilder`].
+/// Body layout (89 bytes after item type tag): KdopItem (53) + port_token
+/// u64 + prefab_uid u64 + node_uid u64 + unload_offset 3×f32. Source:
+/// `outputs/ferry_format_notes.md` (TruckLib FerrySerializer + ts-map
+/// cross-check, no code copied).
+fn parse_ferry(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), ParseError> {
+    let uid = read_kdop_item(cur)?;
+    let port_token = read_u64(cur)?;
+    let prefab_uid = read_u64(cur)?;
+    let node_uid = read_u64(cur)?;
+    let _ = read_f32(cur)?; // unload_offset.x
+    let _ = read_f32(cur)?; // unload_offset.y
+    let _ = read_f32(cur)?; // unload_offset.z
+    sector.ferries.push(RawFerry {
+        uid,
+        port_token,
+        prefab_uid,
+        node_uid,
+    });
+    Ok(())
+}
+
+/// Audit-only ferry skip (no capture). Identical byte advance to
+/// [`parse_ferry`] — used by `audit_sector` which doesn't materialise items.
 fn skip_ferry(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
     let _ = read_u64(cur)?;
