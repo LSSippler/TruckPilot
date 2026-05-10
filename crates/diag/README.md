@@ -49,3 +49,20 @@ ProMods owns the majority of `.base` sector paths via last-wins and the
 H1 base-vs-DLC ratio becomes statistically unreliable. Read the per-archive
 tables directly for the real signal.
 
+### `truckpilot-vis-uid-audit`
+
+Phase 5.26a Reframe-C (H4a probe). Re-runs the Phase 5.13 vis_uids
+hypothesis test against the full multi-archive load order. Reports
+resolve rates, byte-pattern histogram, and a hypothetical
+edge-generation gain. Phase 5.13's "disjoint namespace" verdict is
+re-verified at scale (vis_uids consistently sit in the `0x4a-0x5C`
+top-byte range, never `0x00XX` where Node-UIDs live).
+
+```powershell
+cargo run --release --bin truckpilot-vis-uid-audit -- `
+  --ets2-dir "C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2" `
+  --graph graph.json
+```
+
+Output: `outputs/vis_uid_audit.txt` (mirrored to `outputs/claude/`).
+

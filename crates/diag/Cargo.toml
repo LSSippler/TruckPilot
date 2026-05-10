@@ -19,6 +19,10 @@ path = "src/bin/item_census.rs"
 name = "truckpilot-archive-audit"
 path = "src/bin/archive_audit.rs"
 
+[[bin]]
+name = "truckpilot-vis-uid-audit"
+path = "src/bin/vis_uid_audit.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
