@@ -66,3 +66,20 @@ cargo run --release --bin truckpilot-vis-uid-audit -- `
 
 Output: `outputs/vis_uid_audit.txt` (mirrored to `outputs/claude/`).
 
+### `truckpilot-anchor-junction-audit`
+
+Phase 5.26d (H4b probe). Counts how many Single-Anchor-Items
+(Sign, Model, FarModel, MapOverlay, VisibilityArea, BusStop) reference
+the same Node-UID. If the count is significant, those nodes are
+implicit junctions hidden from the graph builder.
+
+```powershell
+cargo run --release --bin truckpilot-anchor-junction-audit -- `
+  --ets2-dir "C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2" `
+  --graph graph.json
+```
+
+Uses `audit_sector` to walk items and direct-slices Node-UIDs at known
+byte offsets per type — no cursor, no production-code touch. Output:
+`outputs/h4b_anchor_junction_audit.txt` (mirrored to `outputs/claude/`).
+
