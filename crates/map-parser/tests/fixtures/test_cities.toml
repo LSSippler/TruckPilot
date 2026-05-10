@@ -52,3 +52,166 @@ z    =   1900.0
 name = "Mailand"
 x    = -22500.0
 z    =   8200.0
+
+# --- Phase 5.26 Reframe-A DLC probe cities (approximate ETS2 coordinates).
+#     The route-test snaps each to its nearest node within 5 km; if the
+#     graph has no DLC coverage, the snap fails and the pair lands in
+#     CAT-1 of the failure-mode classification.
+
+# --- Iberia DLC ---
+[[city]]
+name = "Madrid"
+x    = -65000.0
+z    =  14000.0
+
+[[city]]
+name = "Barcelona"
+x    = -50000.0
+z    =   7500.0
+
+[[city]]
+name = "Sevilla"
+x    = -77000.0
+z    =  24000.0
+
+[[city]]
+name = "Valencia"
+x    = -58000.0
+z    =  14000.0
+
+[[city]]
+name = "Lissabon"
+x    = -95000.0
+z    =  13000.0
+
+[[city]]
+name = "Porto"
+x    = -95000.0
+z    =   4000.0
+
+# --- Italy DLC --- (Mailand already above)
+[[city]]
+name = "Rom"
+x    = -13500.0
+z    =  18500.0
+
+[[city]]
+name = "Venedig"
+x    = -15500.0
+z    =   8000.0
+
+[[city]]
+name = "Neapel"
+x    =  -9500.0
+z    =  21500.0
+
+[[city]]
+name = "Genua"
+x    = -22000.0
+z    =  11500.0
+
+# --- France DLC --- (Paris already above)
+[[city]]
+name = "Marseille"
+x    = -32500.0
+z    =  11000.0
+
+[[city]]
+name = "Lyon"
+x    = -30500.0
+z    =   7000.0
+
+# --- Skandinavien DLC ---
+[[city]]
+name = "Stockholm"
+x    =  -9000.0
+z    = -42000.0
+
+[[city]]
+name = "Oslo"
+x    = -19500.0
+z    = -33500.0
+
+[[city]]
+name = "Goeteborg"
+x    = -19500.0
+z    = -23000.0
+
+[[city]]
+name = "Bergen"
+x    = -26000.0
+z    = -36000.0
+
+[[city]]
+name = "Helsinki"
+x    =   2000.0
+z    = -42000.0
+
+# --- Balkans-East / Road to the Black Sea DLC ---
+[[city]]
+name = "Bukarest"
+x    =  20000.0
+z    =  14500.0
+
+[[city]]
+name = "Sofia"
+x    =  13000.0
+z    =  16000.0
+
+[[city]]
+name = "Istanbul"
+x    =  28000.0
+z    =  22000.0
+
+[[city]]
+name = "Konstanza"
+x    =  25000.0
+z    =  13000.0
+
+# --- Balkans-West / West Balkans DLC ---
+[[city]]
+name = "Zagreb"
+x    =  -3000.0
+z    =   8500.0
+
+[[city]]
+name = "Belgrad"
+x    =   5500.0
+z    =  12500.0
+
+[[city]]
+name = "Ljubljana"
+x    =  -7500.0
+z    =   8000.0
+
+# --- Baltikum DLC ---
+[[city]]
+name = "Riga"
+x    =   8500.0
+z    = -19000.0
+
+[[city]]
+name = "Vilnius"
+x    =   8000.0
+z    = -10000.0
+
+[[city]]
+name = "Tallinn"
+x    =   7500.0
+z    = -27000.0
+
+# --- Going-East DLC ---
+[[city]]
+name = "Krakau"
+x    =  -1000.0
+z    =  -1500.0
+
+[[city]]
+name = "Bratislava"
+x    =  -7000.0
+z    =   3500.0
+
+[[city]]
+name = "Budapest"
+x    =  -1500.0
+z    =   5500.0
