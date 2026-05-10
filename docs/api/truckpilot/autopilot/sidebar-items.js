@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_SPEED_MS","MAX_SPEED_MS"],"enum":["CostMode"],"fn":["edge_cost","euclidean_2d","heuristic","plan_route","plan_route_on_graph","plan_route_on_graph_lane_uids","plan_route_on_roads","reconstruct_path","validate_path"],"struct":["HeapEntry","RouteConfig","RouteResult"]};

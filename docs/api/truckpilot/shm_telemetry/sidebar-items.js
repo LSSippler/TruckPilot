@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["SHM_MAGIC","SHM_NAME","SHM_VERSION"],"fn":["read_shm_linux","read_shm_telemetry","shm_to_telemetry"],"struct":["ShmTelemetryLayout"]};

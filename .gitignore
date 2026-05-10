@@ -80,3 +80,38 @@ aux_inspection*.txt
 
 # Obsidian Vault — komplett ignoriert, Notizen sind privat und lokal
 docs/vault/
+
+# Android — Build-Outputs
+android-server-monitor/app/build/
+android-server-monitor/.gradle/
+android-server-monitor/local.properties
+android-server-monitor/app/release/
+
+# Pre-built Release-Binaries
+release/
+
+# Rustdoc-Output
+docs/api/
+
+# Diagnose-Dumps am Repo-Root (zusätzlich zu graph.json/hashes.txt/parse_full.txt)
+ets2_nodes.json
+ets2_map_data.json
+audit_report.txt
+*_report.txt
+*_results.txt
+probe.log
+last_route_uids*.txt
+mod_order.json
+perf.data*
+
+# Python-Build-Output
+__pycache__/
+*.egg-info/
+.venv/
+
+# Release-Archive
+*-v*.zip
+
+# .NET / generic build dirs
+**/obj/
+

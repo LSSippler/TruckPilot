@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["parse_raw_node","parse_raw_prefab","parse_raw_road","parse_text_sector","read_float_or_int","read_hex_or_num","read_int","read_key","read_quoted_string","read_uid_list","read_vec3","skip_block","skip_value","skip_whitespace_and_comments","try_read_word"],"struct":["RawNode","RawPrefab","RawRoad","SectorData"]};

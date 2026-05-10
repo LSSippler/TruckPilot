@@ -1,2 +1,0 @@
-createSrcSidebar('[["truckpilot",["",[["ets2_parser",[],["archive.rs","binary_parser.rs","error.rs","map_parser.rs","mod.rs","scs_reader.rs","sii_parser.rs","zip_reader.rs"]]],["acc_controller.rs","autopilot.rs","autopilot_loop.rs","compat_export.rs","config.rs","controller.rs","graph_export.rs","graph_schema.rs","json_export.rs","lib.rs","pipeline.rs","route_smoothing.rs","shm_telemetry.rs","telemetry.rs","vjoy.rs"]]]]');
-//{"start":19,"fragment_lengths":[403]}

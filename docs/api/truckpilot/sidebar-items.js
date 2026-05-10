@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"mod":["acc_controller","autopilot","autopilot_loop","compat_export","config","controller","ets2_parser","graph_export","graph_schema","json_export","pipeline","route_smoothing","shm_telemetry","telemetry","vjoy"]};

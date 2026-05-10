@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_TELEMETRY_URL","LOOK_AHEAD_DIST","LOOP_INTERVAL_MS"],"enum":["TelemetrySource"],"fn":["advance_waypoint","build_steering_path","compute_heading_error","compute_heading_error_from_points","compute_target_speed_ms","proxy_distance_from_accel","resolve_telemetry","run_autopilot_loop"]};

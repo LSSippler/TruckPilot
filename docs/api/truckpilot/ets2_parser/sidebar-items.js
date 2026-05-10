@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["collect_base_sector_files","dedup_map","parse_ets2_map","parse_hashfs_sectors_dir","parse_text_map","parse_text_map_file","try_decompress_zlib"],"mod":["archive","binary_parser","error","map_parser","scs_reader","sii_parser","zip_reader"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["build_compat_graph","build_compat_nodes","build_compat_road_looks","build_compat_roads","write_compat_files","write_json"]};
