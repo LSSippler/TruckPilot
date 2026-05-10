@@ -845,19 +845,63 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
 // ---------------------------------------------------------------------------
 
 /// Type 1 — Terrain. Ref: `binary_parser.rs::skip_terrain` lines 662-675.
+/// Type 1 — Terrain.
+///
+/// Phase 5.16 rewrite: the legacy 3-token+u16+token+u16+u32+u32+3×float-list
+/// layout was a placeholder that desynced on every v907 terrain item, leading
+/// to "float list: count … exceeds safety limit" failures in 25/154 sectors
+/// pre-trigger-fix and 39/103 (37.9 %) of remaining failures after that fix.
+///
+/// The actual v907 layout matches TruckLib's `TerrainSerializer.Deserialize`
+/// (read 2026-05-10, no code copied — field order in own words):
+///
+/// 1. `read_kdop_item` already consumes uid + kdop bounds + 4 flag bytes +
+///    view_distance.
+/// 2. Then in order: u64 Node + u64 ForwardNode + vec3 NodeOffset + vec3
+///    ForwardNodeOffset + f32 Length + f32 prev_length + u32 RandomSeed.
+/// 3. Four railings, each `(u64 model_token, i16 offset)`.
+/// 4. Two sides (right, left) with the same layout as in [`skip_curve`]:
+///    u16 size + token profile + f32 coef + token prev_profile + f32
+///    prev_coef + 3 × 16-byte vegetation + 2 × u16 detail-veg distances.
+/// 5. Vegetation sphere list (count u32 + entries).
+/// 6. Two `terrain_quad_data` blocks (right, then left).
+/// 7. Four trailing edge tokens (right_edge, right_edge_look, left_edge,
+///    left_edge_look).
+///
+/// The only difference vs. `skip_curve` is the railing count (4 vs. 3).
 fn skip_terrain(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    skip_token(cur)?;
-    skip_token(cur)?;
-    skip_token(cur)?;
-    let _ = read_u16(cur)?;
-    skip_token(cur)?;
-    let _ = read_u16(cur)?;
+    let _ = read_u64(cur)?;
+    let _ = read_u64(cur)?;
+    skip_vector3(cur)?;
+    skip_vector3(cur)?;
+    let _ = read_f32(cur)?;
+    let _ = read_f32(cur)?;
     let _ = read_u32(cur)?;
-    let _ = read_u32(cur)?;
-    skip_float_list(cur)?;
-    skip_float_list(cur)?;
-    skip_float_list(cur)
+    for _ in 0..3 {
+        skip_token(cur)?;
+        let _ = read_i16(cur)?;
+    }
+    for _ in 0..2 {
+        let _ = read_u16(cur)?;
+        skip_token(cur)?;
+        let _ = read_f32(cur)?;
+        skip_token(cur)?;
+        let _ = read_f32(cur)?;
+        for _ in 0..3 {
+            skip_road_vegetation(cur)?;
+        }
+        let _ = read_u16(cur)?;
+        let _ = read_u16(cur)?;
+    }
+    skip_vegetation_sphere_list(cur)?;
+    skip_terrain_quad_data(cur)?;
+    skip_terrain_quad_data(cur)?;
+    skip_token(cur)?;
+    skip_token(cur)?;
+    skip_token(cur)?;
+    skip_token(cur)?;
+    Ok(())
 }
 
 /// Type 2 — Buildings. Ref: `skip_buildings` lines 677-686.
@@ -1433,17 +1477,6 @@ fn skip_terrain_quad_data(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
         skip_vector3(cur)?;
     }
 
-    Ok(())
-}
-
-/// Ref: `skip_float_list` lines 1150-1158.
-fn skip_float_list(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
-    let count = read_u32(cur)?;
-    ensure_count(count, "float list")?;
-    ensure_capacity(cur, count, 4, "float list")?;
-    for _ in 0..count {
-        let _ = read_f32(cur)?;
-    }
     Ok(())
 }
 
