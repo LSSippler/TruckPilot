@@ -20,3 +20,27 @@
 ## Sub-Agents
 - ipc-protocol-guard     — IPC-Synchronität prüfen
 - shadcn-styler          — UI-Polish-Reviews
+
+
+## Obsidian Vault — Dokumentations-Workflow
+
+Lokaler Vault unter `docs/vault/` (nicht in Git, komplett privat). Claude Code liest und schreibt dort wie auf jeden anderen Ordner.
+
+### Beim Session-Start automatisch lesen
+Vor jeder neuen Aufgabe:
+1. `docs/vault/00-Index.md` — aktueller Projekt-Stand
+2. Die letzte Datei in `docs/vault/01-Phases/` (chronologisch per Filename) — was zuletzt passiert ist
+3. Bei Bezug zu einem Modul: passende Datei aus `docs/vault/02-Architecture/`
+
+### Beim Phasen-Abschluss automatisch schreiben
+Nach jeder erfolgreich abgeschlossenen Phase ohne Nachfrage:
+1. Neue Datei `docs/vault/01-Phases/Phase-X.Y-<Kurztitel>.md` mit Frontmatter + Ziel + Umsetzung + Vorher/Nachher-Tabelle + Lessons Learned
+2. `docs/vault/00-Index.md` updaten — neuen Phase-Eintrag in chronologische Liste
+3. Bei Architektur-Änderung: passende `docs/vault/02-Architecture/<Modul>.md` aktualisieren
+4. Bei wichtiger Entscheidung: neuer ADR in `docs/vault/05-Decisions/ADR-NNN-<Kurztitel>.md`
+
+### Konventionen
+- Wikilinks `[[Phase-5.12-Sign-Handler]]` zu verwandten Phasen
+- Frontmatter-Tags: `[phase, truckpilot]` für Phasen, `[architecture, <modul>]` für Module
+- Tabellen für Vorher/Nachher-Metriken
+- Phase-Filename: `Phase-X.Y-<Kurztitel-mit-Bindestrichen>.md`
