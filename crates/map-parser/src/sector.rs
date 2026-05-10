@@ -1544,18 +1544,19 @@ mod tests {
         write_u32(buf, 0);                 // flags
     }
 
-    /// Append a road item (type tag + 265-byte fixed header + minimal payload) to buf.
+    /// Append a road item (type tag + 265-byte fixed header) to buf.
+    ///
+    /// Phase 5.7 verified empirically that ETS2 v907 `base_map.scs` carries
+    /// no variable payload after the fixed header — the next bytes are
+    /// either the next item's `item_type` or the trailing `node_count`.
+    /// `parse_road` therefore consumes exactly 4 (type tag) + 265 (fixed
+    /// header) bytes, and the helper mirrors that.
     ///
     /// Layout written:
     ///   • 4 B item_type = ITEM_TYPE_ROAD
     ///   • 265 B fixed header (zeros except uid at +0, start at +0xF5, end at +0xFD)
-    ///   • Variable payload — every list count = 0, every scalar zero. The
-    ///     resulting payload size depends on the per-side fixed-size block plus
-    ///     the eight u32 list-count prefixes plus four trailing edge_look u64s.
     fn append_road(buf: &mut Vec<u8>, uid: u64, node_a: u64, node_b: u64) {
         write_u32(buf, ITEM_TYPE_ROAD); // type
-
-        // 265-byte fixed header
         let header_start = buf.len();
         buf.extend_from_slice(&[0u8; 0x109]);
         buf[header_start..header_start + 8].copy_from_slice(&uid.to_le_bytes());
@@ -1563,25 +1564,6 @@ mod tests {
             .copy_from_slice(&node_a.to_le_bytes());
         buf[header_start + 0xFD..header_start + 0xFD + 8]
             .copy_from_slice(&node_b.to_le_bytes());
-
-        // Minimal payload — overlay token, two zero-payload sides, center material
-        // block, center vegetation, four no-detail vegetation u16s, vegetation
-        // sphere count = 0, six list-count u32 = 0, four trailing edge_look u64s.
-        // Per-side block size: 24 (models) + 2 (terrain_size) + 48 (vegetation) +
-        // 8 (sidewalk_material) + 20 (terrain_quad_data with all-zero counts) = 102 B.
-        buf.extend_from_slice(&[0u8; 8]);  // overlay_token u64
-        buf.extend_from_slice(&[0u8; 102]); // right side
-        buf.extend_from_slice(&[0u8; 102]); // left side
-        buf.extend_from_slice(&[0u8; 8]);   // center_material u64
-        buf.extend_from_slice(&[0u8; 4]);   // center_material_color [u8;4]
-        buf.extend_from_slice(&[0u8; 2]);   // center_material_rotation u16
-        buf.extend_from_slice(&[0u8; 4]);   // random_seed u32
-        buf.extend_from_slice(&[0u8; 4]);   // previous_length f32
-        buf.extend_from_slice(&[0u8; 12]);  // CenterVegetation
-        buf.extend_from_slice(&[0u8; 8]);   // 4 × no_detail_vegetation u16
-        buf.extend_from_slice(&[0u8; 4]);   // vegetation_sphere_count u32 = 0
-        buf.extend_from_slice(&[0u8; 24]);  // 6 × list-count u32 = 0
-        buf.extend_from_slice(&[0u8; 32]);  // 4 × trailing edge_look u64
     }
 
     #[test]
@@ -1643,15 +1625,20 @@ mod tests {
     }
 
     #[test]
-    fn unknown_item_type_returns_error() {
+    fn unknown_item_type_returns_partial_sector() {
+        // Phase 5.8 changed the dispatcher: unknown item types no longer
+        // abort the whole sector — `parse_sector_legacy` logs a warning,
+        // sets `all_items_parsed = false`, and returns the items it did
+        // dispatch successfully (here: none).  The trailing node section
+        // is then either skipped or recovered via `recover_nodes_from_tail`.
         let mut data = header(895);
         write_u32(&mut data, 1);  // item_count
-        write_u32(&mut data, 99); // type 99 = unknown — must error
-        // Pad enough bytes so we don't fail on a different read first.
+        write_u32(&mut data, 99); // type 99 = unknown
         data.extend_from_slice(&[0u8; 64]);
 
-        let result = parse_sector(&data);
-        assert!(result.is_err());
+        let s = parse_sector(&data).expect("partial recovery returns Ok");
+        assert!(s.roads.is_empty());
+        assert!(s.prefabs.is_empty());
     }
 
     #[test]

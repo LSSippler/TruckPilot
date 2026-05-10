@@ -205,6 +205,53 @@ impl GraphBuilder {
             }
         }
 
+        // Phase 5.10' — Prefab-derived edges.
+        //
+        // In ETS2, prefabs (intersections, junctions, ramps) are the glue
+        // between roads: each prefab carries a list of `connected_node_uids`
+        // that the surrounding roads attach to.  Without an explicit edge
+        // between those nodes, two roads meeting at the same junction end up
+        // in different connected components — which is exactly what was
+        // happening before this commit (largest CC = 217 nodes, 79 %
+        // isolated).
+        //
+        // We treat each prefab as a fully-connected clique of its valid
+        // node UIDs (those that resolve in `node_lookup`).  Each unordered
+        // pair becomes two directed edges (`from→to` and `to→from`) so the
+        // graph stays directional like the road edges.  Distance uses the
+        // 3-D Euclidean of the two nodes — prefab geometries are small
+        // enough that this is a reasonable proxy for in-prefab travel.
+        for raw in &self.raw_prefabs {
+            let valid: Vec<u64> = raw
+                .nodes
+                .iter()
+                .copied()
+                .filter(|uid| node_lookup.contains_key(uid))
+                .collect();
+            for i in 0..valid.len() {
+                let Some(a) = node_lookup.get(&valid[i]) else { continue };
+                for j in (i + 1)..valid.len() {
+                    let Some(b) = node_lookup.get(&valid[j]) else { continue };
+                    let dist = euclidean_3d(a, b);
+                    for (from, to) in [(valid[i], valid[j]), (valid[j], valid[i])] {
+                        edges.push(GraphEdge {
+                            uid: edge_uid,
+                            from,
+                            to,
+                            distance_m: dist,
+                            speed_limit_kmh: None,
+                            lanes: 1,
+                            direction: "prefab".into(),
+                            dlc_guard: 0,
+                            is_hidden: false,
+                            gps_avoid: false,
+                        });
+                        edge_uid += 1;
+                    }
+                }
+            }
+        }
+
         // Process prefabs
         let prefabs: Vec<Prefab> = self.raw_prefabs.into_iter().map(|p| Prefab {
             uid: p.uid,

@@ -1,0 +1,54 @@
+# Approximate ETS2 world coordinates (metres) for ten well-known cities,
+# used by `truckpilot-route-test` to probe the routing graph.
+# Coordinates are intentionally rough — the route-test snaps each city to
+# the closest node within a 5 km radius before running A*.
+
+[[city]]
+name = "Berlin"
+x    = -16400.0
+z    =  -3200.0
+
+[[city]]
+name = "Hamburg"
+x    = -22300.0
+z    =  -7200.0
+
+[[city]]
+name = "Muenchen"
+x    = -16200.0
+z    =   2700.0
+
+[[city]]
+name = "Wien"
+x    =  -8400.0
+z    =   3500.0
+
+[[city]]
+name = "Prag"
+x    = -11800.0
+z    =     400.0
+
+[[city]]
+name = "Warschau"
+x    =  -3000.0
+z    =  -3200.0
+
+[[city]]
+name = "Amsterdam"
+x    = -29200.0
+z    =  -3400.0
+
+[[city]]
+name = "Bruessel"
+x    = -29800.0
+z    =     200.0
+
+[[city]]
+name = "Paris"
+x    = -33500.0
+z    =   1900.0
+
+[[city]]
+name = "Mailand"
+x    = -22500.0
+z    =   8200.0
