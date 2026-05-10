@@ -2,12 +2,25 @@
 
 TruckPilot is an ETS2 autopilot/tooling project with a Rust runtime, map/graph export pipeline, telemetry SHM integration, and vJoy control output.
 
-> **Status (2026-05-06)** — Reifegrad 100 %, 158 Tests grün, 0 % Abweichung
-> Rust ↔ .NET Map-Export, 74.8 Sektoren/s Durchsatz auf der Realmap
-> (222 891 Nodes / 65 638 Roads / 18 189 Prefabs).
-> Details: [`PROJECT_FINAL.md`](PROJECT_FINAL.md) · Übergabe-Doku:
-> [`HANDOFF.md`](HANDOFF.md) · letzte Validierung:
-> [`offline_validation_results.txt`](offline_validation_results.txt).
+> **Status (2026-05-10)** — Phase 5 (Map-Parser) **CLOSED**. Phase 6.2
+> (Autopilot State-Machine) in Vorbereitung. Plugin-Architektur 6.2-ready
+> (5 Refactor-Fixes gemerged).
+> Details: [`docs/vault/01-Phases/Phase-5-Closeout.md`].
+
+## Map Coverage (Stand 2026-05-10)
+
+- **Sector-Parse:** 270/282 Sektoren clean (95.7%). 12 BezierPatch-Failures
+  akzeptiert (kein Routing-Hebel).
+- **Routing-Erfolg:** 22% (20/90 base_map + 1/27 DLC). Ziel war 60/90 —
+  der Rest ist strukturell durch Cross-Sector-Topologie blockiert.
+- **Big-8-Cluster** (~205k Nodes, ~2000 km drivable): zusammenhängende
+  Komponente Munich–Prag–Warschau–Amsterdam–Mailand–Sevilla–Sofia–Istanbul.
+  Production-Bereich für Autopilot-Tests.
+- **Singleton-Floor:** 53.9% aller Nodes haben degree=0. Architektonische
+  Eigenschaft des trailing-node-Blocks, uniform über 124 Archive
+  (incl. ProMods + alle DLCs). Kein Item-Type-Fix bricht diesen Floor.
+- **Empfohlene Testrouten:** innerhalb Big-8 (Berlin→München,
+  Hamburg→Hannover). Cross-Border Berlin→Madrid funktioniert nicht.
 
 ## Quickstart für zu Hause (Windows-PC mit ETS2)
 
