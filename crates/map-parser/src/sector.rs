@@ -916,14 +916,44 @@ fn skip_buildings(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 5 — Model. Ref: `skip_model` lines 688-696.
+/// Type 5 — Model.
+///
+/// Phase 5.18 rewrite. The legacy port consumed only 86 bytes per item
+/// (kdop + 3 × u64 + token + u8), under-reading by at least 31 bytes.
+/// In the Phase 5.17 audit `model` was the top failing predecessor at
+/// 53/77 (68.8 %); the Δ-scan window of [-16, +32] found no valid
+/// item-type at any of 20 samples, i.e. the missing tail was wider than
+/// 32 bytes — consistent with the AdditionalParts list pushing the true
+/// end far past the claimed end_offset.
+///
+/// The actual v907 layout matches TruckLib's `ModelSerializer.Deserialize`
+/// (read 2026-05-10, no code copied — see `outputs/model_format_notes.md`):
+/// kdop_item, then `Name` token, `Look` token, `Variant` token,
+/// `AdditionalParts` (u32 count + count × u64 token), `Node` u64,
+/// `Scale` vec3, `TerrainMaterial` token, `TerrainColor` (4 × u8 RGBA),
+/// `TerrainRotation` f32. Total = 117 + 8 × N bytes where N is the
+/// AdditionalParts count.
+///
+/// Empirically verified at sec+0000+0001.base body offset 0x27f, N=0:
+/// Scale = (1.0, 1.0, 1.0), TerrainColor = white, and the next u32 at
+/// body+117 reads as `5` (= ITEM_TYPE_MODEL), the strongest possible
+/// alignment signal.
 fn skip_model(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    skip_token(cur)?;
-    let _ = read_u8(cur)?;
+    skip_token(cur)?; // Name
+    skip_token(cur)?; // Look
+    skip_token(cur)?; // Variant
+    let additional_parts = read_u32(cur)?;
+    ensure_count(additional_parts, "model additional parts")?;
+    ensure_capacity(cur, additional_parts, 8, "model additional parts")?;
+    for _ in 0..additional_parts {
+        skip_token(cur)?;
+    }
+    let _ = read_u64(cur)?; // Node
+    skip_vector3(cur)?; // Scale
+    skip_token(cur)?; // TerrainMaterial
+    skip_color(cur)?; // TerrainColor (4 bytes)
+    let _ = read_f32(cur)?; // TerrainRotation
     Ok(())
 }
 
