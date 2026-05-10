@@ -984,20 +984,64 @@ fn skip_fuel_pump(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 36 — Sign. Ref: `skip_sign` lines 802-815.
+/// Type 36 — Sign.
+///
+/// Phase 5.12 rewrite — the original port from `binary_parser.rs:802-815`
+/// matched the byte count for empty-template signs but desynced for any
+/// non-empty template (those have variable bytes between the boards
+/// section and the override lists). The audit walker showed `sign` as
+/// the source of 56.8 % of all sector parse failures.
+///
+/// Layout per TruckLib `SignSerializer.cs` (sk-zk/TruckLib, MIT-licensed
+/// reference — used here for format facts only, no code copied):
+///   1. kdop_item                         (53 B)
+///   2. Model token                       (8 B)
+///   3. Node UID u64                      (8 B)
+///   4. Look token                        (8 B)
+///   5. Variant token                     (8 B)
+///   6. board_count u8                    (1 B)
+///   7. for each board: Road / City1 / City2 tokens (3 tokens = 24 B)
+///   8. SignTemplate PascalString         (8 B header + N B payload)
+///   9. **Only if SignTemplate is non-empty:**
+///      - SignBoardOverride list
+///      - SignOverride list
 fn skip_sign(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
+    skip_token(cur)?; // Model
+    let _ = read_u64(cur)?; // Node UID
+    skip_token(cur)?; // Look
+    skip_token(cur)?; // Variant
     let board_count = read_u8(cur)? as u32;
     for _ in 0..board_count {
-        skip_token(cur)?;
-        skip_token(cur)?;
+        skip_token(cur)?; // Road
+        skip_token(cur)?; // City1
+        skip_token(cur)?; // City2
     }
-    skip_sign_board_override_list(cur)?;
-    skip_sign_override_list(cur)
+    let template_len = read_pascal_string_len(cur)?;
+    if template_len > 0 {
+        skip_sign_board_override_list(cur)?;
+        skip_sign_override_list(cur)?;
+    }
+    Ok(())
+}
+
+/// Read a Pascal-style string (u64 length + raw bytes) and return the
+/// length without copying the bytes.  Used by `skip_sign` to decide
+/// whether the override lists follow.
+fn read_pascal_string_len(cur: &mut Cursor<&[u8]>) -> Result<u64, ParseError> {
+    let len = read_u64(cur)?;
+    if len > MAX_PASCAL_STRING_LEN {
+        return Err(ParseError::Binary(format!(
+            "pascal string length {len} exceeds safety limit"
+        )));
+    }
+    if len > usize::MAX as u64 {
+        return Err(ParseError::Binary(format!(
+            "pascal string length {len} exceeds usize::MAX"
+        )));
+    }
+    skip(cur, len as usize)?;
+    Ok(len)
 }
 
 /// Type 37 — BusStop. Ref: `skip_bus_stop` lines 817-823.
