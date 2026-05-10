@@ -1273,9 +1273,21 @@ fn skip_action_list(cur: &mut Cursor<&[u8]>, include_name: bool) -> Result<(), P
     Ok(())
 }
 
-/// Skip an action base. Ref: `skip_action_base` lines 1007-1030.
+/// Skip an action base.
+///
+/// Phase 5.15 fix: TruckLib's `ActionBase.Deserialize` documents that a
+/// `numeric_params_count` value of `0xFFFFFFFF` is a sentinel meaning
+/// "no params, deserialization ends here" — the remaining fields
+/// (string params, target tags, range, flags) are NOT present on disk.
+/// The legacy reference parser missed this and bailed with
+/// `count 4294967295 exceeds safety limit`, which produced 89/154
+/// (57.8 %) of the v907 sector audit failures.
 fn skip_action_base(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let num_param_count = read_u32(cur)?;
+    if num_param_count == 0xFFFF_FFFF {
+        // Sentinel: action body is empty.
+        return Ok(());
+    }
     ensure_count(num_param_count, "action numeric params")?;
     ensure_capacity(cur, num_param_count, 4, "action numeric params")?;
     for _ in 0..num_param_count {
