@@ -45,3 +45,7 @@ path = "src/bin/uid_resolution.rs"
 [[bin]]
 name = "truckpilot-sector-audit"
 path = "src/bin/sector_audit.rs"
+
+[[bin]]
+name = "truckpilot-vis-uids"
+path = "src/bin/vis_uids.rs"
