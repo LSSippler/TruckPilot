@@ -78,7 +78,7 @@ impl SignReaderPlugin {
     }
 
     /// Find the lowest speed limit within `LOOKAHEAD_M` meters of `(tx, tz)`.
-    fn nearest_limit(&self, tx: f64, tz: f64) -> Option<f32> {
+    fn lowest_limit(&self, tx: f64, tz: f64) -> Option<f32> {
         self.signs
             .iter()
             .filter_map(|s| {
@@ -91,7 +91,7 @@ impl SignReaderPlugin {
                     None
                 }
             })
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .map(|(_, v)| v)
     }
 }
@@ -154,7 +154,7 @@ impl Plugin for SignReaderPlugin {
         let tx = t.position[0];
         let tz = t.position[2];
 
-        match self.nearest_limit(tx, tz) {
+        match self.lowest_limit(tx, tz) {
             Some(limit_kmh) => {
                 ctx.blackboard
                     .set("sign.speed_limit_kmh", limit_kmh.to_string());
@@ -203,36 +203,36 @@ mod tests {
     #[test]
     fn no_signs_returns_none() {
         let p = make_plugin_with_signs(vec![]);
-        assert!(p.nearest_limit(0.0, 0.0).is_none());
+        assert!(p.lowest_limit(0.0, 0.0).is_none());
     }
 
     #[test]
     fn sign_within_range_returned() {
         let p = make_plugin_with_signs(vec![speed_sign(50.0, 0.0, 80.0)]);
-        let limit = p.nearest_limit(0.0, 0.0);
+        let limit = p.lowest_limit(0.0, 0.0);
         assert_eq!(limit, Some(80.0));
     }
 
     #[test]
     fn sign_out_of_range_ignored() {
         let p = make_plugin_with_signs(vec![speed_sign(500.0, 0.0, 80.0)]);
-        assert!(p.nearest_limit(0.0, 0.0).is_none());
+        assert!(p.lowest_limit(0.0, 0.0).is_none());
     }
 
     #[test]
-    fn nearest_sign_wins_when_multiple() {
+    fn lowest_limit_returns_min_speed_not_nearest() {
+        // 120@20m (nearest) + 80@50m (further but lower) → must return 80.
         let p = make_plugin_with_signs(vec![
-            speed_sign(100.0, 0.0, 80.0),
-            speed_sign(30.0, 0.0, 50.0), // closer
+            speed_sign(20.0, 0.0, 120.0), // nearer, higher
+            speed_sign(50.0, 0.0, 80.0),  // farther, lower
         ]);
-        // Nearest is at 30m → 50 km/h
-        assert_eq!(p.nearest_limit(0.0, 0.0), Some(50.0));
+        assert_eq!(p.lowest_limit(0.0, 0.0), Some(80.0));
     }
 
     #[test]
     fn zero_value_sign_ignored() {
         let p = make_plugin_with_signs(vec![speed_sign(10.0, 0.0, 0.0)]);
-        assert!(p.nearest_limit(0.0, 0.0).is_none());
+        assert!(p.lowest_limit(0.0, 0.0).is_none());
     }
 
     #[test]

@@ -83,7 +83,7 @@ impl Plugin for AccPlugin {
 
         let current_speed_kmh = (t.speed_ms * 3.6) as f32;
         let error = f64::from(dist - self.target_distance_m);
-        let correction = self.pid.update(error, 0.02) as f32;
+        let correction = self.pid.update(error, ctx.dt_s) as f32;
         let cap = (current_speed_kmh + correction).clamp(0.0, current_speed_kmh.max(0.0));
 
         ctx.blackboard.set("acc.speed_cap_kmh", cap.to_string());

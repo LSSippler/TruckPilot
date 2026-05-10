@@ -196,15 +196,26 @@ pub struct PluginContext {
     pub plugin_name: String,
     /// Shared key-value store for inter-plugin communication.
     pub blackboard: SharedBlackboard,
+    /// Seconds since the previous tick. Defaults to `0.02` (50 Hz);
+    /// the daemon sets the real value via [`PluginContext::with_dt`].
+    /// Plugins should prefer `ctx.dt_s` over hardcoded periods.
+    pub dt_s: f64,
 }
 
 impl PluginContext {
-    /// Create a new context.
+    /// Create a new context. `dt_s` defaults to `0.02` for backward-compat.
     pub fn new(plugin_name: impl Into<String>, blackboard: SharedBlackboard) -> Self {
         Self {
             plugin_name: plugin_name.into(),
             blackboard,
+            dt_s: 0.02,
         }
+    }
+
+    /// Set the per-tick delta time in seconds. Builder-style. Clamped to >= 0.001.
+    pub fn with_dt(mut self, dt_s: f64) -> Self {
+        self.dt_s = dt_s.max(0.001);
+        self
     }
 }
 
@@ -350,4 +361,25 @@ macro_rules! export_plugin {
             }
         }
     };
+}
+
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::*;
+
+    #[test]
+    fn dt_s_defaults_to_0_02() {
+        let ctx = PluginContext::new("test", SharedBlackboard::new());
+        assert!((ctx.dt_s - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_dt_sets_value_and_clamps_min() {
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone()).with_dt(0.005);
+        assert!((ctx.dt_s - 0.005).abs() < 1e-9);
+        let ctx2 = PluginContext::new("test", bb).with_dt(0.0);
+        assert!((ctx2.dt_s - 0.001).abs() < 1e-9, "dt_s={}", ctx2.dt_s);
+    }
 }

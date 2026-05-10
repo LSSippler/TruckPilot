@@ -219,14 +219,30 @@ impl PluginManager {
     /// Both calls are wrapped in [`catch_unwind`]: a plugin that
     /// panics is disabled (no further ticks until reload) and the
     /// daemon keeps running. See [`arbitrate`] for the merge rules.
-    pub fn tick_all(&mut self, telemetry: Option<&Telemetry>, output: &mut ControlOutput) {
+    pub fn tick_all(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        output: &mut ControlOutput,
+        dt_s: f64,
+    ) {
         // Legacy bucket: plugins still on the old `tick(&mut output)`
         // API write here. Reset every tick so stale values don't stick.
         let mut legacy = ControlOutput::default();
         let mut requests: Vec<ControlRequest> = Vec::new();
 
-        for p in self.plugins.iter_mut().filter(|p| p.enabled) {
-            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone());
+        // vjoy-output must observe the FINAL arbitrated output, not
+        // intermediate legacy values. Skip it in the main loop and tick
+        // it once after arbitration with `*output`.
+        let vjoy_idx: Option<usize> = self
+            .plugins
+            .iter()
+            .position(|p| p.enabled && p.name == "vjoy-output");
+
+        for (i, p) in self.plugins.iter_mut().enumerate().filter(|(_, p)| p.enabled) {
+            if Some(i) == vjoy_idx {
+                continue;
+            }
+            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -256,6 +272,20 @@ impl PluginManager {
         }
 
         *output = arbitrate(legacy, &requests);
+
+        if let Some(idx) = vjoy_idx {
+            let p = &mut self.plugins[idx];
+            if p.enabled {
+                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
+                let tick_result = catch_unwind(AssertUnwindSafe(|| {
+                    p.plugin.tick(telemetry, output, &ctx);
+                }));
+                if let Err(panic) = tick_result {
+                    log_plugin_panic(&p.name, "tick", panic);
+                    p.enabled = false;
+                }
+            }
+        }
     }
 
     pub fn list(&self) -> Vec<truckpilot_ipc_protocol::PluginInfo> {

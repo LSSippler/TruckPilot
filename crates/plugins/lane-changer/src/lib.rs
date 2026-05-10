@@ -17,7 +17,12 @@
 
 use std::time::{Duration, Instant};
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry};
+
+/// Arbitration priority for lane-changer's tick_request — chosen higher
+/// than lane-keeper's `PRIORITY_NORMAL` (50) so the manoeuvre overrides
+/// normal lane-keeping while it is in progress.
+const LC_REQUEST_PRIORITY: i32 = 80;
 
 // ---------------------------------------------------------------------------
 // Configuration defaults
@@ -179,24 +184,43 @@ impl Plugin for LaneChangerPlugin {
                     return;
                 }
 
-                // Apply smooth sinusoidal steering overlay.
-                let progress = elapsed.as_secs_f64() / MANOEUVRE_DURATION.as_secs_f64();
-                let smooth = (progress * std::f64::consts::PI).sin();
-                let steer_delta = (*direction as f64) * LANE_CHANGE_STEER_OFFSET * smooth;
-                output.steering = (output.steering + steer_delta).clamp(-1.0, 1.0);
-
+                // Steering is now produced via `tick_request` so the
+                // arbitrator can favour it over lane-keeper. This block
+                // only tracks state & blackboard; `output` is untouched.
+                let _ = output;
                 ctx.blackboard.set("lane_changer.active", "true");
                 ctx.blackboard.set(
                     "lane_changer.direction",
                     if *direction > 0 { "left" } else { "right" },
                 );
 
-                tracing::debug!(
-                    "[lane-changer] manoeuvre {:.0}% steer_delta={steer_delta:+.3}",
-                    progress * 100.0
-                );
+                let progress = elapsed.as_secs_f64() / MANOEUVRE_DURATION.as_secs_f64();
+                tracing::debug!("[lane-changer] manoeuvre {:.0}%", progress * 100.0);
             }
         }
+    }
+
+    fn tick_request(
+        &mut self,
+        _telemetry: Option<&Telemetry>,
+        _ctx: &PluginContext,
+    ) -> Option<ControlRequest> {
+        let LcState::Changing { started, direction } = &self.state else {
+            return None;
+        };
+        let elapsed = started.elapsed();
+        if elapsed >= MANOEUVRE_DURATION {
+            return None;
+        }
+        let progress = elapsed.as_secs_f64() / MANOEUVRE_DURATION.as_secs_f64();
+        let smooth = (progress * std::f64::consts::PI).sin();
+        let steering = (*direction as f64) * LANE_CHANGE_STEER_OFFSET * smooth;
+        Some(ControlRequest {
+            steering: Some(steering.clamp(-1.0, 1.0)),
+            throttle: None,
+            brake: None,
+            priority: LC_REQUEST_PRIORITY,
+        })
     }
 }
 
@@ -280,5 +304,26 @@ mod tests {
             let smooth = (progress * std::f64::consts::PI).sin();
             assert!(smooth.abs() < 0.01, "progress={progress} smooth={smooth}");
         }
+    }
+
+    #[test]
+    fn changing_state_produces_control_request() {
+        let mut p = LaneChangerPlugin {
+            state: LcState::Changing { started: Instant::now(), direction: 1 },
+            ..LaneChangerPlugin::default()
+        };
+        let ctx = ctx_with_acc_cap(50.0);
+        let req = p.tick_request(None, &ctx).expect("Changing must request");
+        assert_eq!(req.priority, LC_REQUEST_PRIORITY);
+        assert!(req.steering.is_some());
+        assert!(req.throttle.is_none());
+        assert!(req.brake.is_none());
+    }
+
+    #[test]
+    fn idle_state_returns_no_request() {
+        let mut p = LaneChangerPlugin::default();
+        let ctx = ctx_with_acc_cap(80.0);
+        assert!(p.tick_request(None, &ctx).is_none());
     }
 }

@@ -143,7 +143,7 @@ impl Plugin for LaneKeeperPlugin {
     fn tick_request(
         &mut self,
         telemetry: Option<&Telemetry>,
-        _ctx: &PluginContext,
+        ctx: &PluginContext,
     ) -> Option<ControlRequest> {
         let t = telemetry?;
 
@@ -152,9 +152,8 @@ impl Plugin for LaneKeeperPlugin {
             return None;
         }
 
-        let dt = 0.02; // 20 ms fixed step
         let err = self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms);
-        let steering = self.pid.update(err, dt);
+        let steering = self.pid.update(err, ctx.dt_s);
 
         Some(ControlRequest {
             steering: Some(steering),

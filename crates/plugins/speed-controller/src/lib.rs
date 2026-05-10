@@ -75,7 +75,7 @@ impl Plugin for SpeedControllerPlugin {
         let current_ms = t.speed_ms;
         let target_ms = target_kmh / 3.6;
 
-        let raw = self.pid.update(target_ms - current_ms, 0.02);
+        let raw = self.pid.update(target_ms - current_ms, ctx.dt_s);
         let throttle = raw.clamp(0.0, 1.0);
         let brake = (-raw).clamp(0.0, 1.0);
 

@@ -531,6 +531,8 @@ async fn run_daemon() {
     #[cfg(not(feature = "mock_telemetry"))]
     let mut last_ipc_push = Instant::now();
     let mut output = ControlOutput::default();
+    // Wallclock-based dt: PID terms drift if the loop slips below 50 Hz.
+    let mut last_tick = Instant::now();
 
     info!("Running — press Ctrl+C to stop");
 
@@ -564,9 +566,12 @@ async fn run_daemon() {
             }
         }
 
+        let dt_s = last_tick.elapsed().as_secs_f64().max(0.001);
+        last_tick = Instant::now();
+
         let mut mgr = manager.lock().await;
         mgr.process_reloads();
-        mgr.tick_all(telemetry.as_ref(), &mut output);
+        mgr.tick_all(telemetry.as_ref(), &mut output, dt_s);
 
         if last_log.elapsed() >= Duration::from_secs(1) {
             info!(
