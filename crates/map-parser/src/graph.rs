@@ -9,7 +9,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
 
-use crate::sector::{ParsedSector, RawFerry, RawNode, RawPrefab, RawRoad};
+use crate::sector::{ParsedSector, RawBuilding, RawFerry, RawNode, RawPrefab, RawRoad};
 use crate::spatial_match::{
     apply_filters, build_spatial_index, pass1_strict_config, query_circle, select_best_match,
     OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
@@ -96,6 +96,7 @@ pub struct GraphBuilder {
     raw_prefabs: Vec<RawPrefab>,
     raw_signs: Vec<crate::sector::RawSign>,
     ferries: Vec<RawFerry>,
+    buildings: Vec<RawBuilding>,
     /// Phase 5.23a: maps node UID -> sector index assigned during
     /// [`GraphBuilder::merge_sector`]. Used by the SECTOR-FILTER in the
     /// spatial-match pipeline to reject same-sector candidates.
@@ -121,6 +122,7 @@ impl GraphBuilder {
         self.raw_prefabs.extend(sector.prefabs);
         self.raw_signs.extend(sector.signs);
         self.ferries.extend(sector.ferries);
+        self.buildings.extend(sector.buildings);
         self.sectors_merged += 1;
     }
 
@@ -255,6 +257,76 @@ impl GraphBuilder {
                 }
             }
         }
+
+        // Phase 5.25a — Building-derived edges.
+        //
+        // Buildings (Type 2) carry a `Node` and a `ForwardNode` that
+        // delineate the building strip along a road. Phase 5.24 audit
+        // showed ~9% of 574k singleton nodes are referenced by ignored
+        // item types in base_map; buildings are one of the largest
+        // contributors. We generate a bidirectional `direction="building"`
+        // edge for each pair where both endpoints resolve, recovering
+        // connectivity that the road parser alone misses.
+        let mut buildings_total = 0usize;
+        let mut buildings_zero_uid = 0usize;
+        let mut buildings_self_loop = 0usize;
+        let mut buildings_one_unresolved = 0usize;
+        let mut buildings_both_unresolved = 0usize;
+        let mut building_edges_count = 0usize;
+        for b in &self.buildings {
+            buildings_total += 1;
+            if b.node_uid == 0 || b.forward_node_uid == 0 {
+                buildings_zero_uid += 1;
+                continue;
+            }
+            if b.node_uid == b.forward_node_uid {
+                buildings_self_loop += 1;
+                continue;
+            }
+            let a_node = node_lookup.get(&b.node_uid).copied();
+            let f_node = node_lookup.get(&b.forward_node_uid).copied();
+            let (a, f) = match (a_node, f_node) {
+                (Some(a), Some(f)) => (a, f),
+                (Some(_), None) | (None, Some(_)) => {
+                    buildings_one_unresolved += 1;
+                    continue;
+                }
+                (None, None) => {
+                    buildings_both_unresolved += 1;
+                    continue;
+                }
+            };
+            let dist = euclidean_3d(a, f);
+            for (from, to) in [
+                (b.node_uid, b.forward_node_uid),
+                (b.forward_node_uid, b.node_uid),
+            ] {
+                edges.push(GraphEdge {
+                    uid: edge_uid,
+                    from,
+                    to,
+                    distance_m: dist,
+                    speed_limit_kmh: None,
+                    lanes: 1,
+                    direction: "building".into(),
+                    dlc_guard: 0,
+                    is_hidden: false,
+                    gps_avoid: false,
+                });
+                edge_uid += 1;
+                building_edges_count += 1;
+            }
+        }
+        info!(
+            "Building edges: {} from {} buildings ({} both-resolved); skipped: {} zero-uid, {} self-loop, {} one-unresolved, {} both-unresolved",
+            building_edges_count,
+            buildings_total,
+            building_edges_count / 2,
+            buildings_zero_uid,
+            buildings_self_loop,
+            buildings_one_unresolved,
+            buildings_both_unresolved
+        );
 
         // Phase 5.10' — Prefab-derived edges.
         //
@@ -518,6 +590,7 @@ mod tests {
             prefabs,
             signs: vec![],
             ferries: vec![],
+            buildings: vec![],
             recovered_nodes_count: 0,
         }
     }
@@ -653,6 +726,39 @@ mod tests {
         ));
         let g = b.build();
         assert_eq!(g.edges[0].speed_limit_kmh, None);
+    }
+
+    #[test]
+    fn building_pair_yields_bidirectional_edges() {
+        let mut b = GraphBuilder::new();
+        let mut s = ParsedSector {
+            nodes: vec![
+                RawNode { uid: 1, x: 0.0, y: 0.0, z: 0.0 },
+                RawNode { uid: 2, x: 30.0, y: 0.0, z: 40.0 },
+            ],
+            roads: vec![],
+            prefabs: vec![],
+            signs: vec![],
+            ferries: vec![],
+            buildings: vec![RawBuilding {
+                uid: 500,
+                node_uid: 1,
+                forward_node_uid: 2,
+            }],
+            recovered_nodes_count: 0,
+        };
+        // Also test skip cases
+        s.buildings.push(RawBuilding { uid: 501, node_uid: 0, forward_node_uid: 2 }); // zero-uid
+        s.buildings.push(RawBuilding { uid: 502, node_uid: 7, forward_node_uid: 2 }); // one unresolved
+        s.buildings.push(RawBuilding { uid: 503, node_uid: 1, forward_node_uid: 1 }); // self-loop
+        b.merge_sector(s);
+        let g = b.build();
+        let building_edges: Vec<_> = g.edges.iter().filter(|e| e.direction == "building").collect();
+        assert_eq!(building_edges.len(), 2, "exactly one bidirectional pair survives");
+        assert!(building_edges.iter().any(|e| e.from == 1 && e.to == 2));
+        assert!(building_edges.iter().any(|e| e.from == 2 && e.to == 1));
+        // 3-4-5 triangle => distance 50
+        assert!((building_edges[0].distance_m - 50.0).abs() < 0.01);
     }
 
     #[test]

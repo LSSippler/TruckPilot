@@ -89,6 +89,19 @@ pub struct RawFerry {
     pub node_uid: u64,
 }
 
+/// A buildings item (Type 2). Phase 5.25a — buildings carry a primary
+/// `Node` and a `ForwardNode` delineating the strip along a road. The
+/// graph builder turns each pair into a bidirectional
+/// `direction="building"` edge, recovering connectivity through nodes
+/// that road items reference but ignore (Phase 5.24 audit: ~9% of 574k
+/// singletons are referenced by ignored item types in base_map).
+#[derive(Debug, Clone)]
+pub struct RawBuilding {
+    pub uid: u64,
+    pub node_uid: u64,
+    pub forward_node_uid: u64,
+}
+
 /// A traffic sign attached to the road network.
 #[derive(Debug, Clone)]
 pub struct RawSign {
@@ -113,6 +126,10 @@ pub struct ParsedSector {
     pub signs: Vec<RawSign>,
     /// Ferry/train items (Type 19). Phase 5.22 cross-sector connectivity.
     pub ferries: Vec<RawFerry>,
+    /// Buildings items (Type 2). Phase 5.25a — node + forward_node pairs
+    /// turned into bidirectional `direction="building"` edges by the
+    /// graph builder, recovering connectivity hidden in 9% of singletons.
+    pub buildings: Vec<RawBuilding>,
     /// Diagnostic counter — how many of `nodes` were rebuilt by
     /// `recover_nodes_from_tail` after a partial-item failure (Phase 5.8
     /// recovery path). `0` when the standard parse-trailing-nodes path ran.
@@ -223,7 +240,7 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
             ITEM_TYPE_ROAD => parse_road(&mut cur, &mut sector),
             ITEM_TYPE_PREFAB => parse_prefab(&mut cur, &mut sector),
             ITEM_TYPE_TERRAIN => skip_terrain(&mut cur),
-            ITEM_TYPE_BUILDINGS => skip_buildings(&mut cur),
+            ITEM_TYPE_BUILDINGS => parse_buildings(&mut cur, &mut sector),
             ITEM_TYPE_MODEL => skip_model(&mut cur),
             ITEM_TYPE_COMPANY => skip_company(&mut cur),
             ITEM_TYPE_SERVICE => skip_service(&mut cur),
@@ -635,6 +652,9 @@ fn try_parse_sized_sector(data: &[u8]) -> Option<ParsedSector> {
             ITEM_TYPE_FERRY => {
                 let _ = parse_ferry(&mut cur, &mut sector);
             }
+            ITEM_TYPE_BUILDINGS => {
+                let _ = parse_buildings(&mut cur, &mut sector);
+            }
             _ => { /* unknown — skip via item_end */ }
         }
 
@@ -943,15 +963,41 @@ fn skip_terrain(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 /// Empirically verified: at handler-claimed end the next 4 bytes are
 /// always Stretch=1.0, the next 4 a count, and `8 + 4 × count` bytes
 /// later sits the next item_type — a perfect alignment match.
-fn skip_buildings(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
-    let _ = read_kdop_item(cur)?;
+fn parse_buildings(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), ParseError> {
+    let uid = read_kdop_item(cur)?;
     skip_token(cur)?; // Name
     skip_token(cur)?; // Look
-    let _ = read_u64(cur)?; // Node
-    let _ = read_u64(cur)?; // ForwardNode
+    let node_uid = read_u64(cur)?;
+    let forward_node_uid = read_u64(cur)?;
     let _ = read_f32(cur)?; // Length
     let _ = read_u32(cur)?; // RandomSeed
     let _ = read_f32(cur)?; // Stretch
+    let height_offsets_count = read_u32(cur)?;
+    ensure_count(height_offsets_count, "buildings height offsets")?;
+    ensure_capacity(cur, height_offsets_count, 4, "buildings height offsets")?;
+    for _ in 0..height_offsets_count {
+        let _ = read_f32(cur)?;
+    }
+    sector.buildings.push(RawBuilding {
+        uid,
+        node_uid,
+        forward_node_uid,
+    });
+    Ok(())
+}
+
+/// Audit-only buildings skip (no capture). Identical byte advance to
+/// [`parse_buildings`] — used by `audit_sector` which doesn't materialise
+/// items.
+fn skip_buildings(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token(cur)?;
+    skip_token(cur)?;
+    let _ = read_u64(cur)?;
+    let _ = read_u64(cur)?;
+    let _ = read_f32(cur)?;
+    let _ = read_u32(cur)?;
+    let _ = read_f32(cur)?;
     let height_offsets_count = read_u32(cur)?;
     ensure_count(height_offsets_count, "buildings height offsets")?;
     ensure_capacity(cur, height_offsets_count, 4, "buildings height offsets")?;
