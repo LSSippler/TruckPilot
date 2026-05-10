@@ -904,15 +904,39 @@ fn skip_terrain(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 2 — Buildings. Ref: `skip_buildings` lines 677-686.
+/// Type 2 — Buildings.
+///
+/// Phase 5.19 rewrite. The legacy port consumed only 93 bytes per item
+/// (kdop + Name + Look + Node + ForwardNode + Length + RandomSeed),
+/// under-reading by 8 + 4 N bytes. In the Phase 5.18 audit `buildings`
+/// was the top failing predecessor at 26/36 (72.2 %); 26/26 samples
+/// landed on `0x3F800000` (= IEEE float 1.0, the default Stretch
+/// coefficient) at `rel_end = +0`, a deterministic constant marker.
+///
+/// The actual v907 layout matches TruckLib's `BuildingsSerializer`
+/// (read 2026-05-10, no code copied — see `outputs/buildings_format_notes.md`):
+/// kdop_item, then `Name` token, `Look` token, `Node` u64, `ForwardNode`
+/// u64, `Length` f32, `RandomSeed` u32, `Stretch` f32, `HeightOffsets`
+/// (u32 count + N × f32). Total = 101 + 4 × N bytes.
+///
+/// Empirically verified: at handler-claimed end the next 4 bytes are
+/// always Stretch=1.0, the next 4 a count, and `8 + 4 × count` bytes
+/// later sits the next item_type — a perfect alignment match.
 fn skip_buildings(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    skip_token(cur)?;
-    let _ = read_u64(cur)?;
-    skip_token(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u32(cur)?;
-    let _ = read_u32(cur)?;
+    skip_token(cur)?; // Name
+    skip_token(cur)?; // Look
+    let _ = read_u64(cur)?; // Node
+    let _ = read_u64(cur)?; // ForwardNode
+    let _ = read_f32(cur)?; // Length
+    let _ = read_u32(cur)?; // RandomSeed
+    let _ = read_f32(cur)?; // Stretch
+    let height_offsets_count = read_u32(cur)?;
+    ensure_count(height_offsets_count, "buildings height offsets")?;
+    ensure_capacity(cur, height_offsets_count, 4, "buildings height offsets")?;
+    for _ in 0..height_offsets_count {
+        let _ = read_f32(cur)?;
+    }
     Ok(())
 }
 

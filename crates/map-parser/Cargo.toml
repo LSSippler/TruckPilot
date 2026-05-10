@@ -65,3 +65,7 @@ path = "src/bin/curve_audit.rs"
 [[bin]]
 name = "truckpilot-model-audit"
 path = "src/bin/model_audit.rs"
+
+[[bin]]
+name = "truckpilot-buildings-audit"
+path = "src/bin/buildings_audit.rs"
