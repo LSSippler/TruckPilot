@@ -1151,39 +1151,78 @@ fn skip_far_model(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 44 — Curve. Ref: `skip_curve` lines 708-741.
+/// Type 44 — Curve.
+///
+/// Phase 5.17 rewrite. The legacy port (kdop, two u64s, two vec3s, two f32s,
+/// a u32, three railings, two side blocks, a sphere list, two quad-data
+/// blocks, four trailing tokens) was a placeholder that desynced on every
+/// v907 curve item. Phase 5.16 made it byte-identical to the rewritten
+/// skip_terrain on the theory that "curve and terrain carry identical body
+/// layout in the engine"; the audit refuted that — terrain failures dropped
+/// to 0 while curve failures stayed at 36/96 (37.5 %), all crashing inside
+/// `skip_vegetation_sphere_list` or `skip_terrain_quad_data` with absurd
+/// counts (cursor already misaligned by then).
+///
+/// The actual v907 layout matches TruckLib's `CurveSerializer.Deserialize`
+/// (read 2026-05-10, no code copied — see `outputs/curve_format_notes.md`):
+/// kdop_item (uid, 10×f32 bounds, flags, view-distance), then `Node` u64,
+/// `ForwardNode` u64, two locator u64s (always on disk; the engine filters
+/// zero entries in-memory but the bytes are always present), `Length` f32,
+/// `SubcurveUseMask` u32 bitmask, then `popcount(mask)` × `Subcurve`. A
+/// `Subcurve` is 100 fixed bytes plus 4 × `heightOffsetCount` extra bytes
+/// (the only count-driven block in the curve body).
+///
+/// Curve shares only the first 69 bytes with terrain (kdop + Node +
+/// ForwardNode); after that they are unrelated layouts. No shared
+/// helper — see `outputs/curve_format_notes.md` for the diff.
 fn skip_curve(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    skip_vector3(cur)?;
-    skip_vector3(cur)?;
-    let _ = read_f32(cur)?;
-    let _ = read_f32(cur)?;
-    let _ = read_u32(cur)?;
-    for _ in 0..3 {
-        skip_token(cur)?;
-        let _ = read_i16(cur)?;
+    let _ = read_u64(cur)?; // Node
+    let _ = read_u64(cur)?; // ForwardNode
+    let _ = read_u64(cur)?; // Locator[0] — always on disk, filtered in-memory
+    let _ = read_u64(cur)?; // Locator[1]
+    let _ = read_f32(cur)?; // Length
+    let mask = read_u32(cur)?; // SubcurveUseMask
+    let subcurve_count = mask.count_ones();
+    for _ in 0..subcurve_count {
+        skip_subcurve(cur)?;
     }
-    for _ in 0..2 {
-        let _ = read_u16(cur)?;
-        skip_token(cur)?;
+    Ok(())
+}
+
+/// Subcurve body (100 fixed bytes + 4·H for the height-offset list).
+///
+/// Field order per TruckLib `Subcurve.Deserialize`:
+/// Model token, flags u32, Seed u32, Stretch f32, Scale f32, FixedStep f32,
+/// TerrainMaterial token, TerrainColor (4×u8), TerrainRotation f32,
+/// FirstPart token, LastPart token, CenterPartVariation token, Look token,
+/// HeightOffsets (u32 count + count × f32), InitialHeightOffset f32,
+/// OffsetFromBaseCurveStartX/Y f32, OffsetFromBaseCurveEndX/Y f32.
+fn skip_subcurve(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    skip_token(cur)?; // Model
+    let _ = read_u32(cur)?; // flags
+    let _ = read_u32(cur)?; // Seed
+    let _ = read_f32(cur)?; // Stretch
+    let _ = read_f32(cur)?; // Scale
+    let _ = read_f32(cur)?; // FixedStep
+    skip_token(cur)?; // TerrainMaterial
+    skip_color(cur)?; // TerrainColor (4 bytes)
+    let _ = read_f32(cur)?; // TerrainRotation
+    skip_token(cur)?; // FirstPart
+    skip_token(cur)?; // LastPart
+    skip_token(cur)?; // CenterPartVariation
+    skip_token(cur)?; // Look
+    let height_offset_count = read_u32(cur)?;
+    ensure_count(height_offset_count, "subcurve height offsets")?;
+    ensure_capacity(cur, height_offset_count, 4, "subcurve height offsets")?;
+    for _ in 0..height_offset_count {
         let _ = read_f32(cur)?;
-        skip_token(cur)?;
-        let _ = read_f32(cur)?;
-        for _ in 0..3 {
-            skip_road_vegetation(cur)?;
-        }
-        let _ = read_u16(cur)?;
-        let _ = read_u16(cur)?;
     }
-    skip_vegetation_sphere_list(cur)?;
-    skip_terrain_quad_data(cur)?;
-    skip_terrain_quad_data(cur)?;
-    skip_token(cur)?;
-    skip_token(cur)?;
-    skip_token(cur)?;
-    skip_token(cur)?;
+    let _ = read_f32(cur)?; // InitialHeightOffset
+    let _ = read_f32(cur)?; // OffsetFromBaseCurveStartX
+    let _ = read_f32(cur)?; // OffsetFromBaseCurveStartY
+    let _ = read_f32(cur)?; // OffsetFromBaseCurveEndX
+    let _ = read_f32(cur)?; // OffsetFromBaseCurveEndY
     Ok(())
 }
 
