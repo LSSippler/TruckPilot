@@ -14,6 +14,7 @@ pub mod mod_loader;
 pub mod road_full;
 pub mod sector;
 pub mod signs;
+pub mod spatial_match;
 pub mod zip_archive;
 
 pub use archive::Archive;

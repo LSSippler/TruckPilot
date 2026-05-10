@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
 
 use crate::sector::{ParsedSector, RawFerry, RawNode, RawPrefab, RawRoad};
+#[allow(unused_imports)]
+use crate::spatial_match::{SectorId, SECTOR_ID_UNKNOWN};
 use crate::signs::TrafficSign;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,10 @@ pub struct GraphBuilder {
     raw_prefabs: Vec<RawPrefab>,
     raw_signs: Vec<crate::sector::RawSign>,
     ferries: Vec<RawFerry>,
+    /// Phase 5.23a: maps node UID -> sector index assigned during
+    /// [`GraphBuilder::merge_sector`]. Used by the SECTOR-FILTER in the
+    /// spatial-match pipeline to reject same-sector candidates.
+    node_to_sector: HashMap<u64, SectorId>,
     sectors_merged: usize,
 }
 
@@ -103,7 +109,9 @@ impl GraphBuilder {
     /// Duplicate node UIDs are silently overwritten (last writer wins).
     #[instrument(skip(self, sector), fields(nodes = sector.nodes.len(), roads = sector.roads.len()))]
     pub fn merge_sector(&mut self, sector: ParsedSector) {
+        let sid = self.sectors_merged as SectorId;
         for node in sector.nodes {
+            self.node_to_sector.insert(node.uid, sid);
             self.nodes.insert(node.uid, node);
         }
         self.roads.extend(sector.roads);
