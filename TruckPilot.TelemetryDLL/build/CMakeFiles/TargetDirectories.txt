@@ -1,3 +1,0 @@
-C:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL/build/CMakeFiles/truckpilot_telemetry.dir
-C:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/Sippler/Documents/TruckPilot/TruckPilot.TelemetryDLL/build/CMakeFiles/ZERO_CHECK.dir
