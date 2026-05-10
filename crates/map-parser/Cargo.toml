@@ -77,3 +77,7 @@ path = "src/bin/bezier_audit.rs"
 [[bin]]
 name = "truckpilot-ferry-diag"
 path = "src/bin/ferry_diag.rs"
+
+[[bin]]
+name = "truckpilot-singleton-audit"
+path = "src/bin/singleton_audit.rs"
