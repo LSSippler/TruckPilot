@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
 
 use crate::sector::{ParsedSector, RawFerry, RawNode, RawPrefab, RawRoad};
-#[allow(unused_imports)]
-use crate::spatial_match::{SectorId, SECTOR_ID_UNKNOWN};
+use crate::spatial_match::{
+    apply_filters, build_spatial_index, pass1_strict_config, query_circle, select_best_match,
+    OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
+};
+use std::collections::HashSet;
 use crate::signs::TrafficSign;
 
 // ---------------------------------------------------------------------------
@@ -143,14 +146,52 @@ impl GraphBuilder {
         let mut edges: Vec<GraphEdge> = Vec::new();
         let mut edge_uid: u64 = 1;
 
+        // Phase 5.23b: orphan endpoints collected during road-edge generation.
+        // An "orphan" is a road whose ONE endpoint resolves in node_lookup
+        // and the other does not. Both-unresolved roads are dropped with
+        // a warning (cannot match a position we don't know).
+        let mut orphans: Vec<OrphanEndpoint> = Vec::new();
+        let mut both_unresolved = 0usize;
+
         for road in &self.roads {
-            let (Some(a), Some(b)) = (node_lookup.get(&road.node_a), node_lookup.get(&road.node_b))
-            else {
-                warn!(
-                    "Road {} references missing node(s) {} / {}",
-                    road.uid, road.node_a, road.node_b
-                );
-                continue;
+            let a_node = node_lookup.get(&road.node_a).copied();
+            let b_node = node_lookup.get(&road.node_b).copied();
+            let (a, b) = match (a_node, b_node) {
+                (Some(a), Some(b)) => (a, b),
+                (Some(a), None) => {
+                    orphans.push(OrphanEndpoint {
+                        road_uid: road.uid,
+                        resolved_uid: road.node_a,
+                        resolved_pos: [a.x, a.y, a.z],
+                        missing_uid: road.node_b,
+                        sector_id: self
+                            .node_to_sector
+                            .get(&road.node_a)
+                            .copied()
+                            .unwrap_or(SECTOR_ID_UNKNOWN),
+                        road_dir_hint: None,
+                    });
+                    continue;
+                }
+                (None, Some(b)) => {
+                    orphans.push(OrphanEndpoint {
+                        road_uid: road.uid,
+                        resolved_uid: road.node_b,
+                        resolved_pos: [b.x, b.y, b.z],
+                        missing_uid: road.node_a,
+                        sector_id: self
+                            .node_to_sector
+                            .get(&road.node_b)
+                            .copied()
+                            .unwrap_or(SECTOR_ID_UNKNOWN),
+                        road_dir_hint: None,
+                    });
+                    continue;
+                }
+                (None, None) => {
+                    both_unresolved += 1;
+                    continue;
+                }
             };
 
             let dist = euclidean_3d(a, b);
@@ -329,6 +370,92 @@ impl GraphBuilder {
             ferry_groups_with_edges,
             ferries_skipped_zero,
             ferries_skipped_missing_node
+        );
+
+        // Phase 5.23b — Cross-sector spatial matching (Pass 1 STRICT).
+        //
+        // For each orphan endpoint (road where exactly one endpoint resolved
+        // in node_lookup), search a 50 m XZ radius for a node in a DIFFERENT
+        // sector that lies within 5 m vertical tolerance and within 50 m 3D.
+        // Bidirectional cross_sector_spatial_high edges are generated for
+        // each match. Multi-pass + heading filter land in 5.23c/5.23d.
+        let total_road_endpoints = self.roads.len() * 2;
+        info!(
+            "Spatial match input: {} orphan endpoints ({:.1}% of {} road endpoints), {} roads with both endpoints unresolved (dropped)",
+            orphans.len(),
+            if total_road_endpoints > 0 {
+                100.0 * orphans.len() as f64 / total_road_endpoints as f64
+            } else {
+                0.0
+            },
+            total_road_endpoints,
+            both_unresolved
+        );
+
+        let spatial_index =
+            build_spatial_index(&nodes, &self.node_to_sector, DEFAULT_CELL_SIZE);
+        info!(
+            "Spatial index: {} nodes in {} cells (cell_size={}m)",
+            spatial_index.total_nodes(),
+            spatial_index.cell_count(),
+            DEFAULT_CELL_SIZE
+        );
+
+        let pass1 = pass1_strict_config();
+        let mut matched_pairs: HashSet<(u64, u64)> = HashSet::new();
+        let mut pass1_matches = 0usize;
+        let mut pass1_high = 0usize;
+        let mut pass1_medium = 0usize;
+        let mut pass1_low = 0usize;
+        let mut pass1_edges = 0usize;
+
+        for orphan in &orphans {
+            let raw_candidates = query_circle(&spatial_index, &orphan.resolved_pos, pass1.max_dist);
+            let mut filtered: Vec<(&_, f64)> = Vec::new();
+            for cand in raw_candidates {
+                if let Some(d) = apply_filters(orphan, cand, &pass1) {
+                    filtered.push((cand, d));
+                }
+            }
+            let Some((best, dist, conf)) = select_best_match(&mut filtered, pass1.level) else {
+                continue;
+            };
+            // Self-match guard (orphan's own resolved node).
+            if best.uid == orphan.resolved_uid {
+                continue;
+            }
+            let from = orphan.resolved_uid;
+            let to = best.uid;
+            let pair = if from < to { (from, to) } else { (to, from) };
+            if !matched_pairs.insert(pair) {
+                continue;
+            }
+            pass1_matches += 1;
+            match conf {
+                crate::spatial_match::ConfidenceLevel::High => pass1_high += 1,
+                crate::spatial_match::ConfidenceLevel::Medium => pass1_medium += 1,
+                crate::spatial_match::ConfidenceLevel::Low => pass1_low += 1,
+            }
+            for (f, t) in [(from, to), (to, from)] {
+                edges.push(GraphEdge {
+                    uid: edge_uid,
+                    from: f,
+                    to: t,
+                    distance_m: dist,
+                    speed_limit_kmh: None,
+                    lanes: 1,
+                    direction: conf.to_direction_string().into(),
+                    dlc_guard: 0,
+                    is_hidden: false,
+                    gps_avoid: false,
+                });
+                edge_uid += 1;
+                pass1_edges += 1;
+            }
+        }
+        info!(
+            "Pass 1 (STRICT 50m/5m): {} unique matches ({} edges) from {} orphans — confidence: high={} medium={} low={}",
+            pass1_matches, pass1_edges, orphans.len(), pass1_high, pass1_medium, pass1_low
         );
 
         // Process prefabs

@@ -144,6 +144,93 @@ pub fn build_spatial_index(
     SpatialIndex { cells, cell_size }
 }
 
+/// Pass-1 strict configuration (5.23b). 50 m XZ radius, 5 m Y tolerance,
+/// no heading filter (heading lands in 5.23d). Generates `High` confidence.
+pub fn pass1_strict_config() -> PassConfig {
+    PassConfig {
+        max_dist: 50.0,
+        z_tol: 5.0,
+        heading_threshold: 0.5,
+        require_heading: false,
+        level: ConfidenceLevel::High,
+    }
+}
+
+/// Apply the Sector → Z → Distance filter chain to one candidate. Returns
+/// `Some((candidate, distance_3d))` on accept, `None` on reject. Heading
+/// filter lives in 5.23d and is intentionally skipped here even when
+/// `pass.require_heading` is set: the caller of this filter at 5.23b-time
+/// constructs a config with `require_heading = false`.
+///
+/// Z-tolerance is doubled when the 2D distance exceeds
+/// [`Z_RELAX_2D_THRESHOLD`] — long road segments through hilly terrain may
+/// straddle significant elevation deltas (per spec Phase D Filter 2).
+pub fn apply_filters(
+    orphan: &OrphanEndpoint,
+    candidate: &NodeRef,
+    pass: &PassConfig,
+) -> Option<f64> {
+    // Filter 1: SECTOR — reject same-sector candidates (already covered by
+    // road references). SECTOR_ID_UNKNOWN never matches a real sector_id.
+    if candidate.sector_id != SECTOR_ID_UNKNOWN
+        && orphan.sector_id != SECTOR_ID_UNKNOWN
+        && candidate.sector_id == orphan.sector_id
+    {
+        return None;
+    }
+
+    let dx = candidate.x - orphan.resolved_pos[0];
+    let dy = candidate.y - orphan.resolved_pos[1];
+    let dz = candidate.z - orphan.resolved_pos[2];
+    let d2_xz = dx * dx + dz * dz;
+    let dist_2d = d2_xz.sqrt();
+
+    // Filter 2: Z — relax tolerance for long road segments.
+    let z_tol = if dist_2d > Z_RELAX_2D_THRESHOLD {
+        pass.z_tol * 2.0
+    } else {
+        pass.z_tol
+    };
+    if dy.abs() >= z_tol {
+        return None;
+    }
+
+    // Filter 3: 3D-DISTANCE — reject candidates beyond max_dist.
+    let d2 = d2_xz + dy * dy;
+    if d2 > pass.max_dist * pass.max_dist {
+        return None;
+    }
+
+    Some(d2.sqrt())
+}
+
+/// Pick the smallest-distance candidate. If a second candidate sits within
+/// [`AMBIGUITY_MARGIN`], downgrade the confidence one level. Input must be
+/// pre-sorted ascending by distance OR contain the full unsorted set —
+/// this function sorts internally to be robust at minor cost.
+pub fn select_best_match<'a>(
+    candidates: &mut [(&'a NodeRef, f64)],
+    pass_level: ConfidenceLevel,
+) -> Option<(&'a NodeRef, f64, ConfidenceLevel)> {
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let (best, dist) = candidates[0];
+
+    let confidence = if candidates.len() == 1 {
+        pass_level
+    } else {
+        let second_dist = candidates[1].1;
+        if second_dist - dist < AMBIGUITY_MARGIN {
+            pass_level.downgrade()
+        } else {
+            pass_level
+        }
+    };
+    Some((best, dist, confidence))
+}
+
 /// 2D circle query in the XZ plane. Returns every [`NodeRef`] whose
 /// `(x, z)` lies inside `radius` of `center`. Caller is responsible for the
 /// Y / sector / heading / distance-3D filters (Phase D in the spec).
@@ -250,6 +337,114 @@ mod tests {
         // 1 (dist 0), 2 (dist 30), 5 (dist 0 XZ) inside r=50
         // 3 (dist 60), 4 (dist ~141) outside
         assert_eq!(uids, vec![1, 2, 5]);
+    }
+
+    fn orphan(sector: SectorId, pos: [f64; 3]) -> OrphanEndpoint {
+        OrphanEndpoint {
+            road_uid: 1,
+            resolved_uid: 100,
+            resolved_pos: pos,
+            missing_uid: 101,
+            sector_id: sector,
+            road_dir_hint: None,
+        }
+    }
+
+    fn nref(uid: u64, x: f64, y: f64, z: f64, sector: SectorId) -> NodeRef {
+        NodeRef { uid, x, y, z, sector_id: sector }
+    }
+
+    #[test]
+    fn apply_filters_rejects_same_sector() {
+        let cfg = pass1_strict_config();
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        // Candidate at distance 0 but same sector -> reject.
+        let c = nref(50, 0.0, 0.0, 0.0, 7);
+        assert!(apply_filters(&o, &c, &cfg).is_none());
+        // Different sector at the same point -> accept (dist 0).
+        let c2 = nref(51, 0.0, 0.0, 0.0, 8);
+        assert_eq!(apply_filters(&o, &c2, &cfg), Some(0.0));
+    }
+
+    #[test]
+    fn apply_filters_unknown_sector_never_short_circuits() {
+        let cfg = pass1_strict_config();
+        // Orphan with UNKNOWN sector + candidate with real sector -> NOT
+        // treated as "same sector". Same the other way around.
+        let o = orphan(SECTOR_ID_UNKNOWN, [0.0, 0.0, 0.0]);
+        let c = nref(50, 0.0, 0.0, 0.0, 7);
+        assert_eq!(apply_filters(&o, &c, &cfg), Some(0.0));
+
+        let o2 = orphan(7, [0.0, 0.0, 0.0]);
+        let c2 = nref(50, 0.0, 0.0, 0.0, SECTOR_ID_UNKNOWN);
+        assert_eq!(apply_filters(&o2, &c2, &cfg), Some(0.0));
+    }
+
+    #[test]
+    fn apply_filters_rejects_z_outside_tolerance() {
+        let cfg = pass1_strict_config(); // z_tol = 5
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        // 6 m Y diff -> reject.
+        let c = nref(50, 0.0, 6.0, 0.0, 8);
+        assert!(apply_filters(&o, &c, &cfg).is_none());
+        // 4 m Y diff -> accept.
+        let c2 = nref(51, 0.0, 4.0, 0.0, 8);
+        assert!(apply_filters(&o, &c2, &cfg).is_some());
+    }
+
+    #[test]
+    fn apply_filters_relaxes_z_tolerance_for_long_2d_distance() {
+        // For 2D distance > 100m the Z tolerance doubles (5 -> 10).
+        // 2D distance must still fit max_dist = 50m, so use a moderate cfg.
+        let cfg = PassConfig {
+            max_dist: 200.0,
+            z_tol: 5.0,
+            heading_threshold: 0.0,
+            require_heading: false,
+            level: ConfidenceLevel::High,
+        };
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        // 2D dist 150m, Y diff 9m -> accept under relaxed z (10) but
+        // would reject under the strict z (5).
+        let c = nref(50, 150.0, 9.0, 0.0, 8);
+        let got = apply_filters(&o, &c, &cfg);
+        assert!(got.is_some(), "relaxed z should accept 9m dy at 150m 2D");
+    }
+
+    #[test]
+    fn apply_filters_rejects_distance_beyond_max() {
+        let cfg = pass1_strict_config(); // max_dist = 50
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        let c = nref(50, 60.0, 0.0, 0.0, 8); // 2D dist 60 > 50
+        assert!(apply_filters(&o, &c, &cfg).is_none());
+    }
+
+    #[test]
+    fn select_best_match_picks_shortest_and_keeps_confidence_when_unambiguous() {
+        let n0 = nref(1, 0.0, 0.0, 0.0, 0);
+        let n1 = nref(2, 0.0, 0.0, 0.0, 0);
+        let mut cands = vec![(&n0, 30.0), (&n1, 5.0)];
+        let res = select_best_match(&mut cands, ConfidenceLevel::High).unwrap();
+        assert_eq!(res.0.uid, 2);
+        assert_eq!(res.1, 5.0);
+        assert_eq!(res.2, ConfidenceLevel::High);
+    }
+
+    #[test]
+    fn select_best_match_downgrades_on_ambiguity() {
+        // Two candidates within AMBIGUITY_MARGIN (10m) -> downgrade.
+        let n0 = nref(1, 0.0, 0.0, 0.0, 0);
+        let n1 = nref(2, 0.0, 0.0, 0.0, 0);
+        let mut cands = vec![(&n0, 12.0), (&n1, 8.0)];
+        let res = select_best_match(&mut cands, ConfidenceLevel::High).unwrap();
+        assert_eq!(res.0.uid, 2);
+        assert_eq!(res.2, ConfidenceLevel::Medium);
+    }
+
+    #[test]
+    fn select_best_match_empty_returns_none() {
+        let mut cands: Vec<(&NodeRef, f64)> = Vec::new();
+        assert!(select_best_match(&mut cands, ConfidenceLevel::High).is_none());
     }
 
     #[test]
