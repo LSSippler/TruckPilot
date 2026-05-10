@@ -27,6 +27,10 @@ path = "src/bin/vis_uid_audit.rs"
 name = "truckpilot-anchor-junction-audit"
 path = "src/bin/anchor_junction_audit.rs"
 
+[[bin]]
+name = "truckpilot-h4c-ppd-check"
+path = "src/bin/h4c_ppd_check.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
