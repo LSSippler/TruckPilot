@@ -11,12 +11,18 @@ description = "TruckPilot diagnostic tool — checks all subsystems before a liv
 name = "truckpilot-diag"
 path = "src/main.rs"
 
+[[bin]]
+name = "truckpilot-item-census"
+path = "src/bin/item_census.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
 tracing          = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde            = { workspace = true }
 serde_json       = { workspace = true }
+dirs             = "5.0"
 
 # HTTP check
 ureq = "2"
