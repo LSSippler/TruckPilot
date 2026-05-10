@@ -311,6 +311,7 @@ mod tests {
             roads,
             prefabs,
             signs: vec![],
+            recovered_nodes_count: 0,
         }
     }
 

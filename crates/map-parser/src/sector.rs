@@ -95,6 +95,11 @@ pub struct ParsedSector {
     pub roads: Vec<RawRoad>,
     pub prefabs: Vec<RawPrefab>,
     pub signs: Vec<RawSign>,
+    /// Diagnostic counter — how many of `nodes` were rebuilt by
+    /// `recover_nodes_from_tail` after a partial-item failure (Phase 5.8
+    /// recovery path). `0` when the standard parse-trailing-nodes path ran.
+    /// Used by `truckpilot-uid-resolution` to assess UID-space mismatches.
+    pub recovered_nodes_count: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +340,7 @@ fn recover_nodes_from_tail(data: &[u8], sector: &mut ParsedSector) {
                 }
             }
             if ok && (n == 0 || nonzero * 2 >= n) {
+                sector.recovered_nodes_count = tmp.len();
                 sector.nodes.extend(tmp);
                 return;
             }

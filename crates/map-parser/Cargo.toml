@@ -37,3 +37,7 @@ path = "src/bin/graph_stats.rs"
 [[bin]]
 name = "truckpilot-route-test"
 path = "src/bin/route_test.rs"
+
+[[bin]]
+name = "truckpilot-uid-resolution"
+path = "src/bin/uid_resolution.rs"
