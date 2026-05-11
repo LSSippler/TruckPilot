@@ -176,11 +176,37 @@ impl PluginManager {
             Ok(loaded) => {
                 info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 self.plugins.push(loaded);
+                self.publish_loaded_names();
             }
             Err(e) => {
                 error!("Failed to load plugin {:?}: {}", path, e);
             }
         }
+    }
+
+    /// Publish the comma-joined list of currently enabled plugin names to
+    /// `plugins.loaded`. Read by the state machine's
+    /// `check_critical_plugins` precondition check.
+    fn publish_loaded_names(&self) {
+        let joined: String = self
+            .plugins
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        self.blackboard.set("plugins.loaded", joined);
+    }
+
+    /// Whether all critical plugins for autopilot are loaded and enabled.
+    /// Convenience wrapper for the state machine (used after Phase 6.2g
+    /// when the watchdog wires it up directly).
+    #[allow(dead_code)]
+    pub fn are_critical_plugins_loaded(&self) -> bool {
+        let critical = ["lane-keeper", "speed-controller", "vjoy-output"];
+        critical
+            .iter()
+            .all(|name| self.plugins.iter().any(|p| p.name == *name && p.enabled))
     }
 
     /// Process pending reload events. Call between tick() invocations only.
@@ -337,7 +363,7 @@ impl PluginManager {
     }
 
     pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
-        if let Some(p) = self.plugins.iter_mut().find(|p| p.name == name) {
+        let found = if let Some(p) = self.plugins.iter_mut().find(|p| p.name == name) {
             p.enabled = enabled;
             info!(
                 "Plugin {} {}",
@@ -347,7 +373,11 @@ impl PluginManager {
             true
         } else {
             false
+        };
+        if found {
+            self.publish_loaded_names();
         }
+        found
     }
 
     #[allow(dead_code)]

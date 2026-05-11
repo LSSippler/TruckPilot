@@ -15,6 +15,7 @@ use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 
 mod ipc;
 mod plugin_manager;
+mod state_machine;
 
 use plugin_manager::PluginManager;
 
@@ -533,6 +534,10 @@ async fn run_daemon() {
     let mut output = ControlOutput::default();
     // Wallclock-based dt: PID terms drift if the loop slips below 50 Hz.
     let mut last_tick = Instant::now();
+    // Autopilot state machine (Phase 6.2a). Publishes `autopilot.state`
+    // to the blackboard each tick so plugins can branch via
+    // `ctx.is_active()` etc.
+    let mut state_machine = state_machine::AutopilotStateMachine::new();
 
     info!("Running — press Ctrl+C to stop");
 
@@ -568,6 +573,13 @@ async fn run_daemon() {
 
         let dt_s = last_tick.elapsed().as_secs_f64().max(0.001);
         last_tick = Instant::now();
+
+        // State machine drives `autopilot.state` BEFORE plugins tick so
+        // they see the most recent value via ctx helpers. Engage/disengage
+        // requests arrive through the blackboard (set by IPC handlers
+        // and any hotkey path).
+        state_machine.consume_requests(&blackboard);
+        state_machine.evaluate(telemetry.as_ref(), &blackboard);
 
         let mut mgr = manager.lock().await;
         mgr.process_reloads();
