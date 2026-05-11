@@ -28,6 +28,11 @@ truckpilot_bundle.txt
 *.tmp
 ~syncthing~*
 
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
 # Map-parser test fixtures — extracted from a local ETS2 install,
 # regenerated via `cargo test --test extract_fixtures -- --ignored`.
 # Not committed because the bytes are derived from copyrighted ETS2 data.
