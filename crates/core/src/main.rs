@@ -523,6 +523,12 @@ async fn run_daemon() {
     heartbeat.store(0, Ordering::Relaxed);
     tokio::spawn(watchdog_loop(heartbeat.clone(), daemon_start));
 
+    // Status frames are throttled to 10 Hz (1 per 5 daemon ticks) plus
+    // an immediate send whenever the autopilot state transitions, so
+    // the UI never lags behind a fault.
+    let mut last_status_state: Option<String> = None;
+    let mut status_tick_counter: u32 = 0;
+
     let mut last_log = Instant::now();
     // 50 ms IPC throttle: matches the 20 Hz cadence the UI subscribes
     // at; never sends more than one telemetry frame per UI render
@@ -579,7 +585,30 @@ async fn run_daemon() {
         // requests arrive through the blackboard (set by IPC handlers
         // and any hotkey path).
         state_machine.consume_requests(&blackboard);
-        state_machine.evaluate(telemetry.as_ref(), &blackboard);
+        let current_state = state_machine.evaluate(telemetry.as_ref(), &blackboard);
+
+        // Publish AutopilotStatus to the UI: every 5th tick (10 Hz) and
+        // immediately on state change so transitions never wait up to
+        // ~100 ms to surface.
+        status_tick_counter = status_tick_counter.wrapping_add(1);
+        let state_str = current_state.as_str().to_string();
+        let state_changed = last_status_state.as_deref() != Some(state_str.as_str());
+        if state_changed || status_tick_counter >= 5 {
+            status_tick_counter = 0;
+            last_status_state = Some(state_str.clone());
+            let preconditions =
+                state_machine.preconditions_snapshot(telemetry.as_ref(), &blackboard);
+            let fault_reason = state_machine
+                .fault_reason()
+                .map(|r| r.as_str());
+            let _ = ipc_tx.send(CoreMessage::AutopilotStatus {
+                v: CoreMessage::VERSION,
+                state: state_str,
+                fault_reason,
+                preconditions,
+                tick_count: state_machine.tick_count(),
+            });
+        }
 
         let mut mgr = manager.lock().await;
         mgr.process_reloads();

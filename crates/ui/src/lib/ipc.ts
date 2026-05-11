@@ -10,6 +10,7 @@ import { usePluginsStore } from "@/stores/plugins";
 import { useLogsStore } from "@/stores/logs";
 import { usePidStore } from "@/stores/pid";
 import { useModsStore } from "@/stores/mods";
+import { useAutopilotStore } from "@/stores/autopilot";
 
 type AnyHandler = (msg: CoreMessage) => void;
 
@@ -56,6 +57,9 @@ export async function initIpcSubscriptions(): Promise<() => void> {
 
   const unlistenStatus = await listenConnectionStatus((status) => {
     useConnectionStore.getState().setStatus(status);
+    if (status.status === "disconnected") {
+      useAutopilotStore.getState().clear();
+    }
   });
 
   return () => {
@@ -117,6 +121,14 @@ function routeCoreMessage(msg: CoreMessage) {
         setpoint: msg.setpoint,
         actual: msg.actual,
         tMs: msg.t_ms,
+      });
+      break;
+    case "autopilot_status":
+      useAutopilotStore.getState().setStatus({
+        state: msg.state,
+        faultReason: msg.fault_reason,
+        preconditions: msg.preconditions,
+        tickCount: msg.tick_count,
       });
       break;
     case "error":

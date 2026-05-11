@@ -76,6 +76,13 @@ pub enum CoreMessage {
         command: Option<String>,
         message: String,
     },
+    AutopilotStatus {
+        v: u32,
+        state: String,
+        fault_reason: Option<String>,
+        preconditions: PreconditionSnapshot,
+        tick_count: u64,
+    },
 }
 
 /// Messages sent from UI to Core (commands)
@@ -122,6 +129,9 @@ pub enum UiCommand {
         levels: Vec<String>,
         plugin: Option<String>,
     },
+    AutopilotEngage,
+    AutopilotDisengage,
+    AutopilotReset,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +166,15 @@ pub struct ModInfo {
     pub path: String,
     pub enabled: bool,
     pub hash: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PreconditionSnapshot {
+    pub telemetry_ok: bool,
+    pub engine_running: bool,
+    pub cruise_active: bool,
+    pub critical_plugins_loaded: bool,
+    pub router_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +226,89 @@ mod tests {
                 assert_eq!(version, PROTOCOL_VERSION);
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn autopilot_status_round_trip() {
+        let msg = CoreMessage::AutopilotStatus {
+            v: CoreMessage::VERSION,
+            state: "Active".into(),
+            fault_reason: None,
+            preconditions: PreconditionSnapshot {
+                telemetry_ok: true,
+                engine_running: true,
+                cruise_active: true,
+                critical_plugins_loaded: true,
+                router_active: false,
+            },
+            tick_count: 12_345,
+        };
+        let s = serde_json::to_string(&msg).unwrap();
+        assert!(s.contains(r#""type":"autopilot_status""#));
+        assert!(s.contains(r#""state":"Active""#));
+        assert!(s.contains(r#""router_active":false"#));
+        let back: CoreMessage = serde_json::from_str(&s).unwrap();
+        match back {
+            CoreMessage::AutopilotStatus {
+                state,
+                fault_reason,
+                preconditions,
+                tick_count,
+                ..
+            } => {
+                assert_eq!(state, "Active");
+                assert!(fault_reason.is_none());
+                assert!(preconditions.telemetry_ok);
+                assert!(!preconditions.router_active);
+                assert_eq!(tick_count, 12_345);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn autopilot_status_with_fault_reason() {
+        let msg = CoreMessage::AutopilotStatus {
+            v: CoreMessage::VERSION,
+            state: "Fault".into(),
+            fault_reason: Some("WatchdogStall".into()),
+            preconditions: PreconditionSnapshot {
+                telemetry_ok: false,
+                engine_running: false,
+                cruise_active: false,
+                critical_plugins_loaded: true,
+                router_active: false,
+            },
+            tick_count: 99,
+        };
+        let s = serde_json::to_string(&msg).unwrap();
+        let back: CoreMessage = serde_json::from_str(&s).unwrap();
+        if let CoreMessage::AutopilotStatus { fault_reason, .. } = back {
+            assert_eq!(fault_reason.as_deref(), Some("WatchdogStall"));
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn ui_command_autopilot_engage_round_trip() {
+        let cmd = UiCommand::AutopilotEngage;
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(s, r#"{"type":"autopilot_engage"}"#);
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, UiCommand::AutopilotEngage));
+    }
+
+    #[test]
+    fn ui_command_autopilot_disengage_reset_round_trip() {
+        for (cmd, expected) in [
+            (UiCommand::AutopilotDisengage, "autopilot_disengage"),
+            (UiCommand::AutopilotReset, "autopilot_reset"),
+        ] {
+            let s = serde_json::to_string(&cmd).unwrap();
+            assert!(s.contains(expected), "wire form for {cmd:?}: {s}");
+            let _back: UiCommand = serde_json::from_str(&s).unwrap();
         }
     }
 

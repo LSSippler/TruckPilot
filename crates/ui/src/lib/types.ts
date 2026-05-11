@@ -26,6 +26,16 @@ export interface ModInfo {
   hash: string;
 }
 
+export type AutopilotState = "Off" | "Engaging" | "Active" | "Paused" | "Fault";
+
+export interface PreconditionSnapshot {
+  telemetry_ok: boolean;
+  engine_running: boolean;
+  cruise_active: boolean;
+  critical_plugins_loaded: boolean;
+  router_active: boolean;
+}
+
 export interface PidProfile {
   name: string;
   kp: number;
@@ -65,7 +75,15 @@ export type CoreMessage =
       actual: number;
       t_ms: number;
     }
-  | { type: "error"; v: number; code: string; command: string | null; message: string };
+  | { type: "error"; v: number; code: string; command: string | null; message: string }
+  | {
+      type: "autopilot_status";
+      v: number;
+      state: AutopilotState;
+      fault_reason: string | null;
+      preconditions: PreconditionSnapshot;
+      tick_count: number;
+    };
 
 export type CoreMessageType = CoreMessage["type"];
 export type CoreMessageOf<T extends CoreMessageType> = Extract<CoreMessage, { type: T }>;
@@ -91,7 +109,10 @@ export type UiCommand =
     }
   | { type: "pid_profile_reset"; profile: string }
   | { type: "pid_stream_subscribe"; profile: string; enabled: boolean }
-  | { type: "set_log_subscription"; levels: LogLevel[]; plugin: string | null };
+  | { type: "set_log_subscription"; levels: LogLevel[]; plugin: string | null }
+  | { type: "autopilot_engage" }
+  | { type: "autopilot_disengage" }
+  | { type: "autopilot_reset" };
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 

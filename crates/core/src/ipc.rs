@@ -273,6 +273,33 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             );
             Vec::new()
         }
+        UiCommand::AutopilotEngage => {
+            manager
+                .lock()
+                .await
+                .blackboard
+                .set("autopilot.engage_requested", "true");
+            info!("autopilot engage requested via IPC");
+            Vec::new()
+        }
+        UiCommand::AutopilotDisengage => {
+            manager
+                .lock()
+                .await
+                .blackboard
+                .set("autopilot.disengage_requested", "true");
+            info!("autopilot disengage requested via IPC");
+            Vec::new()
+        }
+        UiCommand::AutopilotReset => {
+            manager
+                .lock()
+                .await
+                .blackboard
+                .set("autopilot.reset_requested", "true");
+            info!("autopilot reset requested via IPC");
+            Vec::new()
+        }
     }
 }
 
@@ -306,5 +333,45 @@ impl PluginManager {
                 output_limit: *lim,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod ipc_command_tests {
+    use super::*;
+
+    fn manager_for_test() -> SharedManager {
+        let dir = std::env::temp_dir().join("truckpilot-ipc-test-plugins");
+        let _ = std::fs::create_dir_all(&dir);
+        Arc::new(Mutex::new(PluginManager::new(dir)))
+    }
+
+    #[tokio::test]
+    async fn engage_command_sets_blackboard() {
+        let mgr = manager_for_test();
+        let response = build_response(UiCommand::AutopilotEngage, &mgr).await;
+        assert!(response.is_empty(), "engage produces no immediate reply");
+        let value = mgr.lock().await.blackboard.get("autopilot.engage_requested");
+        assert_eq!(value.as_deref(), Some("true"));
+    }
+
+    #[tokio::test]
+    async fn disengage_command_sets_blackboard() {
+        let mgr = manager_for_test();
+        let _ = build_response(UiCommand::AutopilotDisengage, &mgr).await;
+        let value = mgr
+            .lock()
+            .await
+            .blackboard
+            .get("autopilot.disengage_requested");
+        assert_eq!(value.as_deref(), Some("true"));
+    }
+
+    #[tokio::test]
+    async fn reset_command_sets_blackboard() {
+        let mgr = manager_for_test();
+        let _ = build_response(UiCommand::AutopilotReset, &mgr).await;
+        let value = mgr.lock().await.blackboard.get("autopilot.reset_requested");
+        assert_eq!(value.as_deref(), Some("true"));
     }
 }

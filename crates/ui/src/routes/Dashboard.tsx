@@ -8,6 +8,7 @@ import { SpeedGauge } from "@/components/telemetry/SpeedGauge";
 import { HeadingCompass } from "@/components/telemetry/HeadingCompass";
 import { MiniMap } from "@/components/telemetry/MiniMap";
 import { Badge } from "@/components/ui/badge";
+import { AutopilotStatusCard } from "@/components/AutopilotStatusCard";
 
 export function Dashboard() {
   const latest = useTelemetryStore((s) => s.latest);
@@ -34,15 +35,27 @@ export function Dashboard() {
 
   if (status !== "connected") {
     return (
-      <EmptyState title="Disconnected" body="Waiting for the TruckPilot core daemon on ws://localhost:8765." />
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <AutopilotStatusCard />
+        <EmptyState
+          title="Disconnected"
+          body="Waiting for the TruckPilot core daemon on ws://localhost:8765."
+        />
+      </div>
     );
   }
   if (!latest) {
-    return <EmptyState title="No telemetry yet" body="Start ETS2 or wait for the first frame…" />;
+    return (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <AutopilotStatusCard />
+        <EmptyState title="No telemetry yet" body="Start ETS2 or wait for the first frame…" />
+      </div>
+    );
   }
 
   return (
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <AutopilotStatusCard />
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium text-muted-foreground">Speed</CardTitle>

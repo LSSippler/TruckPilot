@@ -18,6 +18,7 @@
 // suppress dead-code lints rather than narrow visibility.
 #![allow(dead_code)]
 
+use truckpilot_ipc_protocol::PreconditionSnapshot;
 use truckpilot_plugin_api::{SharedBlackboard, Telemetry};
 
 // ---- Constants (in 50 Hz daemon ticks) -------------------------------------
@@ -120,6 +121,13 @@ pub struct AutopilotStateMachine {
     stopped_ticks: u64,
     telemetry_lost_ticks: u64,
     precondition_stable_ticks: u64,
+    /// Monotonic tick counter bumped once per `evaluate()` call. Used by
+    /// the UI status frame so the operator can see "Active for N seconds"
+    /// without the daemon having to thread its own counter through.
+    ticks: u64,
+    /// Ticks-since-entering-current-state. Reset on every state transition
+    /// initiated by `evaluate` or `handle_event`.
+    state_entry_ticks: u64,
 }
 
 impl Default for AutopilotStateMachine {
@@ -138,7 +146,21 @@ impl AutopilotStateMachine {
             stopped_ticks: 0,
             telemetry_lost_ticks: 0,
             precondition_stable_ticks: 0,
+            ticks: 0,
+            state_entry_ticks: 0,
         }
+    }
+
+    /// Total ticks since the state machine was constructed. Bumped once
+    /// per `evaluate` call.
+    pub fn tick_count(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Ticks the state machine has spent in its current state. Used by
+    /// the UI to render "Active for X seconds".
+    pub fn state_age_ticks(&self) -> u64 {
+        self.state_entry_ticks
     }
 
     pub fn state(&self) -> AutopilotState {
@@ -155,6 +177,8 @@ impl AutopilotStateMachine {
         telemetry: Option<&Telemetry>,
         bb: &SharedBlackboard,
     ) -> AutopilotState {
+        self.ticks = self.ticks.wrapping_add(1);
+        let state_before = self.state;
         if telemetry.is_some() {
             self.telemetry_lost_ticks = 0;
         } else {
@@ -242,6 +266,11 @@ impl AutopilotStateMachine {
             AutopilotState::Fault => {}
         }
 
+        if self.state == state_before {
+            self.state_entry_ticks = self.state_entry_ticks.wrapping_add(1);
+        } else {
+            self.state_entry_ticks = 0;
+        }
         self.publish(bb);
         self.state
     }
@@ -257,6 +286,7 @@ impl AutopilotStateMachine {
                 self.state = AutopilotState::Engaging;
                 self.engaging_ticks = 0;
                 self.precondition_stable_ticks = 0;
+                self.state_entry_ticks = 0;
             }
             (AutopilotState::Engaging, AutopilotEvent::UserDisengage)
             | (AutopilotState::Active, AutopilotEvent::UserDisengage)
@@ -267,11 +297,13 @@ impl AutopilotStateMachine {
                 self.paused_ticks = 0;
                 self.stopped_ticks = 0;
                 self.precondition_stable_ticks = 0;
+                self.state_entry_ticks = 0;
             }
             (AutopilotState::Fault, AutopilotEvent::UserReset) => {
                 tracing::info!("[state] Fault -> Off (user reset)");
                 self.state = AutopilotState::Off;
                 self.fault_reason = None;
+                self.state_entry_ticks = 0;
             }
             (_, AutopilotEvent::FaultDetected(reason)) => {
                 tracing::warn!("[state] -> Fault ({:?})", reason);
@@ -285,6 +317,25 @@ impl AutopilotStateMachine {
         }
         self.publish(bb);
         Ok(self.state)
+    }
+
+    /// Build the wire-form precondition snapshot for the UI. Re-uses the
+    /// same `check_preconditions` predicate the state machine evaluates
+    /// against — drift between what gets shown and what gates Engaging→Active
+    /// would be confusing.
+    pub fn preconditions_snapshot(
+        &self,
+        telemetry: Option<&Telemetry>,
+        bb: &SharedBlackboard,
+    ) -> PreconditionSnapshot {
+        let p = check_preconditions(telemetry, bb);
+        PreconditionSnapshot {
+            telemetry_ok: p.telemetry_ok,
+            engine_running: p.engine_running,
+            cruise_active: p.cruise_active,
+            critical_plugins_loaded: p.critical_plugins_loaded,
+            router_active: p.router_active,
+        }
     }
 
     pub fn report_fault(&mut self, reason: FailureReason, bb: &SharedBlackboard) {
@@ -316,6 +367,7 @@ impl AutopilotStateMachine {
         self.paused_ticks = 0;
         self.stopped_ticks = 0;
         self.precondition_stable_ticks = 0;
+        self.state_entry_ticks = 0;
     }
 
     fn publish(&self, bb: &SharedBlackboard) {
@@ -564,6 +616,52 @@ mod tests {
         sm.evaluate(None, &bb);
         assert_eq!(bb.get("autopilot.state").as_deref(), Some("Off"));
         assert_eq!(bb.get("autopilot.fault_reason").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn preconditions_snapshot_matches_internal() {
+        let sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let t = mock_running();
+        let snap = sm.preconditions_snapshot(Some(&t), &bb);
+        assert!(snap.telemetry_ok);
+        assert!(snap.engine_running);
+        assert!(snap.cruise_active);
+        assert!(snap.critical_plugins_loaded);
+        assert!(snap.router_active);
+    }
+
+    #[test]
+    fn preconditions_snapshot_without_telemetry() {
+        let sm = AutopilotStateMachine::new();
+        let bb = SharedBlackboard::new();
+        let snap = sm.preconditions_snapshot(None, &bb);
+        assert!(!snap.telemetry_ok);
+        assert!(!snap.engine_running);
+        assert!(!snap.cruise_active);
+        assert!(!snap.critical_plugins_loaded);
+        assert!(!snap.router_active);
+    }
+
+    #[test]
+    fn state_entry_ticks_resets_on_transition() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let t = mock_running();
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        assert_eq!(sm.state_age_ticks(), 0);
+        // ENGAGE_TIMEOUT/PRECONDITION_STABLE all internal; just step a
+        // few ticks while preconditions hold, then verify the age tracker
+        // counted ticks since reaching Active.
+        for _ in 0..51 {
+            sm.evaluate(Some(&t), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+        let active_age_just_after = sm.state_age_ticks();
+        for _ in 0..5 {
+            sm.evaluate(Some(&t), &bb);
+        }
+        assert_eq!(sm.state_age_ticks(), active_age_just_after + 5);
     }
 
     #[test]
