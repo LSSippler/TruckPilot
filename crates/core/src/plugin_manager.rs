@@ -15,8 +15,18 @@ use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{error, info, warn};
 use truckpilot_plugin_api::{
-    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, Telemetry,
+    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, Telemetry, TickPhase,
 };
+
+/// Phase-6.2b scheduler gate. Returns `true` when a plugin in `phase`
+/// should be ticked on the cycle identified by `tick_count`.
+fn should_tick(phase: TickPhase, tick_count: u64) -> bool {
+    match phase {
+        TickPhase::PhaseA => tick_count.is_multiple_of(50),
+        TickPhase::PhaseB => tick_count.is_multiple_of(5),
+        TickPhase::PhaseC | TickPhase::PostPhase => true,
+    }
+}
 
 // Trait-object pointers (`*mut dyn Plugin`) are fat (data + vtable),
 // so they aren't strict-C FFI-safe. The plugin DLL and host are both
@@ -90,6 +100,10 @@ pub struct PluginManager {
     reload_queue: Arc<Mutex<Vec<PathBuf>>>,
     /// Shared blackboard — same instance across all plugins.
     pub blackboard: SharedBlackboard,
+    /// Monotonic tick counter. Incremented once per [`Self::tick_all`].
+    /// Mirrored into [`PluginContext::tick_count`] so plugins can branch
+    /// on cadence without keeping their own counters.
+    tick_count: u64,
     _watcher: Option<RecommendedWatcher>,
 }
 
@@ -134,6 +148,7 @@ impl PluginManager {
             plugin_dir,
             reload_queue,
             blackboard: SharedBlackboard::new(),
+            tick_count: 0,
             _watcher: watcher,
         }
     }
@@ -225,6 +240,9 @@ impl PluginManager {
         output: &mut ControlOutput,
         dt_s: f64,
     ) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+        let tick_count = self.tick_count;
+
         // Legacy bucket: plugins still on the old `tick(&mut output)`
         // API write here. Reset every tick so stale values don't stick.
         let mut legacy = ControlOutput::default();
@@ -242,7 +260,14 @@ impl PluginManager {
             if Some(i) == vjoy_idx {
                 continue;
             }
-            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
+            let phase = p.plugin.default_phase();
+            if !should_tick(phase, tick_count) {
+                continue;
+            }
+            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                .with_dt(dt_s)
+                .with_phase(phase)
+                .with_tick_count(tick_count);
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -276,7 +301,11 @@ impl PluginManager {
         if let Some(idx) = vjoy_idx {
             let p = &mut self.plugins[idx];
             if p.enabled {
-                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
+                let phase = p.plugin.default_phase();
+                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                    .with_dt(dt_s)
+                    .with_phase(phase)
+                    .with_tick_count(tick_count);
                 let tick_result = catch_unwind(AssertUnwindSafe(|| {
                     p.plugin.tick(telemetry, output, &ctx);
                 }));
@@ -464,6 +493,44 @@ unsafe fn load_plugin_from_path(
         destroy_fn,
         _lib: lib,
     })
+}
+
+#[cfg(test)]
+mod should_tick_tests {
+    use super::should_tick;
+    use truckpilot_plugin_api::TickPhase;
+
+    #[test]
+    fn phase_c_ticks_every_cycle() {
+        for n in [1u64, 2, 7, 49, 50, 51, 99, 100] {
+            assert!(should_tick(TickPhase::PhaseC, n), "phase C tick_count={n}");
+        }
+    }
+
+    #[test]
+    fn phase_a_ticks_every_50th() {
+        assert!(should_tick(TickPhase::PhaseA, 50));
+        assert!(should_tick(TickPhase::PhaseA, 100));
+        assert!(should_tick(TickPhase::PhaseA, 250));
+        assert!(!should_tick(TickPhase::PhaseA, 49));
+        assert!(!should_tick(TickPhase::PhaseA, 51));
+    }
+
+    #[test]
+    fn phase_b_ticks_every_5th() {
+        assert!(should_tick(TickPhase::PhaseB, 5));
+        assert!(should_tick(TickPhase::PhaseB, 50));
+        assert!(!should_tick(TickPhase::PhaseB, 1));
+        assert!(!should_tick(TickPhase::PhaseB, 4));
+        assert!(!should_tick(TickPhase::PhaseB, 6));
+    }
+
+    #[test]
+    fn post_phase_ticks_every_cycle() {
+        for n in [1u64, 2, 50, 99, 100] {
+            assert!(should_tick(TickPhase::PostPhase, n));
+        }
+    }
 }
 
 #[cfg(test)]

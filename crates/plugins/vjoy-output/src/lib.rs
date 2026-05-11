@@ -3,7 +3,7 @@
 //! Must run LAST in the plugin order (letztes Plugin schreibt, gewinnt).
 //! On non-Windows platforms falls back to console output.
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 pub struct VJoyOutputPlugin {
     #[allow(dead_code)]
@@ -100,6 +100,8 @@ impl Plugin for VJoyOutputPlugin {
     fn on_unload(&mut self) {
         tracing::info!("[vjoy-output] unloaded");
     }
+
+    fn default_phase(&self) -> TickPhase { TickPhase::PostPhase }
 
     fn tick(
         &mut self,

@@ -10,9 +10,8 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
-const REPLAN_INTERVAL_TICKS: u64 = 50;
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
 
 #[derive(Clone)]
@@ -52,7 +51,6 @@ pub struct RouterPlugin {
     edges: Vec<(u64, u64, f64)>,
     positions: HashMap<u64, (f64, f64)>,
     active: bool,
-    tick_count: u64,
 }
 
 impl RouterPlugin {
@@ -148,10 +146,10 @@ impl Plugin for RouterPlugin {
 
     fn on_unload(&mut self) { tracing::info!("[router] unloaded"); }
 
-    fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
-        self.tick_count = self.tick_count.wrapping_add(1);
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
 
-        if self.tick_count.is_multiple_of(REPLAN_INTERVAL_TICKS) && self.goal_uid != 0 && !self.nodes.is_empty() {
+    fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
+        if ctx.is_replan_tick() && self.goal_uid != 0 && !self.nodes.is_empty() {
             let (px, pz) = telemetry
                 .map(|t| (t.position[0], t.position[2]))
                 .unwrap_or((0.0, 0.0));
@@ -207,18 +205,19 @@ mod tests {
     }
 
     #[test]
-    fn tick_produces_waypoints() {
+    fn tick_produces_waypoints_on_replan_tick() {
         let (n, e) = simple_graph();
         let mut p = RouterPlugin {
             goal_uid: 3,
             nodes: n.clone(),
             edges: e,
             positions: n.iter().map(|&(u, x, z)| (u, (x, z))).collect(),
-            tick_count: REPLAN_INTERVAL_TICKS - 1,
             ..Default::default()
         };
         let bb = SharedBlackboard::new();
-        let ctx = PluginContext::new("test", bb.clone());
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(50);
         let mut out = ControlOutput::default();
         let t = Telemetry {
             position: [0.0, 0.0, 0.0], heading: 0.0, pitch: 0.0, roll: 0.0,
@@ -230,5 +229,26 @@ mod tests {
         assert_eq!(bb.get("router.active").as_deref(), Some("true"));
         let wp = bb.get("router.waypoints").expect("waypoints set");
         assert!(wp.contains("200"));
+    }
+
+    #[test]
+    fn tick_skips_when_not_replan_tick() {
+        let (n, e) = simple_graph();
+        let mut p = RouterPlugin {
+            goal_uid: 3,
+            nodes: n.clone(),
+            edges: e,
+            positions: n.iter().map(|&(u, x, z)| (u, (x, z))).collect(),
+            ..Default::default()
+        };
+        let bb = SharedBlackboard::new();
+        // PhaseC (wrong phase) — is_replan_tick() returns false → no replan.
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(50);
+        let mut out = ControlOutput::default();
+        p.tick(None, &mut out, &ctx);
+        assert_eq!(bb.get("router.active").as_deref(), Some("false"));
+        assert!(bb.get("router.waypoints").is_none());
     }
 }

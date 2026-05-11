@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use truckpilot_map_parser::signs::{SignKind, TrafficSign};
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// How far ahead (meters) to scan for speed-limit signs.
 const LOOKAHEAD_M: f64 = 200.0;
@@ -133,6 +133,8 @@ impl Plugin for SignReaderPlugin {
     fn on_unload(&mut self) {
         tracing::info!("[sign-reader] unloaded");
     }
+
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseB }
 
     fn tick(
         &mut self,

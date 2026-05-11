@@ -21,7 +21,7 @@
 
 use std::time::Instant;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// EU max continuous driving time before a mandatory break.
 const EU_MAX_DRIVE_SECS: f64 = 4.5 * 3600.0; // 4h 30min
@@ -118,6 +118,8 @@ impl Plugin for BreakPlannerPlugin {
     fn on_unload(&mut self) {
         tracing::info!("[break-planner] unloaded");
     }
+
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
 
     fn tick(
         &mut self,

@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// Default fuel threshold in liters.
 const DEFAULT_LOW_FUEL_L: f64 = 50.0;
@@ -124,6 +124,8 @@ impl Plugin for FuelStopsPlugin {
     fn on_unload(&mut self) {
         tracing::info!("[fuel-stops] unloaded");
     }
+
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
 
     fn tick(
         &mut self,

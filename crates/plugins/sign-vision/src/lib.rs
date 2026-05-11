@@ -33,7 +33,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// Default path to the ONNX model.
 const DEFAULT_MODEL_PATH: &str = "models/tsr_yolo.onnx";
@@ -103,7 +103,6 @@ fn run_inference(_frame: &[u8], _width: u32, _height: u32) -> Vec<Detection> {
 pub struct SignVisionPlugin {
     model_path: PathBuf,
     inference_interval: u32,
-    tick_count: u32,
     // Reserved for future ONNX session result caching.
     #[allow(dead_code)]
     last_detection: Option<Detection>,
@@ -118,7 +117,6 @@ impl Default for SignVisionPlugin {
         Self {
             model_path: PathBuf::from(DEFAULT_MODEL_PATH),
             inference_interval: DEFAULT_INFERENCE_INTERVAL,
-            tick_count: 0,
             last_detection: None,
             last_inference: Instant::now(),
             model_available: false,
@@ -192,22 +190,22 @@ impl Plugin for SignVisionPlugin {
         tracing::info!("[sign-vision] unloaded");
     }
 
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseB }
+
     fn tick(
         &mut self,
         _telemetry: Option<&Telemetry>,
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
-        self.tick_count = self.tick_count.wrapping_add(1);
-
         // Map data takes priority — skip vision if sign-reader already found something.
         if ctx.blackboard.get("sign.source").as_deref() == Some("map") {
             return;
         }
 
-        // Only run inference at the configured sub-rate.
-        #[allow(clippy::manual_is_multiple_of)]
-        if self.tick_count % self.inference_interval != 0 {
+        // Inference sub-rate: only the configured Nth tick (relative to
+        // the scheduler's PhaseB tick stream) actually runs the model.
+        if !ctx.tick_count.is_multiple_of(self.inference_interval as u64) {
             return;
         }
 

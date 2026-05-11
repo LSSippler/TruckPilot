@@ -428,6 +428,16 @@ pub trait Plugin: Send + Sync {
         self.on_unload();
         self.on_load(ctx);
     }
+
+    /// Which scheduler bucket this plugin runs in. The daemon uses the
+    /// returned phase to decide whether to invoke `tick`/`tick_request`
+    /// on a given control cycle (Phase 6.2b scheduler).
+    ///
+    /// Default: [`TickPhase::PhaseC`] (50 Hz). Override for slower
+    /// cadences — see [`TickPhase`] for the rate map.
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PhaseC
+    }
 }
 
 // ---------------------------------------------------------------------------

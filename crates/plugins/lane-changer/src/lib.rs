@@ -17,7 +17,7 @@
 
 use std::time::{Duration, Instant};
 
-use truckpilot_plugin_api::{ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// Arbitration priority for lane-changer's tick_request — chosen higher
 /// than lane-keeper's `PRIORITY_NORMAL` (50) so the manoeuvre overrides
@@ -133,6 +133,8 @@ impl Plugin for LaneChangerPlugin {
     fn on_unload(&mut self) {
         tracing::info!("[lane-changer] unloaded");
     }
+
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseB }
 
     fn tick(
         &mut self,
