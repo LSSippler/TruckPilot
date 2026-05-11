@@ -186,6 +186,25 @@ impl SharedBlackboard {
 }
 
 // ---------------------------------------------------------------------------
+// TickPhase
+// ---------------------------------------------------------------------------
+
+/// Scheduler bucket a plugin runs in. Used by the (Phase 6.2b) daemon
+/// scheduler; for now only carried in [`PluginContext`] so plugins can
+/// branch on it during early adoption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickPhase {
+    /// 1 Hz — router, fuel-stops, break-planner.
+    PhaseA,
+    /// 10 Hz — sign-reader, sign-vision, lane-changer-decision.
+    PhaseB,
+    /// 50 Hz — lane-keeper, speed-controller, ACC, stats-logger.
+    PhaseC,
+    /// Post-arbitration — vjoy-output.
+    PostPhase,
+}
+
+// ---------------------------------------------------------------------------
 // PluginContext
 // ---------------------------------------------------------------------------
 
@@ -200,6 +219,12 @@ pub struct PluginContext {
     /// the daemon sets the real value via [`PluginContext::with_dt`].
     /// Plugins should prefer `ctx.dt_s` over hardcoded periods.
     pub dt_s: f64,
+    /// Scheduler bucket this tick belongs to. Defaults to
+    /// [`TickPhase::PhaseC`] (50 Hz, where most plugins run).
+    pub tick_phase: TickPhase,
+    /// Monotonic tick counter. Increments once per scheduler step.
+    /// Defaults to `0`.
+    pub tick_count: u64,
 }
 
 impl PluginContext {
@@ -209,6 +234,8 @@ impl PluginContext {
             plugin_name: plugin_name.into(),
             blackboard,
             dt_s: 0.02,
+            tick_phase: TickPhase::PhaseC,
+            tick_count: 0,
         }
     }
 
@@ -216,6 +243,121 @@ impl PluginContext {
     pub fn with_dt(mut self, dt_s: f64) -> Self {
         self.dt_s = dt_s.max(0.001);
         self
+    }
+
+    /// Set the tick phase. Builder-style.
+    pub fn with_phase(mut self, phase: TickPhase) -> Self {
+        self.tick_phase = phase;
+        self
+    }
+
+    /// Set the tick counter. Builder-style.
+    pub fn with_tick_count(mut self, count: u64) -> Self {
+        self.tick_count = count;
+        self
+    }
+
+    // --- Convenience: autopilot.state reads ---------------------------------
+
+    /// Current autopilot state from the blackboard, if any.
+    pub fn state(&self) -> Option<String> {
+        self.blackboard.get("autopilot.state")
+    }
+
+    /// `true` iff the autopilot state is `"Active"`.
+    pub fn is_active(&self) -> bool {
+        self.state().as_deref() == Some("Active")
+    }
+
+    /// `true` iff the autopilot is engaged in any way (`Engaging`,
+    /// `Active`, or `Paused`).
+    pub fn is_engaged(&self) -> bool {
+        matches!(
+            self.state().as_deref(),
+            Some("Engaging") | Some("Active") | Some("Paused")
+        )
+    }
+
+    /// `true` iff the autopilot state is `"Fault"`.
+    pub fn is_fault(&self) -> bool {
+        self.state().as_deref() == Some("Fault")
+    }
+
+    /// `true` for ticks where the router should re-plan: every 50th
+    /// `PhaseA` tick (≈ once per minute at 1 Hz × 50).
+    pub fn is_replan_tick(&self) -> bool {
+        self.tick_phase == TickPhase::PhaseA && self.tick_count.is_multiple_of(50)
+    }
+
+    /// `tracing` target string for this plugin, e.g.
+    /// `"truckpilot_plugin_lane_keeper"` for plugin name `"lane-keeper"`.
+    pub fn log_target(&self) -> String {
+        format!("truckpilot_plugin_{}", self.plugin_name.replace('-', "_"))
+    }
+
+    // --- Test helpers -------------------------------------------------------
+
+    /// Default test context with a fresh blackboard.
+    pub fn test() -> Self {
+        Self::new("test", SharedBlackboard::new())
+    }
+
+    /// Test context with `autopilot.state = "Off"`.
+    pub fn test_off() -> Self {
+        let ctx = Self::test();
+        ctx.blackboard.set("autopilot.state", "Off");
+        ctx
+    }
+
+    /// Test context with `autopilot.state = "Engaging"`.
+    pub fn test_engaging() -> Self {
+        let ctx = Self::test();
+        ctx.blackboard.set("autopilot.state", "Engaging");
+        ctx
+    }
+
+    /// Test context with `autopilot.state = "Active"`.
+    pub fn test_active() -> Self {
+        let ctx = Self::test();
+        ctx.blackboard.set("autopilot.state", "Active");
+        ctx
+    }
+
+    /// Test context with `autopilot.state = "Paused"`.
+    pub fn test_paused() -> Self {
+        let ctx = Self::test();
+        ctx.blackboard.set("autopilot.state", "Paused");
+        ctx
+    }
+
+    /// Test context with `autopilot.state = "Fault"`.
+    pub fn test_fault() -> Self {
+        let ctx = Self::test();
+        ctx.blackboard.set("autopilot.state", "Fault");
+        ctx
+    }
+
+    /// Test context with a custom `dt_s`.
+    pub fn test_with_dt(dt: f64) -> Self {
+        Self::test().with_dt(dt)
+    }
+
+    /// Test context with a custom [`TickPhase`].
+    pub fn test_with_phase(phase: TickPhase) -> Self {
+        Self::test().with_phase(phase)
+    }
+
+    /// Test context with a custom `tick_count`.
+    pub fn test_with_tick_count(count: u64) -> Self {
+        Self::test().with_tick_count(count)
+    }
+
+    /// Test context positioned on a router-replan tick
+    /// (`PhaseA`, `tick_count = 50`).
+    pub fn test_replan() -> Self {
+        Self::test()
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(50)
     }
 }
 
@@ -381,5 +523,144 @@ mod ctx_tests {
         assert!((ctx.dt_s - 0.005).abs() < 1e-9);
         let ctx2 = PluginContext::new("test", bb).with_dt(0.0);
         assert!((ctx2.dt_s - 0.001).abs() < 1e-9, "dt_s={}", ctx2.dt_s);
+    }
+
+    #[test]
+    fn test_default_tick_phase_is_phase_c() {
+        let ctx = PluginContext::new("p", SharedBlackboard::new());
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseC);
+    }
+
+    #[test]
+    fn test_default_tick_count_is_zero() {
+        let ctx = PluginContext::new("p", SharedBlackboard::new());
+        assert_eq!(ctx.tick_count, 0);
+    }
+
+    #[test]
+    fn test_with_phase_chainable() {
+        let ctx = PluginContext::new("p", SharedBlackboard::new())
+            .with_dt(0.1)
+            .with_phase(TickPhase::PhaseA);
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseA);
+        assert!((ctx.dt_s - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_with_tick_count_chainable() {
+        let ctx = PluginContext::new("p", SharedBlackboard::new())
+            .with_phase(TickPhase::PhaseB)
+            .with_tick_count(123);
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseB);
+        assert_eq!(ctx.tick_count, 123);
+    }
+
+    #[test]
+    fn test_is_active_reads_blackboard() {
+        let ctx = PluginContext::test();
+        assert!(!ctx.is_active());
+        ctx.blackboard.set("autopilot.state", "Active");
+        assert!(ctx.is_active());
+        ctx.blackboard.set("autopilot.state", "Paused");
+        assert!(!ctx.is_active());
+    }
+
+    #[test]
+    fn test_is_engaged_for_engaging_active_paused() {
+        for state in ["Engaging", "Active", "Paused"] {
+            let ctx = PluginContext::test();
+            ctx.blackboard.set("autopilot.state", state);
+            assert!(ctx.is_engaged(), "state={state} should be engaged");
+        }
+        for state in ["Off", "Fault", "SomethingElse"] {
+            let ctx = PluginContext::test();
+            ctx.blackboard.set("autopilot.state", state);
+            assert!(!ctx.is_engaged(), "state={state} should not be engaged");
+        }
+        // Missing key: not engaged.
+        assert!(!PluginContext::test().is_engaged());
+    }
+
+    #[test]
+    fn test_is_fault_only_for_fault() {
+        assert!(PluginContext::test_fault().is_fault());
+        assert!(!PluginContext::test_active().is_fault());
+        assert!(!PluginContext::test_off().is_fault());
+        assert!(!PluginContext::test().is_fault());
+    }
+
+    #[test]
+    fn test_is_replan_tick_at_phase_a_multiple_of_50() {
+        // Phase A + multiple of 50 → true (incl. 0).
+        assert!(PluginContext::test()
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(0)
+            .is_replan_tick());
+        assert!(PluginContext::test()
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(50)
+            .is_replan_tick());
+        assert!(PluginContext::test()
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(150)
+            .is_replan_tick());
+        // Phase A + non-multiple → false.
+        assert!(!PluginContext::test()
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(49)
+            .is_replan_tick());
+        // Other phase + multiple → false.
+        for phase in [TickPhase::PhaseB, TickPhase::PhaseC, TickPhase::PostPhase] {
+            assert!(!PluginContext::test()
+                .with_phase(phase)
+                .with_tick_count(50)
+                .is_replan_tick());
+        }
+    }
+
+    #[test]
+    fn test_log_target_replaces_hyphens() {
+        let ctx = PluginContext::new("lane-keeper", SharedBlackboard::new());
+        assert_eq!(ctx.log_target(), "truckpilot_plugin_lane_keeper");
+        let ctx2 = PluginContext::new("acc", SharedBlackboard::new());
+        assert_eq!(ctx2.log_target(), "truckpilot_plugin_acc");
+        let ctx3 = PluginContext::new("a-b-c", SharedBlackboard::new());
+        assert_eq!(ctx3.log_target(), "truckpilot_plugin_a_b_c");
+    }
+
+    #[test]
+    fn test_test_helpers_set_correct_state() {
+        assert_eq!(PluginContext::test_off().state().as_deref(), Some("Off"));
+        assert_eq!(
+            PluginContext::test_engaging().state().as_deref(),
+            Some("Engaging")
+        );
+        assert_eq!(
+            PluginContext::test_active().state().as_deref(),
+            Some("Active")
+        );
+        assert_eq!(
+            PluginContext::test_paused().state().as_deref(),
+            Some("Paused")
+        );
+        assert_eq!(
+            PluginContext::test_fault().state().as_deref(),
+            Some("Fault")
+        );
+        assert_eq!(PluginContext::test().state(), None);
+
+        let ctx = PluginContext::test_with_dt(0.05);
+        assert!((ctx.dt_s - 0.05).abs() < 1e-9);
+
+        let ctx = PluginContext::test_with_phase(TickPhase::PhaseB);
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseB);
+
+        let ctx = PluginContext::test_with_tick_count(7);
+        assert_eq!(ctx.tick_count, 7);
+
+        let ctx = PluginContext::test_replan();
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseA);
+        assert_eq!(ctx.tick_count, 50);
+        assert!(ctx.is_replan_tick());
     }
 }
