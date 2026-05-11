@@ -10,7 +10,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 const REPLAN_INTERVAL_TICKS: u64 = 50;
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
@@ -120,6 +120,7 @@ fn reconstruct(came_from: &HashMap<u64, u64>, start: u64, goal: u64) -> Vec<u64>
 impl Plugin for RouterPlugin {
     fn name(&self) -> &str { "router" }
     fn version(&self) -> &str { "0.2.0" }
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
     fn settings_schema(&self) -> &str {
         r#"{"type":"object","properties":{"start_uid":{"type":"integer"},"goal_uid":{"type":"integer"},"graph_path":{"type":"string"}}}"#
     }
@@ -185,6 +186,12 @@ mod tests {
     fn simple_graph() -> (NodeList, EdgeList) {
         (vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)],
          vec![(1, 2, 100.0), (2, 3, 100.0)])
+    }
+
+    #[test]
+    fn default_phase_is_phase_a() {
+        let p = RouterPlugin::default();
+        assert_eq!(p.default_phase(), TickPhase::PhaseA);
     }
 
     #[test]

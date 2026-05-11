@@ -207,6 +207,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_phase_is_phase_c() {
+        use truckpilot_plugin_api::TickPhase;
+        let p = LaneKeeperPlugin::default();
+        assert_eq!(p.default_phase(), TickPhase::PhaseC);
+    }
+
+    #[test]
     fn look_ahead_increases_with_speed() {
         // At 0 km/h: BASE_LOOK_AHEAD = 5m
         // At 80 km/h: 5 + 80 * 0.5 = 45m

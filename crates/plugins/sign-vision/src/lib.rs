@@ -33,7 +33,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// Default path to the ONNX model.
 const DEFAULT_MODEL_PATH: &str = "models/tsr_yolo.onnx";
@@ -132,6 +132,9 @@ impl Plugin for SignVisionPlugin {
     }
     fn version(&self) -> &str {
         "0.1.0"
+    }
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PhaseB
     }
     fn settings_schema(&self) -> &str {
         r#"{
@@ -257,6 +260,12 @@ truckpilot_plugin_api::export_plugin!(SignVisionPlugin);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_phase_is_phase_b() {
+        let p = SignVisionPlugin::default();
+        assert_eq!(p.default_phase(), TickPhase::PhaseB);
+    }
 
     #[test]
     fn parse_speed_limit_label() {

@@ -428,6 +428,15 @@ pub trait Plugin: Send + Sync {
         self.on_unload();
         self.on_load(ctx);
     }
+
+    /// Scheduler bucket this plugin runs in. Default: [`TickPhase::PhaseC`]
+    /// (50 Hz). Plugins that belong elsewhere override this:
+    /// - `PhaseA` (1 Hz): router, fuel-stops, break-planner
+    /// - `PhaseB` (10 Hz): sign-reader, sign-vision, lane-changer-decision
+    /// - `PostPhase` (post-arbitration): vjoy-output
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PhaseC
+    }
 }
 
 // ---------------------------------------------------------------------------

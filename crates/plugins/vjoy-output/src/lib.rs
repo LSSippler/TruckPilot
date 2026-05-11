@@ -3,7 +3,7 @@
 //! Must run LAST in the plugin order (letztes Plugin schreibt, gewinnt).
 //! On non-Windows platforms falls back to console output.
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 pub struct VJoyOutputPlugin {
     #[allow(dead_code)]
@@ -86,6 +86,9 @@ impl Plugin for VJoyOutputPlugin {
     fn version(&self) -> &str {
         "0.1.0"
     }
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PostPhase
+    }
     fn settings_schema(&self) -> &str {
         r#"{"type":"object","properties":{"device_id":{"type":"integer","minimum":1,"maximum":16}}}"#
     }
@@ -116,6 +119,12 @@ truckpilot_plugin_api::export_plugin!(VJoyOutputPlugin);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_phase_is_post_phase() {
+        let p = VJoyOutputPlugin::default();
+        assert_eq!(p.default_phase(), TickPhase::PostPhase);
+    }
 
     #[test]
     fn scale_steering_center() {

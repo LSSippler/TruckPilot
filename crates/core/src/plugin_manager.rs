@@ -15,7 +15,7 @@ use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{error, info, warn};
 use truckpilot_plugin_api::{
-    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, Telemetry,
+    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, Telemetry, TickPhase,
 };
 
 // Trait-object pointers (`*mut dyn Plugin`) are fat (data + vtable),
@@ -91,6 +91,11 @@ pub struct PluginManager {
     /// Shared blackboard — same instance across all plugins.
     pub blackboard: SharedBlackboard,
     _watcher: Option<RecommendedWatcher>,
+    /// Monotonic tick counter. Incremented at the start of each
+    /// [`PluginManager::tick_all`] call. Passed into each plugin's
+    /// [`PluginContext`] via [`PluginContext::with_tick_count`].
+    /// Wraps via [`u64::wrapping_add`] (centuries at 50 Hz before wrap).
+    tick_count: u64,
 }
 
 impl PluginManager {
@@ -135,6 +140,7 @@ impl PluginManager {
             reload_queue,
             blackboard: SharedBlackboard::new(),
             _watcher: watcher,
+            tick_count: 0,
         }
     }
 
@@ -225,6 +231,9 @@ impl PluginManager {
         output: &mut ControlOutput,
         dt_s: f64,
     ) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+        let tick_count = self.tick_count;
+
         // Legacy bucket: plugins still on the old `tick(&mut output)`
         // API write here. Reset every tick so stale values don't stick.
         let mut legacy = ControlOutput::default();
@@ -242,7 +251,11 @@ impl PluginManager {
             if Some(i) == vjoy_idx {
                 continue;
             }
-            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
+            let phase = p.plugin.default_phase();
+            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                .with_dt(dt_s)
+                .with_phase(phase)
+                .with_tick_count(tick_count);
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -276,7 +289,11 @@ impl PluginManager {
         if let Some(idx) = vjoy_idx {
             let p = &mut self.plugins[idx];
             if p.enabled {
-                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone()).with_dt(dt_s);
+                let phase = p.plugin.default_phase();
+                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                    .with_dt(dt_s)
+                    .with_phase(phase)
+                    .with_tick_count(tick_count);
                 let tick_result = catch_unwind(AssertUnwindSafe(|| {
                     p.plugin.tick(telemetry, output, &ctx);
                 }));
@@ -319,6 +336,13 @@ impl PluginManager {
         } else {
             false
         }
+    }
+
+    /// Current value of the monotonic tick counter. Starts at `0` and
+    /// is incremented at the start of each [`Self::tick_all`] call.
+    #[allow(dead_code)] // tests + future IPC introspection
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count
     }
 
     #[allow(dead_code)]
@@ -406,6 +430,26 @@ pub fn arbitrate(legacy: ControlOutput, requests: &[ControlRequest]) -> ControlO
         steering,
         throttle,
         brake,
+    }
+}
+
+/// Whether a plugin in the given [`TickPhase`] should run on the current
+/// daemon tick. Pure function; the scheduler in
+/// [`PluginManager::tick_all`] will gate `tick()` calls with this in a
+/// later migration step. **Not yet wired** — keeping it isolated avoids
+/// breaking plugins that already throttle themselves internally
+/// (e.g. `router`, `sign-vision`).
+///
+/// Cadence:
+/// - [`TickPhase::PhaseA`]: every 50th tick (1 Hz at 50 Hz loop)
+/// - [`TickPhase::PhaseB`]: every 5th tick (10 Hz)
+/// - [`TickPhase::PhaseC`] / [`TickPhase::PostPhase`]: every tick (50 Hz)
+#[allow(dead_code)] // wired in Step 3 of PluginContext migration
+pub fn should_tick(phase: TickPhase, tick_count: u64) -> bool {
+    match phase {
+        TickPhase::PhaseA => tick_count.is_multiple_of(50),
+        TickPhase::PhaseB => tick_count.is_multiple_of(5),
+        TickPhase::PhaseC | TickPhase::PostPhase => true,
     }
 }
 
@@ -603,5 +647,100 @@ mod arbitrate_tests {
         assert!((out.throttle - 0.4).abs() < 1e-9);
         assert!((out.brake - 0.0).abs() < 1e-9);
         assert!((out.steering - 0.5).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    // --- should_tick: pure-function gating ----------------------------------
+
+    #[test]
+    fn should_tick_phase_a_at_multiple_of_50() {
+        assert!(should_tick(TickPhase::PhaseA, 0));
+        assert!(should_tick(TickPhase::PhaseA, 50));
+        assert!(should_tick(TickPhase::PhaseA, 100));
+        assert!(!should_tick(TickPhase::PhaseA, 1));
+        assert!(!should_tick(TickPhase::PhaseA, 49));
+        assert!(!should_tick(TickPhase::PhaseA, 99));
+    }
+
+    #[test]
+    fn should_tick_phase_b_at_multiple_of_5() {
+        assert!(should_tick(TickPhase::PhaseB, 0));
+        assert!(should_tick(TickPhase::PhaseB, 5));
+        assert!(should_tick(TickPhase::PhaseB, 25));
+        assert!(!should_tick(TickPhase::PhaseB, 1));
+        assert!(!should_tick(TickPhase::PhaseB, 4));
+        assert!(!should_tick(TickPhase::PhaseB, 7));
+    }
+
+    #[test]
+    fn should_tick_phase_c_always() {
+        for t in [0_u64, 1, 5, 49, 50, 1_000_000] {
+            assert!(should_tick(TickPhase::PhaseC, t), "PhaseC must run at t={t}");
+        }
+    }
+
+    #[test]
+    fn should_tick_post_phase_always() {
+        for t in [0_u64, 1, 5, 49, 50, 1_000_000] {
+            assert!(should_tick(TickPhase::PostPhase, t),
+                "PostPhase must run at t={t}");
+        }
+    }
+
+    // --- PluginManager: tick_count plumbing ---------------------------------
+
+    fn make_manager() -> PluginManager {
+        // Watcher creation tolerates missing path; the call never blocks
+        // and we never load any plugin. Path only needs to be unique.
+        let dir = std::env::temp_dir().join("tp-pm-tick-count-test");
+        PluginManager::new(dir)
+    }
+
+    #[test]
+    fn tick_count_starts_at_zero() {
+        let mgr = make_manager();
+        assert_eq!(mgr.tick_count(), 0);
+    }
+
+    #[test]
+    fn tick_count_increments_each_tick_all_call() {
+        let mut mgr = make_manager();
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+        assert_eq!(mgr.tick_count(), 1);
+        mgr.tick_all(None, &mut out, 0.02);
+        mgr.tick_all(None, &mut out, 0.02);
+        assert_eq!(mgr.tick_count(), 3);
+    }
+
+    // --- PluginContext: contract for what tick_all builds -------------------
+    //
+    // We can't easily inject a fake Plugin into PluginManager (LoadedPlugin
+    // holds a real `libloading::Library`). Instead we assert the exact
+    // builder-chain `tick_all` performs, with the values it would supply.
+
+    #[test]
+    fn plugin_context_receives_correct_tick_count() {
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("router", bb)
+            .with_dt(0.02)
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(150);
+        assert_eq!(ctx.tick_count, 150);
+    }
+
+    #[test]
+    fn plugin_context_receives_correct_phase() {
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("sign-reader", bb)
+            .with_dt(0.02)
+            .with_phase(TickPhase::PhaseB)
+            .with_tick_count(7);
+        assert_eq!(ctx.tick_phase, TickPhase::PhaseB);
+        assert_eq!(ctx.plugin_name, "sign-reader");
     }
 }

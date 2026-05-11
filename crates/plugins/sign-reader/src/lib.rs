@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use truckpilot_map_parser::signs::{SignKind, TrafficSign};
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
+use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 /// How far ahead (meters) to scan for speed-limit signs.
 const LOOKAHEAD_M: f64 = 200.0;
@@ -103,6 +103,9 @@ impl Plugin for SignReaderPlugin {
     fn version(&self) -> &str {
         "0.1.0"
     }
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PhaseB
+    }
     fn settings_schema(&self) -> &str {
         r#"{
   "type": "object",
@@ -179,6 +182,12 @@ truckpilot_plugin_api::export_plugin!(SignReaderPlugin);
 mod tests {
     use super::*;
     use truckpilot_map_parser::signs::{SignKind, TrafficSign};
+
+    #[test]
+    fn default_phase_is_phase_b() {
+        let p = SignReaderPlugin::default();
+        assert_eq!(p.default_phase(), TickPhase::PhaseB);
+    }
 
     fn make_plugin_with_signs(signs: Vec<TrafficSign>) -> SignReaderPlugin {
         SignReaderPlugin {
