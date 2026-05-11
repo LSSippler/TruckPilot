@@ -84,6 +84,22 @@ fn open_scs_archive(path: &Path) -> Result<Box<dyn Archive>, ParseError> {
     }
 }
 
+/// Build a [`MapGraph`] from a [`ModLoadOrder`].
+///
+/// Walks `order.entries` last-to-first (mod overrides base), opens each
+/// archive via the matching [`Archive`] backend (HashFS or ZIP), and feeds
+/// every `*.sii` sector through [`crate::sector::parse_sector`] into a
+/// shared [`crate::graph::GraphBuilder`]. Sectors that fail to parse are
+/// logged and skipped; the build continues.
+///
+/// When `cache_dir` is `Some` and a cache entry matches the (sha256 of the)
+/// load order, the cached graph is returned without re-parsing.
+///
+/// # Errors
+///
+/// Returns [`ParseError`] only on unrecoverable failures (e.g. the root
+/// archive cannot be opened). Per-sector parse errors are reported as
+/// `warn!` and do not abort the build.
 #[instrument(skip(order, cache_dir))]
 pub fn load_and_build(order: &ModLoadOrder, cache_dir: Option<&Path>) -> Result<MapGraph, ParseError> {
     let t_total = Instant::now();

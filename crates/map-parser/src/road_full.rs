@@ -17,8 +17,8 @@
 //!    additional parts, edge looks).
 //!
 //! The two structs together describe a complete v907 (ETS2 1.50+) Road item
-//! body — the leading `item_type u32` is consumed by the dispatcher in
-//! [`crate::sector::parse_sector_legacy`] before this parser is invoked.
+//! body — the leading `item_type u32` is consumed by the sector dispatcher
+//! (`parse_sector_legacy` in `crate::sector`) before this parser is invoked.
 //!
 //! Quote from Phase 5.6 brief: "Implement Phase 5.6 of the TruckPilot 2.0
 //! ETS2 sector parser: a complete Road-item parser using binrw structs.

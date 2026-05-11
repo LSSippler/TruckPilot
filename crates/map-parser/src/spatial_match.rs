@@ -109,10 +109,12 @@ pub struct SpatialIndex {
 }
 
 impl SpatialIndex {
+    /// Total number of [`NodeRef`]s across all cells.
     pub fn total_nodes(&self) -> usize {
         self.cells.values().map(|c| c.len()).sum()
     }
 
+    /// Number of populated grid cells in the index.
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
