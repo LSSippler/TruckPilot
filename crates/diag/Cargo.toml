@@ -35,6 +35,10 @@ path = "src/bin/h4c_ppd_check.rs"
 name = "truckpilot-h4c-prefab-roi"
 path = "src/bin/h4c_prefab_roi.rs"
 
+[[bin]]
+name = "truckpilot-router-perf-audit"
+path = "src/bin/router_perf_audit.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
