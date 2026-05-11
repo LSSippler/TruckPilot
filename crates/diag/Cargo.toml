@@ -39,6 +39,10 @@ path = "src/bin/h4c_prefab_roi.rs"
 name = "truckpilot-ets2la-traffic-probe"
 path = "src/bin/ets2la_traffic_probe.rs"
 
+[[bin]]
+name = "truckpilot-router-perf-audit"
+path = "src/bin/router_perf_audit.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
