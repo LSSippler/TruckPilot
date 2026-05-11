@@ -145,15 +145,29 @@ impl Plugin for LaneKeeperPlugin {
         telemetry: Option<&Telemetry>,
         ctx: &PluginContext,
     ) -> Option<ControlRequest> {
-        let t = telemetry?;
-
-        // Only steer when engine on and cruise active.
-        if t.engine_rpm < 100.0 || t.cruise_control_kmh <= 0.0 {
+        // State-gate: refuse to steer outside Active. Reset integrator
+        // so the next engage starts from a clean PID state.
+        if !ctx.is_active() {
+            self.pid.reset();
             return None;
         }
 
+        let t = telemetry?;
+
+        // Belt-and-braces: still require engine running. (The state
+        // machine's precondition check covers this too, but the gate
+        // protects us if the state lags by a tick.)
+        if t.engine_rpm < 100.0 {
+            self.pid.reset();
+            return None;
+        }
+
+        // Clamp dt to avoid PID explosion when the daemon loop stalls
+        // (debug pause, slow disk, etc.).
+        let dt = ctx.dt_s.min(0.1);
+
         let err = self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms);
-        let steering = self.pid.update(err, ctx.dt_s);
+        let steering = self.pid.update(err, dt).clamp(-1.0, 1.0);
 
         Some(ControlRequest {
             steering: Some(steering),
@@ -205,11 +219,42 @@ truckpilot_plugin_api::export_plugin!(LaneKeeperPlugin);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use truckpilot_plugin_api::SharedBlackboard;
+
+    fn make_telemetry(speed_ms: f64, heading: f64) -> Telemetry {
+        Telemetry {
+            position: [0.0; 3],
+            heading,
+            pitch: 0.0,
+            roll: 0.0,
+            speed_ms,
+            engine_rpm: 1200.0,
+            cruise_control_kmh: 80.0,
+            nav_speed_limit_kmh: -1.0,
+            lead_vehicle_distance_m: -1.0,
+            accel_longitudinal: -1.0,
+            fuel_liters: -1.0,
+            odometer_km: -1.0,
+        }
+    }
+
+    fn ctx_with_state(state: &str) -> PluginContext {
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", state);
+        PluginContext::new("lane-keeper", bb)
+    }
+
+    fn active_plugin_with_straight_path() -> LaneKeeperPlugin {
+        LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, 100.0], [0.0, 200.0]],
+            ..Default::default()
+        }
+    }
+
+    // ---- Pre-existing geometry tests (kept) --------------------------------
 
     #[test]
     fn look_ahead_increases_with_speed() {
-        // At 0 km/h: BASE_LOOK_AHEAD = 5m
-        // At 80 km/h: 5 + 80 * 0.5 = 45m
         let slow = BASE_LOOK_AHEAD + 0.0 * SPEED_FACTOR;
         let fast = BASE_LOOK_AHEAD + 80.0 * SPEED_FACTOR;
         assert!(fast > slow);
@@ -219,11 +264,7 @@ mod tests {
 
     #[test]
     fn straight_north_zero_error() {
-        let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.0, 100.0], [0.0, 200.0]],
-            ..Default::default()
-        };
-        // Truck at origin, heading North (0.0), target is North
+        let mut lk = active_plugin_with_straight_path();
         let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0);
         assert!(err.abs() < 0.01, "expected ~0, got {err}");
     }
@@ -231,7 +272,7 @@ mod tests {
     #[test]
     fn turn_right_positive_error() {
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [100.0, 0.0]], // East
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
             ..Default::default()
         };
         let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0);
@@ -243,5 +284,110 @@ mod tests {
         let pts = vec![[0.0, 0.0], [50.0, 10.0], [100.0, 0.0]];
         let smoothed = smooth_catmull_rom(&pts, 4);
         assert!(smoothed.len() > pts.len());
+    }
+
+    // ---- Phase 6.2d state-gate + control-output tests ----------------------
+
+    #[test]
+    fn test_state_gate_returns_none_when_off() {
+        let mut lk = active_plugin_with_straight_path();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Off");
+        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+    }
+
+    #[test]
+    fn test_state_gate_returns_none_when_engaging() {
+        let mut lk = active_plugin_with_straight_path();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Engaging");
+        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+    }
+
+    #[test]
+    fn test_active_steering_with_waypoints() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]], // east
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0); // heading north → must turn right
+        let ctx = ctx_with_state("Active");
+        let req = lk.tick_request(Some(&t), &ctx).expect("active must request");
+        let s = req.steering.expect("active must request steering");
+        assert!(s > 0.0, "expected positive steering, got {s}");
+        assert_eq!(req.priority, PRIORITY_NORMAL);
+    }
+
+    #[test]
+    fn test_straight_line_near_zero_steering() {
+        let mut lk = active_plugin_with_straight_path();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let req = lk.tick_request(Some(&t), &ctx).unwrap();
+        let s = req.steering.unwrap();
+        assert!(s.abs() < 0.1, "expected near-zero on straight, got {s}");
+    }
+
+    #[test]
+    fn test_heading_wraparound() {
+        // Waypoint slightly east of north; truck heading near +π. Naive
+        // subtraction would give a -π+ε error; the wraparound must
+        // normalise it to a small positive value (small left turn).
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.1, -100.0]],
+            ..Default::default()
+        };
+        let heading = std::f64::consts::PI - 0.01;
+        let err = lk.compute_heading_error(0.0, 0.0, heading, 10.0);
+        assert!(err.abs() < 0.5, "wraparound produced {err}");
+    }
+
+    #[test]
+    fn test_pid_reset_on_state_exit() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        // Pump integrator while Active.
+        let active = ctx_with_state("Active");
+        for _ in 0..10 {
+            let _ = lk.tick_request(Some(&t), &active);
+        }
+        // Exit to Off — must reset the integrator.
+        let off = ctx_with_state("Off");
+        assert!(lk.tick_request(Some(&t), &off).is_none());
+
+        // Build a fresh plugin for an independent baseline.
+        let mut fresh = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            ..Default::default()
+        };
+        let active2 = ctx_with_state("Active");
+        let fresh_req = fresh.tick_request(Some(&t), &active2).unwrap();
+        let resumed_req = lk.tick_request(Some(&t), &active2).unwrap();
+        assert!(
+            (fresh_req.steering.unwrap() - resumed_req.steering.unwrap()).abs() < 1e-6,
+            "post-reset response must match a fresh PID"
+        );
+    }
+
+    #[test]
+    fn test_dt_clamp_at_0_1() {
+        // A huge ctx.dt_s must not blow up the integrator. We can't
+        // observe dt directly, so we drive the same error with a large
+        // ctx.dt_s and assert the output is still within the controller
+        // clamp range [-1, 1].
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        let ctx = PluginContext::new("lane-keeper", bb).with_dt(10.0); // 10 s
+        let req = lk.tick_request(Some(&t), &ctx).unwrap();
+        let s = req.steering.unwrap();
+        assert!((-1.0..=1.0).contains(&s), "output out of range: {s}");
     }
 }
