@@ -13,6 +13,36 @@
 //!     fuel_used_l REAL,
 //!     pauses      INTEGER NOT NULL DEFAULT 0
 //! );
+//! CREATE TABLE tick_log (
+//!     tick_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+//!     timestamp_ms    INTEGER NOT NULL,
+//!     autopilot_state TEXT    NOT NULL,
+//!     lateral_error_m REAL,
+//!     heading_error_rad REAL,
+//!     speed_kmh       REAL    NOT NULL,
+//!     target_speed_kmh REAL   NOT NULL,
+//!     throttle        REAL,
+//!     brake           REAL,
+//!     steering        REAL,
+//!     lead_distance_m REAL,
+//!     sign_limit_kmh  REAL,
+//!     intervention    INTEGER NOT NULL DEFAULT 0
+//! );
+//! CREATE TABLE fault_log (
+//!     fault_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+//!     timestamp_ms    INTEGER NOT NULL,
+//!     reason          TEXT    NOT NULL,
+//!     context         TEXT
+//! );
+//! CREATE TABLE pid_tuning_log (
+//!     tuning_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+//!     timestamp_ms    INTEGER NOT NULL,
+//!     plugin_name     TEXT    NOT NULL,
+//!     parameter       TEXT    NOT NULL,
+//!     old_value       REAL    NOT NULL,
+//!     new_value       REAL    NOT NULL,
+//!     set_by          TEXT    NOT NULL DEFAULT 'manual'
+//! );
 //! ```
 //!
 //! ## Blackboard contract
@@ -22,6 +52,7 @@
 //! | `stats.session_id`       | stats-logger | UI      |
 //! | `stats.distance_km`      | stats-logger | UI      |
 //! | `stats.duration_s`       | stats-logger | UI      |
+//! | `stats_logger.tick_log_hz` | UI/config  | stats-logger |
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -31,11 +62,19 @@ use rusqlite::{params, Connection};
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry};
 
 const DEFAULT_DB_PATH: &str = "stats.db";
+const DEFAULT_TICK_LOG_HZ: f64 = 10.0;
+
+/// Monotonic timestamp in ms for tick log entries.
+fn monotonic_ms() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(20, Ordering::Relaxed) // ~20ms per tick at 50Hz
+}
 
 /// Snapshot of a driving session.
 struct Session {
     id: i64,
-    #[allow(dead_code)] // stored for future DB queries / UI display
+    #[allow(dead_code)]
     started_at: String,
     distance_km: f64,
     duration_s: f64,
@@ -45,13 +84,17 @@ struct Session {
 
 pub struct StatsLoggerPlugin {
     db_path: PathBuf,
-    /// Wrapped in Mutex so the struct is Send+Sync (required by Plugin trait).
     conn: Option<Mutex<Connection>>,
     session: Option<Session>,
     last_odometer_km: f64,
     last_tick: Option<Instant>,
-    /// Track break state to count pauses.
     was_in_break: bool,
+    /// Track last state for intervention detection.
+    last_state: Option<String>,
+    /// Tick counter for per-tick logging frequency.
+    tick_idx: u64,
+    /// Subscribed to pid_tuning changes.
+    last_observed_gains: [(String, (f64, f64, f64)); 2],
 }
 
 impl Default for StatsLoggerPlugin {
@@ -63,6 +106,12 @@ impl Default for StatsLoggerPlugin {
             last_odometer_km: 0.0,
             last_tick: None,
             was_in_break: false,
+            last_state: None,
+            tick_idx: 0,
+            last_observed_gains: [
+                ("speed_controller".into(), (0.25, 0.08, 0.06)),
+                ("lane_keeper".into(), (0.8, 0.1, 0.3)),
+            ],
         }
     }
 }
@@ -82,6 +131,42 @@ impl StatsLoggerPlugin {
                 avg_speed_kmh REAL,
                 fuel_used_l   REAL,
                 pauses        INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS tick_log (
+                tick_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms     INTEGER NOT NULL,
+                autopilot_state  TEXT    NOT NULL,
+                lateral_error_m  REAL,
+                heading_error_rad REAL,
+                speed_kmh        REAL    NOT NULL,
+                target_speed_kmh  REAL   NOT NULL,
+                throttle         REAL,
+                brake            REAL,
+                steering         REAL,
+                lead_distance_m  REAL,
+                sign_limit_kmh   REAL,
+                intervention     INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tick_log_time ON tick_log(timestamp_ms);
+            CREATE INDEX IF NOT EXISTS idx_tick_log_state ON tick_log(autopilot_state);
+
+            CREATE TABLE IF NOT EXISTS fault_log (
+                fault_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms    INTEGER NOT NULL,
+                reason          TEXT    NOT NULL,
+                context         TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS pid_tuning_log (
+                tuning_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp_ms    INTEGER NOT NULL,
+                plugin_name     TEXT    NOT NULL,
+                parameter       TEXT    NOT NULL,
+                old_value       REAL    NOT NULL,
+                new_value       REAL    NOT NULL,
+                set_by          TEXT    NOT NULL DEFAULT 'manual'
             );",
         )
         .map_err(|e| format!("create table: {e}"))?;
@@ -186,6 +271,194 @@ impl StatsLoggerPlugin {
             );
         }
     }
+
+    fn write_tick_log(
+        &mut self,
+        t: &Telemetry,
+        ctx: &PluginContext,
+    ) {
+        let ts = monotonic_ms();
+        let state = ctx.state().unwrap_or_else(|| "Unknown".into());
+        let speed_kmh = t.speed_ms * 3.6;
+
+        let target_kmh = ctx
+            .blackboard
+            .get_f64("speed_controller.target_speed_kmh")
+            .unwrap_or(speed_kmh);
+
+        let sign_limit = ctx.blackboard.get_f64("sign.speed_limit_kmh");
+        let lead_dist = if t.lead_vehicle_distance_m >= 0.0 {
+            Some(t.lead_vehicle_distance_m as f64)
+        } else {
+            None
+        };
+
+        let intervention = if self.detect_intervention(ctx) { 1 } else { 0 };
+
+        // Lock DB only after all blackboard reads + mutable self calls.
+        let conn_mutex = match &self.conn {
+            Some(c) => c,
+            None => return,
+        };
+        let conn = match conn_mutex.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        if let Err(e) = conn.execute(
+            "INSERT INTO tick_log (timestamp_ms, autopilot_state, lateral_error_m, heading_error_rad,
+             speed_kmh, target_speed_kmh, throttle, brake, steering, lead_distance_m,
+             sign_limit_kmh, intervention)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                ts,
+                state,
+                None::<f64>, // lateral_error_m — not yet available
+                None::<f64>, // heading_error_rad — not yet available
+                speed_kmh,
+                target_kmh,
+                None::<f64>, // throttle — from arbitrator, not visible in tick()
+                None::<f64>, // brake — same
+                None::<f64>, // steering — same
+                lead_dist,
+                sign_limit,
+                intervention,
+            ],
+        ) {
+            tracing::warn!("[stats-logger] tick_log insert: {e}");
+        }
+
+        self.tick_idx += 1;
+    }
+
+    fn detect_intervention(&mut self, ctx: &PluginContext) -> bool {
+        let current = ctx.state();
+        let was_active = self.last_state.as_deref() == Some("Active");
+        let now_off = current.as_deref() == Some("Off");
+        let now_fault = current.as_deref() == Some("Fault");
+
+        // State change: Active -> Off (manual disengage) or Active -> Fault.
+        let state_driven = was_active && (now_off || now_fault);
+
+        // Explicit intervention flags from other plugins.
+        let steer = ctx.blackboard.get("autopilot.intervention_steering").as_deref() == Some("true");
+        let brake = ctx.blackboard.get("autopilot.intervention_brake").as_deref() == Some("true");
+
+        self.last_state = current;
+        state_driven || steer || brake
+    }
+
+    fn write_fault_log(&mut self, ctx: &PluginContext) {
+        let current = ctx.state();
+        let was_active = self.last_state.as_deref() == Some("Active");
+        let now_fault = current.as_deref() == Some("Fault");
+
+        if !was_active || !now_fault {
+            return;
+        }
+
+        let conn_mutex = match &self.conn {
+            Some(c) => c,
+            None => return,
+        };
+        let conn = match conn_mutex.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let ts = monotonic_ms();
+        let reason = ctx
+            .blackboard
+            .get("autopilot.fault_reason")
+            .unwrap_or_else(|| "unknown".into());
+
+        if let Err(e) = conn.execute(
+            "INSERT INTO fault_log (timestamp_ms, reason, context) VALUES (?1, ?2, ?3)",
+            params![ts, reason, None::<String>],
+        ) {
+            tracing::warn!("[stats-logger] fault_log insert: {e}");
+        }
+    }
+
+    fn write_pid_tuning_changes(&mut self, ctx: &PluginContext) {
+        let conn_mutex = match &self.conn {
+            Some(c) => c,
+            None => return,
+        };
+        let conn = match conn_mutex.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let ts = monotonic_ms();
+
+        for (name, param, _blackboard_key, old_val, new_val) in [
+            (
+                "speed_controller",
+                "kp",
+                "pid_tuning.speed_controller.kp",
+                self.last_observed_gains[0].1.0,
+                ctx.blackboard.get_f64("pid_tuning.speed_controller.kp"),
+            ),
+            (
+                "speed_controller",
+                "ki",
+                "pid_tuning.speed_controller.ki",
+                self.last_observed_gains[0].1.1,
+                ctx.blackboard.get_f64("pid_tuning.speed_controller.ki"),
+            ),
+            (
+                "speed_controller",
+                "kd",
+                "pid_tuning.speed_controller.kd",
+                self.last_observed_gains[0].1.2,
+                ctx.blackboard.get_f64("pid_tuning.speed_controller.kd"),
+            ),
+            (
+                "lane_keeper",
+                "kp",
+                "pid_tuning.lane_keeper.kp",
+                self.last_observed_gains[1].1.0,
+                ctx.blackboard.get_f64("pid_tuning.lane_keeper.kp"),
+            ),
+            (
+                "lane_keeper",
+                "ki",
+                "pid_tuning.lane_keeper.ki",
+                self.last_observed_gains[1].1.1,
+                ctx.blackboard.get_f64("pid_tuning.lane_keeper.ki"),
+            ),
+            (
+                "lane_keeper",
+                "kd",
+                "pid_tuning.lane_keeper.kd",
+                self.last_observed_gains[1].1.2,
+                ctx.blackboard.get_f64("pid_tuning.lane_keeper.kd"),
+            ),
+        ] {
+            if let Some(new_v) = new_val {
+                if (new_v - old_val).abs() > 1e-9 {
+                    let _ = conn.execute(
+                        "INSERT INTO pid_tuning_log (timestamp_ms, plugin_name, parameter, old_value, new_value, set_by)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![ts, name, param, old_val, new_v, "blackboard"],
+                    );
+                }
+            }
+        }
+
+        // Sync observed values for next tick.
+        self.last_observed_gains[0].1 = (
+            ctx.blackboard.get_f64("pid_tuning.speed_controller.kp").unwrap_or(self.last_observed_gains[0].1.0),
+            ctx.blackboard.get_f64("pid_tuning.speed_controller.ki").unwrap_or(self.last_observed_gains[0].1.1),
+            ctx.blackboard.get_f64("pid_tuning.speed_controller.kd").unwrap_or(self.last_observed_gains[0].1.2),
+        );
+        self.last_observed_gains[1].1 = (
+            ctx.blackboard.get_f64("pid_tuning.lane_keeper.kp").unwrap_or(self.last_observed_gains[1].1.0),
+            ctx.blackboard.get_f64("pid_tuning.lane_keeper.ki").unwrap_or(self.last_observed_gains[1].1.1),
+            ctx.blackboard.get_f64("pid_tuning.lane_keeper.kd").unwrap_or(self.last_observed_gains[1].1.2),
+        );
+    }
 }
 
 fn now_iso8601() -> String {
@@ -289,6 +562,24 @@ impl Plugin for StatsLoggerPlugin {
             ctx.blackboard
                 .set("stats.duration_s", session.duration_s.to_string());
         }
+
+        // Fault detection must run before write_tick_log because detect_intervention
+        // (called inside write_tick_log) updates self.last_state. write_fault_log needs
+        // self.last_state = previous tick's state to detect Active→Fault transitions.
+        self.write_fault_log(ctx);
+
+        // Tick-log sampling with configurable frequency.
+        let hz = ctx
+            .blackboard
+            .get_f64("stats_logger.tick_log_hz")
+            .unwrap_or(DEFAULT_TICK_LOG_HZ);
+        let skip_ticks = (50.0 / hz.max(0.1)) as u64;
+        if skip_ticks == 0 || self.tick_idx.is_multiple_of(skip_ticks) {
+            self.write_tick_log(t, ctx);
+        }
+
+        // PID tuning change tracking.
+        self.write_pid_tuning_changes(ctx);
     }
 }
 

@@ -20,26 +20,58 @@ const BASE_LOOK_AHEAD: f64 = 5.0; // meters at standstill
 const SPEED_FACTOR: f64 = 0.5; // extra meters per km/h
 const WAYPOINT_REACH_M: f64 = 5.0; // advance waypoint within this radius
 
+const DEFAULT_KP: f64 = 0.8;
+const DEFAULT_KI: f64 = 0.1;
+const DEFAULT_KD: f64 = 0.3;
+
 pub struct LaneKeeperPlugin {
     pid: Pid,
     waypoints: Vec<[f64; 2]>, // (x, z) pairs
     progress_idx: usize,
     /// Catmull-Rom subdivisions (configurable).
     subdivisions: usize,
+    last_gains: (f64, f64, f64),
 }
 
 impl Default for LaneKeeperPlugin {
     fn default() -> Self {
         Self {
-            pid: Pid::new(0.8, 0.1, 0.3, 2.0, 1.0),
+            pid: Pid::new(DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, 2.0, 1.0),
             waypoints: Vec::new(),
             progress_idx: 0,
             subdivisions: 4,
+            last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
         }
     }
 }
 
 impl LaneKeeperPlugin {
+    fn apply_gain_overrides(&mut self, ctx: &PluginContext) {
+        let kp = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.kp")
+            .unwrap_or(DEFAULT_KP);
+        let ki = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.ki")
+            .unwrap_or(DEFAULT_KI);
+        let kd = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.kd")
+            .unwrap_or(DEFAULT_KD);
+        let next = (kp, ki, kd);
+        if next != self.last_gains {
+            self.pid.set_kp(kp);
+            self.pid.set_ki(ki);
+            self.pid.set_kd(kd);
+            self.last_gains = next;
+            tracing::info!("[lane-keeper] gains updated kp={kp} ki={ki} kd={kd}");
+            ctx.blackboard.set("pid_tuning.lane_keeper.kp", kp.to_string());
+            ctx.blackboard.set("pid_tuning.lane_keeper.ki", ki.to_string());
+            ctx.blackboard.set("pid_tuning.lane_keeper.kd", kd.to_string());
+        }
+    }
+
     fn load_waypoints_from_blackboard(&mut self, ctx: &PluginContext) {
         if let Some(json) = ctx.blackboard.get("router.waypoints") {
             if let Ok(pts) = serde_json::from_str::<Vec<[f64; 2]>>(&json) {
@@ -151,6 +183,9 @@ impl Plugin for LaneKeeperPlugin {
             self.pid.reset();
             return None;
         }
+
+        // Apply runtime gain overrides from blackboard (PID hotswap).
+        self.apply_gain_overrides(ctx);
 
         let t = telemetry?;
 

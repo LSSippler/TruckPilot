@@ -62,9 +62,14 @@ impl SpeedControllerPlugin {
             .unwrap_or(DEFAULT_KD);
         let next = (kp, ki, kd);
         if next != self.last_gains {
-            self.pid = Pid::new(kp, ki, kd, INTEGRAL_LIMIT, OUTPUT_LIMIT);
+            self.pid.set_kp(kp);
+            self.pid.set_ki(ki);
+            self.pid.set_kd(kd);
             self.last_gains = next;
             tracing::info!("[speed-ctrl] gains updated kp={kp} ki={ki} kd={kd}");
+            ctx.blackboard.set("pid_tuning.speed_controller.kp", kp.to_string());
+            ctx.blackboard.set("pid_tuning.speed_controller.ki", ki.to_string());
+            ctx.blackboard.set("pid_tuning.speed_controller.kd", kd.to_string());
         }
     }
 }

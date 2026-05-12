@@ -51,4 +51,8 @@ impl Pid {
         self.prev_error = 0.0;
         self.first_update = true;
     }
+
+    pub fn set_kp(&mut self, kp: f64) { self.kp = kp; }
+    pub fn set_ki(&mut self, ki: f64) { self.ki = ki; }
+    pub fn set_kd(&mut self, kd: f64) { self.kd = kd; }
 }

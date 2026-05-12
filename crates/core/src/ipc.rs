@@ -248,14 +248,31 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             kp,
             ki,
             kd,
-            output_limit,
+            output_limit: _,
         } => {
-            info!("PID profile update {profile}: kp={kp} ki={ki} kd={kd} out={output_limit}");
-            vec![CoreMessage::error(
-                "not_implemented",
-                Some("pid_profile_update".into()),
-                "PID tuning service not wired up yet — settings will be persisted via plugin_settings_update".to_string(),
-            )]
+            info!("PID profile update {profile}: kp={kp} ki={ki} kd={kd}");
+            let mgr = manager.lock().await;
+            match profile.as_str() {
+                "lane_keeper" => {
+                    mgr.blackboard.set("plugin.lane_keeper.kp", kp.to_string());
+                    mgr.blackboard.set("plugin.lane_keeper.ki", ki.to_string());
+                    mgr.blackboard.set("plugin.lane_keeper.kd", kd.to_string());
+                }
+                "speed_controller" | "speed-controller" => {
+                    mgr.blackboard.set("plugin.speed_controller.kp", kp.to_string());
+                    mgr.blackboard.set("plugin.speed_controller.ki", ki.to_string());
+                    mgr.blackboard.set("plugin.speed_controller.kd", kd.to_string());
+                }
+                _ => {
+                    return vec![CoreMessage::error(
+                        "not_found",
+                        Some("pid_profile_update".into()),
+                        format!("unknown PID profile '{profile}'"),
+                    )];
+                }
+            }
+            let profiles = mgr.pid_profiles();
+            vec![CoreMessage::PidProfileList { v: V, profiles }]
         }
         UiCommand::PidProfileReset { profile } => vec![CoreMessage::error(
             "not_implemented",
