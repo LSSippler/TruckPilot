@@ -49,10 +49,15 @@
 //!
 //! | Key                      | Written by   | Read by |
 //! |--------------------------|--------------|---------|
-//! | `stats.session_id`       | stats-logger | UI      |
-//! | `stats.distance_km`      | stats-logger | UI      |
-//! | `stats.duration_s`       | stats-logger | UI      |
-//! | `stats_logger.tick_log_hz` | UI/config  | stats-logger |
+//! | `stats.session_id`                     | stats-logger | UI           |
+//! | `stats.distance_km`                    | stats-logger | UI           |
+//! | `stats.duration_s`                     | stats-logger | UI           |
+//! | `stats_logger.tick_log_hz`             | UI/config    | stats-logger |
+//! | `autopilot.intervention_steering`      | external     | stats-logger |
+//! | `autopilot.intervention_brake`         | external     | stats-logger |
+//! | `autopilot.fault_reason`               | core         | stats-logger |
+//! | `pid_tuning.speed_controller.{kp,ki,kd}` | speed-controller | stats-logger |
+//! | `pid_tuning.lane_keeper.{kp,ki,kd}`    | lane-keeper  | stats-logger |
 
 use std::path::PathBuf;
 use std::sync::Mutex;

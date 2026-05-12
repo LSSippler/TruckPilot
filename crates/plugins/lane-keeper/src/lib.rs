@@ -3,6 +3,9 @@
 //! Reads waypoints from `router.waypoints` on the blackboard.
 //! Writes only `output.steering`, leaves throttle/brake untouched.
 //!
+//! PID gains are tunable at runtime via `plugin.lane_keeper.{kp,ki,kd}`.
+//! Confirmed active gains are echoed to `pid_tuning.lane_keeper.{kp,ki,kd}`.
+//!
 //! ## Speed-adaptive look-ahead
 //!
 //! `look_ahead_m = BASE_LOOK_AHEAD + speed_kmh * SPEED_FACTOR`
