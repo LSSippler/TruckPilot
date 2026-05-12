@@ -1,8 +1,17 @@
 {
+  "env": {
+    "ECC_DISABLED_HOOKS": "pre:edit-write:gateguard-fact-force"
+  },
   "permissions": {
     "allow": [
       "Bash(dotnet build *)",
-      "Bash(dotnet run *)"
+      "Bash(dotnet run *)",
+      "Skill(update-config)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\dev\\\\ets2-acc-plugin\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName)",
+      "PowerShell(New-Item *)"
     ]
+  },
+  "remote": {
+    "defaultEnvironmentId": "env_01EfbLiPhefhdmmk1Ty4oDr4"
   }
 }
