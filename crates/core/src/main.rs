@@ -16,6 +16,7 @@ use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 mod ipc;
 mod plugin_manager;
 mod state_machine;
+mod watchdog;
 
 use plugin_manager::PluginManager;
 
@@ -515,13 +516,18 @@ async fn run_daemon() {
 
     // Watchdog: a u64 heartbeat (microseconds since `daemon_start`)
     // that the control loop bumps every tick. If it goes stale beyond
-    // `WATCHDOG_STALL_MS`, the watchdog task forces vJoy into the
-    // failsafe state so the truck doesn't keep cruising blind on the
-    // last good outputs.
+    // heartbeat_stall_ms, the watchdog activates the vJoy failsafe (auto-
+    // recovers). A separate telemetry-stale check fires report_fault when
+    // telemetry.available has been false for >300 ms.
     let daemon_start = Instant::now();
     let heartbeat = Arc::new(AtomicU64::new(0));
-    heartbeat.store(0, Ordering::Relaxed);
-    tokio::spawn(watchdog_loop(heartbeat.clone(), daemon_start));
+    let state_machine = Arc::new(Mutex::new(state_machine::AutopilotStateMachine::new()));
+    tokio::spawn(watchdog::watchdog_loop(
+        heartbeat.clone(),
+        blackboard.clone(),
+        state_machine.clone(),
+        daemon_start,
+    ));
 
     // Status frames are throttled to 10 Hz (1 per 5 daemon ticks) plus
     // an immediate send whenever the autopilot state transitions, so
@@ -540,10 +546,6 @@ async fn run_daemon() {
     let mut output = ControlOutput::default();
     // Wallclock-based dt: PID terms drift if the loop slips below 50 Hz.
     let mut last_tick = Instant::now();
-    // Autopilot state machine (Phase 6.2a). Publishes `autopilot.state`
-    // to the blackboard each tick so plugins can branch via
-    // `ctx.is_active()` etc.
-    let mut state_machine = state_machine::AutopilotStateMachine::new();
 
     info!("Running — press Ctrl+C to stop");
 
@@ -584,29 +586,39 @@ async fn run_daemon() {
         // they see the most recent value via ctx helpers. Engage/disengage
         // requests arrive through the blackboard (set by IPC handlers
         // and any hotkey path).
-        state_machine.consume_requests(&blackboard);
-        let current_state = state_machine.evaluate(telemetry.as_ref(), &blackboard);
+        let status_payload = {
+            let mut sm = state_machine.lock().await;
+            sm.consume_requests(&blackboard);
+            let current_state = sm.evaluate(telemetry.as_ref(), &blackboard);
 
-        // Publish AutopilotStatus to the UI: every 5th tick (10 Hz) and
-        // immediately on state change so transitions never wait up to
-        // ~100 ms to surface.
-        status_tick_counter = status_tick_counter.wrapping_add(1);
-        let state_str = current_state.as_str().to_string();
-        let state_changed = last_status_state.as_deref() != Some(state_str.as_str());
-        if state_changed || status_tick_counter >= 5 {
-            status_tick_counter = 0;
-            last_status_state = Some(state_str.clone());
-            let preconditions =
-                state_machine.preconditions_snapshot(telemetry.as_ref(), &blackboard);
-            let fault_reason = state_machine
-                .fault_reason()
-                .map(|r| r.as_str());
+            // Publish AutopilotStatus to the UI: every 5th tick (10 Hz) and
+            // immediately on state change so transitions never wait up to
+            // ~100 ms to surface.
+            status_tick_counter = status_tick_counter.wrapping_add(1);
+            let state_str = current_state.as_str().to_string();
+            let state_changed =
+                last_status_state.as_deref() != Some(state_str.as_str());
+            if state_changed || status_tick_counter >= 5 {
+                status_tick_counter = 0;
+                last_status_state = Some(state_str.clone());
+                let preconditions =
+                    sm.preconditions_snapshot(telemetry.as_ref(), &blackboard);
+                let fault_reason = sm.fault_reason().map(|r| r.as_str());
+                let tick_count = sm.tick_count();
+                Some((state_str, fault_reason, preconditions, tick_count))
+            } else {
+                None
+            }
+        };
+        if let Some((state_str, fault_reason, preconditions, tick_count)) =
+            status_payload
+        {
             let _ = ipc_tx.send(CoreMessage::AutopilotStatus {
                 v: CoreMessage::VERSION,
                 state: state_str,
                 fault_reason,
                 preconditions,
-                tick_count: state_machine.tick_count(),
+                tick_count,
             });
         }
 
@@ -634,79 +646,7 @@ async fn run_daemon() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Watchdog
-// ---------------------------------------------------------------------------
-
-/// Time without a heartbeat update before the watchdog engages
-/// failsafe.
-const WATCHDOG_STALL_MS: u64 = 100;
-/// How often the watchdog wakes up to inspect the heartbeat. Must be
-/// notably below `WATCHDOG_STALL_MS` to react inside the same stall.
-const WATCHDOG_POLL_MS: u64 = 25;
-/// Throttle how often we *log* a "still stalled" warning. The
-/// failsafe output is still applied every poll while stalled.
-const WATCHDOG_LOG_INTERVAL_S: u64 = 1;
-
-/// Watchdog task. Wakes every [`WATCHDOG_POLL_MS`] and checks how long
-/// it has been since the control loop last bumped `heartbeat`. If the
-/// gap exceeds [`WATCHDOG_STALL_MS`], applies the vJoy failsafe.
-async fn watchdog_loop(heartbeat: Arc<AtomicU64>, daemon_start: Instant) {
-    let mut last_warn: Option<Instant> = None;
-    let stall_us = WATCHDOG_STALL_MS * 1_000;
-    loop {
-        tokio::time::sleep(Duration::from_millis(WATCHDOG_POLL_MS)).await;
-
-        let beat_us = heartbeat.load(Ordering::Relaxed);
-        // Special-case: very first ticks before the loop has had a
-        // chance to bump the heartbeat. Treat 0 as "not started yet".
-        if beat_us == 0 {
-            continue;
-        }
-
-        let now_us = daemon_start.elapsed().as_micros() as u64;
-        let age_us = now_us.saturating_sub(beat_us);
-        if age_us > stall_us {
-            apply_vjoy_failsafe();
-            let now = Instant::now();
-            let should_warn = match last_warn {
-                None => true,
-                Some(t) => now.duration_since(t) >= Duration::from_secs(WATCHDOG_LOG_INTERVAL_S),
-            };
-            if should_warn {
-                warn!(
-                    "WATCHDOG: control loop stalled for {} ms — vJoy held at failsafe",
-                    age_us / 1_000
-                );
-                last_warn = Some(now);
-            }
-        }
-    }
-}
-
-/// Force vJoy into a safe state when the control loop stalls.
-///
-/// Failsafe values: `steering=0.0`, `throttle=0.0`, `brake=0.3`.
-/// Brake is *non-zero* to actively slow the truck down rather than
-/// merely freeing the pedals — a stalled daemon almost always means
-/// something is very wrong and continuing to coast is more dangerous
-/// than a moderate brake.
-fn apply_vjoy_failsafe() {
-    // TODO(Phase 6): wire this to the real vJoyInterface.dll path in
-    // `crates/plugins/vjoy-output`. Today both that plugin's
-    // `send_to_vjoy` and this helper are stubs that only log.
-    let failsafe = ControlOutput {
-        steering: 0.0,
-        throttle: 0.0,
-        brake: 0.3,
-    };
-    tracing::debug!(
-        "[failsafe] steer={:.2} thr={:.2} brk={:.2}",
-        failsafe.steering,
-        failsafe.throttle,
-        failsafe.brake,
-    );
-}
+// Watchdog loop + failsafe implementation moved to crates/core/src/watchdog.rs (Phase 6.2g.2).
 
 // ---------------------------------------------------------------------------
 // Telemetry → Blackboard bridge
