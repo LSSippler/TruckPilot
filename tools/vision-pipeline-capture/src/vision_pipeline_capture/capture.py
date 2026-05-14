@@ -13,6 +13,35 @@ from .shm_writer import ShmFrameWriter
 
 log = logging.getLogger(__name__)
 
+# Pipeline-spec'd maximum capture resolution (Phase 6.5c Decision 5).
+# Frames larger than this are INTER_AREA-downscaled before JPEG encode to keep
+# JPEG size ~150-250 KB and Rust-side decode under 5 ms.
+MAX_W = 1920
+MAX_H = 1080
+
+
+def downscale_frame(
+    frame,  # type: ignore[no-untyped-def]
+    max_w: int = MAX_W,
+    max_h: int = MAX_H,
+    _logged: dict[str, bool] | None = None,
+):
+    """Return `frame` resized to fit within (max_w, max_h) via INTER_AREA.
+
+    Frames already inside the budget are returned untouched. The optional
+    `_logged` dict is used to emit the "downscaling ..." message only once
+    per capture session (set `_logged={}` and reuse it across calls).
+    """
+    import cv2  # local import: keeps shm_writer test path import-light
+
+    h, w = frame.shape[:2]
+    if w <= max_w and h <= max_h:
+        return frame
+    if _logged is not None and not _logged.get("v"):
+        log.info("downscaling from %dx%d to %dx%d", w, h, max_w, max_h)
+        _logged["v"] = True
+    return cv2.resize(frame, (max_w, max_h), interpolation=cv2.INTER_AREA)
+
 
 @dataclass
 class CaptureStats:
@@ -90,6 +119,8 @@ def run_capture(
     window_title: str = "Euro Truck Simulator 2",
     pause_hotkey: str = "F8",
     quit_hotkey: str = "F9",
+    max_width: int = MAX_W,
+    max_height: int = MAX_H,
     on_stats: Callable[[CaptureStats], None] | None = None,
 ) -> CaptureStats:
     """Capture ETS2 window at `fps`, JPEG-encode, publish to SHM. F8=pause, F9=quit."""
@@ -127,6 +158,7 @@ def run_capture(
     next_tick = time.monotonic()
     last_window = time.monotonic()
     frames_in_window = 0
+    downscale_log_state: dict[str, bool] = {}
 
     try:
         with ShmFrameWriter(name=shm_name) as writer:
@@ -140,6 +172,7 @@ def run_capture(
                 if frame is None:
                     stats.frames_skipped += 1
                 else:
+                    frame = downscale_frame(frame, max_width, max_height, downscale_log_state)
                     h, w = frame.shape[:2]
                     ok, buf = cv2.imencode(".jpg", frame, encode_params)
                     if not ok:

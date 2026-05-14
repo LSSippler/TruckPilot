@@ -28,6 +28,8 @@ def cli(verbose: bool) -> None:
 @click.option("--window-title", default="Euro Truck Simulator 2", show_default=True)
 @click.option("--pause-hotkey", default="F8", show_default=True)
 @click.option("--quit-hotkey", default="F9", show_default=True)
+@click.option("--max-width", default=1920, show_default=True, type=int, help="downscale ceiling W")
+@click.option("--max-height", default=1080, show_default=True, type=int, help="downscale ceiling H")
 def start_cmd(
     shm_name: str,
     fps: int,
@@ -35,6 +37,8 @@ def start_cmd(
     window_title: str,
     pause_hotkey: str,
     quit_hotkey: str,
+    max_width: int,
+    max_height: int,
 ) -> None:
     """Start the capture producer. F8 pauses/resumes, F9 quits."""
     from .capture import run_capture
@@ -45,6 +49,8 @@ def start_cmd(
         window_title=window_title,
         pause_hotkey=pause_hotkey,
         quit_hotkey=quit_hotkey,
+        max_width=max_width,
+        max_height=max_height,
     )
     console.print(
         f"published={stats.frames_published} skipped={stats.frames_skipped} "
