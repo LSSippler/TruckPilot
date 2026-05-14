@@ -1,0 +1,41 @@
+# TruckPilot Phase 6.5d - Vision Training Collector Config
+
+[youtube]
+search_terms = [
+    "ETS2 gameplay",
+    "Euro Truck Simulator 2 highway",
+    "ETS2 city driving",
+]
+channels = []     # optional specific YouTube channels (URLs)
+playlists = []    # optional playlist URLs
+min_duration_seconds = 300
+target_resolution = "1080p"
+daily_quota_gb = 5
+max_results_per_search = 25
+
+[capture]
+ets2_window_title = "Euro Truck Simulator 2"
+hotkey_save = "F8"
+hotkey_quit = "F9"
+auto_interval_seconds = 2
+
+[extract]
+frame_interval_seconds = 2
+skip_black_threshold = 0.05      # mean luminance below this -> skip
+skip_menu_color_count = 50       # unique-color count below this -> skip (menu/loading)
+target_width = 1920
+target_height = 1080
+
+[dedupe]
+phash_threshold = 5              # hamming-distance threshold
+
+[export]
+train_ratio = 0.80
+val_ratio = 0.15
+test_ratio = 0.05
+seed = 42
+
+[scene_hint]
+# heuristic edge-density thresholds
+highway_horizontal_ratio = 0.55
+city_edge_density = 0.10

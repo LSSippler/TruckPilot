@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vision-training-collector"
+version = "0.1.0"
+description = "TruckPilot Phase 6.5d - ETS2 vision training data collector"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "TruckPilot" }]
+dependencies = [
+    "yt-dlp>=2024.1.1",
+    "opencv-python>=4.9",
+    "imagehash>=4.3",
+    "dxcam>=0.0.5; sys_platform == 'win32'",
+    "pillow>=10.0",
+    "tqdm>=4.66",
+    "click>=8.1",
+    "rich>=13.7",
+    "tomli>=2.0; python_version < '3.11'",
+    "numpy>=1.26",
+    "keyboard>=0.13.5; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=4.1", "ruff>=0.4"]
+
+[project.scripts]
+vision-training-collector = "vision_training_collector.__main__:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
