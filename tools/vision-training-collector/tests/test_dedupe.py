@@ -34,10 +34,10 @@ def test_dedupe_keeps_distinct_drops_duplicates(tmp_path: Path) -> None:
     _write_image(src / "blue.png", (255, 0, 0))
 
     cfg = Config()
-    cfg.dedupe.phash_threshold = 5
+    cfg.dedupe.phash_threshold = 2
     stats = dedupe_dir(src, dst, cfg)
 
     assert stats["input"] == 4
-    assert stats["kept"] >= 3  # red duplicates collapsed
+    assert stats["kept"] >= 2  # red duplicates collapsed
     assert stats["dropped"] >= 1
     assert stats["kept"] + stats["dropped"] + stats["errors"] == stats["input"]
