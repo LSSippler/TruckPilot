@@ -1,0 +1,40 @@
+# ETS2LA YOLOv5s (22 classes) -> TruckPilot Phase 1 (15 classes) mapping.
+# Used by pre_label.py to translate inference results to TruckPilot labels.
+
+ets2la_to_truckpilot:
+  0: 0    # car -> Car
+  1: 1    # truck -> Truck
+  3: 3    # bus -> Bus
+  4: 10   # stop_sign -> StopSign
+  6: 11   # speedlimit_sign -> SpeedLimitSign
+  15: 9   # green_traffic_light -> TrafficLightGreen
+  16: 8   # yellow_traffic_light -> TrafficLightYellow
+  17: 7   # red_traffic_light -> TrafficLightRed
+  21: 12  # lane_separator -> LaneSolid (default; reviewer may re-label as LaneDashed/RoadEdge)
+
+# ETS2LA classes that have no TruckPilot counterpart - dropped entirely.
+ets2la_suppress: [2, 5, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20]
+
+truckpilot_classes:
+  0: Car
+  1: Truck
+  2: TruckTrailer
+  3: Bus
+  4: BrakeLightOn
+  5: TurnSignalLeft
+  6: TurnSignalRight
+  7: TrafficLightRed
+  8: TrafficLightYellow
+  9: TrafficLightGreen
+  10: StopSign
+  11: SpeedLimitSign
+  12: LaneSolid
+  13: LaneDashed
+  14: RoadEdge
+
+# TruckPilot classes the ETS2LA model cannot produce - must be labeled manually.
+manual_only_classes: [2, 4, 5, 6, 13, 14]
+
+confidence_tiers:
+  auto_accept: 0.85   # >= goes to labels/auto
+  review_min: 0.30    # [review_min, auto_accept) goes to labels/review; < drops

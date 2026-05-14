@@ -88,6 +88,34 @@ def export_cmd(ctx: click.Context) -> None:
     console.print(stats)
 
 
+@cli.command("pre-label")
+@click.option("--input", "input_dir", type=click.Path(path_type=Path), required=True)
+@click.option("--output", "output_dir", type=click.Path(path_type=Path), required=True)
+@click.option("--model", "model_path", type=click.Path(path_type=Path), required=True)
+@click.option("--mapping", "mapping_path", type=click.Path(path_type=Path), default=None)
+@click.option("--conf-auto", type=float, default=None, help="override auto-accept threshold")
+@click.option("--conf-review", type=float, default=None, help="override review-min threshold")
+@click.option("--dry-run", is_flag=True)
+def pre_label_cmd(
+    input_dir: Path,
+    output_dir: Path,
+    model_path: Path,
+    mapping_path: Path | None,
+    conf_auto: float | None,
+    conf_review: float | None,
+    dry_run: bool,
+) -> None:
+    from .pre_label import ClassMapping, pre_label_directory
+    mapping_file = mapping_path or (DEFAULT_CONFIG.parent / "class_mapping.yaml")
+    mapping = ClassMapping.from_yaml(mapping_file)
+    if conf_auto is not None:
+        mapping.auto_accept = conf_auto
+    if conf_review is not None:
+        mapping.review_min = conf_review
+    report = pre_label_directory(input_dir, output_dir, mapping, model_path, dry_run=dry_run)
+    console.print(report)
+
+
 @cli.command("pipeline")
 @click.option("--skip-scrape", is_flag=True)
 @click.option("--skip-capture", is_flag=True, default=True, help="skip live capture by default")

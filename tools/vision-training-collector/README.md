@@ -49,6 +49,61 @@ python -m vision_training_collector stats                    # Datensatz-Statist
 
 Alle Pfade liegen unter `tools/vision-training-collector/data/` und sind nicht versioniert.
 
+## Pre-Labeling (ETS2LA YOLOv5s)
+
+Phase 6.5d nutzt das vortrainierte ETS2LA YOLOv5s-Model (22 Klassen), um TruckPilot-Frames automatisch vorzubeschriften und so Roboflow/CVAT-Annotation zu beschleunigen. 9 der 15 TruckPilot-Klassen sind direkt mappbar (siehe `class_mapping.yaml`):
+
+| ETS2LA              | -> | TruckPilot                |
+|---------------------|----|---------------------------|
+| car (0)             | -> | Car (0)                   |
+| truck (1)           | -> | Truck (1)                 |
+| bus (3)             | -> | Bus (3)                   |
+| stop_sign (4)       | -> | StopSign (10)             |
+| speedlimit_sign (6) | -> | SpeedLimitSign (11)       |
+| green_light (15)    | -> | TrafficLightGreen (9)     |
+| yellow_light (16)   | -> | TrafficLightYellow (8)    |
+| red_light (17)      | -> | TrafficLightRed (7)       |
+| lane_separator (21) | -> | LaneSolid (12) *default*  |
+
+Confidence-Tiers:
+- `>= 0.85` -> `labels/auto/` (direkt verwendbar)
+- `0.30 - 0.85` -> `labels/review/` (manuell bestaetigen / korrigieren)
+- `< 0.30` -> verworfen
+
+Komplett manuell zu annotieren (kein ETS2LA-Counterpart): **TruckTrailer, BrakeLightOn, TurnSignalLeft, TurnSignalRight, LaneDashed, RoadEdge**. Fuer Bilder ohne automatische Detektion legt die Pipeline ein leeres `labels/manual/<stem>.txt` an als To-do-Slot.
+
+### CLI
+
+```powershell
+python -m vision_training_collector pre-label `
+    --input  data/final/images/train `
+    --output data/pre_labeled/train `
+    --model  ../../models/ets2la-object-detection/YOLOv5s/YOLOv5s-1-Active.pt
+```
+
+Optional: `--conf-auto 0.85`, `--conf-review 0.30`, `--dry-run` (Statistik ohne Files), `--mapping <path-to-yaml>`.
+
+### Output-Struktur
+
+```
+data/pre_labeled/train/
+├── images/                 (alle Frames - Symlink wenn moeglich)
+├── labels/
+│   ├── auto/               (>=0.85, ready)
+│   ├── review/             (0.30-0.85, pruefen)
+│   └── manual/             (leer-Slots fuer Frames ohne Detection)
+├── class_mapping.yaml      (Kopie zur Reproduzierbarkeit)
+└── pre_label_report.json   (Statistik: per Tier, per Klasse, Inferenzzeit)
+```
+
+### CVAT / Roboflow Import
+
+Das Standard-YOLO-Format (`class cx cy w h`, normalisiert) wird sowohl von CVAT als auch Roboflow direkt akzeptiert. `data.yaml` aus dem `export`-Schritt liefert die 15-Klassen-Names, die in Roboflow als Label-Set importiert werden koennen. `labels/auto/` und `labels/review/` koennen entweder zusammengefuehrt oder als separate Projekte angelegt werden — letzteres erleichtert den Review-Workflow.
+
+### Windows-Hinweis
+
+`pre_label.py` setzt vor dem Load `pathlib.PosixPath = pathlib.WindowsPath`, weil ETS2LAs `.pt`-Checkpoint POSIX-Pfade gepickelt enthaelt. Ohne diesen Workaround crasht `torch.load` auf Windows mit `NotImplementedError: cannot instantiate 'PosixPath' on your system`.
+
 ## Resume
 
 `data/state.json` trackt bereits heruntergeladene YouTube-IDs, extrahierte Videos und das tägliche Download-Volumen. Wird der Prozess abgebrochen, übernimmt der nächste Lauf nahtlos.

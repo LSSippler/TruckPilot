@@ -1,0 +1,28 @@
+# Python build / venv / cache
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.ruff_cache/
+.mypy_cache/
+
+# Tool output (run reports etc.)
+outputs/
+
+# Model checkpoints accidentally placed here
+*.pt
+*.onnx
+*.engine

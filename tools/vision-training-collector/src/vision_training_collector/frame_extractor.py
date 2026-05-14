@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 from .config import Config
 from .state import State
@@ -58,11 +59,22 @@ def extract_video(
     stats = {"read": 0, "saved": 0, "skipped_black": 0, "skipped_menu": 0}
     idx = 0
     saved_idx = 0
+
+    pbar = tqdm(
+        total=total if total > 0 else None,
+        desc=f"Extracting {video_path.stem}",
+        unit="frame",
+        unit_scale=False,
+        smoothing=0.1,
+    )
+
     while True:
         ok, frame = cap.read()
         if not ok:
             break
         stats["read"] += 1
+        pbar.update(1)
+        pbar.set_postfix(saved=stats["saved"], black=stats["skipped_black"], menu=stats["skipped_menu"])
         if idx % step != 0:
             idx += 1
             continue
@@ -78,6 +90,7 @@ def extract_video(
         cv2.imwrite(str(out_path), norm, [cv2.IMWRITE_JPEG_QUALITY, 92])
         saved_idx += 1
         stats["saved"] += 1
+    pbar.close()
     cap.release()
 
     if state is not None:
