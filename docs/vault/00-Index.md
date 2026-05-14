@@ -100,6 +100,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - Phase 6.4 — ProMods-Support (PLANNED, XL Aufwand)
 - Phase 6.5 — UI-Dashboard erweitert (PLANNED)
 - [[01-Phases/Phase-6.5b-Memory-Hack-Validation]] — RE Tag 1+2: Ghidra+x64dbg Live-Validation + CE Speed-Scan-Pivot (IN PROGRESS)
+- [[01-Phases/Phase-6.5c.1-DXcam-SHM-PoC]] — DXcam → SHM Frame Capture: Python-Producer + Rust-Reader, Sequence-Lock, 6/6 Tests grün, Live-Test pending
 - Phase 6.x — Vision-ACC (DEFERRED, langfristig)
 
 ## Open Threads (Phase 6.2 follow-ups)

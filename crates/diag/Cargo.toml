@@ -43,6 +43,10 @@ path = "src/bin/ets2la_traffic_probe.rs"
 name = "truckpilot-router-perf-audit"
 path = "src/bin/router_perf_audit.rs"
 
+[[bin]]
+name = "shm-frame-reader"
+path = "src/bin/shm_frame_reader.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
@@ -55,6 +59,9 @@ dirs             = "5.0"
 # HTTP check
 ureq = "2"
 
+# SHM frame reader (Phase 6.5c.1)
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -64,4 +71,6 @@ windows = { version = "0.52", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_Security",
 ] }

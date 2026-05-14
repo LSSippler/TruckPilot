@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vision-pipeline-capture"
+version = "0.1.0"
+description = "TruckPilot Phase 6.5c.1 - DXcam to SHM frame producer for ETS2"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "TruckPilot" }]
+dependencies = [
+    "dxcam>=0.0.5; sys_platform == 'win32'",
+    "opencv-python>=4.9",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "click>=8.1",
+    "rich>=13.7",
+    "keyboard>=0.13.5; sys_platform == 'win32'",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+vision-pipeline-capture = "vision_pipeline_capture.__main__:cli"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
