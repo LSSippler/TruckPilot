@@ -11,8 +11,8 @@ cv2 = pytest.importorskip("cv2")
 pytest.importorskip("PIL")
 pytest.importorskip("imagehash")
 
-from vision_training_collector.config import Config
-from vision_training_collector.deduplicator import dedupe_dir
+from vision_training_collector.config import Config  # noqa: E402
+from vision_training_collector.deduplicator import dedupe_dir  # noqa: E402
 
 
 def _write_image(path: Path, color: tuple[int, int, int], noise: int = 0) -> None:

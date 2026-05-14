@@ -11,8 +11,8 @@ import pytest
 cv2 = pytest.importorskip("cv2")
 pytest.importorskip("yaml")
 
-from vision_training_collector import pre_label as pl
-from vision_training_collector.pre_label import ClassMapping, pre_label_directory
+from vision_training_collector import pre_label as pl  # noqa: E402
+from vision_training_collector.pre_label import ClassMapping, pre_label_directory  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -69,63 +69,129 @@ def _make_img(path: Path, color: tuple[int, int, int]) -> None:
     cv2.imwrite(str(path), img)
 
 
-def test_pre_label_pipeline_three_tiers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    in_dir = tmp_path / "in"
-    out_dir = tmp_path / "out"
-    in_dir.mkdir()
-
-    img_a = in_dir / "a.jpg"; _make_img(img_a, (255, 0, 0))
-    img_b = in_dir / "b.jpg"; _make_img(img_b, (0, 255, 0))
-    img_c = in_dir / "c.jpg"; _make_img(img_c, (0, 0, 255))
-
-    # Mock the model loader so we don't need ETS2LA weights.
+def _patch_model(monkeypatch: pytest.MonkeyPatch, dets_by_name: dict[str, list[tuple]]) -> None:
     monkeypatch.setattr(pl, "_load_model", lambda model_path: _MockModel())
 
-    # Per-image canned detections covering all three tiers + drops.
-    # Format: (ets2la_id, conf, cx, cy, w, h) normalized 0-1.
-    fake_dets: dict[str, list[tuple[int, float, float, float, float, float]]] = {
-        "a.jpg": [
-            (0, 0.95, 0.5, 0.5, 0.1, 0.1),   # car, auto
-            (1, 0.50, 0.2, 0.2, 0.1, 0.1),   # truck, review
-            (2, 0.90, 0.3, 0.3, 0.1, 0.1),   # van, suppressed -> dropped_unmapped
-        ],
-        "b.jpg": [
-            (17, 0.95, 0.5, 0.5, 0.05, 0.05),  # red light, auto
-        ],
-        "c.jpg": [],  # no detections -> images_without_detections
-    }
-
     def _fake_infer(model: Any, image_path: Path, conf_min: float):
-        return [d for d in fake_dets.get(image_path.name, []) if d[1] >= conf_min]
+        return [d for d in dets_by_name.get(image_path.name, []) if d[1] >= conf_min]
 
     monkeypatch.setattr(pl, "_infer", _fake_infer)
 
+
+def _read_manifest_rows(out_dir: Path) -> list[dict[str, str]]:
+    import csv
+    with (out_dir / "pre_label_manifest.csv").open(encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_pre_label_split_aware_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    # Standard YOLO split layout
+    (in_dir / "train").mkdir(parents=True)
+    (in_dir / "val").mkdir(parents=True)
+    (in_dir / "test").mkdir(parents=True)
+
+    img_a = in_dir / "train" / "a.jpg"
+    _make_img(img_a, (255, 0, 0))
+    img_b = in_dir / "train" / "b.jpg"
+    _make_img(img_b, (0, 255, 0))
+    img_v = in_dir / "val" / "v.jpg"
+    _make_img(img_v, (0, 0, 255))
+    img_t = in_dir / "test" / "t.jpg"
+    _make_img(img_t, (128, 128, 128))  # no detections
+
+    _patch_model(
+        monkeypatch,
+        {
+            "a.jpg": [
+                (0, 0.95, 0.5, 0.5, 0.1, 0.1),   # car, auto
+                (1, 0.50, 0.2, 0.2, 0.1, 0.1),   # truck, review -> demotes a to "review"
+                (2, 0.90, 0.3, 0.3, 0.1, 0.1),   # van, suppressed
+            ],
+            "b.jpg": [
+                (17, 0.95, 0.5, 0.5, 0.05, 0.05),  # red light, auto -> tier "auto"
+            ],
+            "v.jpg": [
+                (0, 0.45, 0.5, 0.5, 0.1, 0.1),   # car, review -> tier "review"
+            ],
+            "t.jpg": [],  # no detections -> tier "none"
+        },
+    )
+
     mapping = ClassMapping.from_yaml(_project_root() / "class_mapping.yaml")
     fake_model_path = tmp_path / "fake.pt"
-    fake_model_path.write_bytes(b"")  # exists so FileNotFoundError check passes
+    fake_model_path.write_bytes(b"")
 
     report = pre_label_directory(in_dir, out_dir, mapping, fake_model_path)
 
-    assert report["input_images"] == 3
-    assert report["processed"] == 3
-    assert report["skipped"] == 0
-    assert report["detections_per_tier"]["auto_accept"] == 2   # a:car, b:red
-    assert report["detections_per_tier"]["review"] == 1        # a:truck
+    assert report["input_images"] == 4
+    assert report["processed"] == 4
+    assert report["splits"] == {"train": 2, "val": 1, "test": 1}
+    assert report["detections_per_tier"]["auto_accept"] == 2
+    assert report["detections_per_tier"]["review"] == 2
     assert report["detections_per_tier"]["dropped_unmapped"] == 1
     assert report["images_without_detections"] == 1
-    assert report["detections_per_class"]["Car"] == 1
-    assert report["detections_per_class"]["Truck"] == 1
-    assert report["detections_per_class"]["TrafficLightRed"] == 1
 
-    # Output structure
-    assert (out_dir / "images" / "a.jpg").exists() or (out_dir / "images" / "a.jpg").is_symlink()
-    assert (out_dir / "labels" / "auto" / "a.txt").exists()
-    assert (out_dir / "labels" / "review" / "a.txt").exists()
-    assert (out_dir / "labels" / "auto" / "b.txt").exists()
-    assert (out_dir / "labels" / "manual" / "c.txt").exists()
-    assert (out_dir / "pre_label_report.json").exists()
+    # Images mirrored under <split>/
+    assert (out_dir / "images" / "train" / "a.jpg").exists() or (out_dir / "images" / "train" / "a.jpg").is_symlink()
+    assert (out_dir / "images" / "train" / "b.jpg").exists() or (out_dir / "images" / "train" / "b.jpg").is_symlink()
+    assert (out_dir / "images" / "val" / "v.jpg").exists() or (out_dir / "images" / "val" / "v.jpg").is_symlink()
+    assert (out_dir / "images" / "test" / "t.jpg").exists() or (out_dir / "images" / "test" / "t.jpg").is_symlink()
 
-    # YOLO format: first token is class id
-    auto_line = (out_dir / "labels" / "auto" / "a.txt").read_text().strip().split()
-    assert auto_line[0] == "0"  # Car
-    assert len(auto_line) == 5  # cls cx cy w h
+    # Labels: a (review demotion) + b (auto) + v (review). t has none -> no file.
+    assert (out_dir / "labels" / "train" / "a.txt").exists()
+    assert (out_dir / "labels" / "train" / "b.txt").exists()
+    assert (out_dir / "labels" / "val" / "v.txt").exists()
+    assert not (out_dir / "labels" / "test" / "t.txt").exists()
+
+    # Both auto and review detections for `a` end up in the same file
+    a_lines = (out_dir / "labels" / "train" / "a.txt").read_text().strip().splitlines()
+    assert len(a_lines) == 2
+    assert {ln.split()[0] for ln in a_lines} == {"0", "1"}
+
+    # Manifest rows
+    rows = _read_manifest_rows(out_dir)
+    by_file = {r["filename"]: r for r in rows}
+    assert set(by_file) == {
+        "images/train/a.jpg",
+        "images/train/b.jpg",
+        "images/val/v.jpg",
+        "images/test/t.jpg",
+    }
+    assert by_file["images/train/a.jpg"]["tier"] == "review"  # demoted: has a review-tier det
+    assert by_file["images/train/a.jpg"]["split"] == "train"
+    assert int(by_file["images/train/a.jpg"]["num_detections"]) == 2
+    assert float(by_file["images/train/a.jpg"]["confidence_max"]) == pytest.approx(0.95)
+    assert by_file["images/train/b.jpg"]["tier"] == "auto"
+    assert by_file["images/val/v.jpg"]["tier"] == "review"
+    assert by_file["images/test/t.jpg"]["tier"] == "none"
+    assert int(by_file["images/test/t.jpg"]["num_detections"]) == 0
+
+
+def test_pre_label_flat_layout_keeps_legacy_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    img = in_dir / "x.jpg"
+    _make_img(img, (0, 128, 200))
+
+    _patch_model(monkeypatch, {"x.jpg": [(0, 0.95, 0.5, 0.5, 0.1, 0.1)]})
+    mapping = ClassMapping.from_yaml(_project_root() / "class_mapping.yaml")
+    fake_model_path = tmp_path / "fake.pt"
+    fake_model_path.write_bytes(b"")
+
+    report = pre_label_directory(in_dir, out_dir, mapping, fake_model_path)
+
+    assert report["splits"] == {"flat": 1}
+    assert (out_dir / "images" / "x.jpg").exists() or (out_dir / "images" / "x.jpg").is_symlink()
+    assert (out_dir / "labels" / "x.txt").exists()
+
+    rows = _read_manifest_rows(out_dir)
+    assert len(rows) == 1
+    assert rows[0]["split"] == "flat"
+    assert rows[0]["filename"] == "images/x.jpg"
+    assert rows[0]["tier"] == "auto"
+    assert int(rows[0]["num_detections"]) == 1

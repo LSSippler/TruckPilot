@@ -43,11 +43,26 @@ def cli(ctx: click.Context, config_path: Path, verbose: bool) -> None:
 
 @cli.command("scrape-youtube")
 @click.option("--dry-run", is_flag=True, help="probe only, no downloads")
+@click.option(
+    "--cookies-browser",
+    type=click.Choice(
+        ["firefox", "chrome", "edge", "brave", "opera", "vivaldi", "safari", "chromium"],
+        case_sensitive=False,
+    ),
+    default=None,
+    help="pull YouTube cookies from this browser to bypass bot-check; overrides config",
+)
 @click.pass_context
-def scrape_youtube(ctx: click.Context, dry_run: bool) -> None:
+def scrape_youtube(ctx: click.Context, dry_run: bool, cookies_browser: str | None) -> None:
     from .youtube_scraper import scrape
     cfg: Config = ctx.obj["config"]
-    stats = scrape(cfg, DATA_ROOT / "raw", _state_path(), dry_run=dry_run)
+    stats = scrape(
+        cfg,
+        DATA_ROOT / "raw",
+        _state_path(),
+        dry_run=dry_run,
+        cookies_browser=cookies_browser,
+    )
     console.print(stats)
 
 

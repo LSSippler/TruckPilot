@@ -3,10 +3,21 @@
 [youtube]
 search_terms = []
 channels = []     # optional specific YouTube channels (URLs)
-playlists = ["https://www.youtube.com/watch?v=oh_-Tn_-WtU"]    # optional playlist URLs
-min_duration_seconds = 300
+playlists = [
+  "https://www.youtube.com/watch?v=xByY3keQJcg",
+  "https://www.youtube.com/watch?v=vaUGv7_Pl3I",
+  "https://www.youtube.com/watch?v=cDM1kWWoCU8",
+  "https://www.youtube.com/watch?v=DY58UPHlAT8",
+  "https://www.youtube.com/watch?v=EG_84-Z8wns",
+  "https://www.youtube.com/watch?v=y287trA3Eio",
+]
 target_resolution = "1080p"
 daily_quota_gb = 5
+# When YouTube blocks scraping with "Sign in to confirm you're not a bot",
+# set this to a browser whose profile is logged in (e.g. "firefox", "chrome",
+# "edge"). yt-dlp will load that browser's cookie jar. CLI --cookies-browser
+# wins over this value. Leave commented to scrape anonymously.
+# cookies_browser = "firefox"
 max_results_per_search = 25
 
 [capture]
@@ -16,7 +27,7 @@ hotkey_quit = "F9"
 auto_interval_seconds = 2
 
 [extract]
-frame_interval_seconds = 5
+frame_interval_seconds = 1
 skip_black_threshold = 0.05      # mean luminance below this -> skip
 skip_menu_color_count = 50       # unique-color count below this -> skip (menu/loading)
 target_width = 1920

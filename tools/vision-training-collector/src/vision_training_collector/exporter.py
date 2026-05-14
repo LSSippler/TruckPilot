@@ -38,6 +38,35 @@ def _scene_hint(path: Path, cfg: Config) -> str:
     return "rural"
 
 
+def _find_label_for(image_path: Path, src_root: Path) -> Path | None:
+    """Locate an existing YOLO label file for `image_path`.
+
+    Searches in three conventional locations, in priority order:
+      1. Sibling: <image_dir>/<stem>.txt  (e.g., already-labeled flat dir)
+      2. Parallel labels/ peer of the image's parent
+         (e.g., images/<video>/x.jpg -> labels/<video>/x.txt)
+      3. Split-aware mirror under src_root
+         (images/<split>/x.jpg -> labels/<split>/x.txt where src_root sits at
+         the same level as images/ and labels/)
+    Returns the first hit or None.
+    """
+    stem = image_path.stem
+    candidates: list[Path] = [
+        image_path.with_suffix(".txt"),
+        image_path.parent.parent / "labels" / image_path.parent.name / f"{stem}.txt",
+    ]
+    # split-aware: src_root may itself be "images/" with src_root.parent holding labels/
+    try:
+        rel = image_path.relative_to(src_root)
+        candidates.append(src_root.parent / "labels" / rel.with_suffix(".txt"))
+    except ValueError:
+        pass
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 def _timestamp_from_name(name: str) -> str:
     # frame_000123.jpg -> 000123
     stem = Path(name).stem
@@ -73,13 +102,17 @@ def export(src_dir: Path, final_dir: Path, cfg: Config) -> dict[str, int]:
     }
 
     images_root = final_dir / "images"
+    labels_root = final_dir / "labels"
     for split in splits:
         (images_root / split).mkdir(parents=True, exist_ok=True)
+        (labels_root / split).mkdir(parents=True, exist_ok=True)
 
     manifest_path = final_dir / "manifest.csv"
     final_dir.mkdir(parents=True, exist_ok=True)
 
     rows = 0
+    labels_copied = 0
+    missing_labels = 0
     with manifest_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(["filename", "split", "source_video", "timestamp", "scene_hint", "exported_at"])
@@ -94,6 +127,18 @@ def export(src_dir: Path, final_dir: Path, cfg: Config) -> dict[str, int]:
                 shutil.copy2(src, dst)
                 writer.writerow([f"images/{split}/{dst_name}", split, source_video, ts, scene, now_iso])
                 rows += 1
+
+                label_src = _find_label_for(src, src_dir)
+                if label_src is not None:
+                    lbl_dst = labels_root / split / f"{Path(dst_name).stem}.txt"
+                    shutil.copy2(label_src, lbl_dst)
+                    labels_copied += 1
+                else:
+                    missing_labels += 1
+                    log.warning(
+                        "no label found for %s — YOLO will treat as empty (no annotations)",
+                        src.name,
+                    )
 
     # YOLO data.yaml stub for later labeling
     yaml_path = final_dir / "data.yaml"
@@ -112,6 +157,19 @@ def export(src_dir: Path, final_dir: Path, cfg: Config) -> dict[str, int]:
         encoding="utf-8",
     )
 
-    stats = {"total": rows, "train": len(splits["train"]), "val": len(splits["val"]), "test": len(splits["test"])}
+    stats = {
+        "total": rows,
+        "train": len(splits["train"]),
+        "val": len(splits["val"]),
+        "test": len(splits["test"]),
+        "labels_copied": labels_copied,
+        "labels_missing": missing_labels,
+    }
+    if missing_labels:
+        log.warning(
+            "export: %d/%d images have no matching label file — those rows will train as empty",
+            missing_labels,
+            rows,
+        )
     log.info("export stats: %s", stats)
     return stats

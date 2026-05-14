@@ -22,6 +22,10 @@ class YouTubeCfg:
     target_resolution: str = "1080p"
     daily_quota_gb: float = 5.0
     max_results_per_search: int = 25
+    # Optional browser whose cookie jar yt-dlp should use to bypass YouTube's
+    # "Sign in to confirm you're not a bot" wall. One of: firefox, chrome, edge,
+    # brave, opera, vivaldi, safari, chromium. None = don't pass cookies.
+    cookies_browser: str | None = None
 
 
 @dataclass

@@ -39,6 +39,7 @@ Python >= 3.11 erforderlich. `dxcam` und `keyboard` sind Windows-only und werden
 ```powershell
 python -m vision_training_collector scrape-youtube           # YouTube-Download (yt-dlp)
 python -m vision_training_collector scrape-youtube --dry-run # nur probe, kein Download
+python -m vision_training_collector scrape-youtube --cookies-browser firefox  # bot-check bypass
 python -m vision_training_collector capture-live --auto      # Live-Capture (F8=save, F9=quit)
 python -m vision_training_collector extract-frames           # Videos -> Frames
 python -m vision_training_collector dedupe                   # pHash-Filterung
@@ -103,6 +104,16 @@ Das Standard-YOLO-Format (`class cx cy w h`, normalisiert) wird sowohl von CVAT 
 ### Windows-Hinweis
 
 `pre_label.py` setzt vor dem Load `pathlib.PosixPath = pathlib.WindowsPath`, weil ETS2LAs `.pt`-Checkpoint POSIX-Pfade gepickelt enthaelt. Ohne diesen Workaround crasht `torch.load` auf Windows mit `NotImplementedError: cannot instantiate 'PosixPath' on your system`.
+
+## YouTube-Bot-Check bypass (`--cookies-browser`)
+
+Wenn yt-dlp mit `ERROR: [youtube] ... Sign in to confirm you're not a bot. Use --cookies-from-browser ...` abbricht, ist YouTube auf die anonyme Scrape-Session aufmerksam geworden. Lösung: einmal manuell in einem Browser bei YouTube einloggen und den Scraper anweisen, die dortige Cookie-Jar zu verwenden:
+
+```powershell
+python -m vision_training_collector scrape-youtube --cookies-browser firefox
+```
+
+Zulässige Werte: `firefox, chrome, edge, brave, opera, vivaldi, safari, chromium`. CLI-Flag überschreibt `[youtube] cookies_browser` in `config.toml`. yt-dlp liest aus der Cookie-Datenbank des lokalen Profils — der Browser darf während des Scrapes nicht laufen (sonst ist die SQLite-DB gesperrt; bei Firefox empfiehlt sich ein gesondertes Profil).
 
 ## Resume
 

@@ -14,6 +14,25 @@ log = logging.getLogger(__name__)
 
 _MUSIC_KEYWORDS = ("music video", "official music", "soundtrack", "lyrics", "remix")
 
+# Browsers yt-dlp can pull cookies from via --cookies-from-browser.
+_ALLOWED_COOKIE_BROWSERS = frozenset(
+    {"firefox", "chrome", "edge", "brave", "opera", "vivaldi", "safari", "chromium"}
+)
+
+
+def _resolve_cookies_browser(cli_value: str | None, cfg_value: str | None) -> str | None:
+    """CLI flag wins over config. Returns a validated browser name or None."""
+    raw = cli_value if cli_value is not None else cfg_value
+    if raw is None or raw == "":
+        return None
+    browser = raw.strip().lower()
+    if browser not in _ALLOWED_COOKIE_BROWSERS:
+        raise ValueError(
+            f"unsupported cookies_browser '{raw}'. Expected one of: "
+            f"{sorted(_ALLOWED_COOKIE_BROWSERS)}"
+        )
+    return browser
+
 
 def _yt_dlp():
     try:
@@ -60,14 +79,29 @@ def _dir_size_bytes(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
 
-def scrape(cfg: Config, raw_dir: Path, state_path: Path, dry_run: bool = False) -> dict[str, int]:
-    """Download videos matching the configured search terms / channels / playlists."""
+def scrape(
+    cfg: Config,
+    raw_dir: Path,
+    state_path: Path,
+    dry_run: bool = False,
+    cookies_browser: str | None = None,
+) -> dict[str, int]:
+    """Download videos matching the configured search terms / channels / playlists.
+
+    `cookies_browser` (CLI override) takes precedence over `cfg.youtube.cookies_browser`.
+    When set, yt-dlp is told to read cookies from that browser's local profile.
+    """
     raw_dir.mkdir(parents=True, exist_ok=True)
     state = State(state_path)
     yt_dlp = _yt_dlp()
 
     quota_bytes = int(cfg.youtube.daily_quota_gb * (1024 ** 3))
     downloaded_today = state.get("youtube_bytes_today", 0)
+
+    browser = _resolve_cookies_browser(cookies_browser, cfg.youtube.cookies_browser)
+    cookie_opts: dict[str, Any] = {"cookiesfrombrowser": (browser,)} if browser else {}
+    if browser:
+        log.info("using cookies from browser=%s for YouTube auth", browser)
 
     targets: list[str] = []
     for term in cfg.youtube.search_terms:
@@ -82,6 +116,7 @@ def scrape(cfg: Config, raw_dir: Path, state_path: Path, dry_run: bool = False) 
         "skip_download": True,
         "extract_flat": "in_playlist",
         "noplaylist": False,
+        **cookie_opts,
     }
 
     for target in targets:
@@ -112,7 +147,7 @@ def scrape(cfg: Config, raw_dir: Path, state_path: Path, dry_run: bool = False) 
 
             video_url = entry.get("url") or entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
 
-            ydl_opts_info: dict[str, Any] = {"quiet": True, "skip_download": True}
+            ydl_opts_info: dict[str, Any] = {"quiet": True, "skip_download": True, **cookie_opts}
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
                     info = ydl.extract_info(video_url, download=False)
@@ -141,6 +176,7 @@ def scrape(cfg: Config, raw_dir: Path, state_path: Path, dry_run: bool = False) 
                 "quiet": True,
                 "no_warnings": True,
                 "retries": 3,
+                **cookie_opts,
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_dl) as ydl:

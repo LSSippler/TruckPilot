@@ -8,6 +8,7 @@ based on detection confidence.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import pathlib
@@ -20,6 +21,14 @@ from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
+
+# Standard YOLO train/val/test split names. If `input_dir` contains any of
+# these as direct subfolders, the pre-label pipeline mirrors that structure
+# into the output (images/<split>/, labels/<split>/). Otherwise it falls back
+# to flat output (images/<file>, labels/<file>) and the manifest's "split"
+# column is "flat".
+_SPLIT_NAMES = ("train", "val", "test")
+_FLAT_SPLIT = "flat"
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +181,30 @@ def _copy_or_link(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def _detect_splits(input_dir: Path, exts: set[str]) -> dict[str, list[Path]]:
+    """Return {split_name: [image_paths]} keyed by detected split subfolders.
+
+    If `input_dir` contains any of `_SPLIT_NAMES` as a direct subdirectory, only
+    images inside those are picked up and grouped per split. Otherwise the
+    entire tree is treated as a single flat group keyed by `_FLAT_SPLIT`.
+    """
+    found: dict[str, list[Path]] = {}
+    has_split_layout = any((input_dir / s).is_dir() for s in _SPLIT_NAMES)
+    if has_split_layout:
+        for split in _SPLIT_NAMES:
+            sub = input_dir / split
+            if not sub.is_dir():
+                continue
+            imgs = sorted(p for p in sub.rglob("*") if p.suffix.lower() in exts)
+            if imgs:
+                found[split] = imgs
+        return found
+    flat = sorted(p for p in input_dir.rglob("*") if p.suffix.lower() in exts)
+    if flat:
+        found[_FLAT_SPLIT] = flat
+    return found
+
+
 def pre_label_directory(
     input_dir: Path,
     output_dir: Path,
@@ -179,20 +212,25 @@ def pre_label_directory(
     model_path: Path,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Run pre-labeling over input_dir, write labels + report into output_dir."""
+    """Run pre-labeling over input_dir; write split-aware labels + manifest.
+
+    Output layout:
+        <output>/images/<split>/<stem>.<ext>     (copy or symlink of input)
+        <output>/labels/<split>/<stem>.txt       (YOLO, all kept detections)
+        <output>/pre_label_manifest.csv          (per-image tier + counts)
+        <output>/pre_label_report.json           (aggregate stats)
+        <output>/class_mapping.yaml              (mirror for reproducibility)
+
+    Flat input falls back to <output>/images/<file> and <output>/labels/<file>
+    with split = "flat" in the manifest.
+    """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
     if not input_dir.exists():
         raise FileNotFoundError(f"input dir not found: {input_dir}")
 
-    images_root = output_dir / "images"
-    labels_auto = output_dir / "labels" / "auto"
-    labels_review = output_dir / "labels" / "review"
-    labels_manual = output_dir / "labels" / "manual"
     if not dry_run:
-        for d in (images_root, labels_auto, labels_review, labels_manual):
-            d.mkdir(parents=True, exist_ok=True)
-        # writability probe
+        output_dir.mkdir(parents=True, exist_ok=True)
         try:
             probe = output_dir / ".write_probe"
             probe.write_text("ok", encoding="utf-8")
@@ -203,14 +241,22 @@ def pre_label_directory(
     model = _load_model(model_path)
 
     exts = {".jpg", ".jpeg", ".png"}
-    images = sorted([p for p in input_dir.rglob("*") if p.suffix.lower() in exts])
-    log.info("pre-labeling %d images from %s", len(images), input_dir)
+    splits_to_images = _detect_splits(input_dir, exts)
+    total_images = sum(len(v) for v in splits_to_images.values())
+    log.info(
+        "pre-labeling %d images across %d split(s) %s from %s",
+        total_images,
+        len(splits_to_images),
+        list(splits_to_images.keys()),
+        input_dir,
+    )
 
     report: dict[str, Any] = {
-        "input_images": len(images),
+        "input_images": total_images,
         "processed": 0,
         "skipped": 0,
         "errors": [],
+        "splits": {s: len(v) for s, v in splits_to_images.items()},
         "detections_per_tier": {
             "auto_accept": 0,
             "review": 0,
@@ -225,67 +271,105 @@ def pre_label_directory(
         "dry_run": dry_run,
     }
 
+    manifest_rows: list[dict[str, Any]] = []
     t_start = time.time()
 
-    for img_path in tqdm(images, desc="Pre-labeling", unit="img"):
-        try:
-            dets = _infer(model, img_path, conf_min=config.review_min)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("inference failed for %s: %s", img_path.name, exc)
-            report["errors"].append({"file": str(img_path), "error": str(exc)})
-            report["skipped"] += 1
-            continue
+    for split, images in splits_to_images.items():
+        if not dry_run:
+            (output_dir / "images" / split).mkdir(parents=True, exist_ok=True)
+            (output_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-        auto_lines: list[str] = []
-        review_lines: list[str] = []
+        for img_path in tqdm(images, desc=f"Pre-labeling [{split}]", unit="img"):
+            try:
+                dets = _infer(model, img_path, conf_min=config.review_min)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("inference failed for %s: %s", img_path.name, exc)
+                report["errors"].append({"file": str(img_path), "error": str(exc)})
+                report["skipped"] += 1
+                continue
 
-        for ets2la_id, conf, cx, cy, w, h in dets:
-            if conf < config.review_min:
-                report["detections_per_tier"]["dropped_low_conf"] += 1
-                continue
-            tp_id = config.map_class(ets2la_id)
-            if tp_id is None:
-                report["detections_per_tier"]["dropped_unmapped"] += 1
-                continue
-            line = _format_label(tp_id, cx, cy, w, h)
-            if conf >= config.auto_accept:
-                auto_lines.append(line)
-                report["detections_per_tier"]["auto_accept"] += 1
+            kept_lines: list[str] = []
+            max_conf = 0.0
+            any_auto = False
+            any_review = False
+
+            for ets2la_id, conf, cx, cy, w, h in dets:
+                if conf < config.review_min:
+                    report["detections_per_tier"]["dropped_low_conf"] += 1
+                    continue
+                tp_id = config.map_class(ets2la_id)
+                if tp_id is None:
+                    report["detections_per_tier"]["dropped_unmapped"] += 1
+                    continue
+                kept_lines.append(_format_label(tp_id, cx, cy, w, h))
+                if conf >= config.auto_accept:
+                    any_auto = True
+                    report["detections_per_tier"]["auto_accept"] += 1
+                else:
+                    any_review = True
+                    report["detections_per_tier"]["review"] += 1
+                if conf > max_conf:
+                    max_conf = conf
+                name = config.truckpilot_classes.get(tp_id, f"class_{tp_id}")
+                report["detections_per_class"][name] = (
+                    report["detections_per_class"].get(name, 0) + 1
+                )
+
+            report["processed"] += 1
+            if not kept_lines:
+                report["images_without_detections"] += 1
+                tier = "none"
             else:
-                review_lines.append(line)
-                report["detections_per_tier"]["review"] += 1
-            name = config.truckpilot_classes.get(tp_id, f"class_{tp_id}")
-            report["detections_per_class"][name] = report["detections_per_class"].get(name, 0) + 1
+                # An image is "auto" only if every kept detection is above the
+                # auto-accept threshold; any review-tier detection demotes it.
+                tier = "auto" if any_auto and not any_review else "review"
 
-        report["processed"] += 1
-        if not auto_lines and not review_lines:
-            report["images_without_detections"] += 1
+            # filename column uses YOLO-canonical forward slashes for portability.
+            rel = f"images/{split}/{img_path.name}" if split != _FLAT_SPLIT else f"images/{img_path.name}"
+            manifest_rows.append(
+                {
+                    "filename": rel,
+                    "split": split,
+                    "tier": tier,
+                    "confidence_max": round(max_conf, 4),
+                    "num_detections": len(kept_lines),
+                }
+            )
 
-        if dry_run:
-            continue
+            if dry_run:
+                continue
 
-        # copy/link image once
-        _copy_or_link(img_path, images_root / img_path.name)
-
-        stem = img_path.stem
-        if auto_lines:
-            (labels_auto / f"{stem}.txt").write_text("\n".join(auto_lines) + "\n", encoding="utf-8")
-        if review_lines:
-            (labels_review / f"{stem}.txt").write_text("\n".join(review_lines) + "\n", encoding="utf-8")
-        # touch an empty manual file so reviewers see the slot (only when nothing else exists)
-        if not auto_lines and not review_lines:
-            (labels_manual / f"{stem}.txt").touch()
+            img_dst_dir = (output_dir / "images" / split) if split != _FLAT_SPLIT else (output_dir / "images")
+            lbl_dst_dir = (output_dir / "labels" / split) if split != _FLAT_SPLIT else (output_dir / "labels")
+            img_dst_dir.mkdir(parents=True, exist_ok=True)
+            lbl_dst_dir.mkdir(parents=True, exist_ok=True)
+            _copy_or_link(img_path, img_dst_dir / img_path.name)
+            stem = img_path.stem
+            if kept_lines:
+                (lbl_dst_dir / f"{stem}.txt").write_text(
+                    "\n".join(kept_lines) + "\n", encoding="utf-8"
+                )
+            # Images with no detections deliberately get no label file. YOLO
+            # treats a missing label as an empty annotation set; reviewers can
+            # filter via the manifest's tier=="none" rows.
 
     report["inference_time_seconds"] = round(time.time() - t_start, 2)
 
     if not dry_run:
-        # mirror the mapping yaml next to the report for reproducibility
         try:
             src_yaml = Path(__file__).resolve().parent.parent.parent / "class_mapping.yaml"
             if src_yaml.exists():
                 shutil.copy2(src_yaml, output_dir / "class_mapping.yaml")
         except OSError:
             pass
+        manifest_path = output_dir / "pre_label_manifest.csv"
+        with manifest_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(
+                fh,
+                fieldnames=["filename", "split", "tier", "confidence_max", "num_detections"],
+            )
+            writer.writeheader()
+            writer.writerows(manifest_rows)
         (output_dir / "pre_label_report.json").write_text(
             json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
         )

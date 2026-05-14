@@ -9,8 +9,8 @@ import pytest
 
 cv2 = pytest.importorskip("cv2")
 
-from vision_training_collector.config import Config
-from vision_training_collector.frame_extractor import extract_video
+from vision_training_collector.config import Config  # noqa: E402
+from vision_training_collector.frame_extractor import extract_video  # noqa: E402
 
 
 def _make_video(path: Path, n_frames: int = 10, fps: int = 5) -> None:
