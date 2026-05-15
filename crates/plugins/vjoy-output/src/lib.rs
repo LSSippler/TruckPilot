@@ -136,6 +136,19 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard.set("vjoy.last_raw_y", "0");
         ctx.blackboard.set("vjoy.last_raw_z", "0");
         ctx.blackboard.set("vjoy.last_raw_source", "none");
+        // Thread-affinity diagnostics (H1 check)
+        ctx.blackboard.set(
+            "vjoy.thread_id_acquire",
+            format!("{:?}", std::thread::current().id()),
+        );
+        ctx.blackboard.set(
+            "vjoy.self_addr_acquire",
+            format!("{:p}", self as *const Self),
+        );
+        ctx.blackboard.set("vjoy.thread_id_tick", "none");
+        ctx.blackboard.set("vjoy.self_addr_tick", "none");
+        ctx.blackboard.set("vjoy.handle_addr_acquire", "none");
+        ctx.blackboard.set("vjoy.handle_addr_tick", "none");
 
         #[cfg(windows)]
         {
@@ -162,6 +175,12 @@ impl Plugin for VJoyOutputPlugin {
                         }
                     }
                     self.vjoy = Some(handle);
+                    if let Some(ref h) = self.vjoy {
+                        ctx.blackboard.set(
+                            "vjoy.handle_addr_acquire",
+                            format!("{:p}", h as *const VJoyHandle),
+                        );
+                    }
                     ctx.blackboard.set("vjoy.connected", "true");
                     tracing::info!(
                         "[vjoy-output] vJoy device {} acquired (failsafe={}ms)",
@@ -211,6 +230,17 @@ impl Plugin for VJoyOutputPlugin {
     ) {
         if self.inactive {
             return;
+        }
+
+        // Thread-affinity diagnostic: written every tick to catch runtime switches
+        #[cfg(windows)]
+        {
+            ctx.blackboard.set(
+                "vjoy.thread_id_tick",
+                format!("{:?}", std::thread::current().id()),
+            );
+            ctx.blackboard
+                .set("vjoy.self_addr_tick", format!("{:p}", self as *const Self));
         }
 
         // Emergency brake overrides everything else
@@ -285,6 +315,10 @@ impl VJoyOutputPlugin {
             Some(h) => h,
             None => return,
         };
+        ctx.blackboard.set(
+            "vjoy.handle_addr_tick",
+            format!("{:p}", handle as *const VJoyHandle),
+        );
 
         // Reconnect attempt every 10 ticks while disconnected
         if !handle.connected {
