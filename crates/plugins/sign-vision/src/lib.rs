@@ -271,9 +271,15 @@ fn publish_diag(p: &SignVisionPlugin, ctx: &PluginContext, last_skip_reason: &st
 // ---------------------------------------------------------------------------
 
 /// Load an ONNX session from `model_path`, trying DirectML first (if compiled)
-/// then falling back to CPU. Returns `None` on any hard failure.
+/// then falling back to CPU. Returns the session and a static label for
+/// the EP that actually loaded ("DirectML" or "CPU"), or `None` on any
+/// hard failure. The label is propagated to the host log via `ctx_warn!`
+/// in `on_load` — raw `tracing::warn!` from a plugin DLL goes to the
+/// plugin's own (unsubscribed) tracing global and is silently dropped.
 #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
-fn load_onnx_session(model_path: &std::path::Path) -> Option<ort::session::Session> {
+fn load_onnx_session(
+    model_path: &std::path::Path,
+) -> Option<(ort::session::Session, &'static str)> {
     use ort::session::Session;
 
     #[cfg(feature = "onnx-directml")]
@@ -283,34 +289,17 @@ fn load_onnx_session(model_path: &std::path::Path) -> Option<ort::session::Sessi
             if let Ok(mut builder) = builder.with_execution_providers([DirectML::default().build()])
             {
                 match builder.commit_from_file(model_path) {
-                    Ok(sess) => {
-                        // Escalated to warn so it surfaces under the
-                        // daemon's default log filter — operators need
-                        // to see which EP actually loaded, since DirectML
-                        // vs CPU is a 5-10× latency difference.
-                        tracing::warn!(target: LOG_TARGET, "ONNX EP active: DirectML");
-                        return Some(sess);
-                    }
-                    Err(e) => {
-                        tracing::warn!(target: LOG_TARGET, "DirectML session commit failed ({e}), retrying with CPU");
-                    }
+                    Ok(sess) => return Some((sess, "DirectML")),
+                    Err(_) => { /* fall through to CPU */ }
                 }
-            } else {
-                tracing::warn!(target: LOG_TARGET, "DirectML EP registration failed, retrying with CPU");
             }
         }
     }
 
     // CPU fallback (also the only path when only `onnx-cpu` is enabled).
     if let Ok(mut builder) = Session::builder() {
-        match builder.commit_from_file(model_path) {
-            Ok(sess) => {
-                tracing::warn!(target: LOG_TARGET, "ONNX EP active: CPU — expect >100 ms/frame");
-                return Some(sess);
-            }
-            Err(e) => {
-                tracing::error!(target: LOG_TARGET, "CPU session failed: {e}");
-            }
+        if let Ok(sess) = builder.commit_from_file(model_path) {
+            return Some((sess, "CPU"));
         }
     }
     None
@@ -545,9 +534,21 @@ impl Plugin for SignVisionPlugin {
             #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
             {
                 match load_onnx_session(&self.model_path) {
-                    Some(sess) => {
+                    Some((sess, ep_label)) => {
                         self.session = Some(sess);
                         self.model_available = true;
+                        // Logged via ctx_warn so it surfaces under the
+                        // host's tracing subscriber. Raw tracing::warn
+                        // from a plugin DLL is dropped silently because
+                        // each cdylib has its own tracing global with
+                        // no subscriber attached.
+                        ctx_warn!(
+                            ctx,
+                            target: LOG_TARGET,
+                            "ONNX EP active: {ep_label}{}",
+                            if ep_label == "CPU" { " — expect >100 ms/frame" } else { "" }
+                        );
+                        ctx.blackboard.set("sign.onnx.provider", ep_label);
                     }
                     None => {
                         ctx_warn!(
