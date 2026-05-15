@@ -7,6 +7,8 @@
 //! `crates/ui/src/lib/types.ts` in sync — the `npm run sync-types` script verifies
 //! this and fails CI on drift.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: &str = "1.0";
@@ -83,6 +85,14 @@ pub enum CoreMessage {
         preconditions: PreconditionSnapshot,
         tick_count: u64,
     },
+    BlackboardSnapshot {
+        v: u32,
+        values: HashMap<String, String>,
+    },
+    BlackboardKeys {
+        v: u32,
+        keys: Vec<String>,
+    },
 }
 
 /// Messages sent from UI to Core (commands)
@@ -132,6 +142,12 @@ pub enum UiCommand {
     AutopilotEngage,
     AutopilotDisengage,
     AutopilotReset,
+    BlackboardGet {
+        keys: Vec<String>,
+    },
+    BlackboardList {
+        prefix: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
