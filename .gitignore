@@ -120,3 +120,13 @@ __pycache__/
 # .NET / generic build dirs
 **/obj/
 
+
+# Phase 6.5c demo tooling (throwaway)
+tools/vision-live-demo/
+models/
+
+# Local stats database written by stats-logger plugin during runs
+stats.db
+
+# Claude Code worktrees scratch dir
+.claude/worktrees/
