@@ -56,6 +56,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - Router-Perf-Audit Binary restored — pending Execution + Verdict (commit dea41c73)
 - Blackboard-Key-Inventory — docs/blackboard_keys.md (commit 0f906112)
 - Phase 6.2i — PID Hotswap + Live Telemetry Logging (tick_log/fault_log/pid_tuning_log, commit a71d1e2a)
+- [[01-Phases/Phase-6.2a-vJoy-Probe]] — GATE-0 vor 6.2c: `truckpilot-vjoy-probe` Binary (Spec Final v1.0, 15/15 Tests, Manual-ETS2-Test pending)
 
 ## Reviews
 
@@ -80,7 +81,8 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 | 6.2-Prep | Plugin-Architecture-Refactor | DONE | 661812dd |
 | 6.2a | State-Machine | DONE | b479c2eb |
 | 6.2b | Tick-Phasen (Daemon + Plugins) | DONE | b479c2eb |
-| 6.2c | vJoy Real (Hardware Wiring) | PLANNED (requires user-present test) |  |
+| 6.2a-Probe | vJoy GATE-0 Probe Binary | IN PROGRESS (code+tests green, ETS2 manual test pending) | [[01-Phases/Phase-6.2a-vJoy-Probe]] |
+| 6.2c | vJoy Real (Hardware Wiring) | PLANNED (requires 6.2a-Probe GATE-0 pass) |  |
 | 6.2d | Lane-Keeper | DONE | 2a86bdac |
 | 6.2e | Speed-Controller | DONE | 2a86bdac |
 | 6.2f | ACC (conditional) | CONDITIONAL (license-resolved, design pending) |  |

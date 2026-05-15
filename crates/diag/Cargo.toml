@@ -47,6 +47,10 @@ path = "src/bin/router_perf_audit.rs"
 name = "shm-frame-reader"
 path = "src/bin/shm_frame_reader.rs"
 
+[[bin]]
+name = "truckpilot-vjoy-probe"
+path = "src/bin/vjoy_probe.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
@@ -55,6 +59,7 @@ tracing-subscriber = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 dirs             = "5.0"
+clap             = { version = "4", features = ["derive"] }
 
 # HTTP check
 ureq = "2"
@@ -74,3 +79,5 @@ windows = { version = "0.52", features = [
     "Win32_System_Memory",
     "Win32_Security",
 ] }
+vjoy   = "0.4"
+ctrlc  = "3"
