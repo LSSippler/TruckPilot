@@ -1,11 +1,12 @@
 //! VJoyHandle — direct FFI wrapper around `vJoyInterface.dll`.
 //!
 //! Replaces the `vjoy` 0.4 crate, which buffered axis writes into a
-//! `JOYSTICK_POSITION_V2` struct that was pushed to the device via
-//! `UpdateVJD()`. That buffered pattern triggered a state-cache bug in
-//! plugin context: `AcquireVJD` returned success but a delayed first
-//! `UpdateVJD` reported "Device Status: 1" (= VJD_STAT_FREE) and the
-//! hardware never received the write.
+//! `JOYSTICK_POSITION_V2` struct and pushed them via `UpdateVJD()`.
+//! That buffered pattern triggered a state-cache bug when acquire and
+//! the first `UpdateVJD` were temporally separated (plugin `on_load`
+//! followed by a delayed first `tick`): the driver reported
+//! "Device Status: 1" (= VJD_STAT_FREE) and the hardware never saw
+//! the write, even though `AcquireVJD` had returned success.
 //!
 //! This wrapper calls `SetAxis()` directly. SetAxis writes immediately
 //! to the device — no intermediate buffer, no UpdateVJD, no cache.
@@ -22,15 +23,6 @@ const AXIS_MAX: i32 = 32_767;
 pub const HID_USAGE_X: u32 = 0x30;
 pub const HID_USAGE_Y: u32 = 0x31;
 pub const HID_USAGE_Z: u32 = 0x32;
-
-/// Re-exported for tests and lib.rs idle-detection logic that wants to
-/// emit the same axis identifiers without depending on raw HID numbers.
-#[allow(dead_code)]
-pub const STEER_AXIS: u32 = HID_USAGE_X;
-#[allow(dead_code)]
-pub const THROTTLE_AXIS: u32 = HID_USAGE_Y;
-#[allow(dead_code)]
-pub const BRAKE_AXIS: u32 = HID_USAGE_Z;
 
 // VjdStat values returned by GetVJDStatus (vJoy SDK).
 const VJD_STAT_OWN: i32 = 0;
@@ -142,7 +134,6 @@ type FnAcquireVJD = unsafe extern "system" fn(u32) -> i32;
 type FnRelinquishVJD = unsafe extern "system" fn(u32);
 type FnGetVJDStatus = unsafe extern "system" fn(u32) -> i32;
 type FnSetAxis = unsafe extern "system" fn(i32, u32, u32) -> i32;
-type FnResetVJD = unsafe extern "system" fn(u32) -> i32;
 
 // ---------------------------------------------------------------------------
 // VJoyHandle (Windows only)
@@ -153,31 +144,23 @@ use windows::Win32::Foundation::HMODULE;
 
 #[cfg(windows)]
 pub struct VJoyHandle {
-    /// Module handle from LoadLibraryW. Stays loaded until Drop calls
-    /// FreeLibrary. Reference-counted by the loader so concurrent
-    /// reconnects (each doing LoadLibraryW+FreeLibrary) net to zero.
+    /// Module handle from LoadLibraryW. Reference-counted by the loader so
+    /// concurrent reconnects (each doing LoadLibraryW+FreeLibrary) net out.
     dll: HMODULE,
     pub device_id: u32,
     pub connected: bool,
-    // Cached function pointers. Valid as long as `dll` ref-count > 0.
-    #[allow(dead_code)]
-    vjoy_enabled: FnVJoyEnabled,
-    #[allow(dead_code)]
-    acquire_vjd: FnAcquireVJD,
+    // Cached function pointers — valid as long as `dll` ref-count > 0.
     relinquish_vjd: FnRelinquishVJD,
-    #[allow(dead_code)]
-    get_vjd_status: FnGetVJDStatus,
     set_axis: FnSetAxis,
-    #[allow(dead_code)]
-    reset_vjd: FnResetVJD,
 }
 
 #[cfg(windows)]
 impl VJoyHandle {
     /// Acquire vJoy device `device_id`. Loads vJoyInterface.dll, resolves
     /// the required symbols, checks `vJoyEnabled`, queries `GetVJDStatus`
-    /// (must be FREE or OWN), calls `AcquireVJD`, and re-verifies status
-    /// is OWN before declaring success.
+    /// (must be FREE or OWN), calls `AcquireVJD`, re-verifies status is
+    /// OWN, then commits a center-write that must reach hardware before
+    /// the function returns.
     pub fn try_acquire(device_id: u32) -> Result<Self, VJoyInitError> {
         use windows::core::w;
         use windows::Win32::System::LibraryLoader::LoadLibraryW;
@@ -197,7 +180,6 @@ impl VJoyHandle {
         let relinquish_vjd: FnRelinquishVJD = unsafe { load_sym(dll, "RelinquishVJD")? };
         let get_vjd_status: FnGetVJDStatus = unsafe { load_sym(dll, "GetVJDStatus")? };
         let set_axis: FnSetAxis = unsafe { load_sym(dll, "SetAxis")? };
-        let reset_vjd: FnResetVJD = unsafe { load_sym(dll, "ResetVJD")? };
 
         // Helper to roll back DLL load if any check fails below.
         let unload_on_fail = |e: VJoyInitError| -> VJoyInitError {
@@ -232,8 +214,8 @@ impl VJoyHandle {
             )));
         }
 
-        // Verify post-acquire status is OWN — catches the "Acquire-returned-
-        // true-but-driver-says-FREE" mystery that broke the vjoy 0.4 crate.
+        // Re-verify post-acquire status is OWN — catches "Acquire-returned-
+        // true-but-driver-says-FREE" mysteries from buggy drivers.
         let post_status = unsafe { get_vjd_status(device_id) };
         if post_status != VJD_STAT_OWN {
             unsafe {
@@ -245,41 +227,42 @@ impl VJoyHandle {
             )));
         }
 
-        // Drive every axis to a known state immediately so the first
-        // visible hardware state is sane.
+        // Commit the device to a known neutral state, then wait 100 ms
+        // before returning. The blocking sleep is part of the fix, not a
+        // diagnostic: the caller (plugin `on_load`) runs on a tokio task
+        // and would yield to a different OS thread on the next .await.
+        // Holding the thread here long enough for the driver to commit
+        // the writes stops the cdylib/runtime boundary from racing the
+        // first user-visible state.
         let center = map_signed_to_raw(0.0);
         unsafe {
             let _ = set_axis(center, device_id, HID_USAGE_X);
             let _ = set_axis(0, device_id, HID_USAGE_Y);
             let _ = set_axis(0, device_id, HID_USAGE_Z);
         }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        unsafe {
+            let _ = set_axis(center, device_id, HID_USAGE_X);
+        }
 
-        // Suppress unused warnings for symbols we don't call on the hot
-        // path but want available for diagnostics / reset.
-        let _ = reset_vjd;
+        // Drop the symbols we won't need on the hot path now that
+        // try_acquire is done with them.
+        let _ = vjoy_enabled;
+        let _ = acquire_vjd;
+        let _ = get_vjd_status;
 
         Ok(Self {
             dll,
             device_id,
             connected: true,
-            vjoy_enabled,
-            acquire_vjd,
             relinquish_vjd,
-            get_vjd_status,
             set_axis,
-            reset_vjd,
         })
     }
 
-    /// Public status-query for diagnostic blackboard keys.
-    #[allow(dead_code)]
-    pub fn vjd_status(&self) -> i32 {
-        unsafe { (self.get_vjd_status)(self.device_id) }
-    }
-
     /// Write steering, throttle, brake axes to the device. Returns the
-    /// raw i32 values that were sent to `SetAxis` — useful for blackboard
-    /// telemetry so the actual hardware-bound values are visible.
+    /// raw i32 values that were sent to `SetAxis` so the caller can
+    /// surface them on the blackboard.
     pub fn set_axes_verified(
         &mut self,
         steer: f64,
@@ -324,7 +307,9 @@ impl VJoyHandle {
     }
 
     /// Drop the current handle and re-acquire from scratch.
-    /// Returns `true` on success.
+    /// Returns `true` on success. Reserved for future error recovery
+    /// (e.g. driver-initiated relinquish detected by SetAxis failure).
+    #[allow(dead_code)]
     pub fn try_reconnect(&mut self) -> bool {
         let device_id = self.device_id;
         // Release current handle first so we don't acquire on top of an
@@ -349,9 +334,9 @@ impl Drop for VJoyHandle {
             }
             self.connected = false;
         }
-        // Decrement the DLL's reference count. The loader will only
-        // actually unmap when the count reaches zero — safe even if
-        // another VJoyHandle is alive concurrently.
+        // Decrement the DLL's reference count. The loader only actually
+        // unmaps when the count reaches zero — safe even if another
+        // VJoyHandle is alive concurrently.
         unsafe {
             let _ = windows::Win32::Foundation::FreeLibrary(self.dll);
         }
@@ -380,8 +365,6 @@ unsafe fn load_sym<F: Sized>(dll: HMODULE, name: &str) -> Result<F, VJoyInitErro
     let proc = GetProcAddress(dll, PCSTR(cstr.as_ptr()));
     match proc {
         Some(addr) => {
-            // SAFETY: caller asserted signature match.
-            // Sizes are equal (both are 8-byte fn pointers on x64).
             debug_assert_eq!(
                 std::mem::size_of::<F>(),
                 std::mem::size_of::<unsafe extern "system" fn() -> isize>()

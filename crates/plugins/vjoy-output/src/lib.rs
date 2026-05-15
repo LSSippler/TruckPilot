@@ -27,10 +27,6 @@ pub struct VJoyOutputPlugin {
     idle_centered: bool,
     /// `ctx.tick_count` of the most recent successful `set_axes` call.
     last_write_tick: u64,
-    // Diagnostic fields — reconnect-probe (phase 6.2c diag)
-    first_tick_done: bool,
-    reconnect_count: u32,
-    reconnect_failures: u32,
 }
 
 impl Default for VJoyOutputPlugin {
@@ -45,9 +41,6 @@ impl Default for VJoyOutputPlugin {
             tick_count_since_reconnect: 0,
             idle_centered: false,
             last_write_tick: 0,
-            first_tick_done: false,
-            reconnect_count: 0,
-            reconnect_failures: 0,
         }
     }
 }
@@ -132,7 +125,7 @@ impl Plugin for VJoyOutputPlugin {
             .map(|v| (v as u64).clamp(100, 5_000))
             .unwrap_or(500);
 
-        // Announce clean state to blackboard — new keys included
+        // Announce clean initial state to the blackboard.
         ctx.blackboard.set("vjoy.connected", "false");
         ctx.blackboard
             .set("vjoy.device_id", self.device_id.to_string());
@@ -143,31 +136,16 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard.set("vjoy.last_raw_y", "0");
         ctx.blackboard.set("vjoy.last_raw_z", "0");
         ctx.blackboard.set("vjoy.last_raw_source", "none");
-        ctx.blackboard.set("vjoy.first_tick_reconnect", "false");
-        ctx.blackboard.set("vjoy.reconnect_count", "0");
-        ctx.blackboard.set("vjoy.reconnect_failures", "0");
-        ctx.blackboard.set("vjoy.last_reconnect_tick", "0");
-        // Thread-affinity diagnostics (H1 check)
-        ctx.blackboard.set(
-            "vjoy.thread_id_acquire",
-            format!("{:?}", std::thread::current().id()),
-        );
-        ctx.blackboard.set(
-            "vjoy.self_addr_acquire",
-            format!("{:p}", self as *const Self),
-        );
-        ctx.blackboard.set("vjoy.thread_id_tick", "none");
-        ctx.blackboard.set("vjoy.self_addr_tick", "none");
-        ctx.blackboard.set("vjoy.handle_addr_acquire", "none");
-        ctx.blackboard.set("vjoy.handle_addr_tick", "none");
 
         #[cfg(windows)]
         {
             match VJoyHandle::try_acquire(self.device_id) {
                 Ok(mut handle) => {
-                    // Write neutral immediately: steer=center, throttle=0, brake=0.
-                    // try_acquire leaves throttle/brake at AXIS_MAX/2 (check only),
-                    // so we must correct that before the first tick fires.
+                    // try_acquire already commits a center-write + 100ms
+                    // settling sleep before returning. A second explicit
+                    // set_axes_verified here surfaces the raw values to the
+                    // blackboard so the very first frame the UI shows is
+                    // accurate.
                     match handle.set_axes_verified(0.0, 0.0, 0.0) {
                         Ok((rx, ry, rz)) => {
                             self.idle_centered = true;
@@ -186,12 +164,6 @@ impl Plugin for VJoyOutputPlugin {
                         }
                     }
                     self.vjoy = Some(handle);
-                    if let Some(ref h) = self.vjoy {
-                        ctx.blackboard.set(
-                            "vjoy.handle_addr_acquire",
-                            format!("{:p}", h as *const VJoyHandle),
-                        );
-                    }
                     ctx.blackboard.set("vjoy.connected", "true");
                     tracing::info!(
                         "[vjoy-output] vJoy device {} acquired (failsafe={}ms)",
@@ -243,17 +215,6 @@ impl Plugin for VJoyOutputPlugin {
             return;
         }
 
-        // Thread-affinity diagnostic: written every tick to catch runtime switches
-        #[cfg(windows)]
-        {
-            ctx.blackboard.set(
-                "vjoy.thread_id_tick",
-                format!("{:?}", std::thread::current().id()),
-            );
-            ctx.blackboard
-                .set("vjoy.self_addr_tick", format!("{:p}", self as *const Self));
-        }
-
         // Emergency brake overrides everything else
         if should_emergency_brake(ctx) {
             #[cfg(windows)]
@@ -281,8 +242,6 @@ impl Plugin for VJoyOutputPlugin {
             );
             #[cfg(windows)]
             if let Some(ref mut handle) = self.vjoy {
-                // steer=0.0 → map_signed_to_raw(0.0)=16384 (center), throttle/brake=0.
-                // Mirror tick_windows error handling: only update blackboard on success.
                 match handle.set_axes_verified(0.0, 0.0, 0.0) {
                     Ok((rx, ry, rz)) => {
                         self.idle_centered = true;
@@ -326,48 +285,6 @@ impl VJoyOutputPlugin {
             Some(h) => h,
             None => return,
         };
-        ctx.blackboard.set(
-            "vjoy.handle_addr_tick",
-            format!("{:p}", handle as *const VJoyHandle),
-        );
-
-        // DIAG TASK 1: force reconnect on the very first tick to check whether
-        // the connection goes stale between on_load and the first write.
-        if !self.first_tick_done {
-            self.first_tick_done = true;
-            tracing::warn!(
-                "[vjoy-output] first-tick forced reconnect (diag) tick={}",
-                ctx.tick_count
-            );
-            self.reconnect_count += 1;
-            if !handle.try_reconnect() {
-                self.reconnect_failures += 1;
-            }
-            ctx.blackboard.set("vjoy.first_tick_reconnect", "true");
-            ctx.blackboard
-                .set("vjoy.reconnect_count", self.reconnect_count.to_string());
-            ctx.blackboard.set(
-                "vjoy.reconnect_failures",
-                self.reconnect_failures.to_string(),
-            );
-        }
-
-        // DIAG TASK 2: periodic reconnect every 50 ticks (~1 s) while connected,
-        // to test whether refreshing the handle keeps the hardware stable.
-        if handle.connected && ctx.tick_count > 0 && ctx.tick_count.is_multiple_of(50) {
-            self.reconnect_count += 1;
-            if !handle.try_reconnect() {
-                self.reconnect_failures += 1;
-            }
-            ctx.blackboard
-                .set("vjoy.last_reconnect_tick", ctx.tick_count.to_string());
-            ctx.blackboard
-                .set("vjoy.reconnect_count", self.reconnect_count.to_string());
-            ctx.blackboard.set(
-                "vjoy.reconnect_failures",
-                self.reconnect_failures.to_string(),
-            );
-        }
 
         // Reconnect attempt every 10 ticks while disconnected
         if !handle.connected {
