@@ -47,7 +47,8 @@ mod speed_mapper;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::thread::JoinHandle;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use truckpilot_plugin_api::{
     ctx_debug, ctx_info, ctx_trace, ctx_warn, ControlOutput, Plugin, PluginContext, SharedFrame,
@@ -56,17 +57,24 @@ use truckpilot_plugin_api::{
 
 use speed_mapper::SpeedMapper;
 
+fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const LOG_TARGET: &str = "truckpilot_plugin_sign_vision";
 
-/// Default path to the ONNX model (Phase 6.5e v2 model, FP16-quantized).
-/// Generated from `best.onnx` via `tools/model-tools/quantize_fp16.py`;
-/// IO tensors stay FP32 so preprocess/postprocess do not need to change.
-/// Re-run the script after every retrain — see that file's docstring.
-const DEFAULT_MODEL_PATH: &str = "models/truckpilot-yolov8s-v2/best_fp16.onnx";
+/// Default path to the ONNX model (Phase 6.5e v2 model). The exported
+/// model is already FP16 inside, so the separate `_fp16.onnx` variant
+/// is unnecessary; the async-inference worker (added in this phase)
+/// removes the latency pressure that motivated quantization.
+const DEFAULT_MODEL_PATH: &str = "models/truckpilot-yolov8s-v2/best.onnx";
 
 /// Default inference interval in ticks (PhaseB 10 Hz → every tick).
 const DEFAULT_INFERENCE_INTERVAL: u32 = 1;
@@ -111,11 +119,6 @@ const CLASS_NAMES: [&str; 15] = [
     "RoadEdge",
 ];
 
-/// Inference wall-time threshold in ms; above this, skip the next N ticks.
-const BUDGET_WARN_MS: f32 = 80.0;
-/// Number of ticks to skip after a budget overrun.
-const SKIP_AFTER_OVERRUN: u32 = 2;
-
 // ---------------------------------------------------------------------------
 // Detection result
 // ---------------------------------------------------------------------------
@@ -137,6 +140,145 @@ impl Detection {
         label
             .strip_prefix("speed_limit_")
             .and_then(|s| s.parse::<f32>().ok())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Async inference worker (only when an onnx feature is compiled in)
+// ---------------------------------------------------------------------------
+
+/// Stale-frame threshold inside the worker, in microseconds. Frames
+/// submitted longer ago than this are dropped without running inference
+/// — at 10+ Hz frame rate the data is already obsolete by the time we
+/// got around to processing it.
+const WORKER_STALE_FRAME_US: u64 = 200_000;
+
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+struct InferenceJob {
+    frame_id: u64,
+    rgb: Arc<Vec<u8>>,
+    width: u32,
+    height: u32,
+    submit_us: u64,
+}
+
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+struct InferenceResult {
+    frame_id: u64,
+    detections: Vec<Detection>,
+    inference_ms: f32,
+    skipped_stale: bool,
+}
+
+/// Channel-backed handle to the inference worker thread. Owned by
+/// `SignVisionPlugin` while inference is active; dropping it closes
+/// the job channel which lets the worker thread exit cleanly.
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+struct InferenceWorker {
+    /// `Option` so `Drop` can `.take()` and drop it, closing the job
+    /// channel and letting the worker exit cleanly before we join it.
+    job_tx: Option<crossbeam_channel::Sender<InferenceJob>>,
+    /// Receiver clone used by the *producer* side to drain a
+    /// queued-but-not-yet-processed frame and replace it with a fresher
+    /// one (drop-oldest backpressure). This is safe because `tick()` is
+    /// the only producer; the worker thread holds its own clone.
+    job_drain_rx: crossbeam_channel::Receiver<InferenceJob>,
+    result_rx: crossbeam_channel::Receiver<InferenceResult>,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+impl InferenceWorker {
+    /// Spawn a dedicated thread that owns `session` and processes
+    /// frames from `job_rx`. Bounded(1) on both channels so a slow
+    /// worker doesn't queue stale frames; the tick path uses
+    /// drain-then-send to keep "newest frame wins".
+    fn spawn(
+        session: ort::session::Session,
+        speed_mapper: SpeedMapper,
+        conf_threshold: f32,
+        nms_iou: f32,
+    ) -> Self {
+        let (job_tx, job_rx) = crossbeam_channel::bounded::<InferenceJob>(1);
+        let job_drain_rx = job_rx.clone();
+        let (result_tx, result_rx) = crossbeam_channel::bounded::<InferenceResult>(1);
+
+        let handle = std::thread::Builder::new()
+            .name("sign-vision-inference".into())
+            .spawn(move || worker_loop(session, speed_mapper, conf_threshold, nms_iou, job_rx, result_tx))
+            .expect("spawn sign-vision-inference thread");
+
+        Self {
+            job_tx: Some(job_tx),
+            job_drain_rx,
+            result_rx,
+            handle: Some(handle),
+        }
+    }
+}
+
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+impl Drop for InferenceWorker {
+    fn drop(&mut self) {
+        // Dropping the only Sender disconnects the channel; the worker
+        // thread's recv() returns Err and the loop exits.
+        drop(self.job_tx.take());
+        if let Some(h) = self.handle.take() {
+            // Best-effort join. Worker exits within one inference
+            // cycle (<200 ms) after seeing the disconnected channel.
+            let _ = h.join();
+        }
+    }
+}
+
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+fn worker_loop(
+    mut session: ort::session::Session,
+    speed_mapper: SpeedMapper,
+    conf_threshold: f32,
+    nms_iou: f32,
+    job_rx: crossbeam_channel::Receiver<InferenceJob>,
+    result_tx: crossbeam_channel::Sender<InferenceResult>,
+) {
+    while let Ok(job) = job_rx.recv() {
+        // Stale-skip: frame older than threshold is dropped silently
+        // (with a result so the host can count it).
+        if now_us().saturating_sub(job.submit_us) > WORKER_STALE_FRAME_US {
+            let _ = result_tx.send(InferenceResult {
+                frame_id: job.frame_id,
+                detections: Vec::new(),
+                inference_ms: 0.0,
+                skipped_stale: true,
+            });
+            continue;
+        }
+
+        let t0 = Instant::now();
+        let detections = do_inference(
+            &mut session,
+            &speed_mapper,
+            &job.rgb,
+            job.width,
+            job.height,
+            conf_threshold,
+            nms_iou,
+        )
+        .unwrap_or_default();
+        let inference_ms = t0.elapsed().as_secs_f32() * 1_000.0;
+
+        // If the host has already dropped the receiver (plugin
+        // shutdown), send fails — exit the loop.
+        if result_tx
+            .send(InferenceResult {
+                frame_id: job.frame_id,
+                detections,
+                inference_ms,
+                skipped_stale: false,
+            })
+            .is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -181,13 +323,21 @@ pub struct SignVisionPlugin {
     #[allow(dead_code)]
     last_inference: Instant,
     model_available: bool,
-    /// Remaining ticks to skip after a budget overrun.
-    skip_ticks: u32,
     /// Latency of the most recent inference pass in milliseconds.
     last_inference_ms: f32,
     speed_mapper: SpeedMapper,
+    /// Owns the ONNX session; lives only on the worker thread once
+    /// `on_load` has spawned it. `None` when no model is available.
     #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
-    session: Option<ort::session::Session>,
+    worker: Option<InferenceWorker>,
+
+    /// Wall-time (ms) the previous tick spent inside this plugin —
+    /// excludes inference, includes JPEG decode + channel ops.
+    /// Should stay <2 ms once the worker is in steady state.
+    last_tick_blocking_ms: f32,
+    /// Frames dropped because the worker channel was full (= worker
+    /// busy) and we rotated the slot to keep the newest frame.
+    frames_dropped_full: u64,
 
     // ---- DIAG counters (Phase 6.x sign-vision diagnosis) ----
     diag_tick_count: u64,
@@ -218,11 +368,12 @@ impl Default for SignVisionPlugin {
             last_detection: None,
             last_inference: Instant::now(),
             model_available: false,
-            skip_ticks: 0,
             last_inference_ms: 0.0,
             speed_mapper: SpeedMapper::default(),
             #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
-            session: None,
+            worker: None,
+            last_tick_blocking_ms: 0.0,
+            frames_dropped_full: 0,
             diag_tick_count: 0,
             diag_skip_map_source: 0,
             diag_skip_map_only: 0,
@@ -261,6 +412,8 @@ fn publish_diag(p: &SignVisionPlugin, ctx: &PluginContext, last_skip_reason: &st
     bb.set("sign.diag.inference_calls", p.diag_inference_calls.to_string());
     bb.set("sign.diag.inference_returns_empty", p.diag_inference_returns_empty.to_string());
     bb.set("sign.diag.detections_published", p.diag_detections_published.to_string());
+    bb.set("sign.tick_blocking_ms", format!("{:.2}", p.last_tick_blocking_ms));
+    bb.set("sign.frames_dropped_full", p.frames_dropped_full.to_string());
     bb.set("sign.diag.last_skip_reason", last_skip_reason);
     bb.set("sign.diag.mode", format!("{:?}", p.mode));
     bb.set("sign.diag.model_available", p.model_available.to_string());
@@ -423,41 +576,116 @@ impl SignVisionPlugin {
         NextFrame::Got(frame)
     }
 
-    /// Run inference on `rgb`, returning detections (or empty on any failure).
-    fn maybe_run_inference(
-        &mut self,
-        rgb: &[u8],
-        width: u32,
-        height: u32,
-        ctx: &PluginContext,
-    ) -> Vec<Detection> {
-        if !self.model_available {
-            return Vec::new();
+    /// Drain all completed inference results from the worker. Returns
+    /// the most recent (frame_id, detections) pair plus a flag for
+    /// whether any newer one superseded it (so we can publish stats).
+    /// All older results are discarded — only the latest matters.
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn drain_results(&mut self) -> Option<InferenceResult> {
+        let worker = self.worker.as_ref()?;
+        let mut latest: Option<InferenceResult> = None;
+        while let Ok(r) = worker.result_rx.try_recv() {
+            latest = Some(r);
         }
-        #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
-        {
-            // Extract primitive values first to avoid complex borrow interactions.
-            let conf = self.conf_threshold;
-            let iou = self.nms_iou;
-            if let Some(session) = self.session.as_mut() {
-                return match do_inference(
-                    session,
-                    &self.speed_mapper,
-                    rgb,
-                    width,
-                    height,
-                    conf,
-                    iou,
-                ) {
-                    Ok(dets) => dets,
-                    Err(e) => {
-                        ctx_warn!(ctx, target: LOG_TARGET, "inference error: {e}");
-                        Vec::new()
-                    }
-                };
+        latest
+    }
+
+    /// Submit a frame to the worker with drop-oldest backpressure.
+    /// Returns true if accepted, false if the channel was full and
+    /// we kept the in-flight frame (the new one is dropped).
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn submit_frame(&mut self, job: InferenceJob) -> bool {
+        let Some(worker) = self.worker.as_ref() else {
+            return false;
+        };
+        let Some(job_tx) = worker.job_tx.as_ref() else {
+            return false;
+        };
+        match job_tx.try_send(job) {
+            Ok(()) => true,
+            Err(crossbeam_channel::TrySendError::Full(job)) => {
+                // Drain the queued (older) frame and try once more.
+                // tick() is the only producer, so after this try_recv
+                // the channel is empty and the next try_send is
+                // guaranteed to succeed unless the worker exited.
+                let _ = worker.job_drain_rx.try_recv();
+                self.frames_dropped_full += 1;
+                job_tx.try_send(job).is_ok()
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                // Worker died — bail out, don't poison further state.
+                false
             }
         }
-        Vec::new()
+    }
+
+    /// Drain results from the worker and publish the most recent one
+    /// to the blackboard. Runs every tick (cheap when empty).
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn publish_latest_result(&mut self, ctx: &PluginContext) {
+        let Some(result) = self.drain_results() else {
+            return;
+        };
+
+        if result.skipped_stale {
+            // Stale frames count as worked-but-empty; don't move the
+            // last-inference-ms metric, but do tick the diag counter.
+            self.diag_inference_returns_empty += 1;
+            return;
+        }
+
+        self.diag_inference_calls += 1;
+        self.last_inference_ms = result.inference_ms;
+        ctx.blackboard.set(
+            "sign.last_inference_ms",
+            format!("{:.1}", self.last_inference_ms),
+        );
+        ctx.blackboard
+            .set("sign.detected_count", result.detections.len().to_string());
+
+        if result.detections.is_empty() {
+            self.diag_inference_returns_empty += 1;
+        } else {
+            self.diag_detections_published += result.detections.len() as u64;
+        }
+
+        // Pick the highest-confidence speed-limit detection above threshold.
+        let best = result
+            .detections
+            .into_iter()
+            .filter(|d| d.confidence >= MIN_CONFIDENCE)
+            .filter_map(|d| Detection::parse_speed_limit(&d.label).map(|v| (d.confidence, v)))
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        match best {
+            Some((conf, limit_kmh)) => {
+                ctx.blackboard
+                    .set("sign.speed_limit_kmh", limit_kmh.to_string());
+                ctx.blackboard.set("sign.source", "vision");
+                ctx.blackboard
+                    .set("sign.speed_limit_confidence", format!("{conf:.3}"));
+                ctx.blackboard
+                    .set("sign.vision.confidence", format!("{conf:.3}"));
+                ctx_debug!(
+                    ctx,
+                    target: LOG_TARGET,
+                    "speed limit {limit_kmh:.0} km/h detected (conf={conf:.2}, frame_id={})",
+                    result.frame_id
+                );
+            }
+            None => {
+                if ctx.blackboard.get("sign.source").as_deref() == Some("vision") {
+                    ctx.blackboard.remove("sign.speed_limit_kmh");
+                    ctx.blackboard.remove("sign.source");
+                    ctx.blackboard.remove("sign.vision.confidence");
+                    ctx.blackboard.remove("sign.speed_limit_confidence");
+                }
+            }
+        }
+    }
+
+    fn record_tick_blocking(&mut self, tick_start: Instant) {
+        self.last_tick_blocking_ms = tick_start.elapsed().as_secs_f32() * 1_000.0;
     }
 }
 
@@ -474,7 +702,7 @@ impl Plugin for SignVisionPlugin {
   "properties": {
     "model_path": {
       "type": "string",
-      "description": "Path to the YOLOv8s ONNX model (default: models/truckpilot-yolov8s-v2/best_fp16.onnx)."
+      "description": "Path to the YOLOv8s ONNX model (default: models/truckpilot-yolov8s-v2/best.onnx)."
     },
     "inference_interval": {
       "type": "integer",
@@ -538,18 +766,20 @@ impl Plugin for SignVisionPlugin {
             {
                 match load_onnx_session(&self.model_path) {
                     Some((sess, ep_label)) => {
-                        self.session = Some(sess);
+                        // Spawn the inference worker thread and move
+                        // the session into it; the tick path never
+                        // touches the session directly.
+                        self.worker = Some(InferenceWorker::spawn(
+                            sess,
+                            self.speed_mapper.clone(),
+                            self.conf_threshold,
+                            self.nms_iou,
+                        ));
                         self.model_available = true;
-                        // Logged via ctx_warn so it surfaces under the
-                        // host's tracing subscriber. Raw tracing::warn
-                        // from a plugin DLL is dropped silently because
-                        // each cdylib has its own tracing global with
-                        // no subscriber attached.
                         ctx_warn!(
                             ctx,
                             target: LOG_TARGET,
-                            "ONNX EP active: {ep_label}{}",
-                            if ep_label == "CPU" { " — expect >100 ms/frame" } else { "" }
+                            "ONNX EP active: {ep_label} (async worker thread)"
                         );
                         ctx.blackboard.set("sign.onnx.provider", ep_label);
                     }
@@ -592,6 +822,12 @@ impl Plugin for SignVisionPlugin {
     }
 
     fn on_unload(&mut self) {
+        // Drops the worker handle → closes the job channel → worker
+        // recv() returns Err → worker thread exits and is joined.
+        #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+        {
+            self.worker = None;
+        }
         tracing::info!(target: LOG_TARGET, "unloaded");
     }
 
@@ -605,15 +841,25 @@ impl Plugin for SignVisionPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
+        let tick_start = Instant::now();
         self.diag_tick_count += 1;
+
+        // --- 1) Always drain completed inference results first. This
+        //         runs even on early-return paths so the worker's
+        //         backlog never blocks publication, and the latest
+        //         result is always visible on the blackboard.
+        #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+        self.publish_latest_result(ctx);
 
         if ctx.blackboard.get("sign.source").as_deref() == Some("map") {
             self.diag_skip_map_source += 1;
+            self.record_tick_blocking(tick_start);
             publish_diag(self, ctx, "map_source");
             return;
         }
         if self.mode == Mode::MapOnly {
             self.diag_skip_map_only += 1;
+            self.record_tick_blocking(tick_start);
             publish_diag(self, ctx, "map_only_mode");
             return;
         }
@@ -622,6 +868,7 @@ impl Plugin for SignVisionPlugin {
             .is_multiple_of(self.inference_interval as u64)
         {
             self.diag_skip_interval += 1;
+            self.record_tick_blocking(tick_start);
             publish_diag(self, ctx, "interval");
             return;
         }
@@ -629,31 +876,26 @@ impl Plugin for SignVisionPlugin {
         let frame = match self.next_frame_diag(ctx) {
             NextFrame::Got(f) => f,
             NextFrame::Stale => {
+                self.record_tick_blocking(tick_start);
                 publish_diag(self, ctx, "frame_stale");
                 return;
             }
             NextFrame::NoStore => {
+                self.record_tick_blocking(tick_start);
                 publish_diag(self, ctx, "no_frame_store");
                 return;
             }
             NextFrame::Miss => {
+                self.record_tick_blocking(tick_start);
                 publish_diag(self, ctx, "frame_miss");
                 return;
             }
             NextFrame::AlreadyProcessed(_id) => {
+                self.record_tick_blocking(tick_start);
                 publish_diag(self, ctx, "already_processed");
                 return;
             }
         };
-
-        // Frame-skip: budget overrun from previous tick.
-        if self.skip_ticks > 0 {
-            self.skip_ticks -= 1;
-            self.diag_skip_budget += 1;
-            self.last_processed_frame_id = Some(frame.id);
-            publish_diag(self, ctx, "budget_skip");
-            return;
-        }
 
         ctx_trace!(
             ctx,
@@ -681,84 +923,37 @@ impl Plugin for SignVisionPlugin {
                 );
                 self.diag_decode_failures += 1;
                 self.last_processed_frame_id = Some(frame.id);
+                self.record_tick_blocking(tick_start);
                 publish_diag(self, ctx, "decode_failed");
                 return;
             }
         };
 
-        // Run inference and measure wall time.
-        self.diag_inference_calls += 1;
-        let t0 = Instant::now();
-        let detections = self.maybe_run_inference(rgb, frame.width, frame.height, ctx);
-        self.last_inference_ms = t0.elapsed().as_secs_f32() * 1_000.0;
-        if detections.is_empty() {
-            self.diag_inference_returns_empty += 1;
-        } else {
-            self.diag_detections_published += detections.len() as u64;
-        }
+        // --- 2) Submit frame to worker (drop-oldest on full).
+        //         tick() never waits for inference; the result will be
+        //         picked up on a future tick via drain_results().
+        #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+        let submitted = {
+            let job = InferenceJob {
+                frame_id: frame.id,
+                rgb: Arc::clone(rgb),
+                width: frame.width,
+                height: frame.height,
+                submit_us: now_us(),
+            };
+            self.submit_frame(job)
+        };
+        #[cfg(not(any(feature = "onnx-directml", feature = "onnx-cpu")))]
+        let submitted = false;
 
-        ctx.blackboard.set(
-            "sign.last_inference_ms",
-            format!("{:.1}", self.last_inference_ms),
-        );
-        ctx.blackboard
-            .set("sign.detected_count", detections.len().to_string());
-
-        ctx_trace!(
-            ctx,
-            target: LOG_TARGET,
-            "inference done: {} detections in {:.1} ms",
-            detections.len(),
-            self.last_inference_ms
-        );
-
-        // Budget guard: if inference exceeded the warn threshold, skip ticks.
-        if self.last_inference_ms > BUDGET_WARN_MS {
-            self.skip_ticks = SKIP_AFTER_OVERRUN;
-            ctx_warn!(
-                ctx,
-                target: LOG_TARGET,
-                "inference {:.1} ms > {BUDGET_WARN_MS} ms budget — throttling to {:.0} Hz for {} ticks",
-                self.last_inference_ms,
-                1_000.0 / (self.inference_interval as f32 * 100.0 * (SKIP_AFTER_OVERRUN + 1) as f32),
-                SKIP_AFTER_OVERRUN,
-            );
-        }
-
-        // Pick the highest-confidence speed-limit detection above threshold.
-        let best = detections
-            .into_iter()
-            .filter(|d| d.confidence >= MIN_CONFIDENCE)
-            .filter_map(|d| Detection::parse_speed_limit(&d.label).map(|v| (d.confidence, v)))
-            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        match best {
-            Some((conf, limit_kmh)) => {
-                ctx.blackboard
-                    .set("sign.speed_limit_kmh", limit_kmh.to_string());
-                ctx.blackboard.set("sign.source", "vision");
-                ctx.blackboard
-                    .set("sign.speed_limit_confidence", format!("{conf:.3}"));
-                ctx.blackboard
-                    .set("sign.vision.confidence", format!("{conf:.3}"));
-                ctx_debug!(
-                    ctx,
-                    target: LOG_TARGET,
-                    "speed limit {limit_kmh:.0} km/h detected (conf={conf:.2})"
-                );
-            }
-            None => {
-                if ctx.blackboard.get("sign.source").as_deref() == Some("vision") {
-                    ctx.blackboard.remove("sign.speed_limit_kmh");
-                    ctx.blackboard.remove("sign.source");
-                    ctx.blackboard.remove("sign.vision.confidence");
-                    ctx.blackboard.remove("sign.speed_limit_confidence");
-                }
-            }
-        }
-
+        // Mark the frame as "seen" regardless of whether we submitted
+        // it — otherwise next_frame_diag would keep re-fetching the
+        // same SharedFrame every tick.
         self.last_processed_frame_id = Some(frame.id);
-        publish_diag(self, ctx, "processed");
+
+        let reason = if submitted { "submitted" } else { "drop_full" };
+        self.record_tick_blocking(tick_start);
+        publish_diag(self, ctx, reason);
     }
 }
 
@@ -985,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_writes_inference_ms_and_count_after_decode() {
+    fn tick_records_blocking_metric() {
         let mut p = SignVisionPlugin::default();
         let (ctx, store) = ctx_vision();
         p.on_load(&ctx);
@@ -994,34 +1189,12 @@ mod tests {
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
 
-        // Keys must exist (even when model_available=false → 0 detections, 0 ms).
-        assert!(ctx.blackboard.get("sign.last_inference_ms").is_some());
-        assert_eq!(
-            ctx.blackboard.get("sign.detected_count").as_deref(),
-            Some("0")
-        );
-    }
-
-    #[test]
-    fn skip_ticks_prevents_processing() {
-        let mut p = SignVisionPlugin::default();
-        let (ctx, store) = ctx_vision();
-        p.on_load(&ctx);
-        p.skip_ticks = 1; // simulate post-overrun state
-
-        let frame = frame_with(1, one_px_white_jpeg());
-        store.set(FRAME_KEY, Arc::clone(&frame));
-
-        let mut out = ControlOutput::default();
-        p.tick(None, &mut out, &ctx);
-
-        // Frame is marked processed (consumed the slot) but not decoded.
+        // Async worker may not have published a result yet, so
+        // sign.last_inference_ms is not guaranteed on a single tick.
+        // But the tick-blocking metric is always written.
+        assert!(ctx.blackboard.get("sign.tick_blocking_ms").is_some());
+        // Frame was marked processed regardless of submission outcome.
         assert_eq!(p.last_processed_frame_id, Some(1));
-        assert!(
-            frame.decoded_rgb8().is_none(),
-            "skipped frame must not be decoded"
-        );
-        assert_eq!(p.skip_ticks, 0);
     }
 
     // ---- decode_jpeg -------------------------------------------

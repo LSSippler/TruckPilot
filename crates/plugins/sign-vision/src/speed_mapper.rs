@@ -49,6 +49,7 @@ const DIGITS_5X7: [[u8; 7]; 10] = [
 // ---------------------------------------------------------------------------
 
 /// Template-matching speed-limit extractor.
+#[derive(Clone)]
 pub struct SpeedMapper {
     /// Precomputed (limit_kmh, 32×32 grayscale template) pairs.
     templates: Vec<(u32, Vec<u8>)>,
