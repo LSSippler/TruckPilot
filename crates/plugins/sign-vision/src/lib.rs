@@ -44,6 +44,7 @@
 mod postprocess;
 mod preprocess;
 mod speed_mapper;
+mod speed_templates_real;
 
 use std::path::PathBuf;
 use std::sync::Arc;

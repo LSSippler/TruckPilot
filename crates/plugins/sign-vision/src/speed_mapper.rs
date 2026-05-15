@@ -11,8 +11,10 @@
 /// Side length of the square templates used for comparison.
 const TEMPLATE_SIZE: u32 = 32;
 
-/// EU speed limits to generate templates for.
-pub const SPEED_LIMITS: &[u32] = &[30, 50, 60, 70, 80, 90, 100, 110, 120, 130];
+/// EU speed limits to generate templates for. 40 covers German urban
+/// "Tempo 40"-zones; rest are the standard EU set. Add new values here
+/// when retraining or when capture data shows a missing km/h shows up.
+pub const SPEED_LIMITS: &[u32] = &[30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130];
 
 /// Minimum NCC score to accept a match (in [−1, 1]).
 const MIN_NCC: f32 = 0.45;
@@ -56,12 +58,27 @@ pub struct SpeedMapper {
 }
 
 impl SpeedMapper {
-    /// Build templates for all EU speed limits in `SPEED_LIMITS`.
+    /// Build the template set: real-image templates from
+    /// `speed_templates_real::REAL_TEMPLATES` take priority, with
+    /// synthetic 5×7-bitmap-font templates filling in any km/h value
+    /// that has no real exemplars yet. This preserves coverage for
+    /// km/h values we don't have labeled crops for (Phase 6.5h
+    /// initial pass: only 40/60/80/100 had crops).
     pub fn new() -> Self {
-        let templates = SPEED_LIMITS
+        use crate::speed_templates_real::REAL_TEMPLATES;
+        use std::collections::HashSet;
+
+        let mut templates: Vec<(u32, Vec<u8>)> = REAL_TEMPLATES
             .iter()
-            .map(|&limit| (limit, render_eu_speed_sign(limit, TEMPLATE_SIZE)))
+            .map(|(km, bytes)| (*km, bytes.to_vec()))
             .collect();
+        let real_kmh: HashSet<u32> = templates.iter().map(|(k, _)| *k).collect();
+
+        for &limit in SPEED_LIMITS {
+            if !real_kmh.contains(&limit) {
+                templates.push((limit, render_eu_speed_sign(limit, TEMPLATE_SIZE)));
+            }
+        }
         Self { templates }
     }
 
@@ -222,13 +239,29 @@ mod tests {
     #[test]
     fn speed_mapper_creates_all_templates() {
         let mapper = SpeedMapper::new();
-        assert_eq!(mapper.templates.len(), SPEED_LIMITS.len());
+        // Real templates may add more than one entry per km/h (one per
+        // labeled crop), so the count is at least SPEED_LIMITS.len() —
+        // exactly that when REAL_TEMPLATES is empty.
+        assert!(mapper.templates.len() >= SPEED_LIMITS.len());
         for (limit, tmpl) in &mapper.templates {
             assert_eq!(
                 tmpl.len(),
                 (TEMPLATE_SIZE * TEMPLATE_SIZE) as usize,
                 "template for {limit}"
             );
+        }
+    }
+
+    #[test]
+    fn every_speed_limit_has_at_least_one_template() {
+        // Coverage guarantee: real and synthetic together must cover
+        // every km/h in SPEED_LIMITS, otherwise that value can never
+        // be returned by match_speed.
+        let mapper = SpeedMapper::new();
+        let covered: std::collections::HashSet<u32> =
+            mapper.templates.iter().map(|(k, _)| *k).collect();
+        for &limit in SPEED_LIMITS {
+            assert!(covered.contains(&limit), "no template for {limit} km/h");
         }
     }
 
