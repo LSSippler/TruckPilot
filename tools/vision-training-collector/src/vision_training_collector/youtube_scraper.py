@@ -19,6 +19,20 @@ _ALLOWED_COOKIE_BROWSERS = frozenset(
     {"firefox", "chrome", "edge", "brave", "opera", "vivaldi", "safari", "chromium"}
 )
 
+# Format chain: 1080p mp4 first, then any video+audio combo, then anything.
+_YT_FORMAT_FALLBACK = (
+    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+    "bestvideo[height<=1080]+bestaudio/"
+    "best[height<=1080][ext=mp4]/"
+    "best[height<=1080]/"
+    "best"
+)
+
+# yt-dlp 2026+ needs Deno (or NPM) to solve YouTube's "n" JS challenge.
+# Without this, the web client returns format-id "Only images are available".
+# Requires `deno` on PATH (install: https://deno.land/).
+_YT_REMOTE_COMPONENTS = "ejs:github"
+
 
 def _resolve_cookies_browser(cli_value: str | None, cfg_value: str | None) -> str | None:
     """CLI flag wins over config. Returns a validated browser name or None."""
@@ -40,6 +54,14 @@ def _yt_dlp():
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("yt-dlp is not installed. Run `pip install yt-dlp`.") from exc
     return yt_dlp
+
+
+def _base_yt_opts(cookie_opts: dict[str, Any]) -> dict[str, Any]:
+    """Common options: EJS bridge for JS-challenge + cookies."""
+    return {
+        "remote_components": _YT_REMOTE_COMPONENTS,
+        **cookie_opts,
+    }
 
 
 def _video_info_ok(info: dict[str, Any], min_duration: int) -> tuple[bool, str]:
@@ -88,8 +110,8 @@ def scrape(
 ) -> dict[str, int]:
     """Download videos matching the configured search terms / channels / playlists.
 
+    Requires Deno on PATH (yt-dlp uses EJS via deno to solve YouTube's JS challenge).
     `cookies_browser` (CLI override) takes precedence over `cfg.youtube.cookies_browser`.
-    When set, yt-dlp is told to read cookies from that browser's local profile.
     """
     raw_dir.mkdir(parents=True, exist_ok=True)
     state = State(state_path)
@@ -102,6 +124,7 @@ def scrape(
     cookie_opts: dict[str, Any] = {"cookiesfrombrowser": (browser,)} if browser else {}
     if browser:
         log.info("using cookies from browser=%s for YouTube auth", browser)
+    log.info("yt-dlp remote_components=%s (requires Deno on PATH)", _YT_REMOTE_COMPONENTS)
 
     targets: list[str] = []
     for term in cfg.youtube.search_terms:
@@ -111,12 +134,14 @@ def scrape(
 
     stats = {"considered": 0, "downloaded": 0, "skipped": 0, "errors": 0}
 
+    base_opts = _base_yt_opts(cookie_opts)
+
     ydl_opts_probe: dict[str, Any] = {
         "quiet": True,
         "skip_download": True,
         "extract_flat": "in_playlist",
         "noplaylist": False,
-        **cookie_opts,
+        **base_opts,
     }
 
     for target in targets:
@@ -147,7 +172,11 @@ def scrape(
 
             video_url = entry.get("url") or entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
 
-            ydl_opts_info: dict[str, Any] = {"quiet": True, "skip_download": True, **cookie_opts}
+            ydl_opts_info: dict[str, Any] = {
+                "quiet": True,
+                "skip_download": True,
+                **base_opts,
+            }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
                     info = ydl.extract_info(video_url, download=False)
@@ -171,12 +200,12 @@ def scrape(
             outtmpl = str(raw_dir / "%(id)s.%(ext)s")
             ydl_opts_dl: dict[str, Any] = {
                 "outtmpl": outtmpl,
-                "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "format": _YT_FORMAT_FALLBACK,
                 "merge_output_format": "mp4",
                 "quiet": True,
                 "no_warnings": True,
                 "retries": 3,
-                **cookie_opts,
+                **base_opts,
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts_dl) as ydl:

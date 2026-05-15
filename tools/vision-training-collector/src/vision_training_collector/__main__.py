@@ -131,6 +131,30 @@ def pre_label_cmd(
     console.print(report)
 
 
+@cli.command("auto-annotate")
+@click.option("--input", "input_dir", type=click.Path(path_type=Path), required=True)
+@click.option("--output", "output_dir", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "--config",
+    "annotate_config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="auto-annotate YAML config; defaults to <tool-root>/auto_annotate_config.yaml",
+)
+@click.option("--dry-run", is_flag=True)
+def auto_annotate_cmd(
+    input_dir: Path,
+    output_dir: Path,
+    annotate_config_path: Path | None,
+    dry_run: bool,
+) -> None:
+    from .auto_annotate import AutoAnnotateConfig, auto_annotate_directory
+    cfg_path = annotate_config_path or (DEFAULT_CONFIG.parent / "auto_annotate_config.yaml")
+    cfg = AutoAnnotateConfig.from_yaml(cfg_path)
+    report = auto_annotate_directory(input_dir, output_dir, cfg, dry_run=dry_run)
+    console.print(report)
+
+
 @cli.command("pipeline")
 @click.option("--skip-scrape", is_flag=True)
 @click.option("--skip-capture", is_flag=True, default=True, help="skip live capture by default")

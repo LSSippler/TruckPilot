@@ -4,12 +4,23 @@
 search_terms = []
 channels = []     # optional specific YouTube channels (URLs)
 playlists = [
-  "https://www.youtube.com/watch?v=xByY3keQJcg",
   "https://www.youtube.com/watch?v=vaUGv7_Pl3I",
+  "https://www.youtube.com/watch?v=XE6KClrBS3U",
+  "https://www.youtube.com/watch?v=qJVym1MVN_E",
+  "https://www.youtube.com/watch?v=QQQvNuk0fbY",
+  "https://www.youtube.com/watch?v=3JxMiBSxyc0",
+  "https://www.youtube.com/watch?v=co8U6ZAy6hs",
+  "https://www.youtube.com/watch?v=0r7ALlG9ihY",
   "https://www.youtube.com/watch?v=cDM1kWWoCU8",
   "https://www.youtube.com/watch?v=DY58UPHlAT8",
   "https://www.youtube.com/watch?v=EG_84-Z8wns",
+  "https://www.youtube.com/watch?v=m4Ul3jvi0vc",
+  "https://www.youtube.com/watch?v=GqGTDLRVwf0",
   "https://www.youtube.com/watch?v=y287trA3Eio",
+  "https://www.youtube.com/watch?v=2MDbAE8s-Ns",
+  "https://www.youtube.com/watch?v=e9pksvdLSpk",
+  "https://www.youtube.com/watch?v=r3s2tx_5OfQ",
+  "https://www.youtube.com/watch?v=TVUMYSm63EM",
 ]
 target_resolution = "1080p"
 daily_quota_gb = 5

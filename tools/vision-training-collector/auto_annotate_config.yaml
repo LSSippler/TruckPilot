@@ -1,0 +1,66 @@
+# TruckPilot Phase 6.5e — auto-annotation config for the two-model pre-labeler.
+#
+# The pipeline runs every model listed below over each frame, maps the source
+# class ids onto the shared TruckPilot id space, then greedy-NMS-merges all
+# detections (higher `priority` wins on overlap > iou_threshold).
+
+iou_threshold: 0.5
+
+# Shared TruckPilot Phase-1 class space. Must match crates/vision/ and
+# tools/vision-training-collector/class_mapping.yaml.
+truckpilot_classes:
+  0: Car
+  1: Truck
+  2: TruckTrailer
+  3: Bus
+  4: BrakeLightOn
+  5: TurnSignalLeft
+  6: TurnSignalRight
+  7: TrafficLightRed
+  8: TrafficLightYellow
+  9: TrafficLightGreen
+  10: StopSign
+  11: SpeedLimitSign
+  12: LaneSolid
+  13: LaneDashed
+  14: RoadEdge
+
+models:
+  # Primary model — trained on TruckPilot classes directly. Wins all conflicts.
+  - name: truckpilot_v2
+    path: ../../models/truckpilot-yolov8s-v2/best.pt
+    # Index = model's output class id, value = TruckPilot class name.
+    # Order must match the model's training data.yaml.
+    classes:
+      - Car
+      - Truck
+      - TruckTrailer
+      - Bus
+      - BrakeLightOn
+      - TurnSignalLeft
+      - TurnSignalRight
+      - TrafficLightRed
+      - TrafficLightYellow
+      - TrafficLightGreen
+      - StopSign
+      - SpeedLimitSign
+      - LaneSolid
+      - LaneDashed
+      - RoadEdge
+    priority: 100
+    conf_threshold: 0.35
+
+  # Secondary — COCO-pretrained YOLOv8x. Catches generic vehicles the
+  # TruckPilot model misses. Lower priority -> only fills gaps. The traffic
+  # light state (red/yellow/green) is unknowable from COCO, so all of them are
+  # mapped to TrafficLightRed as the safest default; reviewer corrects in CVAT.
+  - name: yolov8x_coco
+    path: yolov8x.pt   # ultralytics auto-downloads on first run
+    class_mapping:
+      car: Car
+      truck: Truck
+      bus: Bus
+      stop sign: StopSign
+      traffic light: TrafficLightRed
+    priority: 50
+    conf_threshold: 0.40
