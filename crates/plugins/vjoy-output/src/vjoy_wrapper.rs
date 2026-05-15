@@ -127,6 +127,19 @@ impl VJoyHandle {
 
     /// Write steering, throttle, brake axes to the device.
     pub fn set_axes(&mut self, steer: f64, throttle: f64, brake: f64) -> Result<(), VJoySendError> {
+        self.set_axes_verified(steer, throttle, brake).map(|_| ())
+    }
+
+    /// Like `set_axes` but also returns the raw i32 values that were passed
+    /// to `device.set_axis` immediately before `update_device_state`.
+    /// (steer_raw, throttle_raw, brake_raw) — steer center = 16384, not 0.
+    /// If last_raw_x == 0 in the blackboard the mapping path itself is the bug.
+    pub fn set_axes_verified(
+        &mut self,
+        steer: f64,
+        throttle: f64,
+        brake: f64,
+    ) -> Result<(i32, i32, i32), VJoySendError> {
         let steer_raw = map_signed_to_raw(steer);
         let throttle_raw = map_unsigned_to_raw(throttle);
         let brake_raw = map_unsigned_to_raw(brake);
@@ -143,7 +156,9 @@ impl VJoyHandle {
 
         self.vjoy
             .update_device_state(&self.device)
-            .map_err(|e| VJoySendError::UpdateError(format!("{e}")))
+            .map_err(|e| VJoySendError::UpdateError(format!("{e}")))?;
+
+        Ok((steer_raw, throttle_raw, brake_raw))
     }
 
     /// Set all axes to safe/neutral values and mark disconnected. The vJoy

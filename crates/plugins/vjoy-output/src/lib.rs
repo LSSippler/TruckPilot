@@ -132,6 +132,10 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard.remove("vjoy.last_error");
         ctx.blackboard.set("vjoy.last_write_tick", "0");
         ctx.blackboard.set("vjoy.idle_centered", "false");
+        ctx.blackboard.set("vjoy.last_raw_x", "0");
+        ctx.blackboard.set("vjoy.last_raw_y", "0");
+        ctx.blackboard.set("vjoy.last_raw_z", "0");
+        ctx.blackboard.set("vjoy.last_raw_source", "none");
 
         #[cfg(windows)]
         {
@@ -140,12 +144,16 @@ impl Plugin for VJoyOutputPlugin {
                     // Write neutral immediately: steer=center, throttle=0, brake=0.
                     // try_acquire leaves throttle/brake at AXIS_MAX/2 (check only),
                     // so we must correct that before the first tick fires.
-                    match handle.set_axes(0.0, 0.0, 0.0) {
-                        Ok(()) => {
+                    match handle.set_axes_verified(0.0, 0.0, 0.0) {
+                        Ok((rx, ry, rz)) => {
                             self.idle_centered = true;
                             ctx.blackboard.set("vjoy.idle_centered", "true");
+                            ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_source", "on_load");
                             tracing::info!(
-                                "[vjoy-output] axes centered on acquire (steer=center throttle=0 brake=0)"
+                                "[vjoy-output] axes centered on acquire raw=({rx},{ry},{rz})"
                             );
                         }
                         Err(e) => {
@@ -234,13 +242,17 @@ impl Plugin for VJoyOutputPlugin {
             if let Some(ref mut handle) = self.vjoy {
                 // steer=0.0 → map_signed_to_raw(0.0)=16384 (center), throttle/brake=0.
                 // Mirror tick_windows error handling: only update blackboard on success.
-                match handle.set_axes(0.0, 0.0, 0.0) {
-                    Ok(()) => {
+                match handle.set_axes_verified(0.0, 0.0, 0.0) {
+                    Ok((rx, ry, rz)) => {
                         self.idle_centered = true;
                         self.last_write_tick = ctx.tick_count;
                         ctx.blackboard.set("vjoy.idle_centered", "true");
                         ctx.blackboard
                             .set("vjoy.last_write_tick", ctx.tick_count.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_source", "watchdog");
                     }
                     Err(e) => {
                         handle.connected = false;
@@ -291,8 +303,8 @@ impl VJoyOutputPlugin {
             return;
         }
 
-        match handle.set_axes(output.steering, output.throttle, output.brake) {
-            Ok(()) => {
+        match handle.set_axes_verified(output.steering, output.throttle, output.brake) {
+            Ok((rx, ry, rz)) => {
                 self.tick_count_since_reconnect = 0;
                 let idle = is_idle_output(output.steering, output.throttle, output.brake);
                 self.idle_centered = idle;
@@ -301,6 +313,10 @@ impl VJoyOutputPlugin {
                     .set("vjoy.idle_centered", if idle { "true" } else { "false" });
                 ctx.blackboard
                     .set("vjoy.last_write_tick", ctx.tick_count.to_string());
+                ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
+                ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
+                ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                ctx.blackboard.set("vjoy.last_raw_source", "tick");
             }
             Err(e) => {
                 handle.connected = false;
