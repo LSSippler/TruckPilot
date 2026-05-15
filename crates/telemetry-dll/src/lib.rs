@@ -97,6 +97,7 @@ const SCS_VALUE_TYPE_double: scs_u32_t = 7;
 const SCS_VALUE_TYPE_dplacement: scs_u32_t = 11;
 const SCS_VALUE_TYPE_fvector: scs_u32_t = 8;
 const SCS_CHANNEL_FLAG_none: scs_u32_t = 0;
+const SCS_U32_NIL: scs_u32_t = 0xFFFF_FFFF;
 
 // SCS frame-end event ID
 const SCS_TELEMETRY_EVENT_frame_end: scs_u32_t = 2;
@@ -305,7 +306,7 @@ unsafe fn reg_channel(
     let cname = std::ffi::CString::new(name).unwrap_or_default();
     let _ = (p.register_for_channel)(
         cname.as_ptr(),
-        0,
+        SCS_U32_NIL,
         value_type,
         SCS_CHANNEL_FLAG_none,
         cb,
@@ -384,13 +385,13 @@ pub unsafe extern "system" fn scs_telemetry_init(
     reg_channel(p, "truck.speed", SCS_VALUE_TYPE_float, cb_speed);
     reg_channel(
         p,
-        "truck.local.velocity",
+        "truck.lv.linear.velocity",
         SCS_VALUE_TYPE_fvector,
         cb_local_velocity,
     );
     reg_channel(
         p,
-        "truck.local.acceleration",
+        "truck.la.linear.acceleration",
         SCS_VALUE_TYPE_fvector,
         cb_local_accel,
     );
@@ -435,7 +436,7 @@ pub unsafe extern "system" fn scs_telemetry_init(
     reg_channel(p, "truck.input.clutch", SCS_VALUE_TYPE_float, cb_in_clutch);
 
     // --- Fuel & navigation ---
-    reg_channel(p, "truck.fuel", SCS_VALUE_TYPE_float, cb_fuel);
+    reg_channel(p, "truck.fuel.amount", SCS_VALUE_TYPE_float, cb_fuel);
     reg_channel(p, "truck.odometer", SCS_VALUE_TYPE_float, cb_odometer);
     reg_channel(p, "truck.cruise_control", SCS_VALUE_TYPE_float, cb_cruise);
     reg_channel(
@@ -448,19 +449,19 @@ pub unsafe extern "system" fn scs_telemetry_init(
     // --- Lights & state ---
     reg_channel(
         p,
-        "truck.light.blinker.left.active",
+        "truck.lblinker",
         SCS_VALUE_TYPE_bool,
         cb_blinker_l,
     );
     reg_channel(
         p,
-        "truck.light.blinker.right.active",
+        "truck.rblinker",
         SCS_VALUE_TYPE_bool,
         cb_blinker_r,
     );
     reg_channel(
         p,
-        "truck.light.hazard.warning",
+        "truck.hazard.warning",
         SCS_VALUE_TYPE_bool,
         cb_hazard,
     );
