@@ -15,7 +15,8 @@ use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{error, info, warn};
 use truckpilot_plugin_api::{
-    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, Telemetry, TickPhase,
+    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, SharedFrameStore,
+    Telemetry, TickPhase,
 };
 
 /// Phase-6.2b scheduler gate. Returns `true` when a plugin in `phase`
@@ -100,6 +101,10 @@ pub struct PluginManager {
     reload_queue: Arc<Mutex<Vec<PathBuf>>>,
     /// Shared blackboard — same instance across all plugins.
     pub blackboard: SharedBlackboard,
+    /// Shared frame store for binary camera payloads (Phase 6.5c.2).
+    /// Constructed once at daemon start, cloned into every
+    /// [`PluginContext`] via [`PluginContext::with_frame_store`].
+    pub frame_store: Arc<SharedFrameStore>,
     /// Monotonic tick counter. Incremented once per [`Self::tick_all`].
     /// Mirrored into [`PluginContext::tick_count`] so plugins can branch
     /// on cadence without keeping their own counters.
@@ -148,6 +153,7 @@ impl PluginManager {
             plugin_dir,
             reload_queue,
             blackboard: SharedBlackboard::new(),
+            frame_store: Arc::new(SharedFrameStore::new()),
             tick_count: 0,
             _watcher: watcher,
         }
@@ -172,7 +178,7 @@ impl PluginManager {
     }
 
     fn load_plugin(&mut self, path: &Path) {
-        match unsafe { load_plugin_from_path(path, &self.blackboard) } {
+        match unsafe { load_plugin_from_path(path, &self.blackboard, &self.frame_store) } {
             Ok(loaded) => {
                 info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 self.plugins.push(loaded);
@@ -282,7 +288,12 @@ impl PluginManager {
             .iter()
             .position(|p| p.enabled && p.name == "vjoy-output");
 
-        for (i, p) in self.plugins.iter_mut().enumerate().filter(|(_, p)| p.enabled) {
+        for (i, p) in self
+            .plugins
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, p)| p.enabled)
+        {
             if Some(i) == vjoy_idx {
                 continue;
             }
@@ -293,7 +304,8 @@ impl PluginManager {
             let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                 .with_dt(dt_s)
                 .with_phase(phase)
-                .with_tick_count(tick_count);
+                .with_tick_count(tick_count)
+                .with_frame_store(Arc::clone(&self.frame_store));
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -331,7 +343,8 @@ impl PluginManager {
                 let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                     .with_dt(dt_s)
                     .with_phase(phase)
-                    .with_tick_count(tick_count);
+                    .with_tick_count(tick_count)
+                    .with_frame_store(Arc::clone(&self.frame_store));
                 let tick_result = catch_unwind(AssertUnwindSafe(|| {
                     p.plugin.tick(telemetry, output, &ctx);
                 }));
@@ -478,6 +491,7 @@ fn is_plugin_file(path: &Path) -> bool {
 unsafe fn load_plugin_from_path(
     path: &Path,
     blackboard: &SharedBlackboard,
+    frame_store: &Arc<SharedFrameStore>,
 ) -> Result<LoadedPlugin, String> {
     let lib = Library::new(path).map_err(|e| format!("library load: {e}"))?;
 
@@ -511,7 +525,8 @@ unsafe fn load_plugin_from_path(
     let name = plugin.name().to_string();
     let version = plugin.version().to_string();
 
-    let ctx = PluginContext::new(name.clone(), blackboard.clone());
+    let ctx = PluginContext::new(name.clone(), blackboard.clone())
+        .with_frame_store(Arc::clone(frame_store));
     plugin.on_load(&ctx);
 
     Ok(LoadedPlugin {
@@ -700,5 +715,214 @@ mod arbitrate_tests {
         assert!((out.throttle - 0.4).abs() < 1e-9);
         assert!((out.brake - 0.0).abs() < 1e-9);
         assert!((out.steering - 0.5).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod frame_store_tests {
+    //! Phase 6.5c.2 Step 2 — daemon wiring.
+    //!
+    //! These tests bypass the cdylib boundary and inject `LoadedPlugin`
+    //! records directly. The whole point of Step 2 is the `PluginContext`
+    //! plumbing, so it's enough to drive `tick_all` with in-process
+    //! plugins and check what they observe.
+    //!
+    //! `LoadedPlugin` normally owns a `Library` and a `destroy_fn`; for
+    //! tests we substitute a dummy library handle and a no-op destroyer
+    //! (the inner `Box<dyn Plugin>` then leaks at the end of the test —
+    //! acceptable, the test process exits immediately).
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+    use truckpilot_plugin_api::{ControlOutput, ControlRequest, SharedFrame};
+
+    /// A Plugin that records what it saw in `on_load` and `tick`.
+    struct ProbePlugin {
+        name: String,
+        saw_store_on_load: Arc<StdMutex<Option<bool>>>,
+        last_seen_frame_id: Arc<StdMutex<Option<u64>>>,
+        /// If set, this plugin will publish a frame with this id on tick.
+        publish_frame_id: Option<u64>,
+        /// If set, this plugin reads a frame from this key on tick.
+        read_key: Option<String>,
+        last_read_frame: Arc<StdMutex<Option<Arc<SharedFrame>>>>,
+    }
+
+    impl ProbePlugin {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.into(),
+                saw_store_on_load: Arc::new(StdMutex::new(None)),
+                last_seen_frame_id: Arc::new(StdMutex::new(None)),
+                publish_frame_id: None,
+                read_key: None,
+                last_read_frame: Arc::new(StdMutex::new(None)),
+            }
+        }
+    }
+
+    impl Plugin for ProbePlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn settings_schema(&self) -> &str {
+            "{}"
+        }
+        fn on_load(&mut self, ctx: &PluginContext) {
+            *self.saw_store_on_load.lock().unwrap() = Some(ctx.frame_store().is_some());
+        }
+        fn on_unload(&mut self) {}
+        fn tick(
+            &mut self,
+            _telemetry: Option<&Telemetry>,
+            _output: &mut ControlOutput,
+            ctx: &PluginContext,
+        ) {
+            let store = ctx.frame_store().expect("daemon must wire frame_store");
+            if let Some(id) = self.publish_frame_id {
+                let frame = Arc::new(SharedFrame::new(
+                    id,
+                    1_000 + id,
+                    320,
+                    240,
+                    Arc::new(vec![0xAA; 16]),
+                ));
+                store.set("camera.front", frame);
+            }
+            if let Some(key) = &self.read_key {
+                if let Some(frame) = store.get(key) {
+                    *self.last_seen_frame_id.lock().unwrap() = Some(frame.id);
+                    *self.last_read_frame.lock().unwrap() = Some(frame);
+                }
+            }
+        }
+        fn tick_request(
+            &mut self,
+            _t: Option<&Telemetry>,
+            _ctx: &PluginContext,
+        ) -> Option<ControlRequest> {
+            None
+        }
+        fn default_phase(&self) -> TickPhase {
+            TickPhase::PhaseC
+        }
+    }
+
+    /// Manually inject a `Plugin` into `PluginManager` without going
+    /// through the cdylib loader. Runs `on_load` against the manager's
+    /// real `frame_store`. Leaks the plugin box on drop (no destroy_fn).
+    fn inject(mgr: &mut PluginManager, mut plugin: Box<dyn Plugin>) {
+        let name = plugin.name().to_string();
+        let version = plugin.version().to_string();
+        let ctx = PluginContext::new(name.clone(), mgr.blackboard.clone())
+            .with_frame_store(Arc::clone(&mgr.frame_store));
+        plugin.on_load(&ctx);
+
+        // No-op destroy: tests leak the box. Acceptable for #[cfg(test)].
+        #[allow(improper_ctypes_definitions)]
+        unsafe extern "C" fn noop_destroy(_p: *mut dyn Plugin) {}
+
+        // A dummy `Library`: we need *some* `Library` value to satisfy
+        // `LoadedPlugin._lib`. Load ourselves (the test binary) — that
+        // is guaranteed to exist and the handle is benign.
+        let lib = unsafe { Library::new(std::env::current_exe().unwrap()) }
+            .expect("self-load for dummy Library handle");
+
+        mgr.plugins.push(LoadedPlugin {
+            name,
+            version,
+            path: PathBuf::new(),
+            enabled: true,
+            plugin: ManuallyDrop::new(plugin),
+            destroy_fn: noop_destroy,
+            _lib: lib,
+        });
+    }
+
+    fn new_test_manager() -> PluginManager {
+        // Plugin dir doesn't have to exist; we never call load_all.
+        PluginManager::new(PathBuf::from("./does-not-exist-test-dir"))
+    }
+
+    #[test]
+    fn manager_constructs_a_frame_store() {
+        let mgr = new_test_manager();
+        assert!(mgr.frame_store.is_empty());
+    }
+
+    #[test]
+    fn plugin_sees_frame_store_in_on_load() {
+        let mut mgr = new_test_manager();
+        let plugin = ProbePlugin::new("probe-load");
+        let observed = Arc::clone(&plugin.saw_store_on_load);
+        inject(&mut mgr, Box::new(plugin));
+        assert_eq!(*observed.lock().unwrap(), Some(true));
+    }
+
+    #[test]
+    fn plugin_sees_frame_store_in_tick() {
+        let mut mgr = new_test_manager();
+        let mut writer = ProbePlugin::new("writer");
+        writer.publish_frame_id = Some(42);
+        inject(&mut mgr, Box::new(writer));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        let frame = mgr
+            .frame_store
+            .get("camera.front")
+            .expect("writer should have published");
+        assert_eq!(frame.id, 42);
+    }
+
+    #[test]
+    fn two_plugins_share_one_frame_store() {
+        let mut mgr = new_test_manager();
+
+        // Pre-publish a frame from outside, so order of plugins in
+        // tick_all doesn't matter for the assertion.
+        let published = Arc::new(SharedFrame::new(7, 7_000, 320, 240, Arc::new(vec![1; 8])));
+        mgr.frame_store.set("camera.front", Arc::clone(&published));
+
+        let mut reader = ProbePlugin::new("reader");
+        reader.read_key = Some("camera.front".to_string());
+        let last_read_frame = Arc::clone(&reader.last_read_frame);
+        let last_seen = Arc::clone(&reader.last_seen_frame_id);
+
+        inject(&mut mgr, Box::new(reader));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        assert_eq!(*last_seen.lock().unwrap(), Some(7));
+        let read_back = last_read_frame
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("reader saw frame");
+        assert!(Arc::ptr_eq(&read_back, &published));
+    }
+
+    #[test]
+    fn writer_then_reader_round_trip() {
+        let mut mgr = new_test_manager();
+        let mut writer = ProbePlugin::new("writer");
+        writer.publish_frame_id = Some(99);
+        let mut reader = ProbePlugin::new("reader");
+        reader.read_key = Some("camera.front".to_string());
+        let last_seen = Arc::clone(&reader.last_seen_frame_id);
+
+        // Order matters: writer first, then reader, so within one
+        // `tick_all` the reader observes the freshly published frame.
+        inject(&mut mgr, Box::new(writer));
+        inject(&mut mgr, Box::new(reader));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        assert_eq!(*last_seen.lock().unwrap(), Some(99));
     }
 }
