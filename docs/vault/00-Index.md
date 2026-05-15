@@ -106,6 +106,10 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-6.5e-Vision-Training]] — **CLOSED 2026-05-15**: v2 final (mAP 0.798, 793 manual frames). v3 auto-annotation pivot REJECTED (mAP 0.604, -19%, 9548 frames). Lesson: Sauberkeit > Menge. Production-Model: `models/truckpilot-yolov8s-v2/best.pt`.
 - Phase 6.x — Vision-ACC (DEFERRED, langfristig)
 
+## Build-System Improvements
+
+- **xtask copy-plugins** (2026-05-15): `cargo xtask copy-plugins` deploys all `truckpilot_plugin_*.dll` from `target/release/` to `plugins/`. `hello-world` demo moved from `crates/plugins/` to `crates/examples/`, `libhello_world.so` removed from `plugins/`.
+
 ## Open Threads (Phase 6.2 follow-ups)
 
 - Watchdog 6.2g (Sub-Session A,B,C per outputs/claude/watchdog_6_2g.txt)
