@@ -18,7 +18,7 @@
 pub mod pid;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -186,6 +186,183 @@ impl SharedBlackboard {
 }
 
 // ---------------------------------------------------------------------------
+// SharedFrame / SharedFrameStore (Phase 6.5c.2)
+// ---------------------------------------------------------------------------
+
+/// A single camera frame shared between plugins.
+///
+/// `SharedFrame` carries the raw JPEG bytes a producer plugin (typically
+/// `vision-frame-source`) wrote to shared memory, plus enough metadata
+/// for consumers (`sign-vision`, future detectors) to identify and time
+/// the frame. The JPEG payload lives behind an [`Arc`] so any number of
+/// readers can share it without copying.
+///
+/// The optional `decoded_rgb8` slot lets the first consumer that needs
+/// raw pixels pay the decode cost once and memoise the result via
+/// [`OnceLock`]; subsequent readers get the same `Arc<Vec<u8>>` for free.
+/// See [`SharedFrame::get_or_init_rgb8`].
+///
+/// ## Example
+/// ```no_run
+/// use std::sync::Arc;
+/// use truckpilot_plugin_api::SharedFrame;
+///
+/// let jpeg: Arc<Vec<u8>> = Arc::new(vec![0xFF, 0xD8, /* ... */]);
+/// let frame = SharedFrame::new(42, 1_700_000_000_000_000, 1920, 1080, jpeg);
+/// assert_eq!(frame.id, 42);
+/// assert!(frame.decoded_rgb8().is_none());
+/// ```
+#[derive(Debug)]
+pub struct SharedFrame {
+    /// Logical frame id (monotonically increasing per camera).
+    pub id: u64,
+    /// Producer-side monotonic timestamp in microseconds.
+    pub timestamp_us: u64,
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// JPEG-encoded payload. Shared by `Arc`; never mutated after publish.
+    pub jpeg: Arc<Vec<u8>>,
+    /// Lazily-populated decoded RGB8 buffer (3 bytes/pixel, row-major,
+    /// no padding). Filled on first consumer demand via
+    /// [`SharedFrame::get_or_init_rgb8`].
+    decoded_rgb8: OnceLock<Arc<Vec<u8>>>,
+}
+
+impl SharedFrame {
+    /// Construct a new frame. `decoded_rgb8` starts empty.
+    pub fn new(id: u64, timestamp_us: u64, width: u32, height: u32, jpeg: Arc<Vec<u8>>) -> Self {
+        Self {
+            id,
+            timestamp_us,
+            width,
+            height,
+            jpeg,
+            decoded_rgb8: OnceLock::new(),
+        }
+    }
+
+    /// Return the decoded RGB8 buffer if it has been initialised, else `None`.
+    pub fn decoded_rgb8(&self) -> Option<&Arc<Vec<u8>>> {
+        self.decoded_rgb8.get()
+    }
+
+    /// Get the decoded RGB8 buffer, computing it on first call.
+    ///
+    /// The closure runs **at most once per `SharedFrame`** (subsequent
+    /// callers, even from other threads, observe the value stored by the
+    /// winner of the initialisation race). Returns the same `Arc<Vec<u8>>`
+    /// every time, so consumers can clone the `Arc` cheaply.
+    ///
+    /// ## Example
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use truckpilot_plugin_api::SharedFrame;
+    /// # let frame = SharedFrame::new(0, 0, 4, 4, Arc::new(vec![]));
+    /// let rgb = frame.get_or_init_rgb8(|| Arc::new(vec![0u8; 4 * 4 * 3]));
+    /// assert_eq!(rgb.len(), 48);
+    /// ```
+    pub fn get_or_init_rgb8<F>(&self, init: F) -> &Arc<Vec<u8>>
+    where
+        F: FnOnce() -> Arc<Vec<u8>>,
+    {
+        self.decoded_rgb8.get_or_init(init)
+    }
+
+    /// Try to populate the decoded buffer from a fallible decoder. The
+    /// closure runs at most once per frame and only on the first call;
+    /// on success the buffer is cached, on failure nothing is stored
+    /// and a later caller may retry.
+    pub fn get_or_try_init_rgb8<E, F>(&self, init: F) -> Result<&Arc<Vec<u8>>, E>
+    where
+        F: FnOnce() -> Result<Arc<Vec<u8>>, E>,
+    {
+        if let Some(rgb) = self.decoded_rgb8.get() {
+            return Ok(rgb);
+        }
+        let rgb = init()?;
+        // If two threads race, `set` returns Err on the loser — that is
+        // fine; we read back whichever value won.
+        let _ = self.decoded_rgb8.set(rgb);
+        Ok(self.decoded_rgb8.get().expect("OnceLock populated above"))
+    }
+}
+
+/// Thread-safe keyed store of [`SharedFrame`] values.
+///
+/// Mirrors the shape of [`SharedBlackboard`] for binary frame payloads
+/// that don't fit in the string-only blackboard. One writer per key
+/// (typically `vision-frame-source`); many readers.
+///
+/// The store is cheap to clone (`Arc` internally) and threaded through
+/// every [`PluginContext`] when the daemon enables the feature. Plugins
+/// that don't need frames can ignore it.
+///
+/// ## Standard keys
+///
+/// | Key             | Writer              | Readers                   |
+/// |-----------------|---------------------|---------------------------|
+/// | `camera.front`  | vision-frame-source | sign-vision, detectors    |
+///
+/// ## Example
+/// ```
+/// use std::sync::Arc;
+/// use truckpilot_plugin_api::{SharedFrame, SharedFrameStore};
+///
+/// let store = SharedFrameStore::new();
+/// let frame = Arc::new(SharedFrame::new(1, 0, 8, 8, Arc::new(vec![0; 0])));
+/// store.set("camera.front", frame);
+/// assert!(store.get("camera.front").is_some());
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct SharedFrameStore {
+    inner: Arc<RwLock<HashMap<String, Arc<SharedFrame>>>>,
+}
+
+impl SharedFrameStore {
+    /// Create an empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publish a frame under `key`. Replaces any previous entry.
+    pub fn set(&self, key: impl Into<String>, frame: Arc<SharedFrame>) {
+        if let Ok(mut map) = self.inner.write() {
+            map.insert(key.into(), frame);
+        }
+    }
+
+    /// Look up the current frame for `key`. Returns a cheap `Arc` clone.
+    pub fn get(&self, key: &str) -> Option<Arc<SharedFrame>> {
+        self.inner.read().ok()?.get(key).cloned()
+    }
+
+    /// Drop the entry for `key`, returning the removed value if any.
+    pub fn remove(&self, key: &str) -> Option<Arc<SharedFrame>> {
+        self.inner.write().ok()?.remove(key)
+    }
+
+    /// Snapshot of all current keys. Order unspecified.
+    pub fn keys(&self) -> Vec<String> {
+        self.inner
+            .read()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Number of keys currently published.
+    pub fn len(&self) -> usize {
+        self.inner.read().map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// `true` iff no keys are published.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TickPhase
 // ---------------------------------------------------------------------------
 
@@ -225,6 +402,11 @@ pub struct PluginContext {
     /// Monotonic tick counter. Increments once per scheduler step.
     /// Defaults to `0`.
     pub tick_count: u64,
+    /// Optional shared frame store for binary camera payloads
+    /// (Phase 6.5c.2). `None` for legacy contexts; the daemon attaches
+    /// a real store when the vision pipeline is wired in. Plugins access
+    /// it via [`PluginContext::frame_store`].
+    pub(crate) frame_store: Option<Arc<SharedFrameStore>>,
 }
 
 impl PluginContext {
@@ -236,7 +418,26 @@ impl PluginContext {
             dt_s: 0.02,
             tick_phase: TickPhase::PhaseC,
             tick_count: 0,
+            frame_store: None,
         }
+    }
+
+    /// Attach a shared frame store. Builder-style. Used by the daemon
+    /// when constructing plugin contexts for the vision pipeline; tests
+    /// can use this to inject a controlled store.
+    pub fn with_frame_store(mut self, store: Arc<SharedFrameStore>) -> Self {
+        self.frame_store = Some(store);
+        self
+    }
+
+    /// Borrow the shared frame store, if the host wired one in.
+    ///
+    /// Returns `None` for legacy / minimal contexts (most unit tests,
+    /// any daemon configuration without the vision pipeline). Plugins
+    /// that need camera frames should treat `None` as "no source
+    /// available" and degrade gracefully.
+    pub fn frame_store(&self) -> Option<Arc<SharedFrameStore>> {
+        self.frame_store.clone()
     }
 
     /// Set the per-tick delta time in seconds. Builder-style. Clamped to >= 0.001.
@@ -514,7 +715,6 @@ macro_rules! export_plugin {
         }
     };
 }
-
 
 #[cfg(test)]
 mod ctx_tests {
