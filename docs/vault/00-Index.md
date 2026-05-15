@@ -104,6 +104,8 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-6.5b-Memory-Hack-Validation]] — RE Tag 1+2: Ghidra+x64dbg Live-Validation + CE Speed-Scan-Pivot (IN PROGRESS)
 - [[01-Phases/Phase-6.5c.1-DXcam-SHM-PoC]] — DXcam → SHM Frame Capture: Python-Producer + Rust-Reader, Sequence-Lock, 6/6 Tests grün, Live-Test pending
 - [[01-Phases/Phase-6.5e-Vision-Training]] — **CLOSED 2026-05-15**: v2 final (mAP 0.798, 793 manual frames). v3 auto-annotation pivot REJECTED (mAP 0.604, -19%, 9548 frames). Lesson: Sauberkeit > Menge. Production-Model: `models/truckpilot-yolov8s-v2/best.pt`.
+- [[01-Phases/Phase-6.5e.1-Live-Stabilization]] — **CLOSED 2026-05-15**: 7 cross-component bugs fixed in one sprint (HTTP fallback storm, SHM torn reads, watchdog log spam, Python/Rust clock mismatch, SCS euler f32-vs-f64 type confusion, plugin-cdylib tracing-bridge, async inference worker). `tick_blocking_ms` 110 ms → <2 ms; live-stable for 30 min / 9205 inferences.
+- [[01-Phases/Phase-6.5f-Detection-Quality-Spec]] — **SPEC 2026-05-15**: ~80 blackboard keys for class distribution, confidence histogram, FP heuristics + ground-truth workflow via stratified OBS sampling + CVAT. No code yet; implementation deferred so the operator can review key-set + cardinality first.
 - Phase 6.x — Vision-ACC (DEFERRED, langfristig)
 
 ## Build-System Improvements
