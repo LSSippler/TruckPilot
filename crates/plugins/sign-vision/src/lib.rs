@@ -62,8 +62,11 @@ use speed_mapper::SpeedMapper;
 
 const LOG_TARGET: &str = "truckpilot_plugin_sign_vision";
 
-/// Default path to the ONNX model (Phase 6.5e v2 model).
-const DEFAULT_MODEL_PATH: &str = "models/truckpilot-yolov8s-v2/best.onnx";
+/// Default path to the ONNX model (Phase 6.5e v2 model, FP16-quantized).
+/// Generated from `best.onnx` via `tools/model-tools/quantize_fp16.py`;
+/// IO tensors stay FP32 so preprocess/postprocess do not need to change.
+/// Re-run the script after every retrain — see that file's docstring.
+const DEFAULT_MODEL_PATH: &str = "models/truckpilot-yolov8s-v2/best_fp16.onnx";
 
 /// Default inference interval in ticks (PhaseB 10 Hz → every tick).
 const DEFAULT_INFERENCE_INTERVAL: u32 = 1;
@@ -471,7 +474,7 @@ impl Plugin for SignVisionPlugin {
   "properties": {
     "model_path": {
       "type": "string",
-      "description": "Path to the YOLOv8s ONNX model (default: models/truckpilot-yolov8s-v2/best.onnx)."
+      "description": "Path to the YOLOv8s ONNX model (default: models/truckpilot-yolov8s-v2/best_fp16.onnx)."
     },
     "inference_interval": {
       "type": "integer",
