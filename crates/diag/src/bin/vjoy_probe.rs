@@ -17,11 +17,13 @@ use clap::Parser;
 const AXIS_MIN: i32 = 0;
 const AXIS_MAX: i32 = 32_767;
 
-/// Axis IDs in the vjoy crate are positions in `AXES_HID_USAGE`. The first
-/// three entries are HID usages 0x30 (X), 0x31 (Y), 0x32 (Z).
-const STEER_AXIS: u32 = 1;
-const THROTTLE_AXIS: u32 = 2;
-const BRAKE_AXIS: u32 = 3;
+/// HID Usage Codes as expected by `SetAxis(value, rID, axis)` in vJoyInterface.dll.
+/// 0x30 = X, 0x31 = Y, 0x32 = Z. The old vjoy-0.4 crate took 1/2/3 (its own
+/// position-based index into AXES_HID_USAGE) — the direct FFI API needs the
+/// actual HID code.
+const STEER_AXIS: u32 = 0x30;
+const THROTTLE_AXIS: u32 = 0x31;
+const BRAKE_AXIS: u32 = 0x32;
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -213,69 +215,161 @@ mod windows_impl {
     use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    use vjoy::{Device, Error, FFIError, VJoy};
+    use windows::core::w;
+    use windows::Win32::Foundation::{FreeLibrary, HMODULE};
+    use windows::Win32::System::LibraryLoader::LoadLibraryW;
+
+    // ------- Direct FFI signatures -------
+
+    type FnVJoyEnabled = unsafe extern "system" fn() -> i32;
+    type FnAcquireVJD = unsafe extern "system" fn(u32) -> i32;
+    type FnRelinquishVJD = unsafe extern "system" fn(u32);
+    type FnGetVJDStatus = unsafe extern "system" fn(u32) -> i32;
+    type FnSetAxis = unsafe extern "system" fn(i32, u32, u32) -> i32;
+
+    const VJD_STAT_OWN: i32 = 0;
+    const VJD_STAT_FREE: i32 = 1;
+    const VJD_STAT_BUSY: i32 = 2;
+    const VJD_STAT_MISS: i32 = 3;
+
+    struct VJoyFfi {
+        dll: HMODULE,
+        vjoy_enabled: FnVJoyEnabled,
+        acquire_vjd: FnAcquireVJD,
+        relinquish_vjd: FnRelinquishVJD,
+        get_vjd_status: FnGetVJDStatus,
+        set_axis: FnSetAxis,
+    }
+
+    impl Drop for VJoyFfi {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = FreeLibrary(self.dll);
+            }
+        }
+    }
+
+    /// Load `vJoyInterface.dll` and resolve the symbols the probe needs.
+    /// Returns a typed FFI wrapper that frees the library on drop.
+    fn load_dll() -> Result<VJoyFfi, String> {
+        let dll = unsafe {
+            LoadLibraryW(w!("C:\\Program Files\\vJoy\\x64\\vJoyInterface.dll"))
+                .or_else(|_| LoadLibraryW(w!("vJoyInterface.dll")))
+                .map_err(|e| format!("LoadLibraryW failed: {e}"))?
+        };
+
+        unsafe fn resolve<F>(dll: HMODULE, name: &str) -> Result<F, String> {
+            use windows::core::PCSTR;
+            use windows::Win32::System::LibraryLoader::GetProcAddress;
+            let mut cstr = String::with_capacity(name.len() + 1);
+            cstr.push_str(name);
+            cstr.push('\0');
+            let proc = GetProcAddress(dll, PCSTR(cstr.as_ptr()));
+            proc.map(|addr| {
+                std::mem::transmute_copy::<unsafe extern "system" fn() -> isize, F>(&addr)
+            })
+            .ok_or_else(|| format!("missing symbol: {name}"))
+        }
+
+        unsafe {
+            let vjoy_enabled: FnVJoyEnabled = resolve(dll, "vJoyEnabled")?;
+            let acquire_vjd: FnAcquireVJD = resolve(dll, "AcquireVJD")?;
+            let relinquish_vjd: FnRelinquishVJD = resolve(dll, "RelinquishVJD")?;
+            let get_vjd_status: FnGetVJDStatus = resolve(dll, "GetVJDStatus")?;
+            let set_axis: FnSetAxis = resolve(dll, "SetAxis")?;
+            Ok(VJoyFfi {
+                dll,
+                vjoy_enabled,
+                acquire_vjd,
+                relinquish_vjd,
+                get_vjd_status,
+                set_axis,
+            })
+        }
+    }
 
     pub fn run(args: Args, pattern: Pattern) -> ExitCode {
         // -- Pre-flight ----------------------------------------------------
-        // The v0.4 crate auto-acquires all devices in `from_default_dll_location`
-        // and does not expose vJoyEnabled / GetvJoyVersion / GetVJDStatus
-        // individually. We therefore translate the higher-level errors back
-        // into the user-facing messages spec §6 demands.
-        let mut vjoy = match VJoy::from_default_dll_location() {
-            Ok(v) => v,
-            Err(Error::Ffi(FFIError::DynamicLybraryNotFound(p))) => {
-                eprintln!(
-                    "vJoy driver not found (vJoyInterface.dll missing at {p}). \
-                     Download installer: https://github.com/njz3/vJoy/releases — \
-                     reboot after install."
-                );
-                return ExitCode::from(1);
-            }
+        let ffi = match load_dll() {
+            Ok(f) => f,
             Err(e) => {
-                eprintln!("vJoy init failed: {e}");
+                eprintln!(
+                    "vJoy driver not found ({e}). Install from \
+                     https://github.com/njz3/vJoy/releases and reboot."
+                );
                 return ExitCode::from(1);
             }
         };
 
-        let mut device = match vjoy.get_device_state(args.device) {
-            Ok(d) => d,
-            Err(_) => {
+        if unsafe { (ffi.vjoy_enabled)() } == 0 {
+            eprintln!("vJoy driver disabled (vJoyEnabled returned 0). Enable in vJoyConf.");
+            return ExitCode::from(1);
+        }
+
+        let status = unsafe { (ffi.get_vjd_status)(args.device) };
+        match status {
+            VJD_STAT_FREE | VJD_STAT_OWN => {}
+            VJD_STAT_BUSY => {
                 eprintln!(
-                    "Device {id} not available. Either (a) driver not configured \
-                     (open vJoyConf, enable Device {id} with X/Y/Z axes), or \
-                     (b) device owned by another process (close ETS2-LA / joy.cpl \
-                     Test page / x360ce / TruckPilot daemon).",
+                    "Device {id} is busy (owned by another process). Close ETS2-LA / \
+                     joy.cpl Test page / x360ce / TruckPilot daemon.",
                     id = args.device
                 );
                 return ExitCode::from(2);
             }
-        };
+            VJD_STAT_MISS => {
+                eprintln!(
+                    "Device {id} is not configured. Open vJoyConf and enable \
+                     Device {id} with X/Y/Z axes.",
+                    id = args.device
+                );
+                return ExitCode::from(2);
+            }
+            other => {
+                eprintln!("Device {} has unknown status {other}.", args.device);
+                return ExitCode::from(1);
+            }
+        }
 
-        // Verify X/Y/Z exist by probing set_axis to center. AxisNotFound
-        // means the user did not enable that axis in vJoyConf.
-        for (axis_id, name) in [
+        if unsafe { (ffi.acquire_vjd)(args.device) } == 0 {
+            let st = unsafe { (ffi.get_vjd_status)(args.device) };
+            eprintln!("AcquireVJD({}) failed (post-status={st}).", args.device);
+            return ExitCode::from(2);
+        }
+
+        let post = unsafe { (ffi.get_vjd_status)(args.device) };
+        if post != VJD_STAT_OWN {
+            unsafe { (ffi.relinquish_vjd)(args.device) };
+            eprintln!("Acquire reported success but status is {post} (expected OWN=0).");
+            return ExitCode::from(2);
+        }
+
+        // Verify X/Y/Z by probing SetAxis to center. SetAxis returns FALSE
+        // when the axis is not configured.
+        let center = (AXIS_MIN + AXIS_MAX) / 2;
+        for (axis, name) in [
             (STEER_AXIS, "X (steering)"),
             (THROTTLE_AXIS, "Y (throttle)"),
             (BRAKE_AXIS, "Z (brake)"),
         ] {
-            if device.set_axis(axis_id, AXIS_MAX / 2).is_err() {
+            if unsafe { (ffi.set_axis)(center, args.device, axis) } == 0 {
+                unsafe { (ffi.relinquish_vjd)(args.device) };
                 eprintln!(
-                    "Device {} missing axis {name}. Reconfigure in vJoyConf \
-                     (enable X, Y, Z axes for Device {}).",
-                    args.device, args.device
+                    "Device {} missing axis {name}. Reconfigure in vJoyConf.",
+                    args.device
                 );
                 return ExitCode::from(1);
             }
         }
 
         println!(
-            "vJoy ok — device {} acquired, X/Y/Z axes present, range {}..={}",
+            "vJoy ok — device {} acquired (direct FFI), X/Y/Z axes present, range {}..={}",
             args.device, AXIS_MIN, AXIS_MAX
         );
 
         if args.dry_run {
             println!("--dry-run: skipping send loop");
-            // Device released when VJoy drops.
+            unsafe { (ffi.relinquish_vjd)(args.device) };
             return ExitCode::from(0);
         }
 
@@ -283,7 +377,6 @@ mod windows_impl {
         let aborted = Arc::new(AtomicBool::new(false));
         {
             let flag = aborted.clone();
-            // If multiple handlers are registered (e.g. tests), ignore.
             let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
         }
 
@@ -296,6 +389,7 @@ mod windows_impl {
                 }
                 Err(e) => {
                     eprintln!("could not open JSONL sink: {e}");
+                    unsafe { (ffi.relinquish_vjd)(args.device) };
                     return ExitCode::from(1);
                 }
             }
@@ -314,7 +408,7 @@ mod windows_impl {
         for tick in 0..total_ticks {
             if aborted.load(Ordering::SeqCst) {
                 println!("[aborted] Releasing device...");
-                let _ = cleanup_center(&mut vjoy, &mut device);
+                cleanup_center(&ffi, args.device);
                 return ExitCode::from(130);
             }
 
@@ -332,22 +426,16 @@ mod windows_impl {
             let throttle_raw = map_unsigned_to_raw(throttle_n);
             let brake_raw = map_unsigned_to_raw(brake_n);
 
-            // set_axis on a `Device` cannot fail here — we already verified
-            // axes exist above. Treat any error as fatal (shouldn't happen).
-            if device.set_axis(STEER_AXIS, steer_raw).is_err()
-                || device.set_axis(THROTTLE_AXIS, throttle_raw).is_err()
-                || device.set_axis(BRAKE_AXIS, brake_raw).is_err()
-            {
-                eprintln!("internal: set_axis failed mid-loop (axis disappeared?)");
-                return ExitCode::from(1);
-            }
-
-            if let Err(e) = vjoy.update_device_state(&device) {
-                eprintln!(
-                    "update_device_state failed: {e}. Device likely owned by \
-                     another process — close ETS2-LA / joy.cpl / x360ce."
-                );
-                return ExitCode::from(2);
+            // SetAxis writes directly to the device — no UpdateVJD buffering.
+            unsafe {
+                if (ffi.set_axis)(steer_raw, args.device, STEER_AXIS) == 0
+                    || (ffi.set_axis)(throttle_raw, args.device, THROTTLE_AXIS) == 0
+                    || (ffi.set_axis)(brake_raw, args.device, BRAKE_AXIS) == 0
+                {
+                    eprintln!("SetAxis failed mid-loop (device released or axis missing?)");
+                    cleanup_center(&ffi, args.device);
+                    return ExitCode::from(1);
+                }
             }
 
             let current_sec = t.floor() as i64;
@@ -382,7 +470,7 @@ mod windows_impl {
             }
         }
 
-        let _ = cleanup_center(&mut vjoy, &mut device);
+        cleanup_center(&ffi, args.device);
         if let Some(mut w) = json_writer {
             let _ = w.flush();
         }
@@ -395,12 +483,14 @@ mod windows_impl {
         ExitCode::from(0)
     }
 
-    fn cleanup_center(vjoy: &mut VJoy, device: &mut Device) -> Result<(), Error> {
+    fn cleanup_center(ffi: &VJoyFfi, device_id: u32) {
         let center = (AXIS_MIN + AXIS_MAX) / 2;
-        let _ = device.set_axis(STEER_AXIS, center);
-        let _ = device.set_axis(THROTTLE_AXIS, AXIS_MIN);
-        let _ = device.set_axis(BRAKE_AXIS, AXIS_MIN);
-        vjoy.update_device_state(device)
+        unsafe {
+            let _ = (ffi.set_axis)(center, device_id, STEER_AXIS);
+            let _ = (ffi.set_axis)(AXIS_MIN, device_id, THROTTLE_AXIS);
+            let _ = (ffi.set_axis)(AXIS_MIN, device_id, BRAKE_AXIS);
+            (ffi.relinquish_vjd)(device_id);
+        }
     }
 
     fn open_json_sink() -> std::io::Result<(PathBuf, BufWriter<File>)> {

@@ -1,17 +1,42 @@
-//! VJoyHandle — thin Windows-only wrapper around the vjoy v0.4 crate.
+//! VJoyHandle — direct FFI wrapper around `vJoyInterface.dll`.
+//!
+//! Replaces the `vjoy` 0.4 crate, which buffered axis writes into a
+//! `JOYSTICK_POSITION_V2` struct that was pushed to the device via
+//! `UpdateVJD()`. That buffered pattern triggered a state-cache bug in
+//! plugin context: `AcquireVJD` returned success but a delayed first
+//! `UpdateVJD` reported "Device Status: 1" (= VJD_STAT_FREE) and the
+//! hardware never received the write.
+//!
+//! This wrapper calls `SetAxis()` directly. SetAxis writes immediately
+//! to the device — no intermediate buffer, no UpdateVJD, no cache.
 
 use std::fmt;
 
 // ---------------------------------------------------------------------------
-// Axis constants (align 1:1 with vjoy_probe.rs)
+// Axis range + HID usage constants
 // ---------------------------------------------------------------------------
 
 const AXIS_MIN: i32 = 0;
 const AXIS_MAX: i32 = 32_767;
 
-pub const STEER_AXIS: u32 = 1; // HID_USAGE_X
-pub const THROTTLE_AXIS: u32 = 2; // HID_USAGE_Y
-pub const BRAKE_AXIS: u32 = 3; // HID_USAGE_Z
+pub const HID_USAGE_X: u32 = 0x30;
+pub const HID_USAGE_Y: u32 = 0x31;
+pub const HID_USAGE_Z: u32 = 0x32;
+
+/// Re-exported for tests and lib.rs idle-detection logic that wants to
+/// emit the same axis identifiers without depending on raw HID numbers.
+#[allow(dead_code)]
+pub const STEER_AXIS: u32 = HID_USAGE_X;
+#[allow(dead_code)]
+pub const THROTTLE_AXIS: u32 = HID_USAGE_Y;
+#[allow(dead_code)]
+pub const BRAKE_AXIS: u32 = HID_USAGE_Z;
+
+// VjdStat values returned by GetVJDStatus (vJoy SDK).
+const VJD_STAT_OWN: i32 = 0;
+const VJD_STAT_FREE: i32 = 1;
+const VJD_STAT_BUSY: i32 = 2;
+const VJD_STAT_MISS: i32 = 3;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -20,9 +45,12 @@ pub const BRAKE_AXIS: u32 = 3; // HID_USAGE_Z
 #[derive(Debug)]
 pub enum VJoyInitError {
     DllNotFound(String),
-    DeviceNotConfigured(u32),
-    AxisMissing(u32, u32),
-    Other(String),
+    NotEnabled,
+    DeviceBusy(u32),
+    DeviceMissing(u32),
+    DeviceUnknown(u32, i32),
+    AcquireFailed(u32, i32),
+    SymbolMissing(String),
 }
 
 impl fmt::Display for VJoyInitError {
@@ -30,18 +58,37 @@ impl fmt::Display for VJoyInitError {
         match self {
             Self::DllNotFound(p) => write!(
                 f,
-                "vJoy driver not found. Install from https://github.com/njz3/vJoy/releases (dll: {p})"
+                "vJoyInterface.dll not found ({p}). Install from https://github.com/njz3/vJoy/releases"
             ),
-            Self::DeviceNotConfigured(id) => write!(
+            Self::NotEnabled => write!(
                 f,
-                "Device {id} not configured in vJoyConf (enable Device {id} with X/Y/Z axes), \
-                 or owned by another process"
+                "vJoy driver is installed but disabled (vJoyEnabled returned 0). \
+                 Open vJoyConf and enable the driver."
             ),
-            Self::AxisMissing(id, axis) => write!(
+            Self::DeviceBusy(id) => write!(
                 f,
-                "Device {id} missing axis {axis}. Reconfigure in vJoyConf (enable X, Y, Z axes)."
+                "Device {id} is busy (owned by another process). Close ETS2-LA, \
+                 x360ce, joy.cpl test pane, or any previous truckpilot instance."
             ),
-            Self::Other(s) => write!(f, "{s}"),
+            Self::DeviceMissing(id) => write!(
+                f,
+                "Device {id} is not configured in vJoyConf. Enable Device {id} \
+                 with X/Y/Z axes."
+            ),
+            Self::DeviceUnknown(id, status) => write!(
+                f,
+                "Device {id} has unknown status {status}. Driver may be in an \
+                 inconsistent state — try reinstalling vJoy."
+            ),
+            Self::AcquireFailed(id, status) => write!(
+                f,
+                "AcquireVJD({id}) failed (post-acquire status={status})."
+            ),
+            Self::SymbolMissing(name) => write!(
+                f,
+                "vJoyInterface.dll is missing required symbol: {name}. \
+                 DLL version may be too old."
+            ),
         }
     }
 }
@@ -49,24 +96,27 @@ impl fmt::Display for VJoyInitError {
 #[derive(Debug)]
 pub enum VJoySendError {
     AxisError(u32),
-    UpdateError(String),
 }
 
 impl fmt::Display for VJoySendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AxisError(axis) => write!(f, "vJoy set_axis failed on axis {axis}"),
-            Self::UpdateError(s) => write!(f, "vJoy update_device_state failed: {s}"),
+            Self::AxisError(axis) => {
+                write!(
+                    f,
+                    "SetAxis(0x{axis:02x}) returned FALSE — axis missing or device released"
+                )
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Axis scaling (1:1 from vjoy_probe.rs — unit-testable, no hardware needed)
+// Axis scaling (pure, unit-testable, no hardware required)
 // ---------------------------------------------------------------------------
 
 /// Maps `value` in `[-1.0, 1.0]` to `[AXIS_MIN, AXIS_MAX]` with center at
-/// 16384. Out-of-range inputs are clamped.
+/// 16384. Out-of-range inputs are clamped. Identical math to the probe binary.
 pub fn map_signed_to_raw(value: f64) -> i32 {
     let clamped = value.clamp(-1.0, 1.0);
     let center = (AXIS_MIN + AXIS_MAX) as f64 / 2.0;
@@ -82,58 +132,154 @@ pub fn map_unsigned_to_raw(value: f64) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// VJoyHandle
+// FFI: function-pointer signatures
+// ---------------------------------------------------------------------------
+
+// All vJoyInterface exports use the Windows stdcall convention; on x64
+// stdcall == fastcall == "system" so `extern "system"` is correct.
+type FnVJoyEnabled = unsafe extern "system" fn() -> i32;
+type FnAcquireVJD = unsafe extern "system" fn(u32) -> i32;
+type FnRelinquishVJD = unsafe extern "system" fn(u32);
+type FnGetVJDStatus = unsafe extern "system" fn(u32) -> i32;
+type FnSetAxis = unsafe extern "system" fn(i32, u32, u32) -> i32;
+type FnResetVJD = unsafe extern "system" fn(u32) -> i32;
+
+// ---------------------------------------------------------------------------
+// VJoyHandle (Windows only)
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
+use windows::Win32::Foundation::HMODULE;
+
+#[cfg(windows)]
 pub struct VJoyHandle {
-    vjoy: vjoy::VJoy,
-    device: vjoy::Device,
+    /// Module handle from LoadLibraryW. Stays loaded until Drop calls
+    /// FreeLibrary. Reference-counted by the loader so concurrent
+    /// reconnects (each doing LoadLibraryW+FreeLibrary) net to zero.
+    dll: HMODULE,
     pub device_id: u32,
     pub connected: bool,
+    // Cached function pointers. Valid as long as `dll` ref-count > 0.
+    #[allow(dead_code)]
+    vjoy_enabled: FnVJoyEnabled,
+    #[allow(dead_code)]
+    acquire_vjd: FnAcquireVJD,
+    relinquish_vjd: FnRelinquishVJD,
+    #[allow(dead_code)]
+    get_vjd_status: FnGetVJDStatus,
+    set_axis: FnSetAxis,
+    #[allow(dead_code)]
+    reset_vjd: FnResetVJD,
 }
 
 #[cfg(windows)]
 impl VJoyHandle {
-    /// Acquire vJoy device `device_id`, verify X/Y/Z axes. Returns error if
-    /// the driver is missing, the device is unconfigured/busy, or axes absent.
+    /// Acquire vJoy device `device_id`. Loads vJoyInterface.dll, resolves
+    /// the required symbols, checks `vJoyEnabled`, queries `GetVJDStatus`
+    /// (must be FREE or OWN), calls `AcquireVJD`, and re-verifies status
+    /// is OWN before declaring success.
     pub fn try_acquire(device_id: u32) -> Result<Self, VJoyInitError> {
-        use vjoy::{Error, FFIError, VJoy};
+        use windows::core::w;
+        use windows::Win32::System::LibraryLoader::LoadLibraryW;
 
-        let mut vjoy = VJoy::from_default_dll_location().map_err(|e| match e {
-            Error::Ffi(FFIError::DynamicLybraryNotFound(p)) => VJoyInitError::DllNotFound(p),
-            other => VJoyInitError::Other(format!("{other}")),
-        })?;
+        // Prefer the canonical install path; fall back to PATH lookup so
+        // dev machines that put the DLL in PATH still work.
+        let dll = unsafe {
+            LoadLibraryW(w!("C:\\Program Files\\vJoy\\x64\\vJoyInterface.dll"))
+                .or_else(|_| LoadLibraryW(w!("vJoyInterface.dll")))
+                .map_err(|e| VJoyInitError::DllNotFound(format!("{e}")))?
+        };
 
-        let mut device = vjoy
-            .get_device_state(device_id)
-            .map_err(|_| VJoyInitError::DeviceNotConfigured(device_id))?;
+        // Resolve all symbols up front so a torn DLL fails cleanly here,
+        // not on the first hot-path call.
+        let vjoy_enabled: FnVJoyEnabled = unsafe { load_sym(dll, "vJoyEnabled")? };
+        let acquire_vjd: FnAcquireVJD = unsafe { load_sym(dll, "AcquireVJD")? };
+        let relinquish_vjd: FnRelinquishVJD = unsafe { load_sym(dll, "RelinquishVJD")? };
+        let get_vjd_status: FnGetVJDStatus = unsafe { load_sym(dll, "GetVJDStatus")? };
+        let set_axis: FnSetAxis = unsafe { load_sym(dll, "SetAxis")? };
+        let reset_vjd: FnResetVJD = unsafe { load_sym(dll, "ResetVJD")? };
 
-        let center = AXIS_MAX / 2;
-        for axis_id in [STEER_AXIS, THROTTLE_AXIS, BRAKE_AXIS] {
-            if device.set_axis(axis_id, center).is_err() {
-                return Err(VJoyInitError::AxisMissing(device_id, axis_id));
+        // Helper to roll back DLL load if any check fails below.
+        let unload_on_fail = |e: VJoyInitError| -> VJoyInitError {
+            unsafe {
+                let _ = windows::Win32::Foundation::FreeLibrary(dll);
+            }
+            e
+        };
+
+        if unsafe { vjoy_enabled() } == 0 {
+            return Err(unload_on_fail(VJoyInitError::NotEnabled));
+        }
+
+        let status = unsafe { get_vjd_status(device_id) };
+        match status {
+            VJD_STAT_FREE | VJD_STAT_OWN => {}
+            VJD_STAT_BUSY => return Err(unload_on_fail(VJoyInitError::DeviceBusy(device_id))),
+            VJD_STAT_MISS => return Err(unload_on_fail(VJoyInitError::DeviceMissing(device_id))),
+            _ => {
+                // VJD_STAT_UNKN and any forward-compatible value.
+                return Err(unload_on_fail(VJoyInitError::DeviceUnknown(
+                    device_id, status,
+                )));
             }
         }
-        let _ = vjoy.update_device_state(&device);
+
+        if unsafe { acquire_vjd(device_id) } == 0 {
+            let post_status = unsafe { get_vjd_status(device_id) };
+            return Err(unload_on_fail(VJoyInitError::AcquireFailed(
+                device_id,
+                post_status,
+            )));
+        }
+
+        // Verify post-acquire status is OWN — catches the "Acquire-returned-
+        // true-but-driver-says-FREE" mystery that broke the vjoy 0.4 crate.
+        let post_status = unsafe { get_vjd_status(device_id) };
+        if post_status != VJD_STAT_OWN {
+            unsafe {
+                relinquish_vjd(device_id);
+            }
+            return Err(unload_on_fail(VJoyInitError::AcquireFailed(
+                device_id,
+                post_status,
+            )));
+        }
+
+        // Drive every axis to a known state immediately so the first
+        // visible hardware state is sane.
+        let center = map_signed_to_raw(0.0);
+        unsafe {
+            let _ = set_axis(center, device_id, HID_USAGE_X);
+            let _ = set_axis(0, device_id, HID_USAGE_Y);
+            let _ = set_axis(0, device_id, HID_USAGE_Z);
+        }
+
+        // Suppress unused warnings for symbols we don't call on the hot
+        // path but want available for diagnostics / reset.
+        let _ = reset_vjd;
 
         Ok(Self {
-            vjoy,
-            device,
+            dll,
             device_id,
             connected: true,
+            vjoy_enabled,
+            acquire_vjd,
+            relinquish_vjd,
+            get_vjd_status,
+            set_axis,
+            reset_vjd,
         })
     }
 
-    /// Write steering, throttle, brake axes to the device.
-    pub fn set_axes(&mut self, steer: f64, throttle: f64, brake: f64) -> Result<(), VJoySendError> {
-        self.set_axes_verified(steer, throttle, brake).map(|_| ())
+    /// Public status-query for diagnostic blackboard keys.
+    #[allow(dead_code)]
+    pub fn vjd_status(&self) -> i32 {
+        unsafe { (self.get_vjd_status)(self.device_id) }
     }
 
-    /// Like `set_axes` but also returns the raw i32 values that were passed
-    /// to `device.set_axis` immediately before `update_device_state`.
-    /// (steer_raw, throttle_raw, brake_raw) — steer center = 16384, not 0.
-    /// If last_raw_x == 0 in the blackboard the mapping path itself is the bug.
+    /// Write steering, throttle, brake axes to the device. Returns the
+    /// raw i32 values that were sent to `SetAxis` — useful for blackboard
+    /// telemetry so the actual hardware-bound values are visible.
     pub fn set_axes_verified(
         &mut self,
         steer: f64,
@@ -144,37 +290,47 @@ impl VJoyHandle {
         let throttle_raw = map_unsigned_to_raw(throttle);
         let brake_raw = map_unsigned_to_raw(brake);
 
-        if self.device.set_axis(STEER_AXIS, steer_raw).is_err() {
-            return Err(VJoySendError::AxisError(STEER_AXIS));
+        unsafe {
+            if (self.set_axis)(steer_raw, self.device_id, HID_USAGE_X) == 0 {
+                return Err(VJoySendError::AxisError(HID_USAGE_X));
+            }
+            if (self.set_axis)(throttle_raw, self.device_id, HID_USAGE_Y) == 0 {
+                return Err(VJoySendError::AxisError(HID_USAGE_Y));
+            }
+            if (self.set_axis)(brake_raw, self.device_id, HID_USAGE_Z) == 0 {
+                return Err(VJoySendError::AxisError(HID_USAGE_Z));
+            }
         }
-        if self.device.set_axis(THROTTLE_AXIS, throttle_raw).is_err() {
-            return Err(VJoySendError::AxisError(THROTTLE_AXIS));
-        }
-        if self.device.set_axis(BRAKE_AXIS, brake_raw).is_err() {
-            return Err(VJoySendError::AxisError(BRAKE_AXIS));
-        }
-
-        self.vjoy
-            .update_device_state(&self.device)
-            .map_err(|e| VJoySendError::UpdateError(format!("{e}")))?;
 
         Ok((steer_raw, throttle_raw, brake_raw))
     }
 
-    /// Set all axes to safe/neutral values and mark disconnected. The vJoy
-    /// handle is released when this struct drops.
-    pub fn center_and_release(&mut self) {
-        let center = AXIS_MAX / 2;
-        let _ = self.device.set_axis(STEER_AXIS, center);
-        let _ = self.device.set_axis(THROTTLE_AXIS, AXIS_MIN);
-        let _ = self.device.set_axis(BRAKE_AXIS, AXIS_MIN);
-        let _ = self.vjoy.update_device_state(&self.device);
-        self.connected = false;
+    /// Convenience: discard raw values, return unit error.
+    pub fn set_axes(&mut self, steer: f64, throttle: f64, brake: f64) -> Result<(), VJoySendError> {
+        self.set_axes_verified(steer, throttle, brake).map(|_| ())
     }
 
-    /// Attempt to re-acquire the device. Returns `true` on success.
+    /// Move all axes to safe/neutral and relinquish the device.
+    pub fn center_and_release(&mut self) {
+        if self.connected {
+            unsafe {
+                let _ = (self.set_axis)(map_signed_to_raw(0.0), self.device_id, HID_USAGE_X);
+                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_Y);
+                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_Z);
+                (self.relinquish_vjd)(self.device_id);
+            }
+            self.connected = false;
+        }
+    }
+
+    /// Drop the current handle and re-acquire from scratch.
+    /// Returns `true` on success.
     pub fn try_reconnect(&mut self) -> bool {
-        match Self::try_acquire(self.device_id) {
+        let device_id = self.device_id;
+        // Release current handle first so we don't acquire on top of an
+        // already-owned device (which is valid but wastes a syscall).
+        self.center_and_release();
+        match Self::try_acquire(device_id) {
             Ok(new_handle) => {
                 *self = new_handle;
                 true
@@ -184,8 +340,63 @@ impl VJoyHandle {
     }
 }
 
+#[cfg(windows)]
+impl Drop for VJoyHandle {
+    fn drop(&mut self) {
+        if self.connected {
+            unsafe {
+                (self.relinquish_vjd)(self.device_id);
+            }
+            self.connected = false;
+        }
+        // Decrement the DLL's reference count. The loader will only
+        // actually unmap when the count reaches zero — safe even if
+        // another VJoyHandle is alive concurrently.
+        unsafe {
+            let _ = windows::Win32::Foundation::FreeLibrary(self.dll);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Tests (scaling functions only — no hardware required)
+// Symbol resolution helper
+// ---------------------------------------------------------------------------
+
+/// Resolve a vJoy DLL export to a typed function pointer.
+///
+/// # Safety
+/// Caller must guarantee `F` matches the actual export signature.
+/// `name` must be the exact ANSI symbol name.
+#[cfg(windows)]
+unsafe fn load_sym<F: Sized>(dll: HMODULE, name: &str) -> Result<F, VJoyInitError> {
+    use windows::core::PCSTR;
+    use windows::Win32::System::LibraryLoader::GetProcAddress;
+
+    // GetProcAddress requires a null-terminated ANSI string.
+    let mut cstr = String::with_capacity(name.len() + 1);
+    cstr.push_str(name);
+    cstr.push('\0');
+
+    let proc = GetProcAddress(dll, PCSTR(cstr.as_ptr()));
+    match proc {
+        Some(addr) => {
+            // SAFETY: caller asserted signature match.
+            // Sizes are equal (both are 8-byte fn pointers on x64).
+            debug_assert_eq!(
+                std::mem::size_of::<F>(),
+                std::mem::size_of::<unsafe extern "system" fn() -> isize>()
+            );
+            Ok(std::mem::transmute_copy::<
+                unsafe extern "system" fn() -> isize,
+                F,
+            >(&addr))
+        }
+        None => Err(VJoyInitError::SymbolMissing(name.to_string())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — pure scaling functions only, no hardware required.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

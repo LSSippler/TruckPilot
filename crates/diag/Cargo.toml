@@ -51,9 +51,15 @@ path = "src/bin/shm_frame_reader.rs"
 name = "truckpilot-vjoy-probe"
 path = "src/bin/vjoy_probe.rs"
 
+[[bin]]
+name = "blackboard-query"
+path = "src/bin/blackboard_query.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
+truckpilot-ipc-protocol = { path = "../ipc-protocol" }
+tungstenite = "0.24"
 tracing          = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde            = { workspace = true }
@@ -79,5 +85,4 @@ windows = { version = "0.52", features = [
     "Win32_System_Memory",
     "Win32_Security",
 ] }
-vjoy   = "0.4"
 ctrlc  = "3"
