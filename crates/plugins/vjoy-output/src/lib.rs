@@ -1,16 +1,32 @@
-//! vJoy-Output plugin — sends ControlOutput to the vJoy virtual joystick.
-//!
-//! Must run LAST in the plugin order (letztes Plugin schreibt, gewinnt).
-//! On non-Windows platforms falls back to console output.
+//! vJoy-Output plugin — sends arbitrated ControlOutput to the vJoy virtual
+//! joystick. Runs post-arbitration (TickPhase::PostPhase), after all other
+//! plugins have had their say. On non-Windows platforms it loads but stays
+//! inactive.
+
+mod vjoy_wrapper;
 
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
+#[cfg(windows)]
+use vjoy_wrapper::VJoyHandle;
+
+// ---------------------------------------------------------------------------
+// Plugin struct
+// ---------------------------------------------------------------------------
+
 pub struct VJoyOutputPlugin {
-    #[allow(dead_code)]
     device_id: u32,
     #[cfg(windows)]
-    #[allow(dead_code)]
-    acquired: bool,
+    vjoy: Option<VJoyHandle>,
+    failsafe_timeout_ms: u64,
+    last_tick_count: u64,
+    inactive: bool,
+    tick_count_since_reconnect: u32,
+    /// True while the plugin is writing center/neutral values with no active
+    /// ControlRequest (game not running or autopilot disengaged).
+    idle_centered: bool,
+    /// `ctx.tick_count` of the most recent successful `set_axes` call.
+    last_write_tick: u64,
 }
 
 impl Default for VJoyOutputPlugin {
@@ -18,61 +34,36 @@ impl Default for VJoyOutputPlugin {
         Self {
             device_id: 1,
             #[cfg(windows)]
-            acquired: false,
+            vjoy: None,
+            failsafe_timeout_ms: 500,
+            last_tick_count: 0,
+            inactive: false,
+            tick_count_since_reconnect: 0,
+            idle_centered: false,
+            last_write_tick: 0,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Axis scaling (same as TruckPilot 1.0)
+// Pure helper functions (unit-testable, no hardware)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-const VJOY_MIN: i32 = 1;
-#[allow(dead_code)]
-const VJOY_MAX: i32 = 32768;
-#[allow(dead_code)]
-const VJOY_CENTER: i32 = 16384;
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn scale_steering(v: f64) -> i32 {
-    ((v.clamp(-1.0, 1.0) + 1.0) / 2.0 * 32767.0) as i32 + 1
+pub fn should_emergency_brake(ctx: &PluginContext) -> bool {
+    ctx.blackboard.get("safety.emergency_brake").as_deref() == Some("true")
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn scale_throttle(v: f64) -> i32 {
-    (VJOY_CENTER as f64 + v.clamp(0.0, 1.0) * (VJOY_MAX - VJOY_CENTER) as f64).round() as i32
+/// Returns true if the watchdog has expired: more than `timeout_ms / 20` ticks
+/// have passed since `last_tick`. Uses wrapping subtraction for u64 safety.
+pub fn is_watchdog_expired(last_tick: u64, current_tick: u64, timeout_ms: u64) -> bool {
+    let max_allowed = (timeout_ms / 20).max(1);
+    current_tick.wrapping_sub(last_tick) > max_allowed
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-fn scale_brake(v: f64) -> i32 {
-    (VJOY_CENTER as f64 - v.clamp(0.0, 1.0) * (VJOY_CENTER - VJOY_MIN) as f64).round() as i32
-}
-
-// ---------------------------------------------------------------------------
-// Platform output
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-fn send_to_vjoy(_device_id: u32, output: &ControlOutput) {
-    // Dynamic loading of vJoyInterface.dll — same approach as TruckPilot 1.0.
-    // Stub: actual DLL loading is handled by the core's vjoy module.
-    tracing::debug!(
-        "[vjoy-output] steer={} thr={} brk={}",
-        scale_steering(output.steering),
-        scale_throttle(output.throttle),
-        scale_brake(output.brake),
-    );
-}
-
-#[cfg(not(windows))]
-fn send_to_vjoy(_device_id: u32, output: &ControlOutput) {
-    tracing::debug!(
-        "[vjoy-output] steer={:.3} thr={:.3} brk={:.3}",
-        output.steering,
-        output.throttle,
-        output.brake
-    );
+/// Returns true when all three axes are at neutral (steer=center, throttle=0,
+/// brake=0). Used to determine whether the plugin is in idle-center state.
+pub fn is_idle_output(steer: f64, throttle: f64, brake: f64) -> bool {
+    steer == 0.0 && throttle == 0.0 && brake == 0.0
 }
 
 // ---------------------------------------------------------------------------
@@ -83,74 +74,401 @@ impl Plugin for VJoyOutputPlugin {
     fn name(&self) -> &str {
         "vjoy-output"
     }
+
     fn version(&self) -> &str {
-        "0.1.0"
+        "0.2.0"
     }
+
     fn settings_schema(&self) -> &str {
-        r#"{"type":"object","properties":{"device_id":{"type":"integer","minimum":1,"maximum":16}}}"#
+        r#"{
+  "type": "object",
+  "properties": {
+    "device_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 1,
+      "description": "vJoy device ID"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable vJoy output"
+    },
+    "failsafe_timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 5000,
+      "default": 500,
+      "description": "Watchdog timeout in milliseconds"
+    }
+  }
+}"#
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        if let Some(id) = ctx.blackboard.get_f64("vjoy.device_id") {
-            self.device_id = (id as u32).clamp(1, 16);
+        // Read configuration from blackboard (written by core before plugin load)
+        self.device_id = ctx
+            .blackboard
+            .get_f64("truckpilot.config.vjoy_output.device_id")
+            .map(|v| (v as u32).clamp(1, 16))
+            .unwrap_or_else(|| {
+                ctx.blackboard
+                    .get_f64("vjoy.device_id")
+                    .map(|v| (v as u32).clamp(1, 16))
+                    .unwrap_or(1)
+            });
+
+        self.failsafe_timeout_ms = ctx
+            .blackboard
+            .get_f64("truckpilot.config.vjoy_output.failsafe_timeout_ms")
+            .map(|v| (v as u64).clamp(100, 5_000))
+            .unwrap_or(500);
+
+        // Announce clean state to blackboard — new keys included
+        ctx.blackboard.set("vjoy.connected", "false");
+        ctx.blackboard
+            .set("vjoy.device_id", self.device_id.to_string());
+        ctx.blackboard.remove("vjoy.last_error");
+        ctx.blackboard.set("vjoy.last_write_tick", "0");
+        ctx.blackboard.set("vjoy.idle_centered", "false");
+
+        #[cfg(windows)]
+        {
+            match VJoyHandle::try_acquire(self.device_id) {
+                Ok(mut handle) => {
+                    // Write neutral immediately: steer=center, throttle=0, brake=0.
+                    // try_acquire leaves throttle/brake at AXIS_MAX/2 (check only),
+                    // so we must correct that before the first tick fires.
+                    match handle.set_axes(0.0, 0.0, 0.0) {
+                        Ok(()) => {
+                            self.idle_centered = true;
+                            ctx.blackboard.set("vjoy.idle_centered", "true");
+                            tracing::info!(
+                                "[vjoy-output] axes centered on acquire (steer=center throttle=0 brake=0)"
+                            );
+                        }
+                        Err(e) => {
+                            ctx.blackboard.set("vjoy.last_error", format!("{e}"));
+                            tracing::warn!("[vjoy-output] initial center-write failed: {e}");
+                        }
+                    }
+                    self.vjoy = Some(handle);
+                    ctx.blackboard.set("vjoy.connected", "true");
+                    tracing::info!(
+                        "[vjoy-output] vJoy device {} acquired (failsafe={}ms)",
+                        self.device_id,
+                        self.failsafe_timeout_ms
+                    );
+                }
+                Err(e) => {
+                    self.vjoy = None;
+                    self.inactive = true;
+                    ctx.blackboard.set("vjoy.last_error", format!("{e}"));
+                    tracing::warn!(
+                        "[vjoy-output] vJoy init failed: {e} — plugin loaded but inactive"
+                    );
+                }
+            }
         }
-        tracing::info!("[vjoy-output] loaded — device={}", self.device_id);
+
+        #[cfg(not(windows))]
+        {
+            self.inactive = true;
+            tracing::info!("[vjoy-output] platform not supported — plugin loaded but inactive");
+        }
     }
 
     fn on_unload(&mut self) {
-        tracing::info!("[vjoy-output] unloaded");
+        #[cfg(windows)]
+        if let Some(ref mut handle) = self.vjoy {
+            handle.center_and_release();
+        }
+        #[cfg(windows)]
+        {
+            self.vjoy = None;
+        }
+        tracing::info!("[vjoy-output] unloaded — axes centered, device released");
     }
 
-    fn default_phase(&self) -> TickPhase { TickPhase::PostPhase }
+    fn default_phase(&self) -> TickPhase {
+        TickPhase::PostPhase
+    }
 
     fn tick(
         &mut self,
         _telemetry: Option<&Telemetry>,
         output: &mut ControlOutput,
-        _ctx: &PluginContext,
+        ctx: &PluginContext,
     ) {
-        send_to_vjoy(self.device_id, output);
+        if self.inactive {
+            return;
+        }
+
+        // Emergency brake overrides everything else
+        if should_emergency_brake(ctx) {
+            #[cfg(windows)]
+            if let Some(ref mut handle) = self.vjoy {
+                let _ = handle.set_axes(0.0, 0.0, 1.0);
+            }
+            tracing::warn!("[vjoy-output] EMERGENCY BRAKE — throttle=0 brake=full");
+            return;
+        }
+
+        // Watchdog: if too many ticks passed since last send, center and bail.
+        // On cold start (last_tick_count=0) this fires after timeout_ms worth
+        // of ticks, but tick_windows already runs before then via the normal
+        // path. The watchdog's job is to recover from silent ControlOutput gaps.
+        if is_watchdog_expired(
+            self.last_tick_count,
+            ctx.tick_count,
+            self.failsafe_timeout_ms,
+        ) {
+            tracing::warn!(
+                "[vjoy-output] watchdog expired (last={} current={} timeout={}ms) — centering",
+                self.last_tick_count,
+                ctx.tick_count,
+                self.failsafe_timeout_ms,
+            );
+            #[cfg(windows)]
+            if let Some(ref mut handle) = self.vjoy {
+                // steer=0.0 → map_signed_to_raw(0.0)=16384 (center), throttle/brake=0.
+                // Mirror tick_windows error handling: only update blackboard on success.
+                match handle.set_axes(0.0, 0.0, 0.0) {
+                    Ok(()) => {
+                        self.idle_centered = true;
+                        self.last_write_tick = ctx.tick_count;
+                        ctx.blackboard.set("vjoy.idle_centered", "true");
+                        ctx.blackboard
+                            .set("vjoy.last_write_tick", ctx.tick_count.to_string());
+                    }
+                    Err(e) => {
+                        handle.connected = false;
+                        ctx.blackboard.set("vjoy.connected", "false");
+                        ctx.blackboard.set("vjoy.last_error", format!("{e}"));
+                        tracing::error!(
+                            "[vjoy-output] watchdog center-write failed: {e} — marking disconnected"
+                        );
+                    }
+                }
+            }
+            self.last_tick_count = ctx.tick_count;
+            return;
+        }
+        self.last_tick_count = ctx.tick_count;
+
+        #[cfg(windows)]
+        self.tick_windows(output, ctx);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows-only tick logic (separated to keep cfg blocks readable)
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+impl VJoyOutputPlugin {
+    fn tick_windows(&mut self, output: &mut ControlOutput, ctx: &PluginContext) {
+        let handle = match self.vjoy.as_mut() {
+            Some(h) => h,
+            None => return,
+        };
+
+        // Reconnect attempt every 10 ticks while disconnected
+        if !handle.connected {
+            self.tick_count_since_reconnect += 1;
+            if self.tick_count_since_reconnect >= 10 {
+                self.tick_count_since_reconnect = 0;
+                if handle.try_reconnect() {
+                    ctx.blackboard.set("vjoy.connected", "true");
+                    ctx.blackboard.remove("vjoy.last_error");
+                    tracing::info!(
+                        "[vjoy-output] reconnected to vJoy device {}",
+                        self.device_id
+                    );
+                }
+            }
+            return;
+        }
+
+        match handle.set_axes(output.steering, output.throttle, output.brake) {
+            Ok(()) => {
+                self.tick_count_since_reconnect = 0;
+                let idle = is_idle_output(output.steering, output.throttle, output.brake);
+                self.idle_centered = idle;
+                self.last_write_tick = ctx.tick_count;
+                ctx.blackboard
+                    .set("vjoy.idle_centered", if idle { "true" } else { "false" });
+                ctx.blackboard
+                    .set("vjoy.last_write_tick", ctx.tick_count.to_string());
+            }
+            Err(e) => {
+                handle.connected = false;
+                ctx.blackboard.set("vjoy.connected", "false");
+                ctx.blackboard.set("vjoy.last_error", format!("{e}"));
+                tracing::error!("[vjoy-output] vJoy send failed: {e} — marking disconnected");
+            }
+        }
     }
 }
 
 truckpilot_plugin_api::export_plugin!(VJoyOutputPlugin);
 
+// ---------------------------------------------------------------------------
+// Tests (pure functions, no vJoy hardware required)
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // --- Scaling (via vjoy_wrapper re-export) ---
+
     #[test]
-    fn scale_steering_center() {
-        assert_eq!(scale_steering(0.0), 16384);
+    fn signed_full_left() {
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(-1.0), 0);
     }
 
     #[test]
-    fn scale_steering_full_left() {
-        assert_eq!(scale_steering(-1.0), 1);
+    fn signed_center() {
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(0.0), 16384);
     }
 
     #[test]
-    fn scale_steering_full_right() {
-        assert_eq!(scale_steering(1.0), 32768);
+    fn signed_full_right() {
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(1.0), 32767);
     }
 
     #[test]
-    fn scale_throttle_zero() {
-        assert_eq!(scale_throttle(0.0), 16384);
+    fn signed_clamp_under() {
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(-2.5), 0);
     }
 
     #[test]
-    fn scale_throttle_full() {
-        assert_eq!(scale_throttle(1.0), 32768);
+    fn signed_clamp_over() {
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(2.5), 32767);
     }
 
     #[test]
-    fn scale_brake_zero() {
-        assert_eq!(scale_brake(0.0), 16384);
+    fn unsigned_zero() {
+        assert_eq!(vjoy_wrapper::map_unsigned_to_raw(0.0), 0);
     }
 
     #[test]
-    fn scale_brake_full() {
-        assert_eq!(scale_brake(1.0), 1);
+    fn unsigned_full() {
+        assert_eq!(vjoy_wrapper::map_unsigned_to_raw(1.0), 32767);
+    }
+
+    #[test]
+    fn unsigned_clamp_under() {
+        assert_eq!(vjoy_wrapper::map_unsigned_to_raw(-0.5), 0);
+    }
+
+    #[test]
+    fn unsigned_clamp_over() {
+        assert_eq!(vjoy_wrapper::map_unsigned_to_raw(1.5), 32767);
+    }
+
+    // --- Emergency brake ---
+
+    #[test]
+    fn emergency_brake_when_key_true() {
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("safety.emergency_brake", "true");
+        assert!(should_emergency_brake(&ctx));
+    }
+
+    #[test]
+    fn no_emergency_brake_when_key_absent() {
+        let ctx = PluginContext::test();
+        assert!(!should_emergency_brake(&ctx));
+    }
+
+    #[test]
+    fn no_emergency_brake_when_key_false() {
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("safety.emergency_brake", "false");
+        assert!(!should_emergency_brake(&ctx));
+    }
+
+    // --- Watchdog ---
+
+    #[test]
+    fn watchdog_triggers_after_timeout() {
+        // 500ms / 20ms = 25 ticks; delta of 26 must trigger
+        assert!(is_watchdog_expired(0, 26, 500));
+    }
+
+    #[test]
+    fn watchdog_ok_within_timeout() {
+        // delta of exactly 25 = not expired (> not >=)
+        assert!(!is_watchdog_expired(0, 25, 500));
+    }
+
+    #[test]
+    fn watchdog_handles_wraparound() {
+        // last near u64::MAX, current has wrapped to 1 → 32 ticks elapsed (> 25)
+        assert!(is_watchdog_expired(u64::MAX - 30, 1, 500));
+    }
+
+    #[test]
+    fn watchdog_no_spurious_trigger_on_small_wraparound() {
+        // last=MAX, current=5 → only 6 ticks elapsed (wrapping) → should NOT fire
+        assert!(!is_watchdog_expired(u64::MAX, 5, 500));
+    }
+
+    #[test]
+    fn watchdog_ok_at_tick_zero() {
+        // last=0, current=0 → delta=0 → not expired
+        assert!(!is_watchdog_expired(0, 0, 500));
+    }
+
+    #[test]
+    fn cold_start_watchdog_boundary() {
+        // Cold start: last_tick=0. Watchdog must NOT fire before timeout elapses,
+        // and must fire exactly one tick after the boundary.
+        let timeout_ms = 500u64;
+        let boundary = timeout_ms / 20; // = 25
+        assert!(!is_watchdog_expired(0, boundary, timeout_ms)); // tick 25: ok
+        assert!(is_watchdog_expired(0, boundary + 1, timeout_ms)); // tick 26: fires
+    }
+
+    // --- Idle-output detection ---
+
+    /// Idle float inputs (steer=0.0, throttle=0.0, brake=0.0) are correctly
+    /// detected by is_idle_output, and steer=0.0 maps to raw 16384 (center),
+    /// NOT raw 0. raw 0 = full-left; raw 16384 = hardware center.
+    #[test]
+    fn idle_output_float_zero_is_detected_and_maps_to_steer_center_raw() {
+        assert!(is_idle_output(0.0, 0.0, 0.0));
+        // The critical assertion: idle steer float 0.0 → raw 16384, not raw 0.
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(0.0), 16384);
+        assert_ne!(vjoy_wrapper::map_signed_to_raw(0.0), 0);
+        // Throttle and brake idle → raw 0 (zero, correct for unsigned axes).
+        assert_eq!(vjoy_wrapper::map_unsigned_to_raw(0.0), 0);
+    }
+
+    #[test]
+    fn not_idle_when_steering_nonzero() {
+        assert!(!is_idle_output(0.1, 0.0, 0.0));
+        assert!(!is_idle_output(-0.1, 0.0, 0.0));
+    }
+
+    #[test]
+    fn not_idle_when_throttle_nonzero() {
+        assert!(!is_idle_output(0.0, 0.3, 0.0));
+    }
+
+    #[test]
+    fn not_idle_when_brake_nonzero() {
+        assert!(!is_idle_output(0.0, 0.0, 0.5));
+    }
+
+    #[test]
+    fn idle_output_center_steer_means_zero_float() {
+        // Steering center maps to 0.0 f64 (plugin convention: 0.0 = center).
+        // Confirm that map_signed_to_raw(0.0) == 16384 (hardware center).
+        assert_eq!(vjoy_wrapper::map_signed_to_raw(0.0), 16384);
+        assert!(is_idle_output(0.0, 0.0, 0.0));
     }
 }
