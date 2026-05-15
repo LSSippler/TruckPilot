@@ -14,15 +14,12 @@ truckpilot-plugin-api = { path = "../../plugin-api" }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 tracing    = { workspace = true }
-# JPEG decode for SharedFrame consumers (Phase 6.5c.2 Step 4).
 image      = { version = "0.25", default-features = false, features = ["jpeg"] }
 
-# ONNX runtime — optional, only linked when the model file is present.
-# Feature-gated so the plugin compiles without ort installed.
-# Use ort = "1" (stable) or "2-rc" when available.
 [features]
-default = []
-onnx = ["ort"]
+default = ["onnx-directml"]
+onnx-directml = ["dep:ort", "ort/directml"]
+onnx-cpu      = ["dep:ort"]
 
 [dependencies.ort]
 version = "2.0.0-rc.12"

@@ -1,11 +1,10 @@
 //! Sign-Vision plugin — visual traffic-sign recognition.
 //!
-//! This plugin is the **fallback** for `sign-reader`. It only activates when:
-//! - `sign.source` is NOT "map" (i.e. sign-reader found nothing) **and**
-//! - The host wired a `SharedFrameStore` into [`PluginContext`] **and**
-//! - A model file exists at `models/tsr_yolo.onnx` (when ONNX inference is wired up).
+//! Reads JPEG frames from `SharedFrameStore` (published by `vision-frame-source`),
+//! runs YOLOv8s-v2 inference via ONNX Runtime (DirectML on AMD RX 7800 XT,
+//! CPU fallback), and writes speed-limit detections to the Blackboard.
 //!
-//! ## Architecture (Phase 6.5c.2 Step 4)
+//! ## Architecture (Phase 6.5e)
 //!
 //! ```text
 //! vision-frame-source (producer)
@@ -15,30 +14,36 @@
 //!     │
 //!     ▼   ctx.frame_store().get("camera.front")
 //! sign-vision (this plugin)
-//!     │  lazy JPEG → RGB8 via SharedFrame::get_or_init_rgb8
-//!     ▼
-//! ONNX inference (Phase 6.5e, stub today)
-//!     │
+//!     │  lazy JPEG → RGB8 via SharedFrame::get_or_try_init_rgb8
+//!     │  letterbox 640×640 → NCHW f32 tensor
+//!     │  ort::Session::run() [DirectML / CPU]
+//!     │  YOLOv8s decode + NMS
+//!     │  SpeedLimitSign → template-match → km/h
 //!     ▼
 //! sign.speed_limit_kmh + sign.source = "vision"
 //! ```
 //!
+//! ## Model
+//!
+//! `models/truckpilot-yolov8s-v2/best.onnx` — 15 classes, mAP@0.5 = 0.798.
+//! `SpeedLimitSign` is class index 11 (generic; km/h extracted via template matching).
+//!
 //! ## Conflict resolution
 //!
-//! - `sign-reader` (map) has priority: when `sign.source == "map"`, this
-//!   plugin skips inference.
-//! - Vision overrides only when its detection confidence exceeds
-//!   [`MIN_CONFIDENCE`] (0.7).
-//! - When `frame_store` is absent the plugin runs in **map-only mode**:
-//!   it is a no-op and never sets `sign.source = "vision"`.
+//! `sign-reader` (map) has priority: when `sign.source == "map"`, this plugin
+//! skips inference. Vision overrides only when confidence ≥ `MIN_CONFIDENCE`.
 //!
-//! ## Modes
+//! ## Build features
 //!
-//! - **map-only**: `ctx.frame_store()` is `None` *or* the daemon never
-//!   publishes `camera.front`. Plugin is dormant; `sign.detection_active`
-//!   is `"false"`.
-//! - **vision**: `camera.front` is published and not stale. Plugin
-//!   processes each new frame id once; `sign.detection_active = "true"`.
+//! | Feature         | Effect                                              |
+//! |-----------------|-----------------------------------------------------|
+//! | `onnx-directml` | DirectML GPU (default, AMD RX 7800 XT)              |
+//! | `onnx-cpu`      | CPU-only (slow, for CI/headless builds)             |
+//! | (neither)       | Stub mode — pipeline active, inference returns `[]` |
+
+mod postprocess;
+mod preprocess;
+mod speed_mapper;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,20 +53,64 @@ use truckpilot_plugin_api::{
     ControlOutput, Plugin, PluginContext, SharedFrame, Telemetry, TickPhase,
 };
 
-/// Default path to the ONNX model.
-const DEFAULT_MODEL_PATH: &str = "models/tsr_yolo.onnx";
+use speed_mapper::SpeedMapper;
 
-/// Default inference interval in ticks (PhaseB 10 Hz → every tick = 10 Hz).
-/// Producer publishes at 10 Hz so we don't need to throttle further; an
-/// explicit knob lets operators dial it down on slow hardware.
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const LOG_TARGET: &str = "truckpilot_plugin_sign_vision";
+
+/// Default path to the ONNX model (Phase 6.5e v2 model).
+const DEFAULT_MODEL_PATH: &str = "models/truckpilot-yolov8s-v2/best.onnx";
+
+/// Default inference interval in ticks (PhaseB 10 Hz → every tick).
 const DEFAULT_INFERENCE_INTERVAL: u32 = 1;
 
-/// Minimum confidence threshold for a vision detection to override map data.
-/// Phase 6.5c.2 Step 4 raises this from 0.6 → 0.7.
+/// Minimum confidence for a vision detection to override map data.
 pub const MIN_CONFIDENCE: f32 = 0.7;
 
-/// SharedFrameStore key the plugin subscribes to.
+/// Default YOLO confidence threshold (below this, anchors are ignored).
+const DEFAULT_CONF_THRESHOLD: f32 = 0.5;
+
+/// Default NMS IoU threshold.
+const DEFAULT_NMS_IOU: f32 = 0.45;
+
+/// SharedFrameStore key subscribed by this plugin.
 const FRAME_KEY: &str = "camera.front";
+
+/// Number of classes in the v2 model (15 header classes, 6 trained).
+const NUM_CLASSES: usize = 15;
+
+/// Number of YOLO anchors in YOLOv8s output (80²+40²+20² = 8400).
+const NUM_ANCHORS: usize = 8400;
+
+/// Class index of `SpeedLimitSign` in dataset.yaml.
+const SPEED_LIMIT_CLASS_ID: usize = 11;
+
+/// Class names in dataset.yaml order (15 entries).
+const CLASS_NAMES: [&str; 15] = [
+    "Car",
+    "Truck",
+    "TruckTrailer",
+    "Bus",
+    "BrakeLightOn",
+    "TurnSignalLeft",
+    "TurnSignalRight",
+    "TrafficLightRed",
+    "TrafficLightYellow",
+    "TrafficLightGreen",
+    "StopSign",
+    "SpeedLimitSign",
+    "LaneSolid",
+    "LaneDashed",
+    "RoadEdge",
+];
+
+/// Inference wall-time threshold in ms; above this, skip the next N ticks.
+const BUDGET_WARN_MS: f32 = 80.0;
+/// Number of ticks to skip after a budget overrun.
+const SKIP_AFTER_OVERRUN: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Detection result
@@ -70,16 +119,16 @@ const FRAME_KEY: &str = "camera.front";
 /// A single detected traffic sign.
 #[derive(Debug, Clone)]
 pub struct Detection {
-    /// Detected class label (e.g. "speed_limit_80").
+    /// Detected class label (e.g. "speed_limit_80" or "Car").
     pub label: String,
     /// Confidence score in [0, 1].
     pub confidence: f32,
-    /// Parsed numeric value (e.g. 80.0 for a speed-limit-80 sign).
+    /// Parsed numeric value — set for speed-limit signs (km/h).
     pub value: Option<f32>,
 }
 
 impl Detection {
-    /// Parse a speed limit value from a label like "speed_limit_80".
+    /// Parse a speed limit value from a label like `"speed_limit_80"`.
     fn parse_speed_limit(label: &str) -> Option<f32> {
         label
             .strip_prefix("speed_limit_")
@@ -92,7 +141,7 @@ impl Detection {
 // ---------------------------------------------------------------------------
 
 /// Decode JPEG bytes into a tightly-packed RGB8 buffer (3 bytes/pixel,
-/// row-major, no row padding). Returns the buffer plus `(width, height)`.
+/// row-major, no padding). Returns `(rgb, width, height)`.
 pub fn decode_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), image::ImageError> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg)?;
     let rgb = img.to_rgb8();
@@ -101,47 +150,40 @@ pub fn decode_jpeg(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), image::ImageErro
 }
 
 // ---------------------------------------------------------------------------
-// Inference (Phase 6.5e stub — returns empty)
+// Plugin mode
 // ---------------------------------------------------------------------------
 
-/// Run inference on a decoded RGB8 frame. **Stub** until Phase 6.5e wires
-/// up the real ONNX session — returns an empty detection list so the
-/// rest of the pipeline can be exercised end-to-end.
-fn run_inference(_rgb: &[u8], _width: u32, _height: u32) -> Vec<Detection> {
-    Vec::new()
-}
-
-// ---------------------------------------------------------------------------
-// Plugin
-// ---------------------------------------------------------------------------
-
-/// Mode the plugin chose at `on_load` based on whether a
-/// [`SharedFrameStore`] is wired in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// `frame_store` is `None` — plugin is dormant.
+    /// `frame_store` absent — plugin is dormant.
     MapOnly,
-    /// `frame_store` is `Some(_)` — process frames as they arrive.
+    /// `frame_store` present — process frames as they arrive.
     Vision,
 }
+
+// ---------------------------------------------------------------------------
+// Plugin struct
+// ---------------------------------------------------------------------------
 
 pub struct SignVisionPlugin {
     model_path: PathBuf,
     inference_interval: u32,
+    conf_threshold: f32,
+    nms_iou: f32,
     mode: Mode,
-    /// `id` of the last [`SharedFrame`] we ran inference on. Used to
-    /// avoid re-processing the same frame across consecutive ticks
-    /// when the producer is slower than the scheduler.
     last_processed_frame_id: Option<u64>,
-    /// Reserved for future ONNX session result caching.
     #[allow(dead_code)]
     last_detection: Option<Detection>,
     #[allow(dead_code)]
     last_inference: Instant,
-    /// Whether an ONNX session was successfully loaded. Today this is
-    /// only flipped when `cfg(feature = "onnx")` is on; the stub path
-    /// keeps it `false`.
     model_available: bool,
+    /// Remaining ticks to skip after a budget overrun.
+    skip_ticks: u32,
+    /// Latency of the most recent inference pass in milliseconds.
+    last_inference_ms: f32,
+    speed_mapper: SpeedMapper,
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    session: Option<ort::session::Session>,
 }
 
 impl Default for SignVisionPlugin {
@@ -149,22 +191,151 @@ impl Default for SignVisionPlugin {
         Self {
             model_path: PathBuf::from(DEFAULT_MODEL_PATH),
             inference_interval: DEFAULT_INFERENCE_INTERVAL,
+            conf_threshold: DEFAULT_CONF_THRESHOLD,
+            nms_iou: DEFAULT_NMS_IOU,
             mode: Mode::MapOnly,
             last_processed_frame_id: None,
             last_detection: None,
             last_inference: Instant::now(),
             model_available: false,
+            skip_ticks: 0,
+            last_inference_ms: 0.0,
+            speed_mapper: SpeedMapper::default(),
+            #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+            session: None,
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Inference helpers
+// ---------------------------------------------------------------------------
+
+/// Load an ONNX session from `model_path`, trying DirectML first (if compiled)
+/// then falling back to CPU. Returns `None` on any hard failure.
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+fn load_onnx_session(model_path: &std::path::Path) -> Option<ort::session::Session> {
+    use ort::session::Session;
+
+    #[cfg(feature = "onnx-directml")]
+    {
+        use ort::ep::DirectML;
+        if let Ok(builder) = Session::builder() {
+            if let Ok(mut builder) = builder.with_execution_providers([DirectML::default().build()])
+            {
+                match builder.commit_from_file(model_path) {
+                    Ok(sess) => {
+                        tracing::info!(target: LOG_TARGET, "ONNX session loaded via DirectML");
+                        return Some(sess);
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: LOG_TARGET, "DirectML session commit failed ({e}), retrying with CPU");
+                    }
+                }
+            } else {
+                tracing::warn!(target: LOG_TARGET, "DirectML EP registration failed, retrying with CPU");
+            }
+        }
+    }
+
+    // CPU fallback (also the only path when only `onnx-cpu` is enabled).
+    if let Ok(mut builder) = Session::builder() {
+        match builder.commit_from_file(model_path) {
+            Ok(sess) => {
+                tracing::warn!(target: LOG_TARGET, "ONNX session on CPU — expect >100 ms/frame");
+                return Some(sess);
+            }
+            Err(e) => {
+                tracing::error!(target: LOG_TARGET, "CPU session failed: {e}");
+            }
+        }
+    }
+    None
+}
+
+/// Run the full YOLOv8s inference pipeline on one RGB8 frame.
+/// Returns detected objects with labels and, for speed-limit signs, km/h values.
+#[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+fn do_inference(
+    session: &mut ort::session::Session,
+    speed_mapper: &SpeedMapper,
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    conf_threshold: f32,
+    nms_iou: f32,
+) -> ort::Result<Vec<Detection>> {
+    use ort::value::Tensor;
+    use postprocess::{decode_yolov8, nms, unletterbox};
+    use preprocess::{crop_rgb, letterbox, rgb_to_gray, to_nchw};
+
+    // 1. Letterbox to 640×640
+    let lb = letterbox(rgb, width, height, 640);
+
+    // 2. NCHW f32 tensor [1, 3, 640, 640] — no ndarray needed, (shape, Vec) works directly
+    let nchw = to_nchw(&lb.pixels, 640, 640);
+    let tensor = Tensor::<f32>::from_array(([1usize, 3, 640, 640], nchw))?;
+
+    // 3. Run inference
+    let outputs = session.run(ort::inputs!["images" => tensor])?;
+
+    // 4. Extract output tensor [1, 19, 8400] — try_extract_tensor returns (&Shape, &[f32])
+    let (_shape, data) = outputs["output0"].try_extract_tensor::<f32>()?;
+    let data: Vec<f32> = data.to_vec();
+
+    // 5. Decode anchors + NMS
+    let mut raw = decode_yolov8(&data, NUM_CLASSES, NUM_ANCHORS, conf_threshold);
+    let kept = nms(&mut raw, nms_iou);
+
+    // 6. Map to Detection with original-image coords + speed-limit extraction
+    let mut detections = Vec::with_capacity(kept.len());
+    for det in &kept {
+        let orig = unletterbox(det, lb.scale, lb.pad_x, lb.pad_y, width, height);
+        let (x1f, y1f, x2f, y2f) = orig.xyxy();
+        let x1 = x1f.max(0.0) as u32;
+        let y1 = y1f.max(0.0) as u32;
+        let x2 = (x2f as u32).min(width);
+        let y2 = (y2f as u32).min(height);
+
+        let value = if det.class_id == SPEED_LIMIT_CLASS_ID {
+            let (crop, cw, ch) = crop_rgb(rgb, width, height, x1, y1, x2, y2);
+            if !crop.is_empty() {
+                let gray = rgb_to_gray(&crop);
+                speed_mapper
+                    .match_speed(&gray, cw, ch)
+                    .map(|kmh| kmh as f32)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let label = if let Some(kmh) = value {
+            format!("speed_limit_{}", kmh as u32)
+        } else {
+            CLASS_NAMES
+                .get(det.class_id)
+                .copied()
+                .unwrap_or("unknown")
+                .to_string()
+        };
+
+        detections.push(Detection {
+            label,
+            confidence: det.confidence,
+            value,
+        });
+    }
+
+    Ok(detections)
+}
+
+// ---------------------------------------------------------------------------
+// Plugin impl
+// ---------------------------------------------------------------------------
+
 impl SignVisionPlugin {
-    /// Pull a fresh frame from `ctx.frame_store` if one is available and
-    /// has an id we haven't processed yet. Returns `None` when:
-    /// - the host did not wire a frame store
-    /// - no frame has been published under `camera.front`
-    /// - the published frame has the same id we last processed
-    /// - the published frame is flagged stale by vision-frame-source
     fn next_frame(&self, ctx: &PluginContext) -> Option<Arc<SharedFrame>> {
         if ctx.blackboard.get("vision.frame.stale").as_deref() == Some("true") {
             return None;
@@ -176,6 +347,37 @@ impl SignVisionPlugin {
         }
         Some(frame)
     }
+
+    /// Run inference on `rgb`, returning detections (or empty on any failure).
+    fn maybe_run_inference(&mut self, rgb: &[u8], width: u32, height: u32) -> Vec<Detection> {
+        if !self.model_available {
+            return Vec::new();
+        }
+        #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+        {
+            // Extract primitive values first to avoid complex borrow interactions.
+            let conf = self.conf_threshold;
+            let iou = self.nms_iou;
+            if let Some(session) = self.session.as_mut() {
+                return match do_inference(
+                    session,
+                    &self.speed_mapper,
+                    rgb,
+                    width,
+                    height,
+                    conf,
+                    iou,
+                ) {
+                    Ok(dets) => dets,
+                    Err(e) => {
+                        tracing::warn!(target: LOG_TARGET, "inference error: {e}");
+                        Vec::new()
+                    }
+                };
+            }
+        }
+        Vec::new()
+    }
 }
 
 impl Plugin for SignVisionPlugin {
@@ -183,7 +385,7 @@ impl Plugin for SignVisionPlugin {
         "sign-vision"
     }
     fn version(&self) -> &str {
-        "0.2.0"
+        "0.3.0"
     }
     fn settings_schema(&self) -> &str {
         r#"{
@@ -191,31 +393,48 @@ impl Plugin for SignVisionPlugin {
   "properties": {
     "model_path": {
       "type": "string",
-      "description": "Path to the ONNX model file (tsr_yolo.onnx)."
+      "description": "Path to the YOLOv8s ONNX model (default: models/truckpilot-yolov8s-v2/best.onnx)."
     },
     "inference_interval": {
       "type": "integer",
       "minimum": 1,
       "maximum": 250,
-      "description": "Run inference every N ticks. Default 1 (every PhaseB tick = 10 Hz)."
+      "description": "Run inference every N PhaseB ticks. Default 1 (10 Hz)."
+    },
+    "conf_threshold": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.0,
+      "description": "YOLO confidence threshold. Default 0.5."
+    },
+    "nms_iou": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1.0,
+      "description": "NMS IoU threshold. Default 0.45."
     },
     "min_confidence": {
       "type": "number",
       "minimum": 0.1,
       "maximum": 1.0,
-      "description": "Minimum detection confidence threshold (default 0.7)."
+      "description": "Min confidence to override map source. Default 0.7."
     }
   }
 }"#
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        // Allow overriding model path and interval via blackboard.
         if let Some(p) = ctx.blackboard.get("sign_vision.model_path") {
             self.model_path = PathBuf::from(p);
         }
         if let Some(iv) = ctx.blackboard.get_f64("sign_vision.inference_interval") {
             self.inference_interval = (iv as u32).clamp(1, 250);
+        }
+        if let Some(conf) = ctx.blackboard.get_f64("sign_vision.conf_threshold") {
+            self.conf_threshold = conf as f32;
+        }
+        if let Some(iou) = ctx.blackboard.get_f64("sign_vision.nms_iou") {
+            self.nms_iou = iou as f32;
         }
 
         self.mode = if ctx.frame_store().is_some() {
@@ -224,7 +443,6 @@ impl Plugin for SignVisionPlugin {
             Mode::MapOnly
         };
 
-        // Surface the chosen mode so UI / stats-logger can show it.
         ctx.blackboard.set(
             "sign.detection_active",
             if self.mode == Mode::Vision {
@@ -235,44 +453,49 @@ impl Plugin for SignVisionPlugin {
         );
 
         if self.model_path.exists() {
-            #[cfg(feature = "onnx")]
+            #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
             {
-                // TODO (Phase 6.5e): load ONNX session here.
-                self.model_available = true;
-                tracing::info!(
-                    target: "truckpilot_plugin_sign_vision",
-                    "ONNX model loaded from {:?}",
-                    self.model_path
-                );
+                match load_onnx_session(&self.model_path) {
+                    Some(sess) => {
+                        self.session = Some(sess);
+                        self.model_available = true;
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            "ONNX session init failed for {:?} — stub inference active",
+                            self.model_path
+                        );
+                    }
+                }
             }
-            #[cfg(not(feature = "onnx"))]
-            {
-                tracing::warn!(
-                    target: "truckpilot_plugin_sign_vision",
-                    "model found at {:?} but onnx feature not compiled in",
-                    self.model_path
-                );
-            }
+            #[cfg(not(any(feature = "onnx-directml", feature = "onnx-cpu")))]
+            tracing::warn!(
+                target: LOG_TARGET,
+                "model found at {:?} but no onnx feature compiled — build with --features onnx-directml",
+                self.model_path
+            );
         } else {
             tracing::info!(
-                target: "truckpilot_plugin_sign_vision",
-                "model not found at {:?} — visual recognition disabled (stub inference)",
+                target: LOG_TARGET,
+                "model not found at {:?} — visual recognition disabled",
                 self.model_path
             );
         }
 
         tracing::info!(
-            target: "truckpilot_plugin_sign_vision",
-            "loaded — mode={:?} model_available={} inference_interval={}",
-            self.mode, self.model_available, self.inference_interval
+            target: LOG_TARGET,
+            "loaded — mode={:?} model_available={} conf={} nms_iou={} interval={}",
+            self.mode,
+            self.model_available,
+            self.conf_threshold,
+            self.nms_iou,
+            self.inference_interval,
         );
     }
 
     fn on_unload(&mut self) {
-        tracing::info!(
-            target: "truckpilot_plugin_sign_vision",
-            "unloaded"
-        );
+        tracing::info!(target: LOG_TARGET, "unloaded");
     }
 
     fn default_phase(&self) -> TickPhase {
@@ -285,18 +508,12 @@ impl Plugin for SignVisionPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
-        // Map data takes priority — skip vision if sign-reader already
-        // claimed this tick.
         if ctx.blackboard.get("sign.source").as_deref() == Some("map") {
             return;
         }
-
         if self.mode == Mode::MapOnly {
             return;
         }
-
-        // Sub-rate throttle (the PhaseB scheduler may itself be slower
-        // than the producer; this gives operators another knob).
         if !ctx
             .tick_count
             .is_multiple_of(self.inference_interval as u64)
@@ -308,23 +525,24 @@ impl Plugin for SignVisionPlugin {
             return;
         };
 
-        tracing::debug!(
-            target: "truckpilot_plugin_sign_vision",
-            "frame received id={} size={}x{} jpeg={}B",
+        // Frame-skip: budget overrun from previous tick.
+        if self.skip_ticks > 0 {
+            self.skip_ticks -= 1;
+            self.last_processed_frame_id = Some(frame.id);
+            return;
+        }
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            "frame id={} {}x{} jpeg={}B",
             frame.id, frame.width, frame.height, frame.jpeg.len()
         );
 
-        // Lazy decode: closure runs at most once per SharedFrame even
-        // if multiple consumers ask. We pass through the Result so the
-        // first attempt can recover next tick.
+        // Lazy JPEG → RGB8 decode (result cached in SharedFrame OnceLock).
         let decode_attempt: Result<&Arc<Vec<u8>>, image::ImageError> =
             frame.get_or_try_init_rgb8(|| {
                 let (rgb, w, h) = decode_jpeg(&frame.jpeg)?;
-                debug_assert_eq!(
-                    rgb.len() as u32,
-                    w * h * 3,
-                    "RGB8 buffer size must match decoded dimensions"
-                );
+                debug_assert_eq!(rgb.len() as u32, w * h * 3);
                 Ok(Arc::new(rgb))
             });
 
@@ -332,25 +550,47 @@ impl Plugin for SignVisionPlugin {
             Ok(rgb) => rgb,
             Err(e) => {
                 tracing::warn!(
-                    target: "truckpilot_plugin_sign_vision",
+                    target: LOG_TARGET,
                     "JPEG decode failed for frame id={}: {e}",
                     frame.id
                 );
-                // Mark the frame as processed so a permanently-corrupt
-                // payload doesn't burn CPU on every tick.
                 self.last_processed_frame_id = Some(frame.id);
                 return;
             }
         };
 
-        // Phase 6.5e will replace this with a real ONNX call.
-        let detections = if self.model_available {
-            run_inference(rgb, frame.width, frame.height)
-        } else {
-            Vec::new()
-        };
+        // Run inference and measure wall time.
+        let t0 = Instant::now();
+        let detections = self.maybe_run_inference(rgb, frame.width, frame.height);
+        self.last_inference_ms = t0.elapsed().as_secs_f32() * 1_000.0;
 
-        // Find the highest-confidence speed-limit detection above threshold.
+        ctx.blackboard.set(
+            "sign.last_inference_ms",
+            format!("{:.1}", self.last_inference_ms),
+        );
+        ctx.blackboard
+            .set("sign.detected_count", detections.len().to_string());
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            "inference done: {} detections in {:.1} ms",
+            detections.len(),
+            self.last_inference_ms
+        );
+
+        // Budget guard: if inference exceeded the warn threshold, skip ticks.
+        if self.last_inference_ms > BUDGET_WARN_MS {
+            self.skip_ticks = SKIP_AFTER_OVERRUN;
+            tracing::warn!(
+                target: LOG_TARGET,
+                "inference {:.1} ms > {BUDGET_WARN_MS} ms budget — throttling to {:.0} Hz for {} ticks",
+                self.last_inference_ms,
+                1_000.0 / (self.inference_interval as f32 * 100.0 * (SKIP_AFTER_OVERRUN + 1) as f32),
+                SKIP_AFTER_OVERRUN,
+            );
+        }
+
+        // Pick the highest-confidence speed-limit detection above threshold.
         let best = detections
             .into_iter()
             .filter(|d| d.confidence >= MIN_CONFIDENCE)
@@ -363,20 +603,20 @@ impl Plugin for SignVisionPlugin {
                     .set("sign.speed_limit_kmh", limit_kmh.to_string());
                 ctx.blackboard.set("sign.source", "vision");
                 ctx.blackboard
+                    .set("sign.speed_limit_confidence", format!("{conf:.3}"));
+                ctx.blackboard
                     .set("sign.vision.confidence", format!("{conf:.3}"));
                 tracing::debug!(
-                    target: "truckpilot_plugin_sign_vision",
-                    "detected {limit_kmh:.0} km/h (conf={conf:.2})"
+                    target: LOG_TARGET,
+                    "speed limit {limit_kmh:.0} km/h detected (conf={conf:.2})"
                 );
             }
             None => {
-                // No high-confidence detection this frame. If we were
-                // the previous owner of `sign.source`, fall back to
-                // map (i.e. clear our claim).
                 if ctx.blackboard.get("sign.source").as_deref() == Some("vision") {
                     ctx.blackboard.remove("sign.speed_limit_kmh");
                     ctx.blackboard.remove("sign.source");
                     ctx.blackboard.remove("sign.vision.confidence");
+                    ctx.blackboard.remove("sign.speed_limit_confidence");
                 }
             }
         }
@@ -396,8 +636,6 @@ mod tests {
     use super::*;
     use truckpilot_plugin_api::{SharedBlackboard, SharedFrameStore};
 
-    /// 1×1 white JPEG produced with `image` and embedded as bytes.
-    /// Decodes to `[0xFF, 0xFF, 0xFF]` RGB8.
     fn one_px_white_jpeg() -> Vec<u8> {
         let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 255, 255]));
         let mut buf = std::io::Cursor::new(Vec::new());
@@ -421,7 +659,7 @@ mod tests {
         (ctx, store)
     }
 
-    // ---- regression: legacy behaviour ----------------------------------
+    // ---- regression: label parsing ----------------------------------
 
     #[test]
     fn parse_speed_limit_label() {
@@ -431,10 +669,24 @@ mod tests {
         assert_eq!(Detection::parse_speed_limit("speed_limit_abc"), None);
     }
 
+    // ---- regression: defaults ---------------------------------------
+
     #[test]
     fn default_plugin_model_not_available() {
         let p = SignVisionPlugin::default();
         assert!(!p.model_available);
+    }
+
+    #[test]
+    fn default_conf_threshold() {
+        let p = SignVisionPlugin::default();
+        assert!((p.conf_threshold - DEFAULT_CONF_THRESHOLD).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_nms_iou() {
+        let p = SignVisionPlugin::default();
+        assert!((p.nms_iou - DEFAULT_NMS_IOU).abs() < 1e-6);
     }
 
     #[test]
@@ -446,7 +698,7 @@ mod tests {
         for i in 1..=4u64 {
             assert!(
                 !i.is_multiple_of(p.inference_interval as u64),
-                "tick {i} should not trigger"
+                "tick {i} must not trigger"
             );
         }
         assert!(5u64.is_multiple_of(p.inference_interval as u64));
@@ -456,11 +708,11 @@ mod tests {
     fn missing_model_does_not_panic() {
         let mut p = SignVisionPlugin::default();
         let ctx = ctx_map_only();
-        p.on_load(&ctx); // model file absent → warn, no panic
+        p.on_load(&ctx);
         assert!(!p.model_available);
     }
 
-    // ---- Step 4: mode selection ---------------------------------------
+    // ---- mode selection -------------------------------------------
 
     #[test]
     fn on_load_chooses_map_only_without_frame_store() {
@@ -486,7 +738,7 @@ mod tests {
         );
     }
 
-    // ---- Step 4: tick behaviour ---------------------------------------
+    // ---- tick behaviour -------------------------------------------
 
     #[test]
     fn tick_is_noop_in_map_only_mode() {
@@ -523,13 +775,13 @@ mod tests {
         p.on_load(&ctx);
         let frame = frame_with(42, one_px_white_jpeg());
         store.set(FRAME_KEY, Arc::clone(&frame));
-        assert!(frame.decoded_rgb8().is_none(), "not decoded yet");
+        assert!(frame.decoded_rgb8().is_none(), "should not be decoded yet");
 
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
 
         assert_eq!(p.last_processed_frame_id, Some(42));
-        let rgb = frame.decoded_rgb8().expect("decode populated OnceLock");
+        let rgb = frame.decoded_rgb8().expect("OnceLock must be populated");
         assert_eq!(rgb.as_slice(), &[255, 255, 255]);
     }
 
@@ -543,14 +795,15 @@ mod tests {
 
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
-        // Inject a second SharedFrame with the same id; OnceLock would be
-        // a fresh slot so we'd see decode happen again if the plugin
-        // didn't gate on `last_processed_frame_id`.
+        // Replace with a new SharedFrame that has the same id; must not be decoded.
         let dup = frame_with(7, one_px_white_jpeg());
         store.set(FRAME_KEY, Arc::clone(&dup));
         p.tick(None, &mut out, &ctx);
 
-        assert!(dup.decoded_rgb8().is_none(), "second frame must not decode");
+        assert!(
+            dup.decoded_rgb8().is_none(),
+            "duplicate frame must not be decoded"
+        );
     }
 
     #[test]
@@ -585,19 +838,56 @@ mod tests {
         let mut p = SignVisionPlugin::default();
         let (ctx, store) = ctx_vision();
         p.on_load(&ctx);
-        // 16 random bytes that are not a valid JPEG.
         store.set(FRAME_KEY, frame_with(11, vec![0u8; 16]));
 
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
 
-        // Plugin must mark the frame processed so it doesn't decode-loop.
         assert_eq!(p.last_processed_frame_id, Some(11));
-        // No vision claim on the blackboard.
         assert!(ctx.blackboard.get("sign.source").is_none());
     }
 
-    // ---- decode_jpeg ---------------------------------------------------
+    #[test]
+    fn tick_writes_inference_ms_and_count_after_decode() {
+        let mut p = SignVisionPlugin::default();
+        let (ctx, store) = ctx_vision();
+        p.on_load(&ctx);
+        store.set(FRAME_KEY, frame_with(1, one_px_white_jpeg()));
+
+        let mut out = ControlOutput::default();
+        p.tick(None, &mut out, &ctx);
+
+        // Keys must exist (even when model_available=false → 0 detections, 0 ms).
+        assert!(ctx.blackboard.get("sign.last_inference_ms").is_some());
+        assert_eq!(
+            ctx.blackboard.get("sign.detected_count").as_deref(),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn skip_ticks_prevents_processing() {
+        let mut p = SignVisionPlugin::default();
+        let (ctx, store) = ctx_vision();
+        p.on_load(&ctx);
+        p.skip_ticks = 1; // simulate post-overrun state
+
+        let frame = frame_with(1, one_px_white_jpeg());
+        store.set(FRAME_KEY, Arc::clone(&frame));
+
+        let mut out = ControlOutput::default();
+        p.tick(None, &mut out, &ctx);
+
+        // Frame is marked processed (consumed the slot) but not decoded.
+        assert_eq!(p.last_processed_frame_id, Some(1));
+        assert!(
+            frame.decoded_rgb8().is_none(),
+            "skipped frame must not be decoded"
+        );
+        assert_eq!(p.skip_ticks, 0);
+    }
+
+    // ---- decode_jpeg -------------------------------------------
 
     #[test]
     fn decode_jpeg_returns_rgb8_of_expected_size() {
@@ -609,6 +899,6 @@ mod tests {
     #[test]
     fn decode_jpeg_rejects_non_jpeg_bytes() {
         let err = decode_jpeg(b"not a jpeg").unwrap_err();
-        let _ = format!("{err}"); // make sure it Displays
+        let _ = format!("{err}");
     }
 }
