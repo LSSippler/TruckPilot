@@ -4,7 +4,7 @@ Header layout (64 bytes, little-endian, packed):
     magic         char[4]   (4)   "TPF1"
     version       u32       (4)   1
     frame_id      u64       (8)   sequence counter; odd while writing, even when committed
-    timestamp_us  u64       (8)   monotonic micros, set at commit
+    timestamp_us  u64       (8)   UNIX-epoch micros, set at commit
     width         u32       (4)
     height        u32       (4)
     jpeg_size     u32       (4)
@@ -102,7 +102,10 @@ class ShmFrameWriter:
             raise ValueError(
                 f"jpeg_bytes ({len(jpeg_bytes)} B) exceeds payload budget ({self._max_payload} B)"
             )
-        ts = timestamp_us if timestamp_us is not None else int(time.monotonic() * 1_000_000)
+        # Default to UNIX-epoch microseconds so the Rust consumer's
+        # SystemTime::now() reference matches; monotonic-clock would make
+        # every frame look wildly stale.
+        ts = timestamp_us if timestamp_us is not None else (time.time_ns() // 1_000)
 
         in_progress = self._seq + 1   # odd
         committed = self._seq + 2     # even

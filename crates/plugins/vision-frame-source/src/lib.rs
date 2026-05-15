@@ -16,18 +16,25 @@
 
 use std::sync::Arc;
 
-use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, SharedFrame, Telemetry};
+use truckpilot_plugin_api::{
+    ctx_error, ctx_info, ctx_warn, ControlOutput, Plugin, PluginContext, SharedFrame, Telemetry,
+};
 
 pub mod shm_reader;
 
 use shm_reader::{map_shm, read_frame, ReadOutcome, DEFAULT_BUFFER_BYTES, DEFAULT_SHM_NAME};
 
-const DEFAULT_STALE_AFTER_MS: u64 = 500;
+const DEFAULT_STALE_AFTER_MS: u64 = 2000;
 const DEFAULT_FRAME_KEY: &str = "camera.front";
 /// Re-map the SHM every N ticks while the producer is absent.
 const REMAP_INTERVAL_TICKS: u64 = 10;
 /// Consecutive `read_frame` misses before the plugin flips to unhealthy.
 const MISS_THRESHOLD: u32 = 50;
+/// Apparent age above which we assume a clock-source mismatch (producer
+/// writing monotonic instead of UNIX-epoch micros). Frames in this case
+/// are trusted, not flagged stale — otherwise every frame would look
+/// ~1.78e15 µs old.
+const CLOCK_MISMATCH_THRESHOLD_US: u64 = 60 * 60 * 1_000_000; // 1 hour
 
 /// Plugin settings, populated from the daemon's `settings_schema` JSON.
 /// Defaults match `Default::default()`.
@@ -69,6 +76,9 @@ pub struct VisionFrameSource {
     /// session. Drives the `vision.source.healthy` blackboard key
     /// in combination with `consecutive_misses`.
     has_published: bool,
+    /// Set the first time we detect a clock-source mismatch with the
+    /// producer (apparent age > 1 h). Suppresses repeated warnings.
+    clock_mismatch_warned: bool,
 }
 
 impl VisionFrameSource {
@@ -91,7 +101,8 @@ impl VisionFrameSource {
     fn try_map(&mut self, ctx: &PluginContext) {
         match map_shm(&self.settings.shm_name, self.settings.buffer_bytes) {
             Ok(buf) => {
-                tracing::info!(
+                ctx_info!(
+                    ctx,
                     target: "truckpilot_plugin_vision_frame_source",
                     "mapped SHM region '{}' ({} bytes)",
                     self.settings.shm_name,
@@ -101,7 +112,8 @@ impl VisionFrameSource {
                 ctx.blackboard.remove("vision.source.last_error");
             }
             Err(e) => {
-                tracing::warn!(
+                ctx_warn!(
+                    ctx,
                     target: "truckpilot_plugin_vision_frame_source",
                     "SHM not available: {e}"
                 );
@@ -150,7 +162,8 @@ impl Plugin for VisionFrameSource {
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        tracing::info!(
+        ctx_info!(
+            ctx,
             target: "truckpilot_plugin_vision_frame_source",
             "loaded — shm='{}' buffer_bytes={} stale_after_ms={} frame_key='{}'",
             self.settings.shm_name,
@@ -171,7 +184,8 @@ impl Plugin for VisionFrameSource {
         ctx.blackboard.set("vision.frame.stale", "false");
 
         if ctx.frame_store().is_none() {
-            tracing::warn!(
+            ctx_warn!(
+                ctx,
                 target: "truckpilot_plugin_vision_frame_source",
                 "PluginContext has no SharedFrameStore — frames will be dropped. \
                  Daemon must attach one via PluginContext::with_frame_store()."
@@ -240,8 +254,30 @@ impl Plugin for VisionFrameSource {
 
                 let logical_id = header.frame_id / 2;
                 let now = Self::now_us();
-                let stale = now.saturating_sub(header.timestamp_us)
-                    > self.settings.stale_after_ms.saturating_mul(1_000);
+                let apparent_age_us = now.saturating_sub(header.timestamp_us);
+                // Defensive: a producer using a monotonic clock instead
+                // of UNIX-epoch microseconds yields apparent_age of order
+                // 10^15 µs every frame. Detect that and trust the frame
+                // rather than flagging everything stale.
+                let stale = if apparent_age_us > CLOCK_MISMATCH_THRESHOLD_US
+                    || header.timestamp_us > now
+                {
+                    if !self.clock_mismatch_warned {
+                        ctx_warn!(
+                            ctx,
+                            target: "truckpilot_plugin_vision_frame_source",
+                            "producer/consumer clock mismatch (apparent age {} µs, ts={} now={}); \
+                             trusting frame timestamps. Update producer to UNIX-epoch micros.",
+                            apparent_age_us,
+                            header.timestamp_us,
+                            now,
+                        );
+                        self.clock_mismatch_warned = true;
+                    }
+                    false
+                } else {
+                    apparent_age_us > self.settings.stale_after_ms.saturating_mul(1_000)
+                };
 
                 // Build SharedFrame and publish, if the host wired in a store.
                 if let Some(store) = ctx.frame_store() {
@@ -285,7 +321,8 @@ impl Plugin for VisionFrameSource {
                 }
             }
             ReadOutcome::InvalidHeader => {
-                tracing::error!(
+                ctx_error!(
+                    ctx,
                     target: "truckpilot_plugin_vision_frame_source",
                     "invalid SHM header (magic/version mismatch or buffer too short)"
                 );
@@ -295,7 +332,8 @@ impl Plugin for VisionFrameSource {
                     .set("vision.source.last_error", "invalid header");
             }
             ReadOutcome::PayloadOverflow => {
-                tracing::error!(
+                ctx_error!(
+                    ctx,
                     target: "truckpilot_plugin_vision_frame_source",
                     "SHM payload overflow (jpeg_size exceeds buffer)"
                 );

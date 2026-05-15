@@ -179,7 +179,10 @@ def run_capture(
                         stats.frames_skipped += 1
                     else:
                         jpeg_bytes = buf.tobytes()
-                        ts_us = int(time.monotonic() * 1_000_000)
+                        # UNIX-epoch microseconds — must match the Rust
+                        # consumer's SystemTime::now() reference frame, or
+                        # frames will be wrongly flagged stale.
+                        ts_us = time.time_ns() // 1_000
                         writer.write_frame(width=w, height=h, jpeg_bytes=jpeg_bytes, timestamp_us=ts_us)
                         stats.frames_published += 1
                         stats.last_jpeg_bytes = len(jpeg_bytes)
