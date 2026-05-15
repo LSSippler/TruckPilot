@@ -63,15 +63,11 @@ fn parse_args() -> Args {
     while i < argv.len() {
         match argv[i].as_str() {
             "--ets2-dir" => {
-                ets2_dir = Some(PathBuf::from(
-                    argv.get(i + 1).expect("--ets2-dir needs value"),
-                ));
+                ets2_dir = Some(PathBuf::from(argv.get(i + 1).expect("--ets2-dir needs value")));
                 i += 2;
             }
             "--output" => {
-                output = Some(PathBuf::from(
-                    argv.get(i + 1).expect("--output needs value"),
-                ));
+                output = Some(PathBuf::from(argv.get(i + 1).expect("--output needs value")));
                 i += 2;
             }
             "--max-roads" => {
@@ -378,24 +374,9 @@ fn write_sector_section(out: &mut String, index: usize, cand: &Candidate) {
         header.left_terrain_profile, header.left_terrain_coefficient
     )
     .ok();
-    writeln!(
-        out,
-        "RightLook                 : 0x{:016X}",
-        header.right_look
-    )
-    .ok();
-    writeln!(
-        out,
-        "LeftLook                  : 0x{:016X}",
-        header.left_look
-    )
-    .ok();
-    writeln!(
-        out,
-        "Material                  : 0x{:016X}",
-        header.material
-    )
-    .ok();
+    writeln!(out, "RightLook                 : 0x{:016X}", header.right_look).ok();
+    writeln!(out, "LeftLook                  : 0x{:016X}", header.left_look).ok();
+    writeln!(out, "Material                  : 0x{:016X}", header.material).ok();
     for (i, rail) in header.railings.iter().enumerate() {
         writeln!(
             out,
@@ -469,11 +450,7 @@ fn write_hex_row(out: &mut String, offset: usize, chunk: &[u8]) {
 
     let mut ascii = String::with_capacity(16);
     for b in chunk {
-        let c = if (32..127).contains(b) {
-            *b as char
-        } else {
-            '.'
-        };
+        let c = if (32..127).contains(b) { *b as char } else { '.' };
         ascii.push(c);
     }
     let ascii_padded = format!("{ascii:<16}");
@@ -547,18 +524,12 @@ fn write_analysis(out: &mut String, header: &RoadFixedHeader, post: &[u8]) {
             off += 1;
         }
         if hits.is_empty() {
-            writeln!(
-                out,
-                "{label} UID 0x{uid:016X} : not present in post-header bytes"
-            )
-            .ok();
+            writeln!(out, "{label} UID 0x{uid:016X} : not present in post-header bytes").ok();
         } else {
             writeln!(
                 out,
                 "{label} UID 0x{uid:016X} : found at offsets {:?}",
-                hits.iter()
-                    .map(|o| format!("0x{o:04X}"))
-                    .collect::<Vec<_>>()
+                hits.iter().map(|o| format!("0x{o:04X}")).collect::<Vec<_>>()
             )
             .ok();
         }
@@ -572,7 +543,8 @@ fn write_analysis(out: &mut String, header: &RoadFixedHeader, post: &[u8]) {
     if limit >= 4 {
         for split in (0..=limit.saturating_sub(4)).step_by(4) {
             let n_bytes = &post[split..split + 4];
-            let n = u32::from_le_bytes([n_bytes[0], n_bytes[1], n_bytes[2], n_bytes[3]]) as usize;
+            let n =
+                u32::from_le_bytes([n_bytes[0], n_bytes[1], n_bytes[2], n_bytes[3]]) as usize;
             if n > 4096 {
                 continue;
             }
@@ -589,8 +561,8 @@ fn write_analysis(out: &mut String, header: &RoadFixedHeader, post: &[u8]) {
             // Variant B: vis_count + vis_uids[M].
             if remaining >= 4 {
                 let m_bytes = &post[after_nodes..after_nodes + 4];
-                let m =
-                    u32::from_le_bytes([m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]]) as usize;
+                let m = u32::from_le_bytes([m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]])
+                    as usize;
                 if m <= 4096 && (4 + m * 8) == remaining {
                     tail_candidates.push((split, n, Some(after_nodes), m));
                 }
@@ -664,11 +636,7 @@ fn run_audit(args: &Args, archive: &mut HashFsArchive, sector_paths: &[String]) 
     let mut by_prev_kind: HashMap<&'static str, usize> = HashMap::new();
     let mut by_raw_type: HashMap<u32, usize> = HashMap::new();
     for (_p, _d, rep) in &failures {
-        let prev_kind = rep
-            .items
-            .last()
-            .map(|it| it.kind_name)
-            .unwrap_or("<no_items>");
+        let prev_kind = rep.items.last().map(|it| it.kind_name).unwrap_or("<no_items>");
         *by_prev_kind.entry(prev_kind).or_insert(0) += 1;
         if let Some(f) = &rep.failure {
             *by_raw_type.entry(f.raw_type).or_insert(0) += 1;
@@ -725,15 +693,14 @@ fn run_audit(args: &Args, archive: &mut HashFsArchive, sector_paths: &[String]) 
     );
 }
 
-fn stratified_sample(failures: &[(String, Vec<u8>, AuditReport)], cap: usize) -> Vec<usize> {
+fn stratified_sample(
+    failures: &[(String, Vec<u8>, AuditReport)],
+    cap: usize,
+) -> Vec<usize> {
     use std::collections::HashMap;
     let mut buckets: HashMap<&'static str, Vec<usize>> = HashMap::new();
     for (i, (_, _, rep)) in failures.iter().enumerate() {
-        let prev_kind = rep
-            .items
-            .last()
-            .map(|it| it.kind_name)
-            .unwrap_or("<no_items>");
+        let prev_kind = rep.items.last().map(|it| it.kind_name).unwrap_or("<no_items>");
         buckets.entry(prev_kind).or_default().push(i);
     }
     let bucket_count = buckets.len().max(1);
@@ -811,11 +778,7 @@ fn write_failure_detail(
     writeln!(
         out,
         "Failure: item #{} read u32 = 0x{:08X} ({}) at offset 0x{:04X} — \"{}\"",
-        failure.item_index,
-        failure.raw_type,
-        failure.raw_type,
-        failure.error_offset,
-        failure.error_msg
+        failure.item_index, failure.raw_type, failure.raw_type, failure.error_offset, failure.error_msg
     )
     .ok();
 
@@ -830,11 +793,7 @@ fn write_failure_detail(
     // Plausibility scan: at which negative/positive offsets does a u32 value
     // 1..=48 (a real item type) sit?  That hints how many bytes the previous
     // handler over-/under-read.
-    writeln!(
-        out,
-        "Plausible item-type offsets near failure (read u32 LE):"
-    )
-    .ok();
+    writeln!(out, "Plausible item-type offsets near failure (read u32 LE):").ok();
     for delta in [-12i32, -8, -4, 0, 4, 8, 12] {
         let abs = here as i64 + delta as i64;
         if abs < 0 || (abs as usize + 4) > data.len() {
@@ -877,11 +836,7 @@ fn write_audit_hex(out: &mut String, bytes: &[u8], start_offset: usize, marker_o
         let hex_padded = format!("{hex:<47}");
         let mut ascii = String::with_capacity(16);
         for b in chunk {
-            let c = if (32..127).contains(b) {
-                *b as char
-            } else {
-                '.'
-            };
+            let c = if (32..127).contains(b) { *b as char } else { '.' };
             ascii.push(c);
         }
         let here_marker = if (row_off..row_off + chunk.len()).contains(&marker_offset) {

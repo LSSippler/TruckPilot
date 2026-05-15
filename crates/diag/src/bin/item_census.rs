@@ -56,11 +56,7 @@ struct TypeStats {
 }
 
 fn pair_key(a: u64, b: u64) -> (u64, u64) {
-    if a < b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a < b { (a, b) } else { (b, a) }
 }
 
 fn census_pair(
@@ -72,14 +68,8 @@ fn census_pair(
     building_pairs: &HashSet<(u64, u64)>,
     node_to_sector: &HashMap<u64, u32>,
 ) {
-    if n_uid == 0 || f_uid == 0 {
-        s.zero_uid += 1;
-        return;
-    }
-    if n_uid == f_uid {
-        s.self_loop += 1;
-        return;
-    }
+    if n_uid == 0 || f_uid == 0 { s.zero_uid += 1; return; }
+    if n_uid == f_uid { s.self_loop += 1; return; }
     if !known_uids.contains(&n_uid) || !known_uids.contains(&f_uid) {
         return;
     }
@@ -87,24 +77,14 @@ fn census_pair(
     let pair = pair_key(n_uid, f_uid);
     let in_road = road_pairs.contains(&pair);
     let in_bldg = building_pairs.contains(&pair);
-    if in_road {
-        s.already_road += 1;
-    }
-    if in_bldg {
-        s.already_building += 1;
-    }
-    if !in_road && !in_bldg {
-        s.unique_new += 1;
-    }
+    if in_road { s.already_road += 1; }
+    if in_bldg { s.already_building += 1; }
+    if !in_road && !in_bldg { s.unique_new += 1; }
     if let (Some(a), Some(b)) = (node_to_sector.get(&n_uid), node_to_sector.get(&f_uid)) {
         if a != b {
             s.cross_sector += 1;
-            if in_road {
-                s.cs_already_road += 1;
-            }
-            if !in_road && !in_bldg {
-                s.cs_unique_new += 1;
-            }
+            if in_road { s.cs_already_road += 1; }
+            if !in_road && !in_bldg { s.cs_unique_new += 1; }
         }
     }
 }
@@ -120,10 +100,7 @@ fn read_u64_le(slice: &[u8], off: usize) -> Option<u64> {
 /// Returns `(node, forward_node, locator_0, locator_1)`. Locators are
 /// only valid for curve. `item_bytes` starts at the item_type u32, body
 /// kdop_item starts at +4 and is 53 B fixed -> first post-kdop field at +57.
-fn extract_two_node(
-    item_bytes: &[u8],
-    item_type: u32,
-) -> Option<(u64, u64, Option<u64>, Option<u64>)> {
+fn extract_two_node(item_bytes: &[u8], item_type: u32) -> Option<(u64, u64, Option<u64>, Option<u64>)> {
     let kdop_end = 4 + 53;
     let (n_off, f_off, loc0, loc1) = match item_type {
         ITEM_TYPE_TERRAIN => (kdop_end, kdop_end + 8, None, None),
@@ -152,71 +129,35 @@ fn parse_args() -> (PathBuf, Option<PathBuf>, PathBuf, PathBuf) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--ets2-dir" => {
-                ets2_dir = Some(PathBuf::from(&argv[i + 1]));
-                i += 2;
-            }
-            "--mods-dir" => {
-                mods_dir = Some(PathBuf::from(&argv[i + 1]));
-                i += 2;
-            }
-            "--graph" => {
-                graph = PathBuf::from(&argv[i + 1]);
-                i += 2;
-            }
-            "--output" => {
-                output = PathBuf::from(&argv[i + 1]);
-                i += 2;
-            }
+            "--ets2-dir" => { ets2_dir = Some(PathBuf::from(&argv[i + 1])); i += 2; }
+            "--mods-dir" => { mods_dir = Some(PathBuf::from(&argv[i + 1])); i += 2; }
+            "--graph" => { graph = PathBuf::from(&argv[i + 1]); i += 2; }
+            "--output" => { output = PathBuf::from(&argv[i + 1]); i += 2; }
             _ => i += 1,
         }
     }
-    (
-        ets2_dir.expect("--ets2-dir required"),
-        mods_dir,
-        graph,
-        output,
-    )
+    (ets2_dir.expect("--ets2-dir required"), mods_dir, graph, output)
 }
 
 fn default_mods_dir() -> PathBuf {
-    dirs::document_dir()
-        .or_else(dirs::home_dir)
-        .unwrap_or_default()
+    dirs::document_dir().or_else(dirs::home_dir).unwrap_or_default()
         .join("Euro Truck Simulator 2/mod")
 }
 
 fn recommend(label: &str, s: &TypeStats) -> String {
     let unique_pct = if s.both_resolved > 0 {
         100.0 * s.unique_new as f64 / s.both_resolved as f64
-    } else {
-        0.0
-    };
+    } else { 0.0 };
     if s.total < 5000 {
-        format!(
-            "Type {label} : SKIP   (total {} < 5000, Buildings-Pattern: zu wenig Volumen)",
-            s.total
-        )
+        format!("Type {label} : SKIP   (total {} < 5000, Buildings-Pattern: zu wenig Volumen)", s.total)
     } else if s.cs_unique_new > 2000 {
-        format!(
-            "Type {label} : GO     (cross-sec-unique {} > 2000)",
-            s.cs_unique_new
-        )
+        format!("Type {label} : GO     (cross-sec-unique {} > 2000)", s.cs_unique_new)
     } else if unique_pct > 20.0 {
-        format!(
-            "Type {label} : GO     (unique-rate {:.1}% > 20%, {} new edges expected)",
-            unique_pct, s.unique_new
-        )
+        format!("Type {label} : GO     (unique-rate {:.1}% > 20%, {} new edges expected)", unique_pct, s.unique_new)
     } else if unique_pct < 10.0 {
-        format!(
-            "Type {label} : SKIP   (unique-rate {:.1}% < 10%)",
-            unique_pct
-        )
+        format!("Type {label} : SKIP   (unique-rate {:.1}% < 10%)", unique_pct)
     } else {
-        format!(
-            "Type {label} : REVIEW (unique-rate {:.1}% in [10%, 20%], {} new edges)",
-            unique_pct, s.unique_new
-        )
+        format!("Type {label} : REVIEW (unique-rate {:.1}% in [10%, 20%], {} new edges)", unique_pct, s.unique_new)
     }
 }
 
@@ -224,11 +165,7 @@ fn main() {
     let (ets2_dir, mods_dir_opt, graph_path, output_path) = parse_args();
     let mods_dir = mods_dir_opt.unwrap_or_else(default_mods_dir);
     eprintln!("ets2_dir = {}", ets2_dir.display());
-    eprintln!(
-        "mods_dir = {} (exists: {})",
-        mods_dir.display(),
-        mods_dir.exists()
-    );
+    eprintln!("mods_dir = {} (exists: {})", mods_dir.display(), mods_dir.exists());
     eprintln!("loading graph from {} ...", graph_path.display());
     let bytes = std::fs::read(&graph_path).expect("read graph.json");
     let graph: GraphFile = serde_json::from_slice(&bytes).expect("parse graph.json");
@@ -240,43 +177,30 @@ fn main() {
     for e in &graph.edges {
         let p = pair_key(e.from, e.to);
         match e.direction.as_str() {
-            "building" => {
-                building_pairs.insert(p);
-            }
-            "forward" | "backward" | "bidirectional_unknown" | "prefab" => {
-                road_pairs.insert(p);
-            }
+            "building" => { building_pairs.insert(p); }
+            "forward" | "backward" | "bidirectional_unknown" | "prefab" => { road_pairs.insert(p); }
             _ => {}
         }
     }
-    eprintln!(
-        "  {} road-pairs, {} building-pairs",
-        road_pairs.len(),
-        building_pairs.len()
-    );
+    eprintln!("  {} road-pairs, {} building-pairs", road_pairs.len(), building_pairs.len());
 
     // Use the same ModLoadOrder as production (base + workshop mods,
     // alphabetical for mods, last-wins). Open each entry as HashFS first,
     // ZIP fallback.
-    let order = ModLoadOrder::from_directories(&ets2_dir, &mods_dir).expect("build mod load order");
+    let order = ModLoadOrder::from_directories(&ets2_dir, &mods_dir)
+        .expect("build mod load order");
     let mut archives: Vec<Box<dyn Archive>> = Vec::new();
     for entry in &order.entries {
         let arc: Box<dyn Archive> = match HashFsArchive::open(&entry.path) {
             Ok(a) => Box::new(a),
             Err(_) => match ZipArchive::open(&entry.path) {
                 Ok(a) => Box::new(a),
-                Err(e) => {
-                    eprintln!("  skip {}: {e}", entry.name);
-                    continue;
-                }
+                Err(e) => { eprintln!("  skip {}: {e}", entry.name); continue; }
             },
         };
         archives.push(arc);
     }
-    eprintln!(
-        "opened {} archives (production-equivalent load order)",
-        archives.len()
-    );
+    eprintln!("opened {} archives (production-equivalent load order)", archives.len());
 
     // Mod-loader pattern: gather all .base paths, last-archive-wins.
     let mut all_paths: HashSet<String> = HashSet::new();
@@ -288,31 +212,21 @@ fn main() {
             }
         }
         for f in files {
-            if f.ends_with(".base") {
-                all_paths.insert(f);
-            }
+            if f.ends_with(".base") { all_paths.insert(f); }
         }
     }
     let mut sector_paths: Vec<String> = all_paths.into_iter().collect();
     sector_paths.sort();
-    eprintln!(
-        "scanning {} `.base` sectors across all archives ...",
-        sector_paths.len()
-    );
+    eprintln!("scanning {} `.base` sectors across all archives ...", sector_paths.len());
 
     let read_sector = |path: &str, archives: &mut [Box<dyn Archive>]| -> Option<Vec<u8>> {
-        archives
-            .iter_mut()
-            .rev()
-            .find_map(|a| a.read_path(path).ok())
+        archives.iter_mut().rev().find_map(|a| a.read_path(path).ok())
     };
 
     // Pass 1: build node_to_sector.
     let mut node_to_sector: HashMap<u64, u32> = HashMap::with_capacity(1_200_000);
     for (sid, path) in sector_paths.iter().enumerate() {
-        let Some(data) = read_sector(path, &mut archives) else {
-            continue;
-        };
+        let Some(data) = read_sector(path, &mut archives) else { continue };
         if let Ok(parsed) = parse_sector(&data) {
             for n in &parsed.nodes {
                 node_to_sector.insert(n.uid, sid as u32);
@@ -335,9 +249,7 @@ fn main() {
     let mut hex_dumps: Vec<String> = Vec::new();
     let mut sectors_audit_unsafe = 0usize;
     for path in &sector_paths {
-        let Some(data) = read_sector(path, &mut archives) else {
-            continue;
-        };
+        let Some(data) = read_sector(path, &mut archives) else { continue };
         let parsed = match parse_sector(&data) {
             Ok(p) => p,
             Err(_) => continue,
@@ -347,24 +259,14 @@ fn main() {
         for b in &parsed.buildings {
             let s = stats.entry(ITEM_TYPE_BUILDINGS).or_default();
             s.total += 1;
-            census_pair(
-                s,
-                b.node_uid,
-                b.forward_node_uid,
-                &known_uids,
-                &road_pairs,
-                &building_pairs,
-                &node_to_sector,
-            );
+            census_pair(s, b.node_uid, b.forward_node_uid, &known_uids,
+                &road_pairs, &building_pairs, &node_to_sector);
         }
 
         // Terrain/Curve — via audit_sector. Sanity-gate per sector.
         let report = audit_sector(&data);
-        let audit_bldg_count = report
-            .items
-            .iter()
-            .filter(|i| i.item_type == ITEM_TYPE_BUILDINGS)
-            .count();
+        let audit_bldg_count = report.items.iter()
+            .filter(|i| i.item_type == ITEM_TYPE_BUILDINGS).count();
         if audit_bldg_count != parsed.buildings.len() {
             sectors_audit_unsafe += 1;
             continue;
@@ -382,9 +284,7 @@ fn main() {
                     let preview_end = it.start_offset.saturating_add(200).min(data.len());
                     hex_dumps.push(format!(
                         "  type={} sector={} item#={} bytes(0..{}): {:02x?}",
-                        it.item_type,
-                        path,
-                        it.index,
+                        it.item_type, path, it.index,
                         preview_end - it.start_offset,
                         &data[it.start_offset..preview_end]
                     ));
@@ -394,31 +294,14 @@ fn main() {
             if it.item_type == ITEM_TYPE_CURVE {
                 let l0 = l0.unwrap_or(0);
                 let l1 = l1.unwrap_or(0);
-                if l0 != 0 || l1 != 0 {
-                    s.locator_nonzero_any += 1;
-                }
-                if l0 != 0 {
-                    s.locator_nonzero_count += 1;
-                }
-                if l1 != 0 {
-                    s.locator_nonzero_count += 1;
-                }
+                if l0 != 0 || l1 != 0 { s.locator_nonzero_any += 1; }
+                if l0 != 0 { s.locator_nonzero_count += 1; }
+                if l1 != 0 { s.locator_nonzero_count += 1; }
             }
-            census_pair(
-                s,
-                n_uid,
-                f_uid,
-                &known_uids,
-                &road_pairs,
-                &building_pairs,
-                &node_to_sector,
-            );
+            census_pair(s, n_uid, f_uid, &known_uids, &road_pairs, &building_pairs, &node_to_sector);
         }
     }
-    eprintln!(
-        "  sectors with audit/parse Buildings count mismatch (terrain/curve skipped): {}",
-        sectors_audit_unsafe
-    );
+    eprintln!("  sectors with audit/parse Buildings count mismatch (terrain/curve skipped): {}", sectors_audit_unsafe);
 
     let terrain = std::mem::take(stats.entry(ITEM_TYPE_TERRAIN).or_default());
     let bldg = std::mem::take(stats.entry(ITEM_TYPE_BUILDINGS).or_default());
@@ -429,115 +312,58 @@ fn main() {
     let mut out = String::new();
     let _ = writeln!(out, "===========================================");
     let _ = writeln!(out, "TRUCKPILOT ITEM CENSUS — Phase 5.25 Pre-Check");
-    let _ = writeln!(
-        out,
-        "Source: production-equivalent load order ({} archives, {} .base sectors)",
-        archives.len(),
-        sector_paths.len()
-    );
+    let _ = writeln!(out, "Source: production-equivalent load order ({} archives, {} .base sectors)",
+        archives.len(), sector_paths.len());
     let _ = writeln!(out, "===========================================");
     let _ = writeln!(out);
     let _ = writeln!(out, "ITEM-TYPE-COUNTS");
     let _ = writeln!(out, "----------------");
     let _ = writeln!(out, "Type 1  (Terrain)    :  {:>9} items", terrain.total);
-    let _ = writeln!(
-        out,
-        "Type 2  (Buildings)  :  {:>9} items   [Sanity: should be 606 -> {}]",
-        bldg.total,
-        if bldg_sanity_ok { "OK" } else { "MISMATCH" }
-    );
+    let _ = writeln!(out, "Type 2  (Buildings)  :  {:>9} items   [Sanity: should be 606 -> {}]",
+        bldg.total, if bldg_sanity_ok { "OK" } else { "MISMATCH" });
     let _ = writeln!(out, "Type 44 (Curve)      :  {:>9} items", curve.total);
     let _ = writeln!(out);
     let _ = writeln!(out, "RESOLVE-RATES");
     let _ = writeln!(out, "-------------");
-    let _ = writeln!(
-        out,
-        "Type    | Total    | Both-Resolved | Resolve-% | ZeroUID | SelfLoop | ParseFail"
-    );
-    for (label, s) in [
-        ("Terrain", &terrain),
-        ("Bldg   ", &bldg),
-        ("Curve  ", &curve),
-    ] {
-        let pct = if s.total > 0 {
-            100.0 * s.both_resolved as f64 / s.total as f64
-        } else {
-            0.0
-        };
-        let _ = writeln!(
-            out,
-            "{} | {:>8} | {:>13} | {:>7.2}% | {:>7} | {:>8} | {:>9}",
-            label, s.total, s.both_resolved, pct, s.zero_uid, s.self_loop, s.parse_failed
-        );
+    let _ = writeln!(out, "Type    | Total    | Both-Resolved | Resolve-% | ZeroUID | SelfLoop | ParseFail");
+    for (label, s) in [("Terrain", &terrain), ("Bldg   ", &bldg), ("Curve  ", &curve)] {
+        let pct = if s.total > 0 { 100.0 * s.both_resolved as f64 / s.total as f64 } else { 0.0 };
+        let _ = writeln!(out, "{} | {:>8} | {:>13} | {:>7.2}% | {:>7} | {:>8} | {:>9}",
+            label, s.total, s.both_resolved, pct, s.zero_uid, s.self_loop, s.parse_failed);
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "REDUNDANZ-CHECK (of resolved items)");
     let _ = writeln!(out, "-----------------------------------");
-    let _ = writeln!(
-        out,
-        "Type    | Already-Road | Already-Bldg | Unique-New | Unique-%"
-    );
-    for (label, s) in [
-        ("Terrain", &terrain),
-        ("Bldg   ", &bldg),
-        ("Curve  ", &curve),
-    ] {
+    let _ = writeln!(out, "Type    | Already-Road | Already-Bldg | Unique-New | Unique-%");
+    for (label, s) in [("Terrain", &terrain), ("Bldg   ", &bldg), ("Curve  ", &curve)] {
         let pct = if s.both_resolved > 0 {
             100.0 * s.unique_new as f64 / s.both_resolved as f64
-        } else {
-            0.0
-        };
-        let _ = writeln!(
-            out,
-            "{} | {:>12} | {:>12} | {:>10} | {:>6.2}%",
-            label, s.already_road, s.already_building, s.unique_new, pct
-        );
+        } else { 0.0 };
+        let _ = writeln!(out, "{} | {:>12} | {:>12} | {:>10} | {:>6.2}%",
+            label, s.already_road, s.already_building, s.unique_new, pct);
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "CROSS-SECTOR");
     let _ = writeln!(out, "------------");
     let _ = writeln!(out, "Type    | Cross-Sec | Already-Road-CS | Unique-CS-New");
-    for (label, s) in [
-        ("Terrain", &terrain),
-        ("Bldg   ", &bldg),
-        ("Curve  ", &curve),
-    ] {
-        let _ = writeln!(
-            out,
-            "{} | {:>9} | {:>15} | {:>13}",
-            label, s.cross_sector, s.cs_already_road, s.cs_unique_new
-        );
+    for (label, s) in [("Terrain", &terrain), ("Bldg   ", &bldg), ("Curve  ", &curve)] {
+        let _ = writeln!(out, "{} | {:>9} | {:>15} | {:>13}",
+            label, s.cross_sector, s.cs_already_road, s.cs_unique_new);
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "CURVE LOCATOR SUB-CHECK (DeepSeek 1 H1 verification)");
     let _ = writeln!(out, "----------------------------------------------------");
     let curve_loc_pct = if curve.total > 0 {
         100.0 * curve.locator_nonzero_any as f64 / curve.total as f64
-    } else {
-        0.0
-    };
-    let h1_verdict = if curve_loc_pct < 20.0 {
-        "H1 BESTAETIGT (locators sparse)"
-    } else if curve_loc_pct > 80.0 {
-        "DEEP-DIVE NOETIG (locators dominant)"
-    } else {
-        "REVIEW (in [20%, 80%], judgement call)"
-    };
-    let _ = writeln!(
-        out,
-        "Curve items with any non-zero locator : {} / {} ({:.2}%)",
-        curve.locator_nonzero_any, curve.total, curve_loc_pct
-    );
-    let _ = writeln!(
-        out,
-        "Total non-zero locator slots          : {}",
-        curve.locator_nonzero_count
-    );
-    let _ = writeln!(
-        out,
-        "Verdict                               : {}",
-        h1_verdict
-    );
+    } else { 0.0 };
+    let h1_verdict = if curve_loc_pct < 20.0 { "H1 BESTAETIGT (locators sparse)" }
+                     else if curve_loc_pct > 80.0 { "DEEP-DIVE NOETIG (locators dominant)" }
+                     else { "REVIEW (in [20%, 80%], judgement call)" };
+    let _ = writeln!(out, "Curve items with any non-zero locator : {} / {} ({:.2}%)",
+        curve.locator_nonzero_any, curve.total, curve_loc_pct);
+    let _ = writeln!(out, "Total non-zero locator slots          : {}",
+        curve.locator_nonzero_count);
+    let _ = writeln!(out, "Verdict                               : {}", h1_verdict);
     let _ = writeln!(out);
     let _ = writeln!(out, "EMPFEHLUNGEN");
     let _ = writeln!(out, "------------");
@@ -546,14 +372,8 @@ fn main() {
     let _ = writeln!(out, "{}", recommend("44 (Curve)    ", &curve));
     let _ = writeln!(out);
     if !hex_dumps.is_empty() {
-        let _ = writeln!(
-            out,
-            "PARSE-FAILURES (first 3 hex dumps for manual inspection)"
-        );
-        let _ = writeln!(
-            out,
-            "--------------------------------------------------------"
-        );
+        let _ = writeln!(out, "PARSE-FAILURES (first 3 hex dumps for manual inspection)");
+        let _ = writeln!(out, "--------------------------------------------------------");
         for d in &hex_dumps {
             let _ = writeln!(out, "{d}");
         }
@@ -572,10 +392,8 @@ fn main() {
     eprintln!("-> {} (copy)", claude_copy.display());
 
     if !bldg_sanity_ok {
-        eprintln!(
-            "WARNING: Buildings sanity check failed (got {}/{}, expected 606/483)",
-            bldg.total, bldg.both_resolved
-        );
+        eprintln!("WARNING: Buildings sanity check failed (got {}/{}, expected 606/483)",
+            bldg.total, bldg.both_resolved);
         std::process::exit(2);
     }
 }

@@ -110,16 +110,16 @@ fn parse_cli() -> Cli {
 fn map_shm(name: &str, size: usize) -> Result<&'static [u8], String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
+    use windows::Win32::System::Memory::{
+        MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
+    };
 
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         let handle = OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(wide.as_ptr()))
             .map_err(|e| format!("OpenFileMappingW({name}): {e}"))?;
         if handle.is_invalid() {
-            return Err(format!(
-                "OpenFileMappingW returned invalid handle for {name}"
-            ));
+            return Err(format!("OpenFileMappingW returned invalid handle for {name}"));
         }
         let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size);
         // close the handle - mapping survives until UnmapViewOfFile
@@ -317,10 +317,7 @@ fn print_summary(stats: &Stats, duration_secs: u64) {
             0.0
         }
     );
-    println!(
-        "decode ok / err:        {} / {}",
-        stats.decode_ok, stats.decode_err
-    );
+    println!("decode ok / err:        {} / {}", stats.decode_ok, stats.decode_err);
     println!("avg decode time:        {avg_decode_ms:.2} ms");
     println!(
         "max decode time:        {:.2} ms",

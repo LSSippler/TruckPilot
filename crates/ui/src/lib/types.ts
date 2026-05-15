@@ -83,9 +83,7 @@ export type CoreMessage =
       fault_reason: string | null;
       preconditions: PreconditionSnapshot;
       tick_count: number;
-    }
-  | { type: "blackboard_snapshot"; v: number; values: Record<string, string> }
-  | { type: "blackboard_keys"; v: number; keys: string[] };
+    };
 
 export type CoreMessageType = CoreMessage["type"];
 export type CoreMessageOf<T extends CoreMessageType> = Extract<CoreMessage, { type: T }>;
@@ -114,9 +112,7 @@ export type UiCommand =
   | { type: "set_log_subscription"; levels: LogLevel[]; plugin: string | null }
   | { type: "autopilot_engage" }
   | { type: "autopilot_disengage" }
-  | { type: "autopilot_reset" }
-  | { type: "blackboard_get"; keys: string[] }
-  | { type: "blackboard_list"; prefix: string | null };
+  | { type: "autopilot_reset" };
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 

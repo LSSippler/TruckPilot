@@ -31,11 +31,7 @@ impl ModLoadOrder {
     pub fn from_directories(base_dir: &Path, mods_dir: &Path) -> Result<Self, ParseError> {
         // 1. Get base game files (unsorted, order doesn't matter among them)
         let mut base_files = Self::discover_scs(base_dir)?;
-        info!(
-            "Found {} base game .scs files in {:?}",
-            base_files.len(),
-            base_dir
-        );
+        info!("Found {} base game .scs files in {:?}", base_files.len(), base_dir);
 
         // 2. Get mod files and sort alphabetically (last wins)
         let mut mod_files = if mods_dir.exists() {
@@ -58,9 +54,7 @@ impl ModLoadOrder {
             info!("  {:>2}. {}", i + 1, entry.name);
         }
 
-        Ok(Self {
-            entries: all_entries,
-        })
+        Ok(Self { entries: all_entries })
     }
 
     /// Helper to find all `.scs` files in a directory.
@@ -82,10 +76,7 @@ fn open_scs_archive(path: &Path) -> Result<Box<dyn Archive>, ParseError> {
     match HashFsArchive::open(path) {
         Ok(archive) => Ok(Box::new(archive)),
         Err(ParseError::InvalidMagic(_)) => {
-            warn!(
-                "{:?}: not a HashFS archive, trying ZIP fallback",
-                path.file_name().unwrap()
-            );
+            warn!("{:?}: not a HashFS archive, trying ZIP fallback", path.file_name().unwrap());
             let archive = ZipArchive::open(path)?;
             Ok(Box::new(archive))
         }
@@ -94,10 +85,7 @@ fn open_scs_archive(path: &Path) -> Result<Box<dyn Archive>, ParseError> {
 }
 
 #[instrument(skip(order, cache_dir))]
-pub fn load_and_build(
-    order: &ModLoadOrder,
-    cache_dir: Option<&Path>,
-) -> Result<MapGraph, ParseError> {
+pub fn load_and_build(order: &ModLoadOrder, cache_dir: Option<&Path>) -> Result<MapGraph, ParseError> {
     let t_total = Instant::now();
 
     if order.entries.is_empty() {
@@ -118,8 +106,13 @@ pub fn load_and_build(
                             "base_map.scs index: {} entries — listing first 20",
                             hashfs.entries().len()
                         );
-                        for (i, (hash, dir_entry)) in hashfs.entries().iter().take(20).enumerate() {
-                            info!("  entry {i}: hash={hash:016x} size={}", dir_entry.size);
+                        for (i, (hash, dir_entry)) in
+                            hashfs.entries().iter().take(20).enumerate()
+                        {
+                            info!(
+                                "  entry {i}: hash={hash:016x} size={}",
+                                dir_entry.size
+                            );
                         }
                     }
                 }
@@ -129,10 +122,7 @@ pub fn load_and_build(
         }
     }
 
-    info!(
-        "Archive phase done in {:.1} ms",
-        t_archives.elapsed().as_secs_f64() * 1000.0
-    );
+    info!("Archive phase done in {:.1} ms", t_archives.elapsed().as_secs_f64() * 1000.0);
 
     // ── debug probe: hash known paths and check archive containment ──
     {
@@ -199,10 +189,7 @@ pub fn load_and_build(
         let hashes: Vec<[u8; 32]> = archives.iter().map(|a| a.file_hash()).collect();
         let key = compute_cache_key(&hashes);
         if let Some(graph) = load_cache(cache_dir, &key) {
-            info!(
-                "Cache hit — total load time {:.1} ms",
-                t_total.elapsed().as_secs_f64() * 1000.0
-            );
+            info!("Cache hit — total load time {:.1} ms", t_total.elapsed().as_secs_f64() * 1000.0);
             return Ok(graph);
         }
 
@@ -212,17 +199,11 @@ pub fn load_and_build(
             warn!("Failed to save cache: {e}");
         }
 
-        info!(
-            "Total load time: {:.1} ms",
-            t_total.elapsed().as_secs_f64() * 1000.0
-        );
+        info!("Total load time: {:.1} ms", t_total.elapsed().as_secs_f64() * 1000.0);
         Ok(graph)
     } else {
         let graph = parse_sectors_from_archives(&mut archives)?;
-        info!(
-            "Total load time (no cache): {:.1} ms",
-            t_total.elapsed().as_secs_f64() * 1000.0
-        );
+        info!("Total load time (no cache): {:.1} ms", t_total.elapsed().as_secs_f64() * 1000.0);
         Ok(graph)
     }
 }
@@ -257,18 +238,10 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
                 override_count += overridden;
             }
         }
-        debug!(
-            "  {}: found {} new files",
-            arc.path().file_name().unwrap().to_string_lossy(),
-            new_count
-        );
+        debug!("  {}: found {} new files", arc.path().file_name().unwrap().to_string_lossy(), new_count);
     }
-
-    info!(
-        "Found {} total unique files. {} files were overridden by mods.",
-        all_paths.len(),
-        override_count
-    );
+    
+    info!("Found {} total unique files. {} files were overridden by mods.", all_paths.len(), override_count);
 
     // Sector binary format lives in `*.base`. Other extensions (`.aux`,
     // `.data`, `.desc`) and prefab files use different layouts and would
@@ -285,10 +258,7 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
                 info!("  ...parsed {}/{} files", i, sector_paths.len());
             }
             // Find the last archive that contains this path (highest priority)
-            let data = archives
-                .iter_mut()
-                .rev()
-                .find_map(|arc| arc.read_path(path).ok());
+            let data = archives.iter_mut().rev().find_map(|arc| arc.read_path(path).ok());
             let Some(data) = data else { continue };
             match parse_sector(&data) {
                 Ok(sector) => {
@@ -345,10 +315,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("truckpilot_invalid.scs");
         std::fs::write(&tmp, b"this is not a valid archive").unwrap();
         let order = ModLoadOrder {
-            entries: vec![ArchiveFile {
-                name: "invalid".into(),
-                path: tmp.clone(),
-            }],
+            entries: vec![ArchiveFile { name: "invalid".into(), path: tmp.clone() }]
         };
         let g = load_and_build(&order, None).unwrap();
         assert!(g.nodes.is_empty());

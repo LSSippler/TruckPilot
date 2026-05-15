@@ -134,9 +134,7 @@ impl Plugin for SignReaderPlugin {
         tracing::info!("[sign-reader] unloaded");
     }
 
-    fn default_phase(&self) -> TickPhase {
-        TickPhase::PhaseB
-    }
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseB }
 
     fn tick(
         &mut self,

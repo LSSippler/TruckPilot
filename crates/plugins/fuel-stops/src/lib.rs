@@ -125,9 +125,7 @@ impl Plugin for FuelStopsPlugin {
         tracing::info!("[fuel-stops] unloaded");
     }
 
-    fn default_phase(&self) -> TickPhase {
-        TickPhase::PhaseA
-    }
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
 
     fn tick(
         &mut self,

@@ -57,7 +57,9 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "-h" | "--help" => {
-                eprintln!("usage: truckpilot-uid-resolution --ets2-dir <PATH> [--output <FILE>]");
+                eprintln!(
+                    "usage: truckpilot-uid-resolution --ets2-dir <PATH> [--output <FILE>]"
+                );
                 std::process::exit(0);
             }
             other => {

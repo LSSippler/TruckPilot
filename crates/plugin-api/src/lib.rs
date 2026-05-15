@@ -20,40 +20,6 @@ pub mod pid;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-// ---------------------------------------------------------------------------
-// LogLevel + LogSinkWrapper
-// ---------------------------------------------------------------------------
-
-/// Log severity level, mirroring tracing's five levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-/// Type alias for the log-sink closure stored inside [`LogSinkWrapper`].
-pub type LogSinkFn = dyn Fn(LogLevel, &str, &str) + Send + Sync;
-
-/// Newtype wrapping a log-sink callback so [`PluginContext`] can derive
-/// `Debug` and `Clone`.
-///
-/// The host constructs one instance per plugin-load and closes over a
-/// `tracing::event!` dispatch. Plugin code calls [`PluginContext::log`]
-/// or the `ctx_info!/ctx_warn!/…` macros, which invoke this closure
-/// inside the *host* subscriber context — bridging the cross-DLL tracing
-/// gap where each cdylib would otherwise have its own unregistered global.
-#[derive(Clone)]
-pub struct LogSinkWrapper(pub Arc<LogSinkFn>);
-
-impl std::fmt::Debug for LogSinkWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("LogSinkWrapper(<fn>)")
-    }
-}
-
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -215,24 +181,6 @@ impl SharedBlackboard {
     pub fn remove(&self, key: &str) {
         if let Ok(mut map) = self.0.lock() {
             map.remove(key);
-        }
-    }
-
-    /// Snapshot of all key-value pairs. Takes a single lock; result is
-    /// consistent but immediately stale.
-    pub fn snapshot(&self) -> HashMap<String, String> {
-        self.0.lock().map(|m| m.clone()).unwrap_or_default()
-    }
-
-    /// All currently set keys, optionally filtered by prefix.
-    pub fn keys(&self, prefix: Option<&str>) -> Vec<String> {
-        let map = self.0.lock();
-        let Ok(m) = map else {
-            return Vec::new();
-        };
-        match prefix {
-            Some(p) => m.keys().filter(|k| k.starts_with(p)).cloned().collect(),
-            None => m.keys().cloned().collect(),
         }
     }
 }
@@ -459,10 +407,6 @@ pub struct PluginContext {
     /// a real store when the vision pipeline is wired in. Plugins access
     /// it via [`PluginContext::frame_store`].
     pub(crate) frame_store: Option<Arc<SharedFrameStore>>,
-    /// Optional log sink. When set the host routes plugin log calls through
-    /// this closure into the host's tracing subscriber, bridging the
-    /// cross-DLL dispatcher gap. `None` in unit tests and legacy contexts.
-    pub(crate) log_sink: Option<LogSinkWrapper>,
 }
 
 impl PluginContext {
@@ -475,7 +419,6 @@ impl PluginContext {
             tick_phase: TickPhase::PhaseC,
             tick_count: 0,
             frame_store: None,
-            log_sink: None,
         }
     }
 
@@ -495,21 +438,6 @@ impl PluginContext {
     /// available" and degrade gracefully.
     pub fn frame_store(&self) -> Option<Arc<SharedFrameStore>> {
         self.frame_store.clone()
-    }
-
-    /// Attach a log sink. Builder-style. Used by the daemon to bridge
-    /// cross-DLL tracing; tests leave this `None`.
-    pub fn with_log_sink(mut self, sink: LogSinkWrapper) -> Self {
-        self.log_sink = Some(sink);
-        self
-    }
-
-    /// Emit a log record via the host's tracing subscriber. Falls back to
-    /// a no-op when the context has no sink (unit tests, legacy contexts).
-    pub fn log(&self, level: LogLevel, target: &str, message: &str) {
-        if let Some(sink) = &self.log_sink {
-            (sink.0)(level, target, message);
-        }
     }
 
     /// Set the per-tick delta time in seconds. Builder-style. Clamped to >= 0.001.
@@ -711,73 +639,6 @@ pub trait Plugin: Send + Sync {
     fn default_phase(&self) -> TickPhase {
         TickPhase::PhaseC
     }
-}
-
-// ---------------------------------------------------------------------------
-// ctx_* logging macros
-// ---------------------------------------------------------------------------
-
-/// Log at INFO level via the plugin context's log sink.
-///
-/// Falls back to a no-op when the context has no sink (unit tests).
-///
-/// # Usage
-/// ```ignore
-/// ctx_info!(ctx, "message {}", value);
-/// ctx_info!(ctx, target: "my_target", "message {}", value);
-/// ```
-#[macro_export]
-macro_rules! ctx_info {
-    ($ctx:expr, target: $target:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Info, $target, &::std::format!($($arg)+))
-    };
-    ($ctx:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Info, &$ctx.log_target(), &::std::format!($($arg)+))
-    };
-}
-
-/// Log at WARN level via the plugin context's log sink.
-#[macro_export]
-macro_rules! ctx_warn {
-    ($ctx:expr, target: $target:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Warn, $target, &::std::format!($($arg)+))
-    };
-    ($ctx:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Warn, &$ctx.log_target(), &::std::format!($($arg)+))
-    };
-}
-
-/// Log at ERROR level via the plugin context's log sink.
-#[macro_export]
-macro_rules! ctx_error {
-    ($ctx:expr, target: $target:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Error, $target, &::std::format!($($arg)+))
-    };
-    ($ctx:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Error, &$ctx.log_target(), &::std::format!($($arg)+))
-    };
-}
-
-/// Log at DEBUG level via the plugin context's log sink.
-#[macro_export]
-macro_rules! ctx_debug {
-    ($ctx:expr, target: $target:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Debug, $target, &::std::format!($($arg)+))
-    };
-    ($ctx:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Debug, &$ctx.log_target(), &::std::format!($($arg)+))
-    };
-}
-
-/// Log at TRACE level via the plugin context's log sink.
-#[macro_export]
-macro_rules! ctx_trace {
-    ($ctx:expr, target: $target:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Trace, $target, &::std::format!($($arg)+))
-    };
-    ($ctx:expr, $($arg:tt)+) => {
-        $ctx.log($crate::LogLevel::Trace, &$ctx.log_target(), &::std::format!($($arg)+))
-    };
 }
 
 // ---------------------------------------------------------------------------

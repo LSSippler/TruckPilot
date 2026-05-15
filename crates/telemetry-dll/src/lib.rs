@@ -192,38 +192,21 @@ const _: () = {
     assert!(mem::offset_of!(ShmLayout, effective_brake) == 148);
     assert!(mem::offset_of!(ShmLayout, timestamp_us) == 188);
     assert!(mem::size_of::<ShmLayout>() == 196);
-
-    // Per-field size asserts — catches type drift (f32 vs f64) that
-    // offset_of cannot detect alone. The deltas below assume f64 fields
-    // in the orientation/motion block and would fail at compile time
-    // if any field were silently downgraded to f32.
-    assert!(mem::offset_of!(ShmLayout, y) - mem::offset_of!(ShmLayout, x) == 8);
-    assert!(mem::offset_of!(ShmLayout, z) - mem::offset_of!(ShmLayout, y) == 8);
-    assert!(mem::offset_of!(ShmLayout, heading) - mem::offset_of!(ShmLayout, z) == 8);
-    assert!(mem::offset_of!(ShmLayout, pitch) - mem::offset_of!(ShmLayout, heading) == 8);
-    assert!(mem::offset_of!(ShmLayout, roll) - mem::offset_of!(ShmLayout, pitch) == 8);
-    assert!(mem::offset_of!(ShmLayout, speed_ms) - mem::offset_of!(ShmLayout, roll) == 8);
-    assert!(mem::offset_of!(ShmLayout, engine_rpm) - mem::offset_of!(ShmLayout, speed_ms) == 8);
-    assert!(mem::offset_of!(ShmLayout, nav_speed_limit_kmh) - mem::offset_of!(ShmLayout, engine_rpm) == 8);
 };
 
 // ---------------------------------------------------------------------------
 // SCS SDK structs
 // ---------------------------------------------------------------------------
 
-/// SCS SDK `scs_value_dplacement_t`: position is a `dvector` (3×f64),
-/// orientation is a `scs_value_euler_t` (3×**f32**, NOT f64). Reading
-/// the orientation block as f64 gives denormal garbage because two
-/// f32 fields stack into one f64 with a near-zero exponent.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ScsDPlacement {
     x: scs_double_t,
     y: scs_double_t,
     z: scs_double_t,
-    heading: f32,
-    pitch: f32,
-    roll: f32,
+    heading: scs_double_t,
+    pitch: scs_double_t,
+    roll: scs_double_t,
 }
 
 #[repr(C)]
@@ -669,10 +652,9 @@ unsafe extern "system" fn cb_placement(
     G_X = dp.x;
     G_Y = dp.y;
     G_Z = dp.z;
-    // SDK euler block is 3×f32 — widen to f64 for SHM storage.
-    G_HEADING = dp.heading as f64;
-    G_PITCH = dp.pitch as f64;
-    G_ROLL = dp.roll as f64;
+    G_HEADING = dp.heading;
+    G_PITCH = dp.pitch;
+    G_ROLL = dp.roll;
 }
 
 unsafe extern "system" fn cb_local_velocity(

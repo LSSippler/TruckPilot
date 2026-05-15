@@ -43,8 +43,8 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     eprintln!("loading {} …", args.graph.display());
-    let bytes =
-        std::fs::read(&args.graph).unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
+    let bytes = std::fs::read(&args.graph)
+        .unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
     let graph: MapGraph = serde_json::from_slice(&bytes)
         .unwrap_or_else(|e| panic!("parse {}: {e}", args.graph.display()));
     eprintln!(
@@ -83,44 +83,17 @@ fn print_bounding_box(graph: &MapGraph) {
     let mut z_min = f64::INFINITY;
     let mut z_max = f64::NEG_INFINITY;
     for n in &graph.nodes {
-        if n.x < x_min {
-            x_min = n.x;
-        }
-        if n.x > x_max {
-            x_max = n.x;
-        }
-        if n.y < y_min {
-            y_min = n.y;
-        }
-        if n.y > y_max {
-            y_max = n.y;
-        }
-        if n.z < z_min {
-            z_min = n.z;
-        }
-        if n.z > z_max {
-            z_max = n.z;
-        }
+        if n.x < x_min { x_min = n.x; }
+        if n.x > x_max { x_max = n.x; }
+        if n.y < y_min { y_min = n.y; }
+        if n.y > y_max { y_max = n.y; }
+        if n.z < z_min { z_min = n.z; }
+        if n.z > z_max { z_max = n.z; }
     }
     println!("=== BOUNDING BOX ===");
-    println!(
-        "x ∈ [{:.0}, {:.0}]  span {:.0}",
-        x_min,
-        x_max,
-        x_max - x_min
-    );
-    println!(
-        "y ∈ [{:.0}, {:.0}]  span {:.0}",
-        y_min,
-        y_max,
-        y_max - y_min
-    );
-    println!(
-        "z ∈ [{:.0}, {:.0}]  span {:.0}",
-        z_min,
-        z_max,
-        z_max - z_min
-    );
+    println!("x ∈ [{:.0}, {:.0}]  span {:.0}", x_min, x_max, x_max - x_min);
+    println!("y ∈ [{:.0}, {:.0}]  span {:.0}", y_min, y_max, y_max - y_min);
+    println!("z ∈ [{:.0}, {:.0}]  span {:.0}", z_min, z_max, z_max - z_min);
     println!();
 }
 
@@ -236,20 +209,14 @@ fn print_connectivity(graph: &MapGraph) {
 
     sizes.sort_unstable_by(|a, b| b.cmp(a));
     println!("Components total       : {}", sizes.len());
-    println!(
-        "Largest component size : {}",
-        sizes.first().copied().unwrap_or(0)
-    );
+    println!("Largest component size : {}", sizes.first().copied().unwrap_or(0));
     if !sizes.is_empty() {
         println!(
             "Largest CC coverage    : {:.1}%",
             100.0 * sizes[0] as f64 / node_count as f64
         );
     }
-    println!(
-        "Top 10 component sizes : {:?}",
-        &sizes[..sizes.len().min(10)]
-    );
+    println!("Top 10 component sizes : {:?}", &sizes[..sizes.len().min(10)]);
     let singletons = sizes.iter().filter(|&&s| s == 1).count();
     println!("Singleton components   : {singletons}");
     println!();

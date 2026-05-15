@@ -50,8 +50,9 @@ pub trait Archive {
 /// The hash is namespaced (`"TruckPilot/archive-id/v1"` prefix) so that
 /// future schema changes can rotate keys without colliding.
 pub fn archive_identity_hash(path: &Path) -> Result<[u8; 32], ParseError> {
-    let metadata =
-        std::fs::metadata(path).map_err(|e| ParseError::Io(format!("metadata {:?}: {e}", path)))?;
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        ParseError::Io(format!("metadata {:?}: {e}", path))
+    })?;
     let size = metadata.len();
     let mtime_nanos = metadata
         .modified()

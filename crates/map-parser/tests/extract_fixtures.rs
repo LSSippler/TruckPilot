@@ -125,7 +125,9 @@ fn extract_road_sector_fixtures() {
                 wrote += 1;
             }
             None => {
-                eprintln!("WARN: no candidate found for {name} — skip writing this fixture");
+                eprintln!(
+                    "WARN: no candidate found for {name} — skip writing this fixture"
+                );
             }
         }
     }

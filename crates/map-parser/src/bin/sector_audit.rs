@@ -76,6 +76,7 @@ fn parse_args() -> Args {
     }
 }
 
+
 fn main() {
     let args = parse_args();
     let base_map = args.ets2_dir.join("base_map.scs");
@@ -187,10 +188,7 @@ fn main() {
     let _ = writeln!(out);
 
     // 1-D: garbage type
-    let _ = writeln!(
-        out,
-        "── GARBAGE u32 (read where next item_type was expected) ──"
-    );
+    let _ = writeln!(out, "── GARBAGE u32 (read where next item_type was expected) ──");
     let mut g_sorted: Vec<(&u32, &u64)> = garbage_type_hist.iter().collect();
     g_sorted.sort_by(|a, b| b.1.cmp(a.1));
     for (g, count) in g_sorted.iter().take(20) {
@@ -219,12 +217,17 @@ fn main() {
     let mut joint_sorted: Vec<(&(&'static str, u32), &u64)> = joint_hist.iter().collect();
     joint_sorted.sort_by(|a, b| b.1.cmp(a.1));
     for ((kind, garbage), count) in joint_sorted.iter().take(20) {
-        let _ = writeln!(out, "  {:<28} → 0x{:08X}  {:>4}", kind, garbage, count);
+        let _ = writeln!(
+            out,
+            "  {:<28} → 0x{:08X}  {:>4}",
+            kind, garbage, count
+        );
     }
     let _ = writeln!(out);
 
     // Item-count distribution — quick "did we get past item 0/1/2?" stats.
-    let mut c_sorted: Vec<(usize, u64)> = consumed_hist.iter().map(|(k, v)| (*k, *v)).collect();
+    let mut c_sorted: Vec<(usize, u64)> =
+        consumed_hist.iter().map(|(k, v)| (*k, *v)).collect();
     c_sorted.sort_by_key(|(k, _)| *k);
     let _ = writeln!(out, "── ITEMS CONSUMED PER SECTOR (distribution) ──");
     for (k, v) in c_sorted.iter().take(15) {
@@ -266,11 +269,7 @@ fn main() {
             top_share * 100.0,
             kind
         );
-        let _ = writeln!(
-            out,
-            "→ fix the {} skip handler; it desyncs the cursor.",
-            kind
-        );
+        let _ = writeln!(out, "→ fix the {} skip handler; it desyncs the cursor.", kind);
     } else {
         let _ = writeln!(
             out,

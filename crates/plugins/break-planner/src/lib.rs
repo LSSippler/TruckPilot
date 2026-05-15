@@ -119,9 +119,7 @@ impl Plugin for BreakPlannerPlugin {
         tracing::info!("[break-planner] unloaded");
     }
 
-    fn default_phase(&self) -> TickPhase {
-        TickPhase::PhaseA
-    }
+    fn default_phase(&self) -> TickPhase { TickPhase::PhaseA }
 
     fn tick(
         &mut self,

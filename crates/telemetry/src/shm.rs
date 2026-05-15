@@ -133,23 +133,6 @@ const _: () = {
     assert!(mem::offset_of!(ShmTelemetryLayout, effective_brake) == 148);
     assert!(mem::offset_of!(ShmTelemetryLayout, timestamp_us) == 188);
     assert!(mem::size_of::<ShmTelemetryLayout>() == 196);
-
-    // Per-field size asserts. offset_of! catches drift in field
-    // *position*; this catches drift in field *type* (e.g. f32 vs f64)
-    // even when the next field's offset happens to coincide due to
-    // padding. Both writer and reader must agree on these widths.
-    use std::mem::size_of;
-    assert!(size_of::<u32>() == 4);  // magic, version, sequence, _pad,
-                                     //   nav_speed_limit_valid
-    // Doubles in the orientation/motion block.
-    assert!(mem::offset_of!(ShmTelemetryLayout, y) - mem::offset_of!(ShmTelemetryLayout, x) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, z) - mem::offset_of!(ShmTelemetryLayout, y) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, heading) - mem::offset_of!(ShmTelemetryLayout, z) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, pitch) - mem::offset_of!(ShmTelemetryLayout, heading) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, roll) - mem::offset_of!(ShmTelemetryLayout, pitch) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, speed_ms) - mem::offset_of!(ShmTelemetryLayout, roll) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, engine_rpm) - mem::offset_of!(ShmTelemetryLayout, speed_ms) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, nav_speed_limit_kmh) - mem::offset_of!(ShmTelemetryLayout, engine_rpm) == 8);
 };
 
 /// Persistent shared-memory reader.

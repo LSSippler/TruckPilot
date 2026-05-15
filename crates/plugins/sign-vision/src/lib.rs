@@ -50,8 +50,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use truckpilot_plugin_api::{
-    ctx_debug, ctx_info, ctx_trace, ctx_warn, ControlOutput, Plugin, PluginContext, SharedFrame,
-    Telemetry, TickPhase,
+    ControlOutput, Plugin, PluginContext, SharedFrame, Telemetry, TickPhase,
 };
 
 use speed_mapper::SpeedMapper;
@@ -185,22 +184,6 @@ pub struct SignVisionPlugin {
     speed_mapper: SpeedMapper,
     #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
     session: Option<ort::session::Session>,
-
-    // ---- DIAG counters (Phase 6.x sign-vision diagnosis) ----
-    diag_tick_count: u64,
-    diag_skip_map_source: u64,
-    diag_skip_map_only: u64,
-    diag_skip_interval: u64,
-    diag_frame_fetch_attempts: u64,
-    diag_frame_no_store: u64,
-    diag_frame_stale_skips: u64,
-    diag_frame_fetch_misses: u64,
-    diag_frame_already_processed: u64,
-    diag_skip_budget: u64,
-    diag_decode_failures: u64,
-    diag_inference_calls: u64,
-    diag_inference_returns_empty: u64,
-    diag_detections_published: u64,
 }
 
 impl Default for SignVisionPlugin {
@@ -220,49 +203,7 @@ impl Default for SignVisionPlugin {
             speed_mapper: SpeedMapper::default(),
             #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
             session: None,
-            diag_tick_count: 0,
-            diag_skip_map_source: 0,
-            diag_skip_map_only: 0,
-            diag_skip_interval: 0,
-            diag_frame_fetch_attempts: 0,
-            diag_frame_no_store: 0,
-            diag_frame_stale_skips: 0,
-            diag_frame_fetch_misses: 0,
-            diag_frame_already_processed: 0,
-            diag_skip_budget: 0,
-            diag_decode_failures: 0,
-            diag_inference_calls: 0,
-            diag_inference_returns_empty: 0,
-            diag_detections_published: 0,
         }
-    }
-}
-
-/// Helper: write all DIAG counters to the blackboard. Called on every
-/// tick, regardless of which early-return path was taken — so an
-/// operator running `blackboard-query --prefix sign` can see *why* the
-/// plugin is silent.
-fn publish_diag(p: &SignVisionPlugin, ctx: &PluginContext, last_skip_reason: &str) {
-    let bb = &ctx.blackboard;
-    bb.set("sign.diag.tick_count", p.diag_tick_count.to_string());
-    bb.set("sign.diag.skip_map_source", p.diag_skip_map_source.to_string());
-    bb.set("sign.diag.skip_map_only", p.diag_skip_map_only.to_string());
-    bb.set("sign.diag.skip_interval", p.diag_skip_interval.to_string());
-    bb.set("sign.diag.frame_fetch_attempts", p.diag_frame_fetch_attempts.to_string());
-    bb.set("sign.diag.frame_no_store", p.diag_frame_no_store.to_string());
-    bb.set("sign.diag.frame_stale_skips", p.diag_frame_stale_skips.to_string());
-    bb.set("sign.diag.frame_fetch_misses", p.diag_frame_fetch_misses.to_string());
-    bb.set("sign.diag.frame_already_processed", p.diag_frame_already_processed.to_string());
-    bb.set("sign.diag.skip_budget", p.diag_skip_budget.to_string());
-    bb.set("sign.diag.decode_failures", p.diag_decode_failures.to_string());
-    bb.set("sign.diag.inference_calls", p.diag_inference_calls.to_string());
-    bb.set("sign.diag.inference_returns_empty", p.diag_inference_returns_empty.to_string());
-    bb.set("sign.diag.detections_published", p.diag_detections_published.to_string());
-    bb.set("sign.diag.last_skip_reason", last_skip_reason);
-    bb.set("sign.diag.mode", format!("{:?}", p.mode));
-    bb.set("sign.diag.model_available", p.model_available.to_string());
-    if let Some(id) = p.last_processed_frame_id {
-        bb.set("sign.diag.last_processed_frame_id", id.to_string());
     }
 }
 
@@ -284,11 +225,7 @@ fn load_onnx_session(model_path: &std::path::Path) -> Option<ort::session::Sessi
             {
                 match builder.commit_from_file(model_path) {
                     Ok(sess) => {
-                        // Escalated to warn so it surfaces under the
-                        // daemon's default log filter — operators need
-                        // to see which EP actually loaded, since DirectML
-                        // vs CPU is a 5-10× latency difference.
-                        tracing::warn!(target: LOG_TARGET, "ONNX EP active: DirectML");
+                        tracing::info!(target: LOG_TARGET, "ONNX session loaded via DirectML");
                         return Some(sess);
                     }
                     Err(e) => {
@@ -305,7 +242,7 @@ fn load_onnx_session(model_path: &std::path::Path) -> Option<ort::session::Sessi
     if let Ok(mut builder) = Session::builder() {
         match builder.commit_from_file(model_path) {
             Ok(sess) => {
-                tracing::warn!(target: LOG_TARGET, "ONNX EP active: CPU — expect >100 ms/frame");
+                tracing::warn!(target: LOG_TARGET, "ONNX session on CPU — expect >100 ms/frame");
                 return Some(sess);
             }
             Err(e) => {
@@ -398,47 +335,21 @@ fn do_inference(
 // Plugin impl
 // ---------------------------------------------------------------------------
 
-enum NextFrame {
-    Got(Arc<SharedFrame>),
-    Stale,
-    NoStore,
-    Miss,
-    AlreadyProcessed(u64),
-}
-
 impl SignVisionPlugin {
-    /// Outcome of the per-tick frame-fetch attempt — used by the
-    /// instrumented tick path to update DIAG counters and the
-    /// `sign.diag.last_skip_reason` key.
-    fn next_frame_diag(&mut self, ctx: &PluginContext) -> NextFrame {
-        self.diag_frame_fetch_attempts += 1;
+    fn next_frame(&self, ctx: &PluginContext) -> Option<Arc<SharedFrame>> {
         if ctx.blackboard.get("vision.frame.stale").as_deref() == Some("true") {
-            self.diag_frame_stale_skips += 1;
-            return NextFrame::Stale;
+            return None;
         }
-        let Some(store) = ctx.frame_store() else {
-            self.diag_frame_no_store += 1;
-            return NextFrame::NoStore;
-        };
-        let Some(frame) = store.get(FRAME_KEY) else {
-            self.diag_frame_fetch_misses += 1;
-            return NextFrame::Miss;
-        };
+        let store = ctx.frame_store()?;
+        let frame = store.get(FRAME_KEY)?;
         if Some(frame.id) == self.last_processed_frame_id {
-            self.diag_frame_already_processed += 1;
-            return NextFrame::AlreadyProcessed(frame.id);
+            return None;
         }
-        NextFrame::Got(frame)
+        Some(frame)
     }
 
     /// Run inference on `rgb`, returning detections (or empty on any failure).
-    fn maybe_run_inference(
-        &mut self,
-        rgb: &[u8],
-        width: u32,
-        height: u32,
-        ctx: &PluginContext,
-    ) -> Vec<Detection> {
+    fn maybe_run_inference(&mut self, rgb: &[u8], width: u32, height: u32) -> Vec<Detection> {
         if !self.model_available {
             return Vec::new();
         }
@@ -459,7 +370,7 @@ impl SignVisionPlugin {
                 ) {
                     Ok(dets) => dets,
                     Err(e) => {
-                        ctx_warn!(ctx, target: LOG_TARGET, "inference error: {e}");
+                        tracing::warn!(target: LOG_TARGET, "inference error: {e}");
                         Vec::new()
                     }
                 };
@@ -550,8 +461,7 @@ impl Plugin for SignVisionPlugin {
                         self.model_available = true;
                     }
                     None => {
-                        ctx_warn!(
-                            ctx,
+                        tracing::warn!(
                             target: LOG_TARGET,
                             "ONNX session init failed for {:?} — stub inference active",
                             self.model_path
@@ -560,23 +470,20 @@ impl Plugin for SignVisionPlugin {
                 }
             }
             #[cfg(not(any(feature = "onnx-directml", feature = "onnx-cpu")))]
-            ctx_warn!(
-                ctx,
+            tracing::warn!(
                 target: LOG_TARGET,
                 "model found at {:?} but no onnx feature compiled — build with --features onnx-directml",
                 self.model_path
             );
         } else {
-            ctx_info!(
-                ctx,
+            tracing::info!(
                 target: LOG_TARGET,
                 "model not found at {:?} — visual recognition disabled",
                 self.model_path
             );
         }
 
-        ctx_info!(
-            ctx,
+        tracing::info!(
             target: LOG_TARGET,
             "loaded — mode={:?} model_available={} conf={} nms_iou={} interval={}",
             self.mode,
@@ -601,58 +508,31 @@ impl Plugin for SignVisionPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
-        self.diag_tick_count += 1;
-
         if ctx.blackboard.get("sign.source").as_deref() == Some("map") {
-            self.diag_skip_map_source += 1;
-            publish_diag(self, ctx, "map_source");
             return;
         }
         if self.mode == Mode::MapOnly {
-            self.diag_skip_map_only += 1;
-            publish_diag(self, ctx, "map_only_mode");
             return;
         }
         if !ctx
             .tick_count
             .is_multiple_of(self.inference_interval as u64)
         {
-            self.diag_skip_interval += 1;
-            publish_diag(self, ctx, "interval");
             return;
         }
 
-        let frame = match self.next_frame_diag(ctx) {
-            NextFrame::Got(f) => f,
-            NextFrame::Stale => {
-                publish_diag(self, ctx, "frame_stale");
-                return;
-            }
-            NextFrame::NoStore => {
-                publish_diag(self, ctx, "no_frame_store");
-                return;
-            }
-            NextFrame::Miss => {
-                publish_diag(self, ctx, "frame_miss");
-                return;
-            }
-            NextFrame::AlreadyProcessed(_id) => {
-                publish_diag(self, ctx, "already_processed");
-                return;
-            }
+        let Some(frame) = self.next_frame(ctx) else {
+            return;
         };
 
         // Frame-skip: budget overrun from previous tick.
         if self.skip_ticks > 0 {
             self.skip_ticks -= 1;
-            self.diag_skip_budget += 1;
             self.last_processed_frame_id = Some(frame.id);
-            publish_diag(self, ctx, "budget_skip");
             return;
         }
 
-        ctx_trace!(
-            ctx,
+        tracing::trace!(
             target: LOG_TARGET,
             "frame id={} {}x{} jpeg={}B",
             frame.id, frame.width, frame.height, frame.jpeg.len()
@@ -669,29 +549,20 @@ impl Plugin for SignVisionPlugin {
         let rgb = match decode_attempt {
             Ok(rgb) => rgb,
             Err(e) => {
-                ctx_warn!(
-                    ctx,
+                tracing::warn!(
                     target: LOG_TARGET,
                     "JPEG decode failed for frame id={}: {e}",
                     frame.id
                 );
-                self.diag_decode_failures += 1;
                 self.last_processed_frame_id = Some(frame.id);
-                publish_diag(self, ctx, "decode_failed");
                 return;
             }
         };
 
         // Run inference and measure wall time.
-        self.diag_inference_calls += 1;
         let t0 = Instant::now();
-        let detections = self.maybe_run_inference(rgb, frame.width, frame.height, ctx);
+        let detections = self.maybe_run_inference(rgb, frame.width, frame.height);
         self.last_inference_ms = t0.elapsed().as_secs_f32() * 1_000.0;
-        if detections.is_empty() {
-            self.diag_inference_returns_empty += 1;
-        } else {
-            self.diag_detections_published += detections.len() as u64;
-        }
 
         ctx.blackboard.set(
             "sign.last_inference_ms",
@@ -700,8 +571,7 @@ impl Plugin for SignVisionPlugin {
         ctx.blackboard
             .set("sign.detected_count", detections.len().to_string());
 
-        ctx_trace!(
-            ctx,
+        tracing::trace!(
             target: LOG_TARGET,
             "inference done: {} detections in {:.1} ms",
             detections.len(),
@@ -711,8 +581,7 @@ impl Plugin for SignVisionPlugin {
         // Budget guard: if inference exceeded the warn threshold, skip ticks.
         if self.last_inference_ms > BUDGET_WARN_MS {
             self.skip_ticks = SKIP_AFTER_OVERRUN;
-            ctx_warn!(
-                ctx,
+            tracing::warn!(
                 target: LOG_TARGET,
                 "inference {:.1} ms > {BUDGET_WARN_MS} ms budget — throttling to {:.0} Hz for {} ticks",
                 self.last_inference_ms,
@@ -737,8 +606,7 @@ impl Plugin for SignVisionPlugin {
                     .set("sign.speed_limit_confidence", format!("{conf:.3}"));
                 ctx.blackboard
                     .set("sign.vision.confidence", format!("{conf:.3}"));
-                ctx_debug!(
-                    ctx,
+                tracing::debug!(
                     target: LOG_TARGET,
                     "speed limit {limit_kmh:.0} km/h detected (conf={conf:.2})"
                 );
@@ -754,7 +622,6 @@ impl Plugin for SignVisionPlugin {
         }
 
         self.last_processed_frame_id = Some(frame.id);
-        publish_diag(self, ctx, "processed");
     }
 }
 

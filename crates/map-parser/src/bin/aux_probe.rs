@@ -415,17 +415,10 @@ fn main() {
     );
     let _ = writeln!(out, "Total `.aux`:      {}", aux_paths.len());
     let _ = writeln!(out, "Global node pool:  {}", node_to_sector.len());
-    let _ = writeln!(
-        out,
-        "Global world pool: {} (nodes ∪ road/prefab/sign UIDs ∪ road/prefab node refs)",
-        world_uid_to_sector.len()
-    );
+    let _ = writeln!(out, "Global world pool: {} (nodes ∪ road/prefab/sign UIDs ∪ road/prefab node refs)", world_uid_to_sector.len());
     let _ = writeln!(out, "Samples requested: {}", args.sample_count);
     let _ = writeln!(out, "Samples produced:  {}", reports.len());
-    let _ = writeln!(
-        out,
-        "UID fingerprint:   high u16 == 0x0029 (v907 world-uid prefix)"
-    );
+    let _ = writeln!(out, "UID fingerprint:   high u16 == 0x0029 (v907 world-uid prefix)");
     let _ = writeln!(out);
 
     let mut total_unique = 0usize;
@@ -436,20 +429,13 @@ fn main() {
     let mut total_unresolved = 0usize;
 
     for r in &reports {
-        let _ = writeln!(
-            out,
-            "------------------------------------------------------------"
-        );
+        let _ = writeln!(out, "------------------------------------------------------------");
         let _ = writeln!(out, "## {}", r.aux_path);
         let _ = writeln!(out, "    companion .base        : {}", r.base_path);
         let _ = writeln!(out, "    .aux size              : {} bytes", r.aux_size);
         let _ = writeln!(out, "    .base node count       : {}", r.base_node_count);
         let _ = writeln!(out, "    .base item count (other): {}", r.base_item_count);
-        let _ = writeln!(
-            out,
-            "    byte offsets scanned   : {}",
-            r.raw_offsets_scanned
-        );
+        let _ = writeln!(out, "    byte offsets scanned   : {}", r.raw_offsets_scanned);
         let _ = writeln!(
             out,
             "    fingerprint matches    : {} unique u64 values",
@@ -513,10 +499,7 @@ fn main() {
         total_unresolved += r.unresolved.len();
     }
 
-    let _ = writeln!(
-        out,
-        "============================================================"
-    );
+    let _ = writeln!(out, "============================================================");
     let _ = writeln!(out, "## Aggregate ({} samples)", reports.len());
     let _ = writeln!(out, "    unique fingerprint uids  : {total_unique}");
     let _ = writeln!(out, "    same-sector node         : {total_same_node}");
@@ -576,7 +559,10 @@ fn main() {
             out,
             "→ `.aux` references its OWN sector's items — visibility/LOD or item-extension data. Not a cross-sector layer."
         );
-        let _ = writeln!(out, "→ Move on: (C2) road handler or (C3) prefab `.ppd`.");
+        let _ = writeln!(
+            out,
+            "→ Move on: (C2) road handler or (C3) prefab `.ppd`."
+        );
     } else if total_unresolved > 50 && unresolved_share >= 90.0 {
         let _ = writeln!(
             out,
@@ -591,7 +577,10 @@ fn main() {
             out,
             "→ REJECTED — {total_unique} fingerprint matches, near noise floor."
         );
-        let _ = writeln!(out, "→ Move on to (C2) road handler or (C3) prefab `.ppd`.");
+        let _ = writeln!(
+            out,
+            "→ Move on to (C2) road handler or (C3) prefab `.ppd`."
+        );
     }
 
     if let Some(parent) = args.output.parent() {

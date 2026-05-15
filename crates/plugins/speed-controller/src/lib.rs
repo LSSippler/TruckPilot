@@ -40,13 +40,7 @@ pub struct SpeedControllerPlugin {
 impl Default for SpeedControllerPlugin {
     fn default() -> Self {
         Self {
-            pid: Pid::new(
-                DEFAULT_KP,
-                DEFAULT_KI,
-                DEFAULT_KD,
-                INTEGRAL_LIMIT,
-                OUTPUT_LIMIT,
-            ),
+            pid: Pid::new(DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, INTEGRAL_LIMIT, OUTPUT_LIMIT),
             last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
         }
     }
@@ -73,23 +67,16 @@ impl SpeedControllerPlugin {
             self.pid.set_kd(kd);
             self.last_gains = next;
             tracing::info!("[speed-ctrl] gains updated kp={kp} ki={ki} kd={kd}");
-            ctx.blackboard
-                .set("pid_tuning.speed_controller.kp", kp.to_string());
-            ctx.blackboard
-                .set("pid_tuning.speed_controller.ki", ki.to_string());
-            ctx.blackboard
-                .set("pid_tuning.speed_controller.kd", kd.to_string());
+            ctx.blackboard.set("pid_tuning.speed_controller.kp", kp.to_string());
+            ctx.blackboard.set("pid_tuning.speed_controller.ki", ki.to_string());
+            ctx.blackboard.set("pid_tuning.speed_controller.kd", kd.to_string());
         }
     }
 }
 
 impl Plugin for SpeedControllerPlugin {
-    fn name(&self) -> &str {
-        "speed-controller"
-    }
-    fn version(&self) -> &str {
-        "0.2.0"
-    }
+    fn name(&self) -> &str { "speed-controller" }
+    fn version(&self) -> &str { "0.2.0" }
     fn settings_schema(&self) -> &str {
         r#"{"type":"object","properties":{"kp":{"type":"number"},"ki":{"type":"number"},"kd":{"type":"number"}}}"#
     }

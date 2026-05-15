@@ -15,26 +15,9 @@ use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{error, info, warn};
 use truckpilot_plugin_api::{
-    ControlOutput, ControlRequest, LogLevel, LogSinkWrapper, Plugin, PluginContext,
-    SharedBlackboard, SharedFrameStore, Telemetry, TickPhase,
+    ControlOutput, ControlRequest, Plugin, PluginContext, SharedBlackboard, SharedFrameStore,
+    Telemetry, TickPhase,
 };
-
-/// Build a log-sink that routes plugin log calls into the host's tracing
-/// subscriber. The plugin's `target` (e.g. `truckpilot_plugin_sign_vision`)
-/// is embedded as a prefix in the message because `tracing` macro targets
-/// must be compile-time constants and cannot be runtime `&str` values.
-fn make_log_sink() -> LogSinkWrapper {
-    LogSinkWrapper(Arc::new(|level, target, message| {
-        // Include target as a prefix so it's visible in structured output.
-        match level {
-            LogLevel::Trace => tracing::trace!(plugin_target = target, "{}", message),
-            LogLevel::Debug => tracing::debug!(plugin_target = target, "{}", message),
-            LogLevel::Info => tracing::info!(plugin_target = target, "{}", message),
-            LogLevel::Warn => tracing::warn!(plugin_target = target, "{}", message),
-            LogLevel::Error => tracing::error!(plugin_target = target, "{}", message),
-        }
-    }))
-}
 
 /// Phase-6.2b scheduler gate. Returns `true` when a plugin in `phase`
 /// should be ticked on the cycle identified by `tick_count`.
@@ -322,8 +305,7 @@ impl PluginManager {
                 .with_dt(dt_s)
                 .with_phase(phase)
                 .with_tick_count(tick_count)
-                .with_frame_store(Arc::clone(&self.frame_store))
-                .with_log_sink(make_log_sink());
+                .with_frame_store(Arc::clone(&self.frame_store));
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -362,8 +344,7 @@ impl PluginManager {
                     .with_dt(dt_s)
                     .with_phase(phase)
                     .with_tick_count(tick_count)
-                    .with_frame_store(Arc::clone(&self.frame_store))
-                    .with_log_sink(make_log_sink());
+                    .with_frame_store(Arc::clone(&self.frame_store));
                 let tick_result = catch_unwind(AssertUnwindSafe(|| {
                     p.plugin.tick(telemetry, output, &ctx);
                 }));
@@ -545,8 +526,7 @@ unsafe fn load_plugin_from_path(
     let version = plugin.version().to_string();
 
     let ctx = PluginContext::new(name.clone(), blackboard.clone())
-        .with_frame_store(Arc::clone(frame_store))
-        .with_log_sink(make_log_sink());
+        .with_frame_store(Arc::clone(frame_store));
     plugin.on_load(&ctx);
 
     Ok(LoadedPlugin {

@@ -55,8 +55,8 @@ fn end_to_end_real_archive() {
     };
 
     let started = Instant::now();
-    let mut archive =
-        HashFsArchive::open(&path).unwrap_or_else(|e| panic!("failed to open {path:?}: {e}"));
+    let mut archive = HashFsArchive::open(&path)
+        .unwrap_or_else(|e| panic!("failed to open {path:?}: {e}"));
     println!(
         "Opened {} in {:?}: {} entries indexed",
         path.display(),
@@ -73,13 +73,10 @@ fn end_to_end_real_archive() {
     let root_bytes = archive
         .read_path("")
         .expect("reading the root directory ('') must succeed");
-    println!(
-        "root listing: {} compressed → {} inflated",
-        root_bytes.len(),
-        root_bytes.len()
-    );
+    println!("root listing: {} compressed → {} inflated", root_bytes.len(), root_bytes.len());
 
-    let items = parse_directory_listing(&root_bytes).expect("root directory listing must parse");
+    let items = parse_directory_listing(&root_bytes)
+        .expect("root directory listing must parse");
     println!("root contains {} items:", items.len());
     for it in &items {
         println!("  {}{}", if it.is_dir { "/" } else { "" }, it.name);
@@ -109,7 +106,8 @@ fn end_to_end_real_archive() {
     let sub_bytes = archive
         .read_path(&first_subdir)
         .unwrap_or_else(|e| panic!("read subdir {:?}: {e}", first_subdir));
-    let sub_items = parse_directory_listing(&sub_bytes).expect("subdirectory listing must parse");
+    let sub_items = parse_directory_listing(&sub_bytes)
+        .expect("subdirectory listing must parse");
     println!(
         "  /{} listing: {} bytes → {} items",
         first_subdir,
@@ -151,7 +149,8 @@ fn end_to_end_real_archive() {
     //     base.scs across every ETS2 1.x version we know of, with hash
     //     0x56BC42EECBC73F2F.
     const AUTOMAT_HASH: u64 = 0x56BC42EECBC73F2F;
-    let our_automat = truckpilot_map_parser::hashfs::scs_path_hash(archive.salt(), "automat");
+    let our_automat =
+        truckpilot_map_parser::hashfs::scs_path_hash(archive.salt(), "automat");
     assert_eq!(
         our_automat, AUTOMAT_HASH,
         "regression: cityhash64(\"automat\") drifted away from TruckLib"

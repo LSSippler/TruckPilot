@@ -149,7 +149,11 @@ fn main() {
     sector_paths.sort();
     eprintln!("probed {} `.base` paths", sector_paths.len());
 
-    type Sample = (String, Vec<u8>, truckpilot_map_parser::sector::AuditReport);
+    type Sample = (
+        String,
+        Vec<u8>,
+        truckpilot_map_parser::sector::AuditReport,
+    );
     let mut samples: Vec<Sample> = Vec::new();
     let mut total_bezier_last = 0usize;
     let mut total_failures = 0usize;
@@ -214,10 +218,7 @@ fn main() {
         let body_start = last.start_offset + 4;
         let body_len = last.end_offset.saturating_sub(body_start);
 
-        let _ = writeln!(
-            out,
-            "------------------------------------------------------------"
-        );
+        let _ = writeln!(out, "------------------------------------------------------------");
         let _ = writeln!(out, "## {path}");
         let _ = writeln!(out, "    sector size              : {} bytes", data.len());
         let _ = writeln!(out, "    item_count               : {}", report.item_count);
@@ -237,11 +238,7 @@ fn main() {
             "    failure raw_type         : 0x{:08x} ({})",
             failure.raw_type, failure.raw_type
         );
-        let _ = writeln!(
-            out,
-            "    failure error_offset     : {}",
-            failure.error_offset
-        );
+        let _ = writeln!(out, "    failure error_offset     : {}", failure.error_offset);
         let _ = writeln!(out, "    failure msg              : {}", failure.error_msg);
         let _ = writeln!(out);
 
@@ -259,11 +256,7 @@ fn main() {
                 break;
             };
             let f = read_f32_le(data, pos).unwrap_or(0.0);
-            let valid_marker = if valid.contains(&u) {
-                "  <-- VALID type"
-            } else {
-                ""
-            };
+            let valid_marker = if valid.contains(&u) { "  <-- VALID type" } else { "" };
             let _ = writeln!(
                 out,
                 "        +{:3}  pos {pos:7}  hex=0x{u:08x}  dec={u:>10}  f32={f:>+13.4}{valid_marker}",
@@ -272,10 +265,7 @@ fn main() {
         }
         let _ = writeln!(out);
 
-        let _ = writeln!(
-            out,
-            "    plausibility scan (Delta where u32 is a valid item_type):"
-        );
+        let _ = writeln!(out, "    plausibility scan (Delta where u32 is a valid item_type):");
         let mut hits_this_sample: Vec<i32> = Vec::new();
         for &delta in &probe_deltas {
             let probe_pos_i64 = last.end_offset as i64 + delta as i64;
@@ -311,15 +301,8 @@ fn main() {
         let _ = writeln!(out);
     }
 
-    let _ = writeln!(
-        out,
-        "============================================================"
-    );
-    let _ = writeln!(
-        out,
-        "## Aggregate Delta-distribution ({} samples)",
-        samples.len()
-    );
+    let _ = writeln!(out, "============================================================");
+    let _ = writeln!(out, "## Aggregate Delta-distribution ({} samples)", samples.len());
     let mut deltas: Vec<(i32, usize)> = delta_hits.into_iter().collect();
     deltas.sort_by_key(|(d, _)| *d);
     for (d, n) in &deltas {
@@ -363,10 +346,7 @@ fn main() {
     }
     let _ = writeln!(out);
 
-    let _ = writeln!(
-        out,
-        "============================================================"
-    );
+    let _ = writeln!(out, "============================================================");
     let _ = writeln!(
         out,
         "## Global failing-handler distribution (all {total_failures} failing sectors)"
@@ -381,10 +361,7 @@ fn main() {
         let _ = writeln!(out, "    raw_type 0x{t:08x}  {n:>3}  ({pct:5.1}%)");
     }
     let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "### Last SUCCESSFUL handler before failure (predecessor)"
-    );
+    let _ = writeln!(out, "### Last SUCCESSFUL handler before failure (predecessor)");
     let mut by_pred: Vec<(&str, usize)> = last_success_kind.iter().map(|(k, v)| (*k, *v)).collect();
     by_pred.sort_by_key(|b| std::cmp::Reverse(b.1));
     for (k, n) in &by_pred {

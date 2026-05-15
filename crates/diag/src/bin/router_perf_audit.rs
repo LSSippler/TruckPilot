@@ -24,14 +24,8 @@ use std::time::Instant;
 use truckpilot_map_parser::graph::MapGraph;
 
 const BIG8: [&str; 8] = [
-    "Muenchen",
-    "Prag",
-    "Warschau",
-    "Amsterdam",
-    "Mailand",
-    "Sevilla",
-    "Sofia",
-    "Istanbul",
+    "Muenchen", "Prag", "Warschau", "Amsterdam",
+    "Mailand", "Sevilla", "Sofia", "Istanbul",
 ];
 const RUNS_PER_PAIR: usize = 3;
 
@@ -50,65 +44,35 @@ fn parse_args() -> Args {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--graph" => {
-                graph = PathBuf::from(&argv[i + 1]);
-                i += 2;
-            }
-            "--cities" => {
-                cities = PathBuf::from(&argv[i + 1]);
-                i += 2;
-            }
-            "--output" => {
-                output = PathBuf::from(&argv[i + 1]);
-                i += 2;
-            }
+            "--graph" => { graph = PathBuf::from(&argv[i + 1]); i += 2; }
+            "--cities" => { cities = PathBuf::from(&argv[i + 1]); i += 2; }
+            "--output" => { output = PathBuf::from(&argv[i + 1]); i += 2; }
             "-h" | "--help" => {
                 eprintln!("usage: truckpilot-router-perf-audit [--graph PATH] [--cities PATH] [--output PATH]");
                 std::process::exit(0);
             }
-            other => {
-                eprintln!("unknown argument: {other}");
-                std::process::exit(2);
-            }
+            other => { eprintln!("unknown argument: {other}"); std::process::exit(2); }
         }
     }
-    Args {
-        graph,
-        cities,
-        output,
-    }
+    Args { graph, cities, output }
 }
 
 #[derive(Debug, Clone)]
-struct City {
-    name: String,
-    x: f64,
-    z: f64,
-}
+struct City { name: String, x: f64, z: f64 }
 
 fn read_cities(path: &PathBuf) -> Vec<City> {
-    let text =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut cities: Vec<City> = Vec::new();
-    let (mut cur_name, mut cur_x, mut cur_z): (Option<String>, Option<f64>, Option<f64>) =
-        (None, None, None);
-    let flush = |list: &mut Vec<City>,
-                 name: &mut Option<String>,
-                 x: &mut Option<f64>,
-                 z: &mut Option<f64>| {
+    let (mut cur_name, mut cur_x, mut cur_z): (Option<String>, Option<f64>, Option<f64>) = (None, None, None);
+    let flush = |list: &mut Vec<City>, name: &mut Option<String>, x: &mut Option<f64>, z: &mut Option<f64>| {
         if let (Some(n), Some(xv), Some(zv)) = (name.take(), x.take(), z.take()) {
-            list.push(City {
-                name: n,
-                x: xv,
-                z: zv,
-            });
+            list.push(City { name: n, x: xv, z: zv });
         }
     };
     for raw in text.lines() {
         let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
+        if line.is_empty() { continue; }
         if line == "[[city]]" {
             flush(&mut cities, &mut cur_name, &mut cur_x, &mut cur_z);
             continue;
@@ -134,31 +98,14 @@ fn read_cities(path: &PathBuf) -> Vec<City> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct HeapEntry {
-    uid: u64,
-    f: f64,
-}
-impl PartialEq for HeapEntry {
-    fn eq(&self, o: &Self) -> bool {
-        self.f.total_cmp(&o.f).is_eq() && self.uid == o.uid
-    }
-}
+struct HeapEntry { uid: u64, f: f64 }
+impl PartialEq for HeapEntry { fn eq(&self, o: &Self) -> bool { self.f.total_cmp(&o.f).is_eq() && self.uid == o.uid } }
 impl Eq for HeapEntry {}
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(o))
-    }
-}
-impl Ord for HeapEntry {
-    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-        self.f.total_cmp(&o.f).then_with(|| self.uid.cmp(&o.uid))
-    }
-}
+impl PartialOrd for HeapEntry { fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
+impl Ord for HeapEntry { fn cmp(&self, o: &Self) -> std::cmp::Ordering { self.f.total_cmp(&o.f).then_with(|| self.uid.cmp(&o.uid)) } }
 
 fn heuristic(p: (f64, f64), g: (f64, f64)) -> f64 {
-    let dx = p.0 - g.0;
-    let dz = p.1 - g.1;
-    (dx * dx + dz * dz).sqrt()
+    let dx = p.0 - g.0; let dz = p.1 - g.1; (dx * dx + dz * dz).sqrt()
 }
 
 fn plan(
@@ -173,41 +120,28 @@ fn plan(
     for &(from, to, dist) in edges {
         adj.entry(from).or_default().push((to, dist));
     }
-    let Some(&goal_pos) = positions.get(&goal) else {
-        return (None, 0);
-    };
-    let Some(&start_pos) = positions.get(&start) else {
-        return (None, 0);
-    };
+    let Some(&goal_pos) = positions.get(&goal) else { return (None, 0); };
+    let Some(&start_pos) = positions.get(&start) else { return (None, 0); };
     let mut open: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
     let mut g: HashMap<u64, f64> = HashMap::new();
     let mut came_from: HashMap<u64, u64> = HashMap::new();
     let mut closed: HashSet<u64> = HashSet::new();
     let mut expanded = 0usize;
     g.insert(start, 0.0);
-    open.push(Reverse(HeapEntry {
-        uid: start,
-        f: heuristic(start_pos, goal_pos),
-    }));
+    open.push(Reverse(HeapEntry { uid: start, f: heuristic(start_pos, goal_pos) }));
     while let Some(Reverse(entry)) = open.pop() {
         if entry.uid == goal {
             return (Some(reconstruct(&came_from, start, goal)), expanded);
         }
-        if !closed.insert(entry.uid) {
-            continue;
-        }
+        if !closed.insert(entry.uid) { continue; }
         expanded += 1;
         for &(nb, cost) in adj.get(&entry.uid).into_iter().flatten() {
-            if closed.contains(&nb) {
-                continue;
-            }
+            if closed.contains(&nb) { continue; }
             let tg = g[&entry.uid] + cost;
             if tg < *g.get(&nb).unwrap_or(&f64::MAX) {
                 came_from.insert(nb, entry.uid);
                 g.insert(nb, tg);
-                let Some(&np) = positions.get(&nb) else {
-                    continue;
-                };
+                let Some(&np) = positions.get(&nb) else { continue; };
                 let h = heuristic(np, goal_pos);
                 open.push(Reverse(HeapEntry { uid: nb, f: tg + h }));
             }
@@ -220,25 +154,15 @@ fn reconstruct(came_from: &HashMap<u64, u64>, start: u64, goal: u64) -> Vec<u64>
     let mut path = vec![goal];
     let mut cur = goal;
     while cur != start {
-        if let Some(&prev) = came_from.get(&cur) {
-            path.push(prev);
-            cur = prev;
-        } else {
-            break;
-        }
+        if let Some(&prev) = came_from.get(&cur) { path.push(prev); cur = prev; } else { break; }
     }
     path.reverse();
     path
 }
 
 fn find_nearest(nodes: &[(u64, f64, f64)], x: f64, z: f64) -> Option<u64> {
-    nodes
-        .iter()
-        .map(|&(uid, nx, nz)| {
-            let dx = nx - x;
-            let dz = nz - z;
-            (uid, dx * dx + dz * dz)
-        })
+    nodes.iter()
+        .map(|&(uid, nx, nz)| { let dx = nx - x; let dz = nz - z; (uid, dx * dx + dz * dz) })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(uid, _)| uid)
 }
@@ -259,9 +183,7 @@ struct PairTimings {
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
+    if sorted.is_empty() { return 0.0; }
     let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
 }
@@ -269,12 +191,8 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 fn summarize(values: &[f64]) -> (f64, f64, f64, f64) {
     let mut v = values.to_vec();
     v.sort_by(|a, b| a.total_cmp(b));
-    (
-        percentile(&v, 0.50),
-        percentile(&v, 0.95),
-        percentile(&v, 0.99),
-        v.last().copied().unwrap_or(0.0),
-    )
+    (percentile(&v, 0.50), percentile(&v, 0.95), percentile(&v, 0.99),
+     v.last().copied().unwrap_or(0.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -300,42 +218,23 @@ fn main() {
             std::process::exit(2);
         }
     };
-    eprintln!(
-        "graph: {} nodes / {} edges",
-        graph.nodes.len(),
-        graph.edges.len()
-    );
+    eprintln!("graph: {} nodes / {} edges", graph.nodes.len(), graph.edges.len());
 
     // Flatten to plugin-router shape.
     let nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
-    let edges: Vec<(u64, u64, f64)> = graph
-        .edges
-        .iter()
-        .map(|e| (e.from, e.to, e.distance_m))
-        .collect();
+    let edges: Vec<(u64, u64, f64)> = graph.edges.iter().map(|e| (e.from, e.to, e.distance_m)).collect();
     let positions: HashMap<u64, (f64, f64)> = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
 
     let all_cities = read_cities(&args.cities);
-    let big8: Vec<City> = BIG8
-        .iter()
+    let big8: Vec<City> = BIG8.iter()
         .filter_map(|name| all_cities.iter().find(|c| c.name == *name).cloned())
         .collect();
     if big8.len() != BIG8.len() {
-        eprintln!(
-            "ERROR: expected {} Big-8 cities, found {} in {}",
-            BIG8.len(),
-            big8.len(),
-            args.cities.display()
-        );
+        eprintln!("ERROR: expected {} Big-8 cities, found {} in {}",
+            BIG8.len(), big8.len(), args.cities.display());
         std::process::exit(2);
     }
-    eprintln!(
-        "Big-8 cities loaded: {}",
-        big8.iter()
-            .map(|c| c.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    eprintln!("Big-8 cities loaded: {}", big8.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
 
     // 28 unordered pairs.
     let mut pairs: Vec<(City, City)> = Vec::new();
@@ -369,10 +268,9 @@ fn main() {
             };
 
             let t2 = Instant::now();
-            let path_len = path
-                .as_ref()
-                .map(|p| p.iter().filter_map(|uid| positions.get(uid)).count())
-                .unwrap_or(0);
+            let path_len = path.as_ref().map(|p| {
+                p.iter().filter_map(|uid| positions.get(uid)).count()
+            }).unwrap_or(0);
             let waypoint_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
             let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -392,10 +290,8 @@ fn main() {
                 acc.reachable = path.is_some();
             }
         }
-        eprintln!(
-            "  {:<10} -> {:<10}  total {:>7.1} ms  astar {:>7.1} ms  expanded {:>7}  reachable={}",
-            from.name, to.name, acc.total_ms, acc.astar_ms, acc.nodes_expanded, acc.reachable
-        );
+        eprintln!("  {:<10} -> {:<10}  total {:>7.1} ms  astar {:>7.1} ms  expanded {:>7}  reachable={}",
+            from.name, to.name, acc.total_ms, acc.astar_ms, acc.nodes_expanded, acc.reachable);
         results.push((from.name.clone(), to.name.clone(), acc));
     }
 
@@ -410,42 +306,20 @@ fn main() {
     writeln!(out, "============================================").unwrap();
     writeln!(out, "A* ROUTER PERFORMANCE AUDIT").unwrap();
     writeln!(out, "Generated: unix_ts={ts}").unwrap();
-    writeln!(
-        out,
-        "Graph: {} nodes, {} edges",
-        graph.nodes.len(),
-        graph.edges.len()
-    )
-    .unwrap();
+    writeln!(out, "Graph: {} nodes, {} edges", graph.nodes.len(), graph.edges.len()).unwrap();
     writeln!(out, "Runs per pair: {RUNS_PER_PAIR} (warm-cache avg)").unwrap();
     writeln!(out, "============================================").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "PER-PAIR LATENCY").unwrap();
     writeln!(out, "----------------").unwrap();
-    writeln!(
-        out,
-        "{:<30} | {:>10} | {:>9} | {:>10} | {:>14} | status",
-        "Pair", "nearest_ms", "astar_ms", "waypt_ms", "nodes_expanded"
-    )
-    .unwrap();
+    writeln!(out, "{:<30} | {:>10} | {:>9} | {:>10} | {:>14} | status",
+        "Pair", "nearest_ms", "astar_ms", "waypt_ms", "nodes_expanded").unwrap();
     for (a, b, r) in &results {
-        let status = if r.reachable {
-            format!("OK ({} wps)", r.path_len)
-        } else {
-            "NO PATH".to_string()
-        };
-        writeln!(
-            out,
-            "{:<30} | {:>10.2} | {:>9.2} | {:>10.2} | {:>14} | {}",
+        let status = if r.reachable { format!("OK ({} wps)", r.path_len) } else { "NO PATH".to_string() };
+        writeln!(out, "{:<30} | {:>10.2} | {:>9.2} | {:>10.2} | {:>14} | {}",
             format!("{} -> {}", a, b),
-            r.nearest_ms,
-            r.astar_ms,
-            r.waypoint_ms,
-            r.nodes_expanded,
-            status
-        )
-        .unwrap();
+            r.nearest_ms, r.astar_ms, r.waypoint_ms, r.nodes_expanded, status).unwrap();
     }
     writeln!(out).unwrap();
 
@@ -468,51 +342,23 @@ fn main() {
 
     writeln!(out, "BREAKDOWN").unwrap();
     writeln!(out, "---------").unwrap();
-    writeln!(
-        out,
-        "nearest_node:  P50 {n_p50:>7.2} ms, P95 {n_p95:>7.2} ms"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "A* search:     P50 {a_p50:>7.2} ms, P95 {a_p95:>7.2} ms"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "waypoint mat:  P50 {w_p50:>7.2} ms, P95 {w_p95:>7.2} ms"
-    )
-    .unwrap();
+    writeln!(out, "nearest_node:  P50 {n_p50:>7.2} ms, P95 {n_p95:>7.2} ms").unwrap();
+    writeln!(out, "A* search:     P50 {a_p50:>7.2} ms, P95 {a_p95:>7.2} ms").unwrap();
+    writeln!(out, "waypoint mat:  P50 {w_p50:>7.2} ms, P95 {w_p95:>7.2} ms").unwrap();
     writeln!(out).unwrap();
 
     // ---- Verdict ---------------------------------------------------------
     let budget_ms = 200.0;
-    let verdict = if p95 <= budget_ms * 0.5 {
-        "PASS"
-    } else if p95 <= budget_ms {
-        "WARN"
-    } else {
-        "FAIL"
-    };
+    let verdict = if p95 <= budget_ms * 0.5 { "PASS" }
+                  else if p95 <= budget_ms   { "WARN" }
+                  else                       { "FAIL" };
     let bottleneck = {
-        let candidates = [
-            ("nearest_node", n_p95),
-            ("A* search", a_p95),
-            ("waypoint mat", w_p95),
-        ];
-        candidates
-            .iter()
-            .max_by(|x, y| x.1.total_cmp(&y.1))
-            .map(|(n, _)| *n)
-            .unwrap_or("?")
+        let candidates = [("nearest_node", n_p95), ("A* search", a_p95), ("waypoint mat", w_p95)];
+        candidates.iter().max_by(|x, y| x.1.total_cmp(&y.1)).map(|(n, _)| *n).unwrap_or("?")
     };
     writeln!(out, "VERDICT").unwrap();
     writeln!(out, "-------").unwrap();
-    writeln!(
-        out,
-        "1 Hz Router (200ms budget): {verdict}  (P95 = {p95:.1} ms)"
-    )
-    .unwrap();
+    writeln!(out, "1 Hz Router (200ms budget): {verdict}  (P95 = {p95:.1} ms)").unwrap();
     writeln!(out, "Bottleneck (highest P95):   {bottleneck}").unwrap();
     writeln!(out).unwrap();
 
@@ -521,81 +367,28 @@ fn main() {
     writeln!(out, "-----------------------").unwrap();
     if a_p95 > 100.0 {
         writeln!(out, "[A* P95 = {a_p95:.1} ms > 100 ms]").unwrap();
-        writeln!(
-            out,
-            "  - Lift positions+adjacency build OUT of plan(): currently rebuilt every"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    call (HashMap of 1M+ nodes/edges). Cache them on RouterPlugin and reuse."
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "  - Heuristic: Euclidean is admissible but loose for grid-like networks; try"
-        )
-        .unwrap();
+        writeln!(out, "  - Lift positions+adjacency build OUT of plan(): currently rebuilt every").unwrap();
+        writeln!(out, "    call (HashMap of 1M+ nodes/edges). Cache them on RouterPlugin and reuse.").unwrap();
+        writeln!(out, "  - Heuristic: Euclidean is admissible but loose for grid-like networks; try").unwrap();
         writeln!(out, "    Octile or a tightened scaling factor.").unwrap();
-        writeln!(
-            out,
-            "  - Adjacency: replace HashMap<u64, Vec<...>> with Vec<Vec<...>> + uid->index"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    map (built once); cuts hash overhead on the hot edge-iteration path."
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "  - PriorityQueue: BinaryHeap re-inserts (decrease-key emulation) blow up the"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    heap; consider `indexmap`-backed PQ or fibonacci heap for dense graphs."
-        )
-        .unwrap();
+        writeln!(out, "  - Adjacency: replace HashMap<u64, Vec<...>> with Vec<Vec<...>> + uid->index").unwrap();
+        writeln!(out, "    map (built once); cuts hash overhead on the hot edge-iteration path.").unwrap();
+        writeln!(out, "  - PriorityQueue: BinaryHeap re-inserts (decrease-key emulation) blow up the").unwrap();
+        writeln!(out, "    heap; consider `indexmap`-backed PQ or fibonacci heap for dense graphs.").unwrap();
     }
     if n_p95 > 50.0 {
         writeln!(out, "[nearest_node P95 = {n_p95:.1} ms > 50 ms]").unwrap();
-        writeln!(
-            out,
-            "  - Linear scan over {} nodes is O(N). Build a spatial index once at load:",
-            graph.nodes.len()
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    R-Tree (`rstar` crate) or KD-Tree (`kdtree` / `kiddo` crate) gives O(log N)."
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "  - Alternative: 2D grid bucketing (cell-size ~ROI radius); cheap, no deps."
-        )
-        .unwrap();
+        writeln!(out, "  - Linear scan over {} nodes is O(N). Build a spatial index once at load:", graph.nodes.len()).unwrap();
+        writeln!(out, "    R-Tree (`rstar` crate) or KD-Tree (`kdtree` / `kiddo` crate) gives O(log N).").unwrap();
+        writeln!(out, "  - Alternative: 2D grid bucketing (cell-size ~ROI radius); cheap, no deps.").unwrap();
     }
     if w_p95 > 20.0 {
         writeln!(out, "[waypoint mat P95 = {w_p95:.1} ms > 20 ms]").unwrap();
-        writeln!(
-            out,
-            "  - positions HashMap lookups dominate; with index-based adjacency the path"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    is a Vec<usize> directly indexing into a Vec<(x,z)> — O(1) per waypoint."
-        )
-        .unwrap();
+        writeln!(out, "  - positions HashMap lookups dominate; with index-based adjacency the path").unwrap();
+        writeln!(out, "    is a Vec<usize> directly indexing into a Vec<(x,z)> — O(1) per waypoint.").unwrap();
     }
     if a_p95 <= 100.0 && n_p95 <= 50.0 && w_p95 <= 20.0 {
-        writeln!(
-            out,
-            "(no thresholds breached — current implementation fits the 1 Hz budget)"
-        )
-        .unwrap();
+        writeln!(out, "(no thresholds breached — current implementation fits the 1 Hz budget)").unwrap();
     }
     writeln!(out).unwrap();
 

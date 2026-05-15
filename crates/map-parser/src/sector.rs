@@ -261,10 +261,14 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
             ITEM_TYPE_CURVE => skip_curve(&mut cur),
             ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur),
             ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur),
-            other => Err(ParseError::Binary(format!("unsupported item type {other}"))),
+            other => Err(ParseError::Binary(format!(
+                "unsupported item type {other}"
+            ))),
         };
         if let Err(e) = dispatch_result {
-            warn!("sector item #{idx} (type={item_type}) failed: {e} — partial sector accepted");
+            warn!(
+                "sector item #{idx} (type={item_type}) failed: {e} — partial sector accepted"
+            );
             all_items_parsed = false;
             break;
         }
@@ -612,7 +616,8 @@ fn try_parse_sized_sector(data: &[u8]) -> Option<ParsedSector> {
                 .unwrap_or([0; 4]);
             let count = u32::from_le_bytes(count_bytes);
             count <= MAX_LIST_COUNT
-                && (count as usize).saturating_mul(node_record_size) == remaining.saturating_sub(4)
+                && (count as usize).saturating_mul(node_record_size)
+                    == remaining.saturating_sub(4)
         })
         || remaining.is_multiple_of(node_record_size);
     if !plausible_tail {
@@ -780,9 +785,12 @@ fn parse_road(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), 
         let consumed = cur.position().saturating_sub(road_start);
         warn!(
             road_start,
-            consumed, "Road fixed header parse failed at byte +{consumed} of road body: {e}"
+            consumed,
+            "Road fixed header parse failed at byte +{consumed} of road body: {e}"
         );
-        ParseError::Binary(format!("road fixed header at +{consumed} bytes: {e}"))
+        ParseError::Binary(format!(
+            "road fixed header at +{consumed} bytes: {e}"
+        ))
     })?;
 
     // Phase 5.7: ETS2 v907 `base_map.scs` does NOT carry a variable
@@ -857,8 +865,8 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
     let z_raw = read_i32(cur)?;
     skip(cur, 16)?; // rotation quaternion (4×f32)
     skip(cur, 16)?; // backward_uid(u64) + forward_uid(u64)
-    skip(cur, 4)?; // flags(u32)
-                   // total: 8+4+4+4+16+16+4 = 56 bytes
+    skip(cur, 4)?;  // flags(u32)
+    // total: 8+4+4+4+16+16+4 = 56 bytes
 
     Ok(RawNode {
         uid,
@@ -1814,8 +1822,8 @@ mod tests {
     fn header(core_version: u32) -> Vec<u8> {
         let mut buf = Vec::new();
         write_u32(&mut buf, core_version); // CoreMapVersion
-        write_u64(&mut buf, 0); // GameId token
-        write_u32(&mut buf, 1); // GameMapVersion
+        write_u64(&mut buf, 0);            // GameId token
+        write_u32(&mut buf, 1);            // GameMapVersion
         buf
     }
 
@@ -1826,9 +1834,9 @@ mod tests {
         write_i32(buf, y_raw);
         write_i32(buf, z_raw);
         buf.extend_from_slice(&[0u8; 16]); // quaternion
-        write_u64(buf, 0); // backward_uid
-        write_u64(buf, 0); // forward_uid
-        write_u32(buf, 0); // flags
+        write_u64(buf, 0);                 // backward_uid
+        write_u64(buf, 0);                 // forward_uid
+        write_u32(buf, 0);                 // flags
     }
 
     /// Append a road item (type tag + 265-byte fixed header) to buf.
@@ -1847,8 +1855,10 @@ mod tests {
         let header_start = buf.len();
         buf.extend_from_slice(&[0u8; 0x109]);
         buf[header_start..header_start + 8].copy_from_slice(&uid.to_le_bytes());
-        buf[header_start + 0xF5..header_start + 0xF5 + 8].copy_from_slice(&node_a.to_le_bytes());
-        buf[header_start + 0xFD..header_start + 0xFD + 8].copy_from_slice(&node_b.to_le_bytes());
+        buf[header_start + 0xF5..header_start + 0xF5 + 8]
+            .copy_from_slice(&node_a.to_le_bytes());
+        buf[header_start + 0xFD..header_start + 0xFD + 8]
+            .copy_from_slice(&node_b.to_le_bytes());
     }
 
     #[test]
@@ -1917,7 +1927,7 @@ mod tests {
         // dispatch successfully (here: none).  The trailing node section
         // is then either skipped or recovered via `recover_nodes_from_tail`.
         let mut data = header(895);
-        write_u32(&mut data, 1); // item_count
+        write_u32(&mut data, 1);  // item_count
         write_u32(&mut data, 99); // type 99 = unknown
         data.extend_from_slice(&[0u8; 64]);
 

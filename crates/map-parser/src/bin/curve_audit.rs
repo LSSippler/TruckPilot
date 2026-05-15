@@ -161,7 +161,11 @@ fn main() {
     sector_paths.sort();
     eprintln!("probed {} `.base` paths", sector_paths.len());
 
-    type Sample = (String, Vec<u8>, truckpilot_map_parser::sector::AuditReport);
+    type Sample = (
+        String,
+        Vec<u8>,
+        truckpilot_map_parser::sector::AuditReport,
+    );
     let mut samples: Vec<Sample> = Vec::new();
     let mut total_curve_failures = 0usize;
     let mut error_msg_hist: HashMap<String, usize> = HashMap::new();
@@ -178,7 +182,11 @@ fn main() {
             continue;
         }
         total_curve_failures += 1;
-        let bucket = failure.error_msg.chars().take(60).collect::<String>();
+        let bucket = failure
+            .error_msg
+            .chars()
+            .take(60)
+            .collect::<String>();
         *error_msg_hist.entry(bucket).or_insert(0) += 1;
 
         if samples.len() < args.sample_count {
@@ -216,15 +224,10 @@ fn main() {
         out,
         "## Field classification at body+{KDOP_ITEM_LEN} (post-kdop_item, first 8B)"
     );
-    let _ = writeln!(
-        out,
-        "    (terrain has u64 node-uid here = uid-like; TruckLib curve has token-like)"
-    );
+    let _ = writeln!(out, "    (terrain has u64 node-uid here = uid-like; TruckLib curve has token-like)");
     let mut class_hist: HashMap<&'static str, usize> = HashMap::new();
     for (_, data, report) in &samples {
-        let Some(failure) = report.failure.as_ref() else {
-            continue;
-        };
+        let Some(failure) = report.failure.as_ref() else { continue; };
         let body = failure.error_offset + 4;
         let post_kdop = body + KDOP_ITEM_LEN;
         if post_kdop + 8 > data.len() {
@@ -246,10 +249,7 @@ fn main() {
         let body = failure.error_offset + 4;
         let post_kdop = body + KDOP_ITEM_LEN;
 
-        let _ = writeln!(
-            out,
-            "------------------------------------------------------------"
-        );
+        let _ = writeln!(out, "------------------------------------------------------------");
         let _ = writeln!(out, "## {path}");
         let _ = writeln!(out, "    sector size           : {} bytes", data.len());
         let _ = writeln!(out, "    item_count            : {}", report.item_count);
@@ -278,17 +278,11 @@ fn main() {
         if post_kdop + 8 <= data.len() {
             let cls = classify_field(&data[post_kdop..post_kdop + 8]);
             let v = u64::from_le_bytes(data[post_kdop..post_kdop + 8].try_into().unwrap());
-            let _ = writeln!(
-                out,
-                "    body+53 classifier    : {cls}  (raw u64 = 0x{v:016x})"
-            );
+            let _ = writeln!(out, "    body+53 classifier    : {cls}  (raw u64 = 0x{v:016x})");
         }
         let _ = writeln!(out);
 
-        let _ = writeln!(
-            out,
-            "    hex preview — 192 bytes from curve body (skip type-tag):"
-        );
+        let _ = writeln!(out, "    hex preview — 192 bytes from curve body (skip type-tag):");
         out.push_str(&hex_block(data, body, 192));
         let _ = writeln!(out);
     }

@@ -1,55 +1,45 @@
+# TruckPilot CVAT stack — local dev (Phase 6.5e).
+#
+# Strategy: use CVAT's official docker-compose.yml as the base (cloned into
+# ./vendor/cvat/ — see README), and apply local overrides via this file
+# using `docker compose -f vendor/cvat/docker-compose.yml -f docker-compose.yml up -d`.
+#
+# This override:
+#   * Pins image tags to ${CVAT_VERSION} from .env (the upstream compose
+#     defaults to :dev which we don't want).
+#   * Bind-mounts the TruckPilot dataset into the server + workers read-only
+#     so the import script can stage frames via "Connected file share".
+#   * Pins the host port via ${CVAT_PORT}.
+#
+# Why not roll our own from scratch: CVAT needs ~10 coordinated services
+# (db, two redises, server, ui, 3 worker queues, utils, traefik). Maintaining
+# a parallel compose drifts fast on every CVAT release. Override + vendor
+# pin = least surprise.
+
 services:
   cvat_server:
-    image: cvat/server:v2.20.0
-    environment:
-      CVAT_HOST: localhost
-      DJANGO_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-      CSRF_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
+    image: cvat/server:${CVAT_VERSION}
     volumes:
-      - C:\Users\Sippler\Documents\TruckPilot\tools\vision-training-collector\data\final:/home/django/share/truckpilot:ro
-  cvat_ui:
-    image: cvat/ui:v2.20.0
-  cvat_utils:
-    image: cvat/server:v2.20.0
-    environment:
-      CVAT_HOST: localhost
-      DJANGO_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-      CSRF_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-  cvat_worker_import:
-    image: cvat/server:v2.20.0
-    environment:
-      CVAT_HOST: localhost
-      DJANGO_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-      CSRF_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-    volumes:
-      - C:\Users\Sippler\Documents\TruckPilot\tools\vision-training-collector\data\final:/home/django/share/truckpilot:ro
-  cvat_worker_export:
-    image: cvat/server:v2.20.0
-    environment:
-      CVAT_HOST: localhost
-      DJANGO_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-      CSRF_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-  cvat_worker_annotation:
-    image: cvat/server:v2.20.0
-    environment:
-      CVAT_HOST: localhost
-      DJANGO_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-      CSRF_TRUSTED_ORIGINS: 'http://localhost:8080,http://localhost'
-  traefik:
-    profiles: ["disabled"]
-  nginx_proxy:
-    image: nginx:alpine
-    container_name: cvat_nginx_proxy
-    networks:
-      - cvat_cvat
-    ports:
-      - "8080:80"
-    depends_on:
-      - cvat_server
-      - cvat_ui
-    volumes:
-      - C:\Users\Sippler\Documents\TruckPilot\tools\cvat-setup\nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TRUCKPILOT_DATASET_HOST}:/home/django/share/truckpilot:ro
 
-networks:
-  cvat_cvat:
-    external: true
+  cvat_ui:
+    image: cvat/ui:${CVAT_VERSION}
+
+  cvat_utils:
+    image: cvat/server:${CVAT_VERSION}
+
+  cvat_worker_import:
+    image: cvat/server:${CVAT_VERSION}
+    volumes:
+      - ${TRUCKPILOT_DATASET_HOST}:/home/django/share/truckpilot:ro
+
+  cvat_worker_export:
+    image: cvat/server:${CVAT_VERSION}
+
+  cvat_worker_annotation:
+    image: cvat/server:${CVAT_VERSION}
+
+  traefik:
+    ports:
+      - "${CVAT_PORT}:8080"
+      - "8090:8090"

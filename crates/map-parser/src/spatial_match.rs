@@ -351,13 +351,7 @@ mod tests {
     }
 
     fn nref(uid: u64, x: f64, y: f64, z: f64, sector: SectorId) -> NodeRef {
-        NodeRef {
-            uid,
-            x,
-            y,
-            z,
-            sector_id: sector,
-        }
+        NodeRef { uid, x, y, z, sector_id: sector }
     }
 
     #[test]
@@ -458,9 +452,9 @@ mod tests {
         // Cell-size 25 is small enough that the query origin sits in (0,0)
         // but the relevant nodes live in neighbour cells.
         let nodes = vec![
-            n(10, -5.0, 0.0, -5.0),   // cell (-1,-1), 2D dist ≈ sqrt(17² + 17²) ≈ 24
-            n(11, 30.0, 0.0, 30.0),   // cell (1,1), 2D dist ≈ sqrt(18² + 18²) ≈ 25.5
-            n(12, 600.0, 0.0, 600.0), // far away
+            n(10, -5.0, 0.0, -5.0),    // cell (-1,-1), 2D dist ≈ sqrt(17² + 17²) ≈ 24
+            n(11, 30.0, 0.0, 30.0),    // cell (1,1), 2D dist ≈ sqrt(18² + 18²) ≈ 25.5
+            n(12, 600.0, 0.0, 600.0),  // far away
         ];
         let idx = build_spatial_index(&nodes, &HashMap::new(), 25.0);
         let hits = query_circle(&idx, &[12.0, 0.0, 12.0], 30.0);
