@@ -20,6 +20,7 @@ members = [
     "crates/plugins/fuel-stops",
     "crates/plugins/break-planner",
     "crates/plugins/stats-logger",
+    "crates/plugins/vision-frame-source",
 ]
 resolver = "2"
 

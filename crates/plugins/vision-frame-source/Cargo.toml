@@ -1,0 +1,24 @@
+[package]
+name = "truckpilot-plugin-vision-frame-source"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vision frame source plugin — reads camera frames from SHM and publishes to SharedFrameStore"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+anyhow     = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }
