@@ -166,9 +166,8 @@ fn sweep_vis_layout(data: &[u8]) -> Option<VisLayout> {
             // node's UID is non-zero when N > 0.
             if n > 0 {
                 let first_uid_pos = count_pos + 4;
-                let first_uid = u64::from_le_bytes(
-                    data[first_uid_pos..first_uid_pos + 8].try_into().unwrap(),
-                );
+                let first_uid =
+                    u64::from_le_bytes(data[first_uid_pos..first_uid_pos + 8].try_into().unwrap());
                 if first_uid == 0 {
                     continue;
                 }
@@ -223,8 +222,7 @@ fn main() {
 
     // ----- Pass 1: parse every sector + extract vis_uids ----------------
 
-    let mut node_to_sector: HashMap<u64, SectorId> =
-        HashMap::with_capacity(1_000_000);
+    let mut node_to_sector: HashMap<u64, SectorId> = HashMap::with_capacity(1_000_000);
     // Per-sector: list of vis_uids (parallel to sector_paths)
     let mut sector_vis: Vec<Vec<u64>> = Vec::with_capacity(sector_paths.len());
     let mut sector_node_counts: Vec<u32> = Vec::with_capacity(sector_paths.len());
@@ -380,8 +378,7 @@ fn main() {
     let _ = writeln!(
         out,
         "  CROSS share         : {:>10}  ({:>5.1} %)",
-        cross,
-        cross_share_nonzero
+        cross, cross_share_nonzero
     );
     let _ = writeln!(out);
 
@@ -418,11 +415,7 @@ fn main() {
             }
             match node_to_sector.get(&uid) {
                 Some(&owner) if owner == sid as SectorId => {
-                    let _ = writeln!(
-                        out,
-                        "  0x{:016X}   SAME    sector {}",
-                        uid, sid
-                    );
+                    let _ = writeln!(out, "  0x{:016X}   SAME    sector {}", uid, sid);
                 }
                 Some(&owner) => {
                     let _ = writeln!(

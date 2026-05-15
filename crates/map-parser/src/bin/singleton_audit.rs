@@ -37,7 +37,9 @@ fn parse_args() -> Args {
     while i < argv.len() {
         match argv[i].as_str() {
             "--ets2-dir" => {
-                ets2_dir = Some(PathBuf::from(argv.get(i + 1).expect("--ets2-dir needs value")));
+                ets2_dir = Some(PathBuf::from(
+                    argv.get(i + 1).expect("--ets2-dir needs value"),
+                ));
                 i += 2;
             }
             "--graph" => {
@@ -138,7 +140,9 @@ fn main() {
     let mut total_bytes_scanned = 0usize;
     let mut total_aligned_positions = 0usize;
     for (i, path) in sector_paths.iter().enumerate() {
-        let Ok(data) = archive.read_path(path) else { continue };
+        let Ok(data) = archive.read_path(path) else {
+            continue;
+        };
         total_bytes_scanned += data.len();
         // Byte-level scan: ETS2 item bodies pack u64s at non-8-aligned
         // offsets (kdop_item is 53B, breaking alignment). 8-aligned scan
@@ -182,14 +186,35 @@ fn main() {
     let _ = writeln!(out);
     let _ = writeln!(out, "## Methodology");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Byte-level brute-force scan of every u64 LE position across all");
-    let _ = writeln!(out, "`.base` sectors (kdop_item is 53 bytes, so item-body u64s are NOT");
-    let _ = writeln!(out, "8-aligned; 8-aligned scan misses most refs). Each singleton UID is");
-    let _ = writeln!(out, "DEFINED at least once (trailing node section of its home sector).");
-    let _ = writeln!(out, "Hit-count 1 = defined-only; >=2 = also referenced by item-body bytes.");
+    let _ = writeln!(
+        out,
+        "Byte-level brute-force scan of every u64 LE position across all"
+    );
+    let _ = writeln!(
+        out,
+        "`.base` sectors (kdop_item is 53 bytes, so item-body u64s are NOT"
+    );
+    let _ = writeln!(
+        out,
+        "8-aligned; 8-aligned scan misses most refs). Each singleton UID is"
+    );
+    let _ = writeln!(
+        out,
+        "DEFINED at least once (trailing node section of its home sector)."
+    );
+    let _ = writeln!(
+        out,
+        "Hit-count 1 = defined-only; >=2 = also referenced by item-body bytes."
+    );
     let _ = writeln!(out);
-    let _ = writeln!(out, "False-positive rate at byte alignment is still bounded: scanned");
-    let _ = writeln!(out, "positions * singletons / 2^64 < 0.01 expected FP per singleton.");
+    let _ = writeln!(
+        out,
+        "False-positive rate at byte alignment is still bounded: scanned"
+    );
+    let _ = writeln!(
+        out,
+        "positions * singletons / 2^64 < 0.01 expected FP per singleton."
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "## Aggregates");
     let _ = writeln!(out);
@@ -198,7 +223,11 @@ fn main() {
     let _ = writeln!(out, "| Total singletons | {} |", total_singletons);
     let _ = writeln!(out, "| Sectors scanned | {} |", sector_paths.len());
     let _ = writeln!(out, "| Total bytes scanned | {} |", total_bytes_scanned);
-    let _ = writeln!(out, "| Byte-aligned positions | {} |", total_aligned_positions);
+    let _ = writeln!(
+        out,
+        "| Byte-aligned positions | {} |",
+        total_aligned_positions
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "## Hit-count distribution");
     let _ = writeln!(out);
@@ -235,7 +264,11 @@ fn main() {
         100.0 * zero_hits as f64 / total_singletons as f64
     );
     let _ = writeln!(out);
-    let _ = writeln!(out, "## Sample ({} singletons by hit-count desc)", sample.len());
+    let _ = writeln!(
+        out,
+        "## Sample ({} singletons by hit-count desc)",
+        sample.len()
+    );
     let _ = writeln!(out);
     let _ = writeln!(out, "| UID (hex) | Hit count | Refs in items |");
     let _ = writeln!(out, "| --- | ---: | ---: |");

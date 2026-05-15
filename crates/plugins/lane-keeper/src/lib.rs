@@ -69,9 +69,12 @@ impl LaneKeeperPlugin {
             self.pid.set_kd(kd);
             self.last_gains = next;
             tracing::info!("[lane-keeper] gains updated kp={kp} ki={ki} kd={kd}");
-            ctx.blackboard.set("pid_tuning.lane_keeper.kp", kp.to_string());
-            ctx.blackboard.set("pid_tuning.lane_keeper.ki", ki.to_string());
-            ctx.blackboard.set("pid_tuning.lane_keeper.kd", kd.to_string());
+            ctx.blackboard
+                .set("pid_tuning.lane_keeper.kp", kp.to_string());
+            ctx.blackboard
+                .set("pid_tuning.lane_keeper.ki", ki.to_string());
+            ctx.blackboard
+                .set("pid_tuning.lane_keeper.kd", kd.to_string());
         }
     }
 
@@ -350,7 +353,9 @@ mod tests {
         };
         let t = make_telemetry(20.0, 0.0); // heading north → must turn right
         let ctx = ctx_with_state("Active");
-        let req = lk.tick_request(Some(&t), &ctx).expect("active must request");
+        let req = lk
+            .tick_request(Some(&t), &ctx)
+            .expect("active must request");
         let s = req.steering.expect("active must request steering");
         assert!(s > 0.0, "expected positive steering, got {s}");
         assert_eq!(req.priority, PRIORITY_NORMAL);

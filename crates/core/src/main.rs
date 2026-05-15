@@ -596,13 +596,11 @@ async fn run_daemon() {
             // ~100 ms to surface.
             status_tick_counter = status_tick_counter.wrapping_add(1);
             let state_str = current_state.as_str().to_string();
-            let state_changed =
-                last_status_state.as_deref() != Some(state_str.as_str());
+            let state_changed = last_status_state.as_deref() != Some(state_str.as_str());
             if state_changed || status_tick_counter >= 5 {
                 status_tick_counter = 0;
                 last_status_state = Some(state_str.clone());
-                let preconditions =
-                    sm.preconditions_snapshot(telemetry.as_ref(), &blackboard);
+                let preconditions = sm.preconditions_snapshot(telemetry.as_ref(), &blackboard);
                 let fault_reason = sm.fault_reason().map(|r| r.as_str());
                 let tick_count = sm.tick_count();
                 Some((state_str, fault_reason, preconditions, tick_count))
@@ -610,9 +608,7 @@ async fn run_daemon() {
                 None
             }
         };
-        if let Some((state_str, fault_reason, preconditions, tick_count)) =
-            status_payload
-        {
+        if let Some((state_str, fault_reason, preconditions, tick_count)) = status_payload {
             let _ = ipc_tx.send(CoreMessage::AutopilotStatus {
                 v: CoreMessage::VERSION,
                 state: state_str,

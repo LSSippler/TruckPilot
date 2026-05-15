@@ -139,9 +139,7 @@ mod windows_impl {
             let implausible =
                 x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 || z.abs() > 1_000_000.0;
             if implausible {
-                println!(
-                    "WARN: Slot {slot_idx} has implausible position ({x:.1}, {y:.1}, {z:.1})"
-                );
+                println!("WARN: Slot {slot_idx} has implausible position ({x:.1}, {y:.1}, {z:.1})");
             }
         }
         active

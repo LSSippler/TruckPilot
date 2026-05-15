@@ -8,7 +8,9 @@
       "Bash(dotnet run *)",
       "Skill(update-config)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\dev\\\\ets2-acc-plugin\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName)",
-      "PowerShell(New-Item *)"
+      "PowerShell(New-Item *)",
+      "PowerShell(git *)",
+      "PowerShell(git -C \"C:\\\\Users\\\\Sippler\\\\Documents\\\\TruckPilot\" commit --allow-empty -m $msg)"
     ]
   },
   "remote": {

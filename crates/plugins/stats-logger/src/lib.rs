@@ -277,11 +277,7 @@ impl StatsLoggerPlugin {
         }
     }
 
-    fn write_tick_log(
-        &mut self,
-        t: &Telemetry,
-        ctx: &PluginContext,
-    ) {
+    fn write_tick_log(&mut self, t: &Telemetry, ctx: &PluginContext) {
         let ts = monotonic_ms();
         let state = ctx.state().unwrap_or_else(|| "Unknown".into());
         let speed_kmh = t.speed_ms * 3.6;
@@ -346,8 +342,16 @@ impl StatsLoggerPlugin {
         let state_driven = was_active && (now_off || now_fault);
 
         // Explicit intervention flags from other plugins.
-        let steer = ctx.blackboard.get("autopilot.intervention_steering").as_deref() == Some("true");
-        let brake = ctx.blackboard.get("autopilot.intervention_brake").as_deref() == Some("true");
+        let steer = ctx
+            .blackboard
+            .get("autopilot.intervention_steering")
+            .as_deref()
+            == Some("true");
+        let brake = ctx
+            .blackboard
+            .get("autopilot.intervention_brake")
+            .as_deref()
+            == Some("true");
 
         self.last_state = current;
         state_driven || steer || brake
@@ -402,42 +406,42 @@ impl StatsLoggerPlugin {
                 "speed_controller",
                 "kp",
                 "pid_tuning.speed_controller.kp",
-                self.last_observed_gains[0].1.0,
+                self.last_observed_gains[0].1 .0,
                 ctx.blackboard.get_f64("pid_tuning.speed_controller.kp"),
             ),
             (
                 "speed_controller",
                 "ki",
                 "pid_tuning.speed_controller.ki",
-                self.last_observed_gains[0].1.1,
+                self.last_observed_gains[0].1 .1,
                 ctx.blackboard.get_f64("pid_tuning.speed_controller.ki"),
             ),
             (
                 "speed_controller",
                 "kd",
                 "pid_tuning.speed_controller.kd",
-                self.last_observed_gains[0].1.2,
+                self.last_observed_gains[0].1 .2,
                 ctx.blackboard.get_f64("pid_tuning.speed_controller.kd"),
             ),
             (
                 "lane_keeper",
                 "kp",
                 "pid_tuning.lane_keeper.kp",
-                self.last_observed_gains[1].1.0,
+                self.last_observed_gains[1].1 .0,
                 ctx.blackboard.get_f64("pid_tuning.lane_keeper.kp"),
             ),
             (
                 "lane_keeper",
                 "ki",
                 "pid_tuning.lane_keeper.ki",
-                self.last_observed_gains[1].1.1,
+                self.last_observed_gains[1].1 .1,
                 ctx.blackboard.get_f64("pid_tuning.lane_keeper.ki"),
             ),
             (
                 "lane_keeper",
                 "kd",
                 "pid_tuning.lane_keeper.kd",
-                self.last_observed_gains[1].1.2,
+                self.last_observed_gains[1].1 .2,
                 ctx.blackboard.get_f64("pid_tuning.lane_keeper.kd"),
             ),
         ] {
@@ -454,14 +458,26 @@ impl StatsLoggerPlugin {
 
         // Sync observed values for next tick.
         self.last_observed_gains[0].1 = (
-            ctx.blackboard.get_f64("pid_tuning.speed_controller.kp").unwrap_or(self.last_observed_gains[0].1.0),
-            ctx.blackboard.get_f64("pid_tuning.speed_controller.ki").unwrap_or(self.last_observed_gains[0].1.1),
-            ctx.blackboard.get_f64("pid_tuning.speed_controller.kd").unwrap_or(self.last_observed_gains[0].1.2),
+            ctx.blackboard
+                .get_f64("pid_tuning.speed_controller.kp")
+                .unwrap_or(self.last_observed_gains[0].1 .0),
+            ctx.blackboard
+                .get_f64("pid_tuning.speed_controller.ki")
+                .unwrap_or(self.last_observed_gains[0].1 .1),
+            ctx.blackboard
+                .get_f64("pid_tuning.speed_controller.kd")
+                .unwrap_or(self.last_observed_gains[0].1 .2),
         );
         self.last_observed_gains[1].1 = (
-            ctx.blackboard.get_f64("pid_tuning.lane_keeper.kp").unwrap_or(self.last_observed_gains[1].1.0),
-            ctx.blackboard.get_f64("pid_tuning.lane_keeper.ki").unwrap_or(self.last_observed_gains[1].1.1),
-            ctx.blackboard.get_f64("pid_tuning.lane_keeper.kd").unwrap_or(self.last_observed_gains[1].1.2),
+            ctx.blackboard
+                .get_f64("pid_tuning.lane_keeper.kp")
+                .unwrap_or(self.last_observed_gains[1].1 .0),
+            ctx.blackboard
+                .get_f64("pid_tuning.lane_keeper.ki")
+                .unwrap_or(self.last_observed_gains[1].1 .1),
+            ctx.blackboard
+                .get_f64("pid_tuning.lane_keeper.kd")
+                .unwrap_or(self.last_observed_gains[1].1 .2),
         );
     }
 }

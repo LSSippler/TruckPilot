@@ -139,6 +139,11 @@ function routeCoreMessage(msg: CoreMessage) {
         if (lastSelected) usePluginsStore.getState().setSchema(lastSelected, null);
       }
       break;
+    case "blackboard_snapshot":
+    case "blackboard_keys":
+      // Responses to one-shot blackboard queries — consumed via
+      // subscribeToCoreEvents() by the caller; no store update needed here.
+      break;
     default: {
       const _exhaustive: never = msg;
       void _exhaustive;
