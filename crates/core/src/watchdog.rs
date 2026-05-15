@@ -133,34 +133,43 @@ pub async fn watchdog_loop(
     let config = WatchdogConfig::default();
     let mut last_good_telemetry = Instant::now();
     let mut failsafe_active = false;
+    // Rate-limit "FAILSAFE ACTIVE" repeats — the watchdog runs at 40 Hz
+    // and would otherwise flood the log with one line per poll while a
+    // stall persists.
+    let mut last_failsafe_log: Option<Instant> = None;
+    const FAILSAFE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
-    let mut interval =
-        tokio::time::interval(Duration::from_millis(config.watchdog_poll_ms));
+    let mut interval = tokio::time::interval(Duration::from_millis(config.watchdog_poll_ms));
 
     loop {
         interval.tick().await;
 
         // --- Heartbeat check (failsafe on/off, no Fault) ---
-        let heartbeat_stale =
-            check_heartbeat_stall(&heartbeat, daemon_start, &config);
+        let heartbeat_stale = check_heartbeat_stall(&heartbeat, daemon_start, &config);
 
         if heartbeat_stale && !failsafe_active {
             tracing::warn!("Heartbeat stall detected, activating failsafe");
             apply_vjoy_failsafe(&config);
             failsafe_active = true;
+            last_failsafe_log = Some(Instant::now());
         } else if !heartbeat_stale && failsafe_active {
             tracing::info!("Heartbeat recovered, deactivating failsafe");
             failsafe_active = false;
+            last_failsafe_log = None;
         }
 
         // --- Telemetry-stale check (Fault) ---
-        if let Some(reason) =
-            check_telemetry_stale(&bb, &mut last_good_telemetry, &config)
-        {
+        if let Some(reason) = check_telemetry_stale(&bb, &mut last_good_telemetry, &config) {
             let mut sm = state_machine.lock().await;
             sm.report_fault(reason, &bb);
             drop(sm);
-            apply_vjoy_failsafe(&config);
+            let should_log = last_failsafe_log
+                .map(|t| t.elapsed() >= FAILSAFE_LOG_INTERVAL)
+                .unwrap_or(true);
+            if should_log {
+                apply_vjoy_failsafe(&config);
+                last_failsafe_log = Some(Instant::now());
+            }
         }
     }
 }
