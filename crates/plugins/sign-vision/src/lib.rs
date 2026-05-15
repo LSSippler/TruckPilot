@@ -100,6 +100,33 @@ const NUM_ANCHORS: usize = 8400;
 /// Class index of `SpeedLimitSign` in dataset.yaml.
 const SPEED_LIMIT_CLASS_ID: usize = 11;
 
+// ---------------------------------------------------------------------------
+// Phase 6.5f — detection-quality instrumentation constants
+// ---------------------------------------------------------------------------
+
+/// Sliding-window length for `*_60s` blackboard metrics (Spec §2).
+const QUALITY_WINDOW_NS: u128 = 60 * 1_000_000_000;
+
+/// Confidence histogram bucket boundaries (Spec §3.2). 8 buckets, finer
+/// near `MIN_CONFIDENCE = 0.7` where the publish/discard decision lives.
+const CONF_BUCKET_EDGES: [f32; 9] = [0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 1.0];
+const NUM_CONF_BUCKETS: usize = 8;
+
+/// Class IDs that "look like" sign-vision detections only when a vehicle
+/// is also present (Spec §3.4 implausible-class heuristic).
+const VEHICLE_CLASS_IDS: &[u32] = &[0, 1, 2, 3]; // Car, Truck, TruckTrailer, Bus
+const IMPLAUSIBLE_WITHOUT_VEHICLE: &[u32] = &[4, 5, 6]; // BrakeLightOn, TurnSignal{L,R}
+
+/// Bbox-area / frame-area ratio above which a detection counts as a
+/// size outlier (Spec §3.4). Signs are rarely > 25 % of the frame.
+const BBOX_AREA_OUTLIER_RATIO: f32 = 0.25;
+
+/// "Borderline confidence" upper bound for FP heuristic (Spec §3.4).
+const LOW_CONF_PUBLISH_MAX: f32 = 0.75;
+
+/// Maximum entries kept in the per-frame detection log (Spec §6).
+const DETECTION_LOG_CAPACITY: usize = 1000;
+
 /// Class names in dataset.yaml order (15 entries).
 const CLASS_NAMES: [&str; 15] = [
     "Car",
@@ -128,10 +155,15 @@ const CLASS_NAMES: [&str; 15] = [
 pub struct Detection {
     /// Detected class label (e.g. "speed_limit_80" or "Car").
     pub label: String,
+    /// Class index into `CLASS_NAMES` (0..NUM_CLASSES).
+    pub class_id: u32,
     /// Confidence score in [0, 1].
     pub confidence: f32,
     /// Parsed numeric value — set for speed-limit signs (km/h).
     pub value: Option<f32>,
+    /// Bounding box in original-image coordinates: [x1, y1, x2, y2].
+    /// Used for FP heuristics and the per-frame detection log.
+    pub bbox_xyxy: [f32; 4],
 }
 
 impl Detection {
@@ -168,6 +200,10 @@ struct InferenceResult {
     detections: Vec<Detection>,
     inference_ms: f32,
     skipped_stale: bool,
+    /// Frame width in pixels, needed by the bbox-outlier FP heuristic.
+    width: u32,
+    /// Frame height in pixels, needed by the bbox-outlier FP heuristic.
+    height: u32,
 }
 
 /// Channel-backed handle to the inference worker thread. Owned by
@@ -249,6 +285,8 @@ fn worker_loop(
                 detections: Vec::new(),
                 inference_ms: 0.0,
                 skipped_stale: true,
+                width: job.width,
+                height: job.height,
             });
             continue;
         }
@@ -274,6 +312,8 @@ fn worker_loop(
                 detections,
                 inference_ms,
                 skipped_stale: false,
+                width: job.width,
+                height: job.height,
             })
             .is_err()
         {
@@ -339,6 +379,32 @@ pub struct SignVisionPlugin {
     /// busy) and we rotated the slot to keep the newest frame.
     frames_dropped_full: u64,
 
+    // ---- Phase 6.5f detection-quality state ----
+    /// Sliding 60 s window of (timestamp, class_id, confidence).
+    /// Pushed on every published detection, pruned on every result.
+    quality_window: std::collections::VecDeque<QualityEntry>,
+    /// Per-class running totals (monotonic, never reset in-session).
+    class_totals: [u64; NUM_CLASSES],
+    /// Per-km/h running totals for `SpeedLimitSign` detections.
+    speed_limit_totals: std::collections::HashMap<u32, u64>,
+    /// `SpeedLimitSign` detections where template-matching produced no km/h.
+    speed_limit_unmapped_total: u64,
+    /// Per-confidence-bucket running totals.
+    conf_bucket_totals: [u64; NUM_CONF_BUCKETS],
+    /// Detections in [0.0, MIN_CONFIDENCE) — would have been discarded.
+    conf_below_min_total: u64,
+    /// Detections in [MIN_CONFIDENCE, 1.0].
+    conf_above_min_total: u64,
+    /// Frames whose result had zero detections.
+    frame_zero_detections_total: u64,
+    /// FP heuristic counts (monotonic).
+    fp_implausible_class_total: u64,
+    /// Per-frame detection log — rolling NDJSON (Spec §6).
+    detection_log: std::collections::VecDeque<String>,
+    /// Last second-boundary at which the every-1-s derived metrics were
+    /// recomputed. None means "never recomputed".
+    quality_last_recompute: Option<Instant>,
+
     // ---- DIAG counters (Phase 6.x sign-vision diagnosis) ----
     diag_tick_count: u64,
     diag_skip_map_source: u64,
@@ -374,6 +440,17 @@ impl Default for SignVisionPlugin {
             worker: None,
             last_tick_blocking_ms: 0.0,
             frames_dropped_full: 0,
+            quality_window: std::collections::VecDeque::with_capacity(2048),
+            class_totals: [0; NUM_CLASSES],
+            speed_limit_totals: std::collections::HashMap::new(),
+            speed_limit_unmapped_total: 0,
+            conf_bucket_totals: [0; NUM_CONF_BUCKETS],
+            conf_below_min_total: 0,
+            conf_above_min_total: 0,
+            frame_zero_detections_total: 0,
+            fp_implausible_class_total: 0,
+            detection_log: std::collections::VecDeque::with_capacity(DETECTION_LOG_CAPACITY),
+            quality_last_recompute: None,
             diag_tick_count: 0,
             diag_skip_map_source: 0,
             diag_skip_map_only: 0,
@@ -390,6 +467,63 @@ impl Default for SignVisionPlugin {
             diag_detections_published: 0,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6.5f — quality-window types + helpers
+// ---------------------------------------------------------------------------
+
+/// One sample in the sliding-60 s quality window. Bbox area is captured
+/// at insert time (not the bbox itself) so the size-outlier heuristic
+/// can be re-evaluated on the windowed set without needing per-frame
+/// dimensions later.
+#[derive(Clone, Copy)]
+struct QualityEntry {
+    at: Instant,
+    class_id: u32,
+    confidence: f32,
+    /// km/h value for `SpeedLimitSign` detections, `None` otherwise.
+    /// Powers `sign.class.SpeedLimitSign.km_<n>.last60s`.
+    speed_limit_kmh: Option<u32>,
+    /// Was this from a result that contained two distinct
+    /// `SpeedLimitSign` km/h values? Used by `fp.contradicting`.
+    contradicting_speed_limit: bool,
+    /// Was the bbox area > BBOX_AREA_OUTLIER_RATIO of frame area?
+    bbox_size_outlier: bool,
+}
+
+/// Snake-cased class name: `"SpeedLimitSign"` -> `"speed_limit_sign"`.
+fn snake_case_class(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+    out
+}
+
+/// Returns the bucket index `[0, NUM_CONF_BUCKETS)` for `conf`, using
+/// `CONF_BUCKET_EDGES` as right-open intervals (last bucket is closed
+/// on the right at 1.0).
+fn conf_bucket(conf: f32) -> usize {
+    for i in 0..NUM_CONF_BUCKETS {
+        let lo = CONF_BUCKET_EDGES[i];
+        let hi = CONF_BUCKET_EDGES[i + 1];
+        if conf >= lo && (conf < hi || (i == NUM_CONF_BUCKETS - 1 && conf <= hi)) {
+            return i;
+        }
+    }
+    NUM_CONF_BUCKETS - 1
+}
+
+/// Bucket key suffix as `"00_50"`, `"70_75"`, etc. Two-digit decimals
+/// of the bucket boundaries in [0, 100].
+fn conf_bucket_key(idx: usize) -> String {
+    let lo = (CONF_BUCKET_EDGES[idx] * 100.0).round() as u32;
+    let hi = (CONF_BUCKET_EDGES[idx + 1] * 100.0).round() as u32;
+    format!("{:02}_{:02}", lo, hi)
 }
 
 /// Helper: write all DIAG counters to the blackboard. Called on every
@@ -531,8 +665,10 @@ fn do_inference(
 
         detections.push(Detection {
             label,
+            class_id: det.class_id as u32,
             confidence: det.confidence,
             value,
+            bbox_xyxy: [x1f, y1f, x2f, y2f],
         });
     }
 
@@ -649,6 +785,10 @@ impl SignVisionPlugin {
             self.diag_detections_published += result.detections.len() as u64;
         }
 
+        // Phase 6.5f — update quality counters + sliding window before
+        // any path consumes `result.detections`.
+        self.update_quality(ctx, &result);
+
         // Pick the highest-confidence speed-limit detection above threshold.
         let best = result
             .detections
@@ -686,6 +826,275 @@ impl SignVisionPlugin {
 
     fn record_tick_blocking(&mut self, tick_start: Instant) {
         self.last_tick_blocking_ms = tick_start.elapsed().as_secs_f32() * 1_000.0;
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 6.5f — quality update + publish
+    // -----------------------------------------------------------------
+
+    /// Update quality counters and the sliding window from a fresh
+    /// inference result, then publish all quality blackboard keys.
+    /// Called from `publish_latest_result` after the per-result side
+    /// effects (best speed-limit pick) have fired.
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn update_quality(&mut self, ctx: &PluginContext, result: &InferenceResult) {
+        let now = Instant::now();
+        let frame_area = (result.width as f32) * (result.height as f32);
+
+        // --- 1) Frame-level: zero-detection counter ---
+        if result.detections.is_empty() {
+            self.frame_zero_detections_total += 1;
+        }
+
+        // --- 2) Detect intra-frame contradictions: two distinct km/h
+        //         SpeedLimitSign detections in the same result. ---
+        let mut seen_kmh: Vec<u32> = Vec::new();
+        for det in &result.detections {
+            if det.class_id as usize == SPEED_LIMIT_CLASS_ID {
+                if let Some(km) = det.value {
+                    let km = km as u32;
+                    if !seen_kmh.contains(&km) {
+                        seen_kmh.push(km);
+                    }
+                }
+            }
+        }
+        let contradicting = seen_kmh.len() > 1;
+
+        // --- 3) Implausible-class heuristic: any of the implausible
+        //         classes present, but no vehicle class. ---
+        let has_vehicle = result
+            .detections
+            .iter()
+            .any(|d| VEHICLE_CLASS_IDS.contains(&d.class_id));
+        let has_implausible = result
+            .detections
+            .iter()
+            .any(|d| IMPLAUSIBLE_WITHOUT_VEHICLE.contains(&d.class_id));
+
+        // --- 4) Per-detection updates: window, totals, log ---
+        for det in &result.detections {
+            // Per-class total
+            if (det.class_id as usize) < NUM_CLASSES {
+                self.class_totals[det.class_id as usize] = self.class_totals[det.class_id as usize]
+                    .saturating_add(1);
+            }
+            // Speed-limit km/h sub-bucket
+            if det.class_id as usize == SPEED_LIMIT_CLASS_ID {
+                match det.value {
+                    Some(km) => {
+                        let km = km as u32;
+                        *self.speed_limit_totals.entry(km).or_insert(0) += 1;
+                    }
+                    None => self.speed_limit_unmapped_total += 1,
+                }
+            }
+            // Confidence histogram + below/above min
+            let bidx = conf_bucket(det.confidence);
+            self.conf_bucket_totals[bidx] = self.conf_bucket_totals[bidx].saturating_add(1);
+            if det.confidence < MIN_CONFIDENCE {
+                self.conf_below_min_total += 1;
+            } else {
+                self.conf_above_min_total += 1;
+            }
+            // FP heuristic: implausible class without vehicle
+            if has_implausible
+                && !has_vehicle
+                && IMPLAUSIBLE_WITHOUT_VEHICLE.contains(&det.class_id)
+            {
+                self.fp_implausible_class_total += 1;
+            }
+            // Bbox-area outlier (per-detection flag carried into window)
+            let bbox_area = (det.bbox_xyxy[2] - det.bbox_xyxy[0]).max(0.0)
+                * (det.bbox_xyxy[3] - det.bbox_xyxy[1]).max(0.0);
+            let outlier = frame_area > 0.0 && (bbox_area / frame_area) > BBOX_AREA_OUTLIER_RATIO;
+
+            // Push to sliding window
+            self.quality_window.push_back(QualityEntry {
+                at: now,
+                class_id: det.class_id,
+                confidence: det.confidence,
+                speed_limit_kmh: if det.class_id as usize == SPEED_LIMIT_CLASS_ID {
+                    det.value.map(|v| v as u32)
+                } else {
+                    None
+                },
+                contradicting_speed_limit: contradicting,
+                bbox_size_outlier: outlier,
+            });
+
+            // Per-frame detection-log entry (rolling NDJSON)
+            self.push_detection_log(result.frame_id, det);
+        }
+
+        // --- 5) Prune window of entries older than 60 s ---
+        while let Some(front) = self.quality_window.front() {
+            if now.duration_since(front.at).as_nanos() > QUALITY_WINDOW_NS {
+                self.quality_window.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // --- 6) Always publish per-result keys; recompute the
+        //         derived (mean/avg) ones at most once per second. ---
+        self.publish_quality_keys(ctx);
+
+        let recompute = match self.quality_last_recompute {
+            None => true,
+            Some(prev) => now.duration_since(prev).as_secs() >= 1,
+        };
+        if recompute {
+            self.publish_quality_derived(ctx);
+            self.quality_last_recompute = Some(now);
+        }
+    }
+
+    /// Append a single detection to the rolling NDJSON detection log
+    /// and trim to `DETECTION_LOG_CAPACITY`. Compact key names keep
+    /// the blackboard string under ~100 KB at full capacity.
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn push_detection_log(&mut self, frame_id: u64, det: &Detection) {
+        let entry = match det.value {
+            Some(km) => format!(
+                r#"{{"f":{},"c":{},"n":"{}","p":{:.3},"b":[{:.1},{:.1},{:.1},{:.1}],"k":{}}}"#,
+                frame_id, det.class_id, det.label, det.confidence,
+                det.bbox_xyxy[0], det.bbox_xyxy[1], det.bbox_xyxy[2], det.bbox_xyxy[3],
+                km as u32,
+            ),
+            None => format!(
+                r#"{{"f":{},"c":{},"n":"{}","p":{:.3},"b":[{:.1},{:.1},{:.1},{:.1}]}}"#,
+                frame_id, det.class_id, det.label, det.confidence,
+                det.bbox_xyxy[0], det.bbox_xyxy[1], det.bbox_xyxy[2], det.bbox_xyxy[3],
+            ),
+        };
+        if self.detection_log.len() == DETECTION_LOG_CAPACITY {
+            self.detection_log.pop_front();
+        }
+        self.detection_log.push_back(entry);
+    }
+
+    /// Publish all per-detection blackboard keys (totals + last60s
+    /// counters). Cheap: a few hashmap iterations and writes.
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn publish_quality_keys(&self, ctx: &PluginContext) {
+        let bb = &ctx.blackboard;
+
+        // Per-class last60s counters from the window
+        let mut class_60s = [0u64; NUM_CLASSES];
+        let mut conf_buckets_60s = [0u64; NUM_CONF_BUCKETS];
+        let mut count_in_window = 0u64;
+        let mut conf_sum = 0.0_f32;
+        let mut contradicting = 0u32;
+        let mut bbox_outlier = 0u32;
+        let mut low_conf_publish = 0u32;
+        for e in &self.quality_window {
+            if (e.class_id as usize) < NUM_CLASSES {
+                class_60s[e.class_id as usize] += 1;
+            }
+            conf_buckets_60s[conf_bucket(e.confidence)] += 1;
+            count_in_window += 1;
+            conf_sum += e.confidence;
+            if e.contradicting_speed_limit {
+                contradicting += 1;
+            }
+            if e.bbox_size_outlier {
+                bbox_outlier += 1;
+            }
+            if e.confidence >= MIN_CONFIDENCE && e.confidence < LOW_CONF_PUBLISH_MAX {
+                low_conf_publish += 1;
+            }
+        }
+
+        // --- Class counters ---
+        for (idx, name) in CLASS_NAMES.iter().enumerate() {
+            let snake = snake_case_class(name);
+            bb.set(format!("sign.class.{snake}.total"), self.class_totals[idx].to_string());
+            bb.set(format!("sign.class.{snake}.last60s"), class_60s[idx].to_string());
+        }
+        for &km in speed_mapper::SPEED_LIMITS {
+            let total = self.speed_limit_totals.get(&km).copied().unwrap_or(0);
+            bb.set(format!("sign.class.SpeedLimitSign.km_{km}.total"), total.to_string());
+            let last60 = self
+                .quality_window
+                .iter()
+                .filter(|e| e.speed_limit_kmh == Some(km))
+                .count() as u64;
+            bb.set(format!("sign.class.SpeedLimitSign.km_{km}.last60s"), last60.to_string());
+        }
+        bb.set(
+            "sign.class.SpeedLimitSign.km_unmapped.total",
+            self.speed_limit_unmapped_total.to_string(),
+        );
+
+        // --- Confidence histogram ---
+        for i in 0..NUM_CONF_BUCKETS {
+            let key = conf_bucket_key(i);
+            bb.set(format!("sign.conf.bucket_{key}.total"), self.conf_bucket_totals[i].to_string());
+            bb.set(format!("sign.conf.bucket_{key}.last60s"), conf_buckets_60s[i].to_string());
+        }
+        bb.set("sign.conf.below_min.total", self.conf_below_min_total.to_string());
+        bb.set("sign.conf.above_min.total", self.conf_above_min_total.to_string());
+
+        // --- Frame cardinality + FP windowed counters ---
+        bb.set("sign.frame.zero_detections.total", self.frame_zero_detections_total.to_string());
+        bb.set("sign.fp.contradicting_speed_limits_60s", contradicting.to_string());
+        bb.set("sign.fp.implausible_class_total", self.fp_implausible_class_total.to_string());
+        bb.set("sign.fp.bbox_size_outlier_60s", bbox_outlier.to_string());
+        bb.set("sign.fp.low_conf_publish_60s", low_conf_publish.to_string());
+
+        // --- Per-frame detection log (NDJSON, rolling) ---
+        if !self.detection_log.is_empty() {
+            // Join with \n. ~80 B per entry × 1000 = ~80 KB at capacity.
+            let body = self
+                .detection_log
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            bb.set("sign.detections.last_n", body);
+        }
+
+        // Stash window aggregates for the every-1s derived metrics
+        // (the function below reads this state via &self too).
+        let _ = (count_in_window, conf_sum);
+    }
+
+    /// Publish derived quality metrics (mean, avg, max). Called at
+    /// most once per second by `update_quality`.
+    #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
+    fn publish_quality_derived(&self, ctx: &PluginContext) {
+        let bb = &ctx.blackboard;
+
+        let mut conf_sum = 0.0_f32;
+        let mut conf_count = 0u32;
+        for e in &self.quality_window {
+            conf_sum += e.confidence;
+            conf_count += 1;
+        }
+        let conf_mean = if conf_count > 0 { conf_sum / (conf_count as f32) } else { 0.0 };
+        bb.set("sign.conf.mean_60s", format!("{:.3}", conf_mean));
+
+        // Group window entries by 100-ms bucket as a proxy for
+        // "frame" — we don't have explicit frame ids in the window
+        // and 100 ms < the inference cadence so each bucket holds at
+        // most one inference's detections.
+        let mut frame_counts: std::collections::HashMap<u64, u32> =
+            std::collections::HashMap::new();
+        if let Some(first) = self.quality_window.front() {
+            for e in &self.quality_window {
+                let bucket = e.at.duration_since(first.at).as_millis() as u64 / 100;
+                *frame_counts.entry(bucket).or_insert(0) += 1;
+            }
+        }
+        let max_in_frame = frame_counts.values().copied().max().unwrap_or(0);
+        let avg_in_frame = if frame_counts.is_empty() {
+            0.0
+        } else {
+            (conf_count as f32) / (frame_counts.len() as f32)
+        };
+        bb.set("sign.frame.detection_count_max_60s", max_in_frame.to_string());
+        bb.set("sign.frame.detection_count_avg_60s", format!("{:.2}", avg_in_frame));
     }
 }
 
@@ -1210,5 +1619,37 @@ mod tests {
     fn decode_jpeg_rejects_non_jpeg_bytes() {
         let err = decode_jpeg(b"not a jpeg").unwrap_err();
         let _ = format!("{err}");
+    }
+
+    // ---- Phase 6.5f quality helpers ----
+
+    #[test]
+    fn conf_bucket_boundaries() {
+        // CONF_BUCKET_EDGES = [0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 1.0]
+        assert_eq!(conf_bucket(0.0), 0);
+        assert_eq!(conf_bucket(0.49), 0);
+        assert_eq!(conf_bucket(0.5), 1);
+        assert_eq!(conf_bucket(0.69), 2);
+        assert_eq!(conf_bucket(0.7), 3);
+        assert_eq!(conf_bucket(0.74), 3);
+        assert_eq!(conf_bucket(0.75), 4);
+        assert_eq!(conf_bucket(0.85), 6);
+        assert_eq!(conf_bucket(0.9), 7);
+        assert_eq!(conf_bucket(1.0), 7); // last bucket closed on the right
+    }
+
+    #[test]
+    fn conf_bucket_key_format() {
+        assert_eq!(conf_bucket_key(0), "00_50");
+        assert_eq!(conf_bucket_key(3), "70_75");
+        assert_eq!(conf_bucket_key(7), "90_100");
+    }
+
+    #[test]
+    fn snake_case_class_examples() {
+        assert_eq!(snake_case_class("Car"), "car");
+        assert_eq!(snake_case_class("SpeedLimitSign"), "speed_limit_sign");
+        assert_eq!(snake_case_class("TrafficLightRed"), "traffic_light_red");
+        assert_eq!(snake_case_class("RoadEdge"), "road_edge");
     }
 }

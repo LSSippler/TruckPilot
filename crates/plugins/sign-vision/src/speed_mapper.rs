@@ -12,7 +12,7 @@
 const TEMPLATE_SIZE: u32 = 32;
 
 /// EU speed limits to generate templates for.
-const SPEED_LIMITS: &[u32] = &[30, 50, 60, 70, 80, 90, 100, 110, 120, 130];
+pub const SPEED_LIMITS: &[u32] = &[30, 50, 60, 70, 80, 90, 100, 110, 120, 130];
 
 /// Minimum NCC score to accept a match (in [−1, 1]).
 const MIN_NCC: f32 = 0.45;
