@@ -27,9 +27,12 @@ python tools\model-tools\extract_sign_crops.py `
     --ndjson outputs\sign_detections_dump.txt `
     --out-dir tools\model-tools\sign_crops\
 
-# 4. Hand-label: move each crop into tools\model-tools\sign_crops_labeled\<kmh>\
-#    Mapped crops land in sign_crops\_mapped\ as reference; use them as
-#    ground truth when the YOLO bbox is ambiguous.
+# 4. Hand-label: in sign_crops/, group crops into <kmh>/ subdirs:
+#      sign_crops/40/<id>.png, sign_crops/60/<id>.png, ...
+#    Delete out-of-frame / unreadable crops. The _mapped/ subdir
+#    serves as a labeled-by-SpeedMapper reference; check it but do
+#    not feed it to the template builder (build_sign_templates skips
+#    non-numeric subdir names).
 ```
 
 ### Why a frames mirror is needed
@@ -39,6 +42,27 @@ no timestamp. There is no way to align the daemon's logical frame_ids
 to an OBS or external video recording without re-running with the
 `--save-frames-dir` flag, which writes `<seq>.jpg` per published frame
 (NDJSON `f * 2 == seq`).
+
+## build_sign_templates.py — generate real-image NCC templates
+
+Reads `tools/model-tools/sign_crops/<kmh>/*.png` (output of the labeling
+step above) and writes `crates/plugins/sign-vision/src/speed_templates_real.rs`
+with one embedded `[u8; 1024]` per crop. The Rust `SpeedMapper` tries
+real templates first and falls back to synthetic 5×7-bitmap-font
+templates for any km/h with no real exemplars.
+
+```powershell
+python tools\model-tools\build_sign_templates.py
+# Found 4 km/h classes, N crops total: ...
+# Wrote crates/plugins/sign-vision/src/speed_templates_real.rs
+
+cargo build -p truckpilot-plugin-sign-vision --release
+cargo xtask copy-plugins
+# Restart daemon, run live test, check sign.class.SpeedLimitSign.km_<n>.total
+```
+
+Re-run after every fresh labeling pass. The generated `.rs` file is
+checked in; an empty placeholder ships when no labeled crops exist.
 
 ## quantize_fp16.py — FP32 → FP16
 
