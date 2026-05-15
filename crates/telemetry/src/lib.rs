@@ -31,14 +31,14 @@ use truckpilot_plugin_api::Telemetry;
 /// Number of consecutive insane frames a single source may emit before
 /// the reader marks it suspended. The offending frames are discarded —
 /// once the threshold trips, the cooldown lasts [`SANITY_COOLDOWN`]
-/// before that source is tried again.
-const SANITY_CONSECUTIVE_BAD: u32 = 3;
+/// before that source is tried again. Set high enough that an SHM
+/// torn-read burst (a few frames per second under load) does not
+/// permanently knock out the source.
+const SANITY_CONSECUTIVE_BAD: u32 = 30;
 
 /// How long a source stays suspended after exceeding
-/// [`SANITY_CONSECUTIVE_BAD`] consecutive insane frames. Long enough
-/// that a transient game glitch resolves itself, short enough that a
-/// temporarily-bad source recovers within one player session.
-const SANITY_COOLDOWN: Duration = Duration::from_secs(10);
+/// [`SANITY_CONSECUTIVE_BAD`] consecutive insane frames.
+const SANITY_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Per-source slot indexes into [`TelemetryReader::bad_reads`] and
 /// [`TelemetryReader::cooldown_until`]. Kept as `const` instead of
@@ -99,7 +99,11 @@ impl Default for TelemetryConfig {
             game_versions_path: None,
             enable_memory: true,
             enable_shm: true,
-            enable_http: true,
+            // HTTP polls the Funbit server which is rarely running.
+            // Each failing tick costs up to ~1.3s (connect+read timeouts),
+            // which spams logs and stalls the heartbeat. Opt in explicitly
+            // when you actually run the Funbit server.
+            enable_http: false,
         }
     }
 }
