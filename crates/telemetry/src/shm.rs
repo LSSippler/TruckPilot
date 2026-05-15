@@ -104,10 +104,46 @@ pub struct ShmTelemetryLayout {
     pub timestamp_us: u64,
 }
 
+// Compile-time offset guards. If the DLL writer struct ever drifts from
+// the layout below, these will fail to build — far better than silent
+// garbage in pitch/roll at runtime. Numbers must match the offsets
+// asserted in `crates/telemetry-dll/src/lib.rs`.
+const _: () = {
+    assert!(mem::offset_of!(ShmTelemetryLayout, magic) == 0);
+    assert!(mem::offset_of!(ShmTelemetryLayout, version) == 4);
+    assert!(mem::offset_of!(ShmTelemetryLayout, sequence) == 8);
+    assert!(mem::offset_of!(ShmTelemetryLayout, _pad) == 12);
+    assert!(mem::offset_of!(ShmTelemetryLayout, x) == 16);
+    assert!(mem::offset_of!(ShmTelemetryLayout, y) == 24);
+    assert!(mem::offset_of!(ShmTelemetryLayout, z) == 32);
+    assert!(mem::offset_of!(ShmTelemetryLayout, heading) == 40);
+    assert!(mem::offset_of!(ShmTelemetryLayout, pitch) == 48);
+    assert!(mem::offset_of!(ShmTelemetryLayout, roll) == 56);
+    assert!(mem::offset_of!(ShmTelemetryLayout, speed_ms) == 64);
+    assert!(mem::offset_of!(ShmTelemetryLayout, engine_rpm) == 72);
+    assert!(mem::offset_of!(ShmTelemetryLayout, nav_speed_limit_kmh) == 80);
+    assert!(mem::offset_of!(ShmTelemetryLayout, nav_speed_limit_valid) == 88);
+    assert!(mem::offset_of!(ShmTelemetryLayout, fuel_liters) == 92);
+    assert!(mem::offset_of!(ShmTelemetryLayout, odometer_km) == 100);
+    assert!(mem::offset_of!(ShmTelemetryLayout, cruise_control_speed_kmh) == 108);
+    assert!(mem::offset_of!(ShmTelemetryLayout, local_velocity) == 116);
+    assert!(mem::offset_of!(ShmTelemetryLayout, local_acceleration) == 128);
+    assert!(mem::offset_of!(ShmTelemetryLayout, effective_throttle) == 140);
+    assert!(mem::offset_of!(ShmTelemetryLayout, distance_to_lead_m) == 144);
+    assert!(mem::offset_of!(ShmTelemetryLayout, effective_brake) == 148);
+    assert!(mem::offset_of!(ShmTelemetryLayout, timestamp_us) == 188);
+    assert!(mem::size_of::<ShmTelemetryLayout>() == 196);
+};
+
 /// Persistent shared-memory reader.
 pub struct ShmReader {
     inner: ShmInner,
     last_sequence: u32,
+    /// Counter for the first-frames raw-byte diagnostic log (Phase X.Y
+    /// Bug-1 reproduction). Logs the first N successful reads so we can
+    /// verify whether the SHM bytes themselves are garbage (= stale
+    /// deployed DLL) or only the decoded values are wrong (= reader bug).
+    diag_logged_count: u32,
 }
 
 impl ShmReader {
@@ -117,6 +153,7 @@ impl ShmReader {
         Ok(Self {
             inner: ShmInner::open()?,
             last_sequence: 0,
+            diag_logged_count: 0,
         })
     }
 
@@ -149,6 +186,37 @@ impl ShmReader {
             // frame. Field reads through `read_sequence` are u32 and
             // therefore atomic on x86_64.
             if seq_before == seq_after && layout.sequence == seq_before {
+                // First-frames raw-byte diagnostic. Logs the orientation
+                // block (offsets 40..72: heading, pitch, roll, speed,
+                // engine_rpm) so we can compare bytes vs. decoded values
+                // — proves whether the DLL writer or the reader is at
+                // fault when fields look like denormal garbage.
+                if self.diag_logged_count < 10 {
+                    if let Some(bytes) = self.inner.read_raw_orientation_block() {
+                        // Copy packed fields to locals before borrowing
+                        // them (repr(packed) forbids references).
+                        let seq = layout.sequence;
+                        let heading = layout.heading;
+                        let pitch = layout.pitch;
+                        let roll = layout.roll;
+                        let speed = layout.speed_ms;
+                        let rpm = layout.engine_rpm;
+                        tracing::warn!(
+                            target: "truckpilot_telemetry",
+                            "SHM diag #{} seq={}: bytes[40..72]={:02x?} \
+                             decoded heading={} pitch={} roll={} speed_ms={} engine_rpm={}",
+                            self.diag_logged_count + 1,
+                            seq,
+                            bytes,
+                            heading,
+                            pitch,
+                            roll,
+                            speed,
+                            rpm,
+                        );
+                    }
+                    self.diag_logged_count += 1;
+                }
                 self.last_sequence = layout.sequence;
                 return Some(layout_to_telemetry(layout));
             }
@@ -255,6 +323,20 @@ impl ShmInner {
                 as *const u32)
         })
     }
+
+    /// Raw bytes of the orientation/motion block (offsets 40..72:
+    /// heading, pitch, roll, speed_ms, engine_rpm). For diagnostic
+    /// logging — proves whether the SHM bytes themselves are garbage.
+    fn read_raw_orientation_block(&self) -> Option<[u8; 32]> {
+        if self.view.is_null() {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.view.add(40), out.as_mut_ptr(), 32);
+        }
+        Some(out)
+    }
 }
 
 #[cfg(windows)]
@@ -307,6 +389,16 @@ impl ShmInner {
             return None;
         }
         Some(unsafe { std::ptr::read_unaligned(data.as_ptr().add(off) as *const u32) })
+    }
+
+    fn read_raw_orientation_block(&self) -> Option<[u8; 32]> {
+        let data = std::fs::read(&self.path).ok()?;
+        if data.len() < 72 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&data[40..72]);
+        Some(out)
     }
 }
 

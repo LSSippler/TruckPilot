@@ -164,6 +164,36 @@ pub struct ShmLayout {
     pub timestamp_us: u64,
 }
 
+// Compile-time offset guards. Must mirror those in
+// `crates/telemetry/src/shm.rs::ShmTelemetryLayout` exactly. Drift here
+// silently corrupts every f64 the daemon reads, so trip the build.
+const _: () = {
+    assert!(mem::offset_of!(ShmLayout, magic) == 0);
+    assert!(mem::offset_of!(ShmLayout, version) == 4);
+    assert!(mem::offset_of!(ShmLayout, sequence) == 8);
+    assert!(mem::offset_of!(ShmLayout, _pad) == 12);
+    assert!(mem::offset_of!(ShmLayout, x) == 16);
+    assert!(mem::offset_of!(ShmLayout, y) == 24);
+    assert!(mem::offset_of!(ShmLayout, z) == 32);
+    assert!(mem::offset_of!(ShmLayout, heading) == 40);
+    assert!(mem::offset_of!(ShmLayout, pitch) == 48);
+    assert!(mem::offset_of!(ShmLayout, roll) == 56);
+    assert!(mem::offset_of!(ShmLayout, speed_ms) == 64);
+    assert!(mem::offset_of!(ShmLayout, engine_rpm) == 72);
+    assert!(mem::offset_of!(ShmLayout, nav_speed_limit_kmh) == 80);
+    assert!(mem::offset_of!(ShmLayout, nav_speed_limit_valid) == 88);
+    assert!(mem::offset_of!(ShmLayout, fuel_liters) == 92);
+    assert!(mem::offset_of!(ShmLayout, odometer_km) == 100);
+    assert!(mem::offset_of!(ShmLayout, cruise_control_speed_kmh) == 108);
+    assert!(mem::offset_of!(ShmLayout, local_velocity) == 116);
+    assert!(mem::offset_of!(ShmLayout, local_acceleration) == 128);
+    assert!(mem::offset_of!(ShmLayout, effective_throttle) == 140);
+    assert!(mem::offset_of!(ShmLayout, distance_to_lead_m) == 144);
+    assert!(mem::offset_of!(ShmLayout, effective_brake) == 148);
+    assert!(mem::offset_of!(ShmLayout, timestamp_us) == 188);
+    assert!(mem::size_of::<ShmLayout>() == 196);
+};
+
 // ---------------------------------------------------------------------------
 // SCS SDK structs
 // ---------------------------------------------------------------------------
