@@ -56,7 +56,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - Router-Perf-Audit Binary restored — pending Execution + Verdict (commit dea41c73)
 - Blackboard-Key-Inventory — docs/blackboard_keys.md (commit 0f906112)
 - Phase 6.2i — PID Hotswap + Live Telemetry Logging (tick_log/fault_log/pid_tuning_log, commit a71d1e2a)
-- [[01-Phases/Phase-6.2a-vJoy-Probe]] — GATE-0 vor 6.2c: `truckpilot-vjoy-probe` Binary (Spec Final v1.0, 15/15 Tests, Manual-ETS2-Test pending)
+- [[01-Phases/Phase-6.2a-vJoy-Probe]] — **CLOSED 2026-05-15**: GATE-0 PASS. `truckpilot-vjoy-probe` Binary validated (Spec Final v1.0, 15/15 unit tests, alle 4 Manual-ETS2-Kriterien PASS). vJoy Device 1 X/Y/Z = Steering/Throttle/Brake. Phase 6.2c (vJoy Real Wiring) freigegeben.
 
 ## Reviews
 
@@ -81,8 +81,8 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 | 6.2-Prep | Plugin-Architecture-Refactor | DONE | 661812dd |
 | 6.2a | State-Machine | DONE | b479c2eb |
 | 6.2b | Tick-Phasen (Daemon + Plugins) | DONE | b479c2eb |
-| 6.2a-Probe | vJoy GATE-0 Probe Binary | IN PROGRESS (code+tests green, ETS2 manual test pending) | [[01-Phases/Phase-6.2a-vJoy-Probe]] |
-| 6.2c | vJoy Real (Hardware Wiring) | PLANNED (requires 6.2a-Probe GATE-0 pass) |  |
+| 6.2a-Probe | vJoy GATE-0 Probe Binary | **CLOSED 2026-05-15** (GATE-0 PASS, 4/4 manual criteria) | [[01-Phases/Phase-6.2a-vJoy-Probe]] |
+| 6.2c | vJoy Real (Hardware Wiring) | UNBLOCKED (GATE-0 cleared) |  |
 | 6.2d | Lane-Keeper | DONE | 2a86bdac |
 | 6.2e | Speed-Controller | DONE | 2a86bdac |
 | 6.2f | ACC (conditional) | CONDITIONAL (license-resolved, design pending) |  |
@@ -103,6 +103,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - Phase 6.5 — UI-Dashboard erweitert (PLANNED)
 - [[01-Phases/Phase-6.5b-Memory-Hack-Validation]] — RE Tag 1+2: Ghidra+x64dbg Live-Validation + CE Speed-Scan-Pivot (IN PROGRESS)
 - [[01-Phases/Phase-6.5c.1-DXcam-SHM-PoC]] — DXcam → SHM Frame Capture: Python-Producer + Rust-Reader, Sequence-Lock, 6/6 Tests grün, Live-Test pending
+- [[01-Phases/Phase-6.5e-Vision-Training]] — **CLOSED 2026-05-15**: v2 final (mAP 0.798, 793 manual frames). v3 auto-annotation pivot REJECTED (mAP 0.604, -19%, 9548 frames). Lesson: Sauberkeit > Menge. Production-Model: `models/truckpilot-yolov8s-v2/best.pt`.
 - Phase 6.x — Vision-ACC (DEFERRED, langfristig)
 
 ## Open Threads (Phase 6.2 follow-ups)
