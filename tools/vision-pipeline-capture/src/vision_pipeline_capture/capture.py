@@ -6,6 +6,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from . import DEFAULT_FPS, DEFAULT_JPEG_QUALITY, DEFAULT_SHM_NAME
@@ -122,8 +123,18 @@ def run_capture(
     max_width: int = MAX_W,
     max_height: int = MAX_H,
     on_stats: Callable[[CaptureStats], None] | None = None,
+    save_frames_dir: Path | None = None,
 ) -> CaptureStats:
-    """Capture ETS2 window at `fps`, JPEG-encode, publish to SHM. F8=pause, F9=quit."""
+    """Capture ETS2 window at `fps`, JPEG-encode, publish to SHM. F8=pause, F9=quit.
+
+    When ``save_frames_dir`` is set, every published JPEG is also written to
+    ``<dir>/<seq>.jpg`` where ``seq`` is the SHM writer's committed sequence
+    number. Frame_ids in the daemon's ``sign.detections.last_n`` NDJSON are
+    ``seq // 2`` (vision-frame-source halves the sequence to get the logical
+    id), so a downstream extractor maps NDJSON ``f`` -> ``f * 2.jpg``.
+    Off by default; intended for offline crop extraction (e.g. Phase 6.5h
+    template re-derivation), not production runs.
+    """
     if sys.platform != "win32":
         raise RuntimeError("Vision-pipeline-capture is Windows-only.")
 
@@ -183,7 +194,11 @@ def run_capture(
                         # consumer's SystemTime::now() reference frame, or
                         # frames will be wrongly flagged stale.
                         ts_us = time.time_ns() // 1_000
-                        writer.write_frame(width=w, height=h, jpeg_bytes=jpeg_bytes, timestamp_us=ts_us)
+                        seq = writer.write_frame(
+                            width=w, height=h, jpeg_bytes=jpeg_bytes, timestamp_us=ts_us
+                        )
+                        if save_frames_dir is not None:
+                            (save_frames_dir / f"{seq}.jpg").write_bytes(jpeg_bytes)
                         stats.frames_published += 1
                         stats.last_jpeg_bytes = len(jpeg_bytes)
                         frames_in_window += 1

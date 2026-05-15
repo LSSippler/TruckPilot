@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -30,6 +31,13 @@ def cli(verbose: bool) -> None:
 @click.option("--quit-hotkey", default="F9", show_default=True)
 @click.option("--max-width", default=1920, show_default=True, type=int, help="downscale ceiling W")
 @click.option("--max-height", default=1080, show_default=True, type=int, help="downscale ceiling H")
+@click.option(
+    "--save-frames-dir",
+    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Optional dir to mirror every published JPEG as <seq>.jpg. "
+    "Off by default; intended for offline crop extraction (Phase 6.5h).",
+)
 def start_cmd(
     shm_name: str,
     fps: int,
@@ -39,9 +47,15 @@ def start_cmd(
     quit_hotkey: str,
     max_width: int,
     max_height: int,
+    save_frames_dir: Path | None,
 ) -> None:
     """Start the capture producer. F8 pauses/resumes, F9 quits."""
     from .capture import run_capture
+
+    if save_frames_dir is not None:
+        save_frames_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"[yellow]save-frames-dir active: {save_frames_dir}[/yellow]")
+
     stats = run_capture(
         shm_name=shm_name,
         fps=fps,
@@ -51,6 +65,7 @@ def start_cmd(
         quit_hotkey=quit_hotkey,
         max_width=max_width,
         max_height=max_height,
+        save_frames_dir=save_frames_dir,
     )
     console.print(
         f"published={stats.frames_published} skipped={stats.frames_skipped} "
