@@ -121,16 +121,42 @@ impl ShmReader {
     }
 
     /// Read the current frame. Returns `None` if the magic/version do not
-    /// match (writer might be initialising).
+    /// match (writer might be initialising) or if every attempt at a
+    /// torn-read-free read fails.
+    ///
+    /// **Torn-read protection.** The DLL writes the layout struct via a
+    /// non-atomic ~196-byte memcpy. A reader running at 50 Hz against a
+    /// writer running at frame-rate occasionally catches a half-old /
+    /// half-new frame, producing wildly out-of-range f64s. To guard
+    /// against this, we read the sequence field, then the body, then
+    /// re-read sequence. If the sequence drifted *or* differs from the
+    /// sequence embedded in the body, the frame is torn — retry a few
+    /// times and give up if the writer is faster than us.
     pub fn read(&mut self) -> Option<Telemetry> {
-        let layout = self.inner.read_layout()?;
-        if layout.magic != SHM_MAGIC || layout.version != SHM_VERSION {
-            return None;
+        const MAX_ATTEMPTS: u32 = 4;
+
+        for _ in 0..MAX_ATTEMPTS {
+            let seq_before = self.inner.read_sequence()?;
+            let layout = self.inner.read_layout()?;
+            let seq_after = self.inner.read_sequence()?;
+
+            if layout.magic != SHM_MAGIC || layout.version != SHM_VERSION {
+                return None;
+            }
+
+            // Embedded seq must match both bracketing reads — otherwise
+            // the writer touched the buffer mid-copy and we got a torn
+            // frame. Field reads through `read_sequence` are u32 and
+            // therefore atomic on x86_64.
+            if seq_before == seq_after && layout.sequence == seq_before {
+                self.last_sequence = layout.sequence;
+                return Some(layout_to_telemetry(layout));
+            }
+            // Tiny back-off so we don't spin synchronously with the
+            // writer's frame cadence.
+            std::thread::sleep(std::time::Duration::from_micros(50));
         }
-        // Track sequence purely as diagnostic — we still serve the frame
-        // even if it has not advanced.
-        self.last_sequence = layout.sequence;
-        Some(layout_to_telemetry(layout))
+        None
     }
 }
 
@@ -217,6 +243,18 @@ impl ShmInner {
         }
         Some(unsafe { std::ptr::read_unaligned(self.view as *const ShmTelemetryLayout) })
     }
+
+    /// Read just the `sequence` field (offset 8). Used for torn-read
+    /// detection — a u32 read is atomic on x86_64.
+    fn read_sequence(&self) -> Option<u32> {
+        if self.view.is_null() {
+            return None;
+        }
+        Some(unsafe {
+            std::ptr::read_unaligned(self.view.add(mem::offset_of!(ShmTelemetryLayout, sequence))
+                as *const u32)
+        })
+    }
 }
 
 #[cfg(windows)]
@@ -260,6 +298,15 @@ impl ShmInner {
             return None;
         }
         Some(unsafe { std::ptr::read_unaligned(data.as_ptr() as *const ShmTelemetryLayout) })
+    }
+
+    fn read_sequence(&self) -> Option<u32> {
+        let data = std::fs::read(&self.path).ok()?;
+        let off = mem::offset_of!(ShmTelemetryLayout, sequence);
+        if data.len() < off + 4 {
+            return None;
+        }
+        Some(unsafe { std::ptr::read_unaligned(data.as_ptr().add(off) as *const u32) })
     }
 }
 
