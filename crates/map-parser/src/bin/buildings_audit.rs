@@ -175,11 +175,7 @@ fn main() {
     sector_paths.sort();
     eprintln!("probed {} `.base` paths", sector_paths.len());
 
-    type Sample = (
-        String,
-        Vec<u8>,
-        truckpilot_map_parser::sector::AuditReport,
-    );
+    type Sample = (String, Vec<u8>, truckpilot_map_parser::sector::AuditReport);
     let mut samples: Vec<Sample> = Vec::new();
     let mut total_buildings_last = 0usize;
     let mut total_failures = 0usize;
@@ -243,7 +239,10 @@ fn main() {
         let body_start = last.start_offset + 4;
         let body_len = last.end_offset.saturating_sub(body_start);
 
-        let _ = writeln!(out, "------------------------------------------------------------");
+        let _ = writeln!(
+            out,
+            "------------------------------------------------------------"
+        );
         let _ = writeln!(out, "## {path}");
         let _ = writeln!(out, "    sector size              : {} bytes", data.len());
         let _ = writeln!(out, "    item_count               : {}", report.item_count);
@@ -263,7 +262,11 @@ fn main() {
             "    failure raw_type         : 0x{:08x} ({})",
             failure.raw_type, failure.raw_type
         );
-        let _ = writeln!(out, "    failure error_offset     : {}", failure.error_offset);
+        let _ = writeln!(
+            out,
+            "    failure error_offset     : {}",
+            failure.error_offset
+        );
         let _ = writeln!(out, "    failure msg              : {}", failure.error_msg);
         let _ = writeln!(out);
 
@@ -273,7 +276,10 @@ fn main() {
 
         let one_hits = find_float_one(data, body_start, 128);
         if one_hits.is_empty() {
-            let _ = writeln!(out, "    float 1.0 (0x3F800000) scan: none in 128-byte window");
+            let _ = writeln!(
+                out,
+                "    float 1.0 (0x3F800000) scan: none in 128-byte window"
+            );
         } else {
             let _ = writeln!(
                 out,
@@ -321,10 +327,7 @@ fn main() {
                     );
                 }
                 None => {
-                    let _ = writeln!(
-                        out,
-                        "      Δ = {delta:+5}  pos {probe_pos:7}  out of range"
-                    );
+                    let _ = writeln!(out, "      Δ = {delta:+5}  pos {probe_pos:7}  out of range");
                 }
             }
         }
@@ -344,8 +347,15 @@ fn main() {
         let _ = writeln!(out);
     }
 
-    let _ = writeln!(out, "============================================================");
-    let _ = writeln!(out, "## Aggregate Δ-distribution ({} samples)", samples.len());
+    let _ = writeln!(
+        out,
+        "============================================================"
+    );
+    let _ = writeln!(
+        out,
+        "## Aggregate Δ-distribution ({} samples)",
+        samples.len()
+    );
     let mut deltas: Vec<(i32, usize)> = delta_hits.into_iter().collect();
     deltas.sort_by_key(|(d, _)| *d);
     for (d, n) in &deltas {
@@ -363,7 +373,10 @@ fn main() {
     for d in &min_delta_per_sample {
         *min_delta_dist.entry(*d).or_insert(0) += 1;
     }
-    let _ = writeln!(out, "## Smallest non-negative valid Δ per sample (the off-by-N candidate):");
+    let _ = writeln!(
+        out,
+        "## Smallest non-negative valid Δ per sample (the off-by-N candidate):"
+    );
     let mut min_keys: Vec<(Option<i32>, usize)> = min_delta_dist.into_iter().collect();
     min_keys.sort_by_key(|a| a.0);
     for (d, n) in &min_keys {
@@ -399,7 +412,10 @@ fn main() {
         .filter_map(|(d, n)| d.map(|dd| (dd, *n)))
         .max_by_key(|(_, n)| *n);
 
-    let _ = writeln!(out, "============================================================");
+    let _ = writeln!(
+        out,
+        "============================================================"
+    );
     let _ = writeln!(
         out,
         "## Global failing-handler distribution (all {total_failures} failing sectors)"

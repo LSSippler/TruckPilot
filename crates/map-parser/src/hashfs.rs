@@ -110,11 +110,12 @@ impl Storage {
             Storage::Mapped(m) => &m[..],
             Storage::Buffer(b) => &b[..],
         };
-        buf.get(offset..offset + len)
-            .ok_or_else(|| ParseError::Archive(format!(
+        buf.get(offset..offset + len).ok_or_else(|| {
+            ParseError::Archive(format!(
                 "read out of bounds: offset={offset}, len={len}, file_len={}",
                 buf.len()
-            )))
+            ))
+        })
     }
 }
 
@@ -188,9 +189,7 @@ pub fn parse_directory_listing(data: &[u8]) -> Result<Vec<DirItem>, ParseError> 
         cursor += len as usize;
 
         let raw_str = std::str::from_utf8(raw).map_err(|e| {
-            ParseError::Archive(format!(
-                "directory listing item is not UTF-8: {e}"
-            ))
+            ParseError::Archive(format!("directory listing item is not UTF-8: {e}"))
         })?;
 
         let (is_dir, name) = match raw_str.strip_prefix('/') {
@@ -261,9 +260,8 @@ impl HashFsArchive {
         // Memory-map large files, read small ones
         let t_storage_start = Instant::now();
         let storage = if file_len > LARGE_FILE_THRESHOLD {
-            let mmap = unsafe {
-                Mmap::map(&file).map_err(|e| ParseError::Io(format!("mmap: {e}")))?
-            };
+            let mmap =
+                unsafe { Mmap::map(&file).map_err(|e| ParseError::Io(format!("mmap: {e}")))? };
             Storage::Mapped(mmap)
         } else {
             let mut buf = Vec::with_capacity(file_len as usize);
@@ -448,7 +446,9 @@ impl Archive for HashFsArchive {
     fn list_files(&self) -> Vec<String> {
         // HashFS does not store paths, so we can't list them.
         // Brute-force would require a massive dictionary.
-        warn!("list_files() called on a HashFS archive; paths are not stored, returning empty list.");
+        warn!(
+            "list_files() called on a HashFS archive; paths are not stored, returning empty list."
+        );
         vec![]
     }
 
@@ -510,16 +510,12 @@ fn parse_header(storage: &Storage, path: &Path) -> Result<HeaderV2, ParseError> 
     }
 
     let entry_count = u32::from_le_bytes(buf[0x0C..0x10].try_into().unwrap());
-    let entry_table_compressed_size =
-        u32::from_le_bytes(buf[0x10..0x14].try_into().unwrap());
+    let entry_table_compressed_size = u32::from_le_bytes(buf[0x10..0x14].try_into().unwrap());
     // 0x14..0x18 is metadata_word_count (u32) — sanity-check value, not retained.
-    let _metadata_word_count =
-        u32::from_le_bytes(buf[0x14..0x18].try_into().unwrap());
-    let metadata_table_compressed_size =
-        u32::from_le_bytes(buf[0x18..0x1C].try_into().unwrap());
+    let _metadata_word_count = u32::from_le_bytes(buf[0x14..0x18].try_into().unwrap());
+    let metadata_table_compressed_size = u32::from_le_bytes(buf[0x18..0x1C].try_into().unwrap());
     let entry_table_start = u64::from_le_bytes(buf[0x1C..0x24].try_into().unwrap());
-    let metadata_table_start =
-        u64::from_le_bytes(buf[0x24..0x2C].try_into().unwrap());
+    let metadata_table_start = u64::from_le_bytes(buf[0x24..0x2C].try_into().unwrap());
     // 0x2C..0x34 is security_descriptor_start (u64, always 0).
 
     Ok(HeaderV2 {
@@ -550,9 +546,8 @@ fn inflate_table(
         )));
     }
     let compressed = storage.read(start_usize, compressed_size as usize)?;
-    let inflated = decompress_to_vec_zlib(compressed).map_err(|e| {
-        ParseError::DecompressionError(format!("{label}: {}", short_zlib_err(&e)))
-    })?;
+    let inflated = decompress_to_vec_zlib(compressed)
+        .map_err(|e| ParseError::DecompressionError(format!("{label}: {}", short_zlib_err(&e))))?;
     debug!(
         "{label}: {} compressed → {} decompressed",
         compressed_size,
@@ -576,25 +571,20 @@ fn build_index(entry_data: &[u8], metadata_data: &[u8]) -> FxHashMap<u64, DirEnt
 
     for i in 0..count {
         let base = i * ENTRY_SIZE;
-        let hash =
-            u64::from_le_bytes(entry_data[base..base + 8].try_into().unwrap());
+        let hash = u64::from_le_bytes(entry_data[base..base + 8].try_into().unwrap());
         let metadata_index =
             u32::from_le_bytes(entry_data[base + 8..base + 12].try_into().unwrap());
         let metadata_count =
             u16::from_le_bytes(entry_data[base + 12..base + 14].try_into().unwrap());
-        let flags_raw =
-            u16::from_le_bytes(entry_data[base + 14..base + 16].try_into().unwrap());
+        let flags_raw = u16::from_le_bytes(entry_data[base + 14..base + 16].try_into().unwrap());
 
-        match resolve_data_part(
-            metadata_data,
-            metadata_index,
-            metadata_count,
-            flags_raw,
-        ) {
+        match resolve_data_part(metadata_data, metadata_index, metadata_count, flags_raw) {
             Some(entry) if entry.size > 0 => {
                 trace!(
                     "0x{hash:016X} → offset={} size={} cs={}",
-                    entry.offset, entry.size, entry.compressed_size
+                    entry.offset,
+                    entry.size,
+                    entry.compressed_size
                 );
                 index.insert(hash, entry);
             }
@@ -650,8 +640,11 @@ fn resolve_data_part(
             return None;
         }
 
-        let offset_lo =
-            u16::from_le_bytes(metadata_data[header_pos..header_pos + 2].try_into().unwrap());
+        let offset_lo = u16::from_le_bytes(
+            metadata_data[header_pos..header_pos + 2]
+                .try_into()
+                .unwrap(),
+        );
         let offset_hi = metadata_data[header_pos + 2];
         let kind_byte = metadata_data[header_pos + 3];
 
@@ -674,10 +667,7 @@ fn resolve_data_part(
         }
 
         if kind_byte & DATA_PART_MARKER != 0 {
-            return parse_main_metadata(
-                &metadata_data[body_pos..body_pos + 16],
-                entry_flags,
-            );
+            return parse_main_metadata(&metadata_data[body_pos..body_pos + 16], entry_flags);
         }
     }
     None
@@ -697,11 +687,11 @@ fn resolve_data_part(
 fn parse_main_metadata(body: &[u8], entry_flags: u16) -> Option<DirEntry> {
     debug_assert_eq!(body.len(), 16);
 
-    let zsize = (u16::from_le_bytes(body[0..2].try_into().unwrap()) as u32)
-        | ((body[2] as u32) << 16);
+    let zsize =
+        (u16::from_le_bytes(body[0..2].try_into().unwrap()) as u32) | ((body[2] as u32) << 16);
     let flags2 = body[3];
-    let usize_ = (u16::from_le_bytes(body[4..6].try_into().unwrap()) as u32)
-        | ((body[6] as u32) << 16);
+    let usize_ =
+        (u16::from_le_bytes(body[4..6].try_into().unwrap()) as u32) | ((body[6] as u32) << 16);
     // body[7] = flags3, currently unused.
     // body[8..12] = unknown7, currently unused.
     let data_offset_blocks = u32::from_le_bytes(body[12..16].try_into().unwrap());
@@ -753,8 +743,7 @@ mod tests {
         buf[0x24..0x2C].copy_from_slice(&0x6666_6666_6666_6666u64.to_le_bytes());
 
         let storage = Storage::Buffer(buf.to_vec());
-        let h = parse_header(&storage, Path::new("synthetic.scs"))
-            .expect("header should parse");
+        let h = parse_header(&storage, Path::new("synthetic.scs")).expect("header should parse");
 
         assert_eq!(h.entry_count, 0x1111_1111);
         assert_eq!(h.entry_table_compressed_size, 0x2222_2222);
@@ -798,12 +787,10 @@ mod tests {
         is_compressed: bool,
     ) -> [u8; 16] {
         let mut body = [0u8; 16];
-        body[0..2]
-            .copy_from_slice(&((zsize & 0xFFFF) as u16).to_le_bytes());
+        body[0..2].copy_from_slice(&((zsize & 0xFFFF) as u16).to_le_bytes());
         body[2] = ((zsize >> 16) & 0xFF) as u8;
         body[3] = if is_compressed { 0x10 } else { 0x00 };
-        body[4..6]
-            .copy_from_slice(&((usize_ & 0xFFFF) as u16).to_le_bytes());
+        body[4..6].copy_from_slice(&((usize_ & 0xFFFF) as u16).to_le_bytes());
         body[6] = ((usize_ >> 16) & 0xFF) as u8;
         // body[7] = 0; body[8..12] = 0
         body[12..16].copy_from_slice(&data_off_blocks.to_le_bytes());
@@ -826,8 +813,7 @@ mod tests {
         let mut idx2 = vec![0u8; 64];
 
         // Data-part body at word 4 (= byte 16).
-        idx2[16..32]
-            .copy_from_slice(&build_data_part_body(100, 250, 0x40, true));
+        idx2[16..32].copy_from_slice(&build_data_part_body(100, 250, 0x40, true));
 
         // Mini-headers at word 8 (= byte 32).
         idx2[32..36].copy_from_slice(&build_mini_header(9, KIND_AUX_8A));
@@ -841,8 +827,8 @@ mod tests {
         // Re-point the aux mini-header to byte 40 = word 10 to avoid overlap.
         idx2[32..36].copy_from_slice(&build_mini_header(10, KIND_AUX_8A));
 
-        let entry = resolve_data_part(&idx2, 8, 2, 0)
-            .expect("should resolve the data-part mini-header");
+        let entry =
+            resolve_data_part(&idx2, 8, 2, 0).expect("should resolve the data-part mini-header");
         assert_eq!(entry.offset, 0x400);
         assert_eq!(entry.size, 250);
         assert_eq!(entry.compressed_size, 100);
@@ -872,9 +858,27 @@ mod tests {
 
         let items = parse_directory_listing(&data).expect("listing should parse");
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0], DirItem { name: "foo".into(), is_dir: true });
-        assert_eq!(items[1], DirItem { name: "bar.sii".into(), is_dir: false });
-        assert_eq!(items[2], DirItem { name: "baz".into(), is_dir: true });
+        assert_eq!(
+            items[0],
+            DirItem {
+                name: "foo".into(),
+                is_dir: true
+            }
+        );
+        assert_eq!(
+            items[1],
+            DirItem {
+                name: "bar.sii".into(),
+                is_dir: false
+            }
+        );
+        assert_eq!(
+            items[2],
+            DirItem {
+                name: "baz".into(),
+                is_dir: true
+            }
+        );
     }
 
     #[test]
@@ -889,11 +893,10 @@ mod tests {
         // Mini-header at word 0 (byte 0), data-part body at word 1 (byte 4).
         let mut idx2 = vec![0u8; 4 + 16];
         idx2[0..4].copy_from_slice(&build_mini_header(1, DATA_PART_MARKER));
-        idx2[4..20]
-            .copy_from_slice(&build_data_part_body(0, 500, 0x10, false));
+        idx2[4..20].copy_from_slice(&build_data_part_body(0, 500, 0x10, false));
 
-        let entry = resolve_data_part(&idx2, 0, 1, 0)
-            .expect("uncompressed data part should resolve");
+        let entry =
+            resolve_data_part(&idx2, 0, 1, 0).expect("uncompressed data part should resolve");
         assert_eq!(entry.offset, 0x100);
         assert_eq!(entry.size, 500);
         assert_eq!(entry.compressed_size, 0);

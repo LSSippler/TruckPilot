@@ -99,10 +99,7 @@ fn hash_len_0_to_16(s: &[u8]) -> u64 {
     }
     if len >= 4 {
         let a = fetch32(s, 0);
-        return hash_len_16(
-            (len as u64).wrapping_add(a << 3),
-            fetch32(s, len - 4),
-        );
+        return hash_len_16((len as u64).wrapping_add(a << 3), fetch32(s, len - 4));
     }
     if len > 0 {
         let a = s[0] as u64;
@@ -134,9 +131,8 @@ fn hash_len_17_to_32(s: &[u8]) -> u64 {
 fn hash_len_33_to_64(s: &[u8]) -> u64 {
     let len = s.len();
     let mut z = fetch64(s, 24);
-    let mut a = fetch64(s, 0).wrapping_add(
-        ((len as u64).wrapping_add(fetch64(s, len - 16))).wrapping_mul(K0),
-    );
+    let mut a = fetch64(s, 0)
+        .wrapping_add(((len as u64).wrapping_add(fetch64(s, len - 16))).wrapping_mul(K0));
     let mut b = rotate(a.wrapping_add(z), 52);
     let mut c = rotate(a, 37);
     a = a.wrapping_add(fetch64(s, 8));
@@ -162,14 +158,7 @@ fn hash_len_33_to_64(s: &[u8]) -> u64 {
 }
 
 /// Returns `(first, second)` of the C# `Uint128`.
-fn weak_hash_len_32_with_seeds_raw(
-    w: u64,
-    x: u64,
-    y: u64,
-    z: u64,
-    a0: u64,
-    b0: u64,
-) -> (u64, u64) {
+fn weak_hash_len_32_with_seeds_raw(w: u64, x: u64, y: u64, z: u64, a0: u64, b0: u64) -> (u64, u64) {
     let mut a = a0.wrapping_add(w);
     let mut b = rotate(b0.wrapping_add(a).wrapping_add(z), 21);
     let c = a;
@@ -214,20 +203,11 @@ fn hash_len_65_plus(s: &[u8]) -> u64 {
             37,
         )
         .wrapping_mul(K1);
-        y = rotate(
-            y.wrapping_add(v.1).wrapping_add(fetch64(s, pos + 48)),
-            42,
-        )
-        .wrapping_mul(K1);
+        y = rotate(y.wrapping_add(v.1).wrapping_add(fetch64(s, pos + 48)), 42).wrapping_mul(K1);
         x ^= w.1;
         y = y.wrapping_add(v.0).wrapping_add(fetch64(s, pos + 40));
         z = rotate(z.wrapping_add(w.0), 33).wrapping_mul(K1);
-        v = weak_hash_len_32_with_seeds(
-            s,
-            pos,
-            v.1.wrapping_mul(K1),
-            x.wrapping_add(w.0),
-        );
+        v = weak_hash_len_32_with_seeds(s, pos, v.1.wrapping_mul(K1), x.wrapping_add(w.0));
         w = weak_hash_len_32_with_seeds(
             s,
             pos + 32,
@@ -290,10 +270,7 @@ mod tests {
     /// Length 18 → 17_to_32 path, longer ASCII path.
     #[test]
     fn trucklib_vector_road_sii() {
-        assert_eq!(
-            cityhash64(b"def/world/road.sii"),
-            0x97E6A16838335F87,
-        );
+        assert_eq!(cityhash64(b"def/world/road.sii"), 0x97E6A16838335F87,);
     }
 
     /// Length 29 → 17_to_32 path edge.

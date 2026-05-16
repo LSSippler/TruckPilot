@@ -30,8 +30,7 @@ struct Args {
 
 fn parse_args() -> Args {
     let mut graph = PathBuf::from("graph.json");
-    let mut cities =
-        PathBuf::from("crates/map-parser/tests/fixtures/test_cities.toml");
+    let mut cities = PathBuf::from("crates/map-parser/tests/fixtures/test_cities.toml");
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -45,9 +44,7 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "-h" | "--help" => {
-                eprintln!(
-                    "usage: truckpilot-route-test [--graph <PATH>] [--cities <PATH>]"
-                );
+                eprintln!("usage: truckpilot-route-test [--graph <PATH>] [--cities <PATH>]");
                 std::process::exit(0);
             }
             other => {
@@ -69,8 +66,8 @@ struct City {
 /// Tiny line-based TOML reader limited to the `[[city]] name=… x=… z=…`
 /// shape our fixture uses — keeps the binary dependency-free.
 fn read_cities(path: &PathBuf) -> Vec<City> {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 
     let mut cities: Vec<City> = Vec::new();
     let mut cur_name: Option<String> = None;
@@ -126,8 +123,8 @@ fn main() {
     let args = parse_args();
 
     eprintln!("loading {} …", args.graph.display());
-    let bytes = std::fs::read(&args.graph)
-        .unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
+    let bytes =
+        std::fs::read(&args.graph).unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
     let graph: MapGraph = serde_json::from_slice(&bytes)
         .unwrap_or_else(|e| panic!("parse {}: {e}", args.graph.display()));
     eprintln!(
@@ -137,7 +134,11 @@ fn main() {
     );
 
     let cities = read_cities(&args.cities);
-    eprintln!("loaded {} cities from {}", cities.len(), args.cities.display());
+    eprintln!(
+        "loaded {} cities from {}",
+        cities.len(),
+        args.cities.display()
+    );
     if cities.is_empty() {
         eprintln!("ERROR: no cities parsed");
         std::process::exit(1);
@@ -169,10 +170,7 @@ fn main() {
     println!("=== CITY → NEAREST NODE ===");
     for (city, uid, dist) in &city_nodes {
         match uid {
-            Some(u) => println!(
-                "  {:<10} → 0x{:016X}  ({:.0} m)",
-                city.name, u, dist
-            ),
+            Some(u) => println!("  {:<10} → 0x{:016X}  ({:.0} m)", city.name, u, dist),
             None => println!(
                 "  {:<10} → NO NODE within {:.0} m radius (closest {:.0} m)",
                 city.name, NEAREST_NODE_RADIUS_M, dist
@@ -284,8 +282,7 @@ fn print_pair_results(results: &[PairResult]) {
             max_dist / 1000.0
         );
 
-        let mut sorted: Vec<&PairResult> =
-            results.iter().filter(|r| r.path.is_some()).collect();
+        let mut sorted: Vec<&PairResult> = results.iter().filter(|r| r.path.is_some()).collect();
         sorted.sort_by(|a, b| {
             b.path
                 .as_ref()

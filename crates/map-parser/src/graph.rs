@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
 
 use crate::sector::{ParsedSector, RawBuilding, RawFerry, RawNode, RawPrefab, RawRoad};
+use crate::signs::TrafficSign;
 use crate::spatial_match::{
     apply_filters, build_spatial_index, pass1_strict_config, query_circle, select_best_match,
     OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
 };
 use std::collections::HashSet;
-use crate::signs::TrafficSign;
 
 // ---------------------------------------------------------------------------
 // Graph types
@@ -352,9 +352,13 @@ impl GraphBuilder {
                 .filter(|uid| node_lookup.contains_key(uid))
                 .collect();
             for i in 0..valid.len() {
-                let Some(a) = node_lookup.get(&valid[i]) else { continue };
+                let Some(a) = node_lookup.get(&valid[i]) else {
+                    continue;
+                };
                 for j in (i + 1)..valid.len() {
-                    let Some(b) = node_lookup.get(&valid[j]) else { continue };
+                    let Some(b) = node_lookup.get(&valid[j]) else {
+                        continue;
+                    };
                     let dist = euclidean_3d(a, b);
                     for (from, to) in [(valid[i], valid[j]), (valid[j], valid[i])] {
                         edges.push(GraphEdge {
@@ -412,9 +416,13 @@ impl GraphBuilder {
             }
             ferry_groups_with_edges += 1;
             for i in 0..nodes.len() {
-                let Some(a) = node_lookup.get(&nodes[i]) else { continue };
+                let Some(a) = node_lookup.get(&nodes[i]) else {
+                    continue;
+                };
                 for j in (i + 1)..nodes.len() {
-                    let Some(b) = node_lookup.get(&nodes[j]) else { continue };
+                    let Some(b) = node_lookup.get(&nodes[j]) else {
+                        continue;
+                    };
                     let dist = euclidean_3d(a, b);
                     for (from, to) in [(nodes[i], nodes[j]), (nodes[j], nodes[i])] {
                         edges.push(GraphEdge {
@@ -464,8 +472,7 @@ impl GraphBuilder {
             both_unresolved
         );
 
-        let spatial_index =
-            build_spatial_index(&nodes, &self.node_to_sector, DEFAULT_CELL_SIZE);
+        let spatial_index = build_spatial_index(&nodes, &self.node_to_sector, DEFAULT_CELL_SIZE);
         info!(
             "Spatial index: {} nodes in {} cells (cell_size={}m)",
             spatial_index.total_nodes(),
@@ -531,11 +538,15 @@ impl GraphBuilder {
         );
 
         // Process prefabs
-        let prefabs: Vec<Prefab> = self.raw_prefabs.into_iter().map(|p| Prefab {
-            uid: p.uid,
-            template_token: p.template_token,
-            connected_node_uids: p.nodes,
-        }).collect();
+        let prefabs: Vec<Prefab> = self
+            .raw_prefabs
+            .into_iter()
+            .map(|p| Prefab {
+                uid: p.uid,
+                template_token: p.template_token,
+                connected_node_uids: p.nodes,
+            })
+            .collect();
 
         // Attach signs to nearest nodes
         let signs = crate::signs::attach_signs_to_nodes(&self.raw_signs, &nodes);
@@ -583,7 +594,11 @@ mod tests {
     use super::*;
     use crate::sector::{ParsedSector, RawNode, RawRoad};
 
-    fn make_sector(nodes: Vec<RawNode>, roads: Vec<RawRoad>, prefabs: Vec<RawPrefab>) -> ParsedSector {
+    fn make_sector(
+        nodes: Vec<RawNode>,
+        roads: Vec<RawRoad>,
+        prefabs: Vec<RawPrefab>,
+    ) -> ParsedSector {
         ParsedSector {
             nodes,
             roads,
@@ -706,8 +721,18 @@ mod tests {
         let mut b = GraphBuilder::new();
         b.merge_sector(make_sector(
             vec![
-                RawNode { uid: 1, x: 0.0, y: 0.0, z: 0.0 },
-                RawNode { uid: 2, x: 10.0, y: 0.0, z: 0.0 },
+                RawNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                RawNode {
+                    uid: 2,
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             ],
             vec![RawRoad {
                 uid: 10,
@@ -733,8 +758,18 @@ mod tests {
         let mut b = GraphBuilder::new();
         let mut s = ParsedSector {
             nodes: vec![
-                RawNode { uid: 1, x: 0.0, y: 0.0, z: 0.0 },
-                RawNode { uid: 2, x: 30.0, y: 0.0, z: 40.0 },
+                RawNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                RawNode {
+                    uid: 2,
+                    x: 30.0,
+                    y: 0.0,
+                    z: 40.0,
+                },
             ],
             roads: vec![],
             prefabs: vec![],
@@ -748,13 +783,33 @@ mod tests {
             recovered_nodes_count: 0,
         };
         // Also test skip cases
-        s.buildings.push(RawBuilding { uid: 501, node_uid: 0, forward_node_uid: 2 }); // zero-uid
-        s.buildings.push(RawBuilding { uid: 502, node_uid: 7, forward_node_uid: 2 }); // one unresolved
-        s.buildings.push(RawBuilding { uid: 503, node_uid: 1, forward_node_uid: 1 }); // self-loop
+        s.buildings.push(RawBuilding {
+            uid: 501,
+            node_uid: 0,
+            forward_node_uid: 2,
+        }); // zero-uid
+        s.buildings.push(RawBuilding {
+            uid: 502,
+            node_uid: 7,
+            forward_node_uid: 2,
+        }); // one unresolved
+        s.buildings.push(RawBuilding {
+            uid: 503,
+            node_uid: 1,
+            forward_node_uid: 1,
+        }); // self-loop
         b.merge_sector(s);
         let g = b.build();
-        let building_edges: Vec<_> = g.edges.iter().filter(|e| e.direction == "building").collect();
-        assert_eq!(building_edges.len(), 2, "exactly one bidirectional pair survives");
+        let building_edges: Vec<_> = g
+            .edges
+            .iter()
+            .filter(|e| e.direction == "building")
+            .collect();
+        assert_eq!(
+            building_edges.len(),
+            2,
+            "exactly one bidirectional pair survives"
+        );
         assert!(building_edges.iter().any(|e| e.from == 1 && e.to == 2));
         assert!(building_edges.iter().any(|e| e.from == 2 && e.to == 1));
         // 3-4-5 triangle => distance 50

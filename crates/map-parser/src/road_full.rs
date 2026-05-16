@@ -511,19 +511,7 @@ mod tests {
 
     #[test]
     fn parses_minimal_fixed_header() {
-        let bytes = fixed_header_bytes(
-            0xCAFE_BABE_DEAD_BEEF,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0xAA,
-            0xBB,
-            0.0,
-        );
+        let bytes = fixed_header_bytes(0xCAFE_BABE_DEAD_BEEF, 0, 0, 0, 0, 0, 0, 0, 0xAA, 0xBB, 0.0);
         assert_eq!(bytes.len(), 0x109, "fixed header must be exactly 265 bytes");
 
         let mut cur = Cursor::new(&bytes);
