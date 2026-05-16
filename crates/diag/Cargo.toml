@@ -63,6 +63,10 @@ path = "src/bin/engage_cli.rs"
 name = "routing-islands"
 path = "src/bin/routing-islands.rs"
 
+[[bin]]
+name = "cross-sector-audit"
+path = "src/bin/cross-sector-audit.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
