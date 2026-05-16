@@ -259,9 +259,12 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
                     mgr.blackboard.set("plugin.lane_keeper.kd", kd.to_string());
                 }
                 "speed_controller" | "speed-controller" => {
-                    mgr.blackboard.set("plugin.speed_controller.kp", kp.to_string());
-                    mgr.blackboard.set("plugin.speed_controller.ki", ki.to_string());
-                    mgr.blackboard.set("plugin.speed_controller.kd", kd.to_string());
+                    mgr.blackboard
+                        .set("plugin.speed_controller.kp", kp.to_string());
+                    mgr.blackboard
+                        .set("plugin.speed_controller.ki", ki.to_string());
+                    mgr.blackboard
+                        .set("plugin.speed_controller.kd", kd.to_string());
                 }
                 _ => {
                     return vec![CoreMessage::error(
@@ -317,6 +320,20 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             info!("autopilot reset requested via IPC");
             Vec::new()
         }
+        UiCommand::BlackboardGet { keys } => {
+            let bb = manager.lock().await.blackboard.clone();
+            let values: std::collections::HashMap<String, String> = keys
+                .into_iter()
+                .filter_map(|k| bb.get(&k).map(|v| (k, v)))
+                .collect();
+            vec![truckpilot_ipc_protocol::CoreMessage::BlackboardSnapshot { v: V, values }]
+        }
+        UiCommand::BlackboardList { prefix } => {
+            let bb = manager.lock().await.blackboard.clone();
+            let mut keys = bb.keys(prefix.as_deref());
+            keys.sort();
+            vec![truckpilot_ipc_protocol::CoreMessage::BlackboardKeys { v: V, keys }]
+        }
     }
 }
 
@@ -368,7 +385,11 @@ mod ipc_command_tests {
         let mgr = manager_for_test();
         let response = build_response(UiCommand::AutopilotEngage, &mgr).await;
         assert!(response.is_empty(), "engage produces no immediate reply");
-        let value = mgr.lock().await.blackboard.get("autopilot.engage_requested");
+        let value = mgr
+            .lock()
+            .await
+            .blackboard
+            .get("autopilot.engage_requested");
         assert_eq!(value.as_deref(), Some("true"));
     }
 
