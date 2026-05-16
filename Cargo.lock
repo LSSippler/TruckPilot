@@ -4913,6 +4913,7 @@ dependencies = [
 name = "truckpilot-diag"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "ctrlc",
  "dirs 5.0.1",
