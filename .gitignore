@@ -130,3 +130,9 @@ stats.db
 
 # Claude Code worktrees scratch dir
 .claude/worktrees/
+
+# Test artifacts
+capture_frames/
+tools/cvat-setup/vendor/
+tools/model-tools/sign_crops/
+tools/model-tools/sign_crops_labeled/
