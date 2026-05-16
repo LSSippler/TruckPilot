@@ -73,6 +73,44 @@ def start_cmd(
     )
 
 
+@cli.command("replay")
+@click.option("--video", "videos", multiple=True,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="Path to MP4/MKV recording. Repeat for a playlist.")
+@click.argument("positional", nargs=-1,
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--fps", default=DEFAULT_FPS, show_default=True, type=float)
+@click.option("--loop", is_flag=True, help="Restart playlist from the first video when exhausted.")
+@click.option("--shm-name", default=DEFAULT_SHM_NAME, show_default=True)
+@click.option("--quality", default=DEFAULT_JPEG_QUALITY, show_default=True, type=int)
+def replay_cmd(
+    videos: tuple[Path, ...],
+    positional: tuple[Path, ...],
+    fps: float,
+    loop: bool,
+    shm_name: str,
+    quality: int,
+) -> None:
+    """Replay one or more video files into SHM (Phase 6.5h verification). Ctrl+C to stop."""
+    from .video_replay import run_replay
+
+    playlist: list[Path] = list(videos) + list(positional)
+    if not playlist:
+        raise click.UsageError("at least one video must be given (--video PATH or positional)")
+
+    summary = run_replay(
+        videos=playlist,
+        fps=fps,
+        loop=loop,
+        shm_name=shm_name,
+        jpeg_quality=quality,
+    )
+    console.print(
+        f"replay finished: videos={summary.videos_played} "
+        f"frames={summary.frames_published} duration={summary.duration_s / 60:.1f} min"
+    )
+
+
 @cli.command("stats")
 @click.option("--shm-name", default=DEFAULT_SHM_NAME, show_default=True)
 @click.option("--seconds", default=5, type=int, show_default=True)
