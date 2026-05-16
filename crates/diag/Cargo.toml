@@ -55,6 +55,10 @@ path = "src/bin/vjoy_probe.rs"
 name = "blackboard-query"
 path = "src/bin/blackboard_query.rs"
 
+[[bin]]
+name = "engage-cli"
+path = "src/bin/engage_cli.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
