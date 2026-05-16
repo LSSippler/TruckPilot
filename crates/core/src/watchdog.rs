@@ -106,18 +106,27 @@ pub fn check_telemetry_stale(
 }
 
 // ---------------------------------------------------------------------------
-// Failsafe output (stub)
+// Failsafe output (Phase 6.2b A1: wired via safety.emergency_brake BB-key)
 // ---------------------------------------------------------------------------
 
-/// STUB: logs the intended vJoy output. Real wiring deferred to Phase 6.2c.
-pub fn apply_vjoy_failsafe(config: &WatchdogConfig) {
+/// Activate failsafe by raising the `safety.emergency_brake` blackboard flag.
+/// vjoy-output's `tick()` reads this key first and, when `true`, drives the
+/// virtual stick to (steer=0, throttle=0, brake=1.0) regardless of the
+/// arbitrated ControlOutput. The watchdog clears the flag in
+/// [`clear_vjoy_failsafe`] on recovery.
+pub fn apply_vjoy_failsafe(bb: &SharedBlackboard, config: &WatchdogConfig) {
     tracing::warn!(
-        "VJOY FAILSAFE ACTIVE: steer={}, throttle={}, brake={}",
+        "VJOY FAILSAFE ACTIVE: steer={}, throttle={}, brake={} (via safety.emergency_brake)",
         config.failsafe_steering,
         config.failsafe_throttle,
         config.failsafe_brake,
     );
-    // TODO Phase 6.2c: wire to actual vjoy_output channel / BB-Key
+    bb.set("safety.emergency_brake", "true");
+}
+
+/// Clear the failsafe flag so vjoy-output resumes normal arbitration.
+pub fn clear_vjoy_failsafe(bb: &SharedBlackboard) {
+    bb.set("safety.emergency_brake", "false");
 }
 
 // ---------------------------------------------------------------------------
@@ -149,11 +158,12 @@ pub async fn watchdog_loop(
 
         if heartbeat_stale && !failsafe_active {
             tracing::warn!("Heartbeat stall detected, activating failsafe");
-            apply_vjoy_failsafe(&config);
+            apply_vjoy_failsafe(&bb, &config);
             failsafe_active = true;
             last_failsafe_log = Some(Instant::now());
         } else if !heartbeat_stale && failsafe_active {
             tracing::info!("Heartbeat recovered, deactivating failsafe");
+            clear_vjoy_failsafe(&bb);
             failsafe_active = false;
             last_failsafe_log = None;
         }
@@ -167,7 +177,7 @@ pub async fn watchdog_loop(
                 .map(|t| t.elapsed() >= FAILSAFE_LOG_INTERVAL)
                 .unwrap_or(true);
             if should_log {
-                apply_vjoy_failsafe(&config);
+                apply_vjoy_failsafe(&bb, &config);
                 last_failsafe_log = Some(Instant::now());
             }
         }
@@ -228,6 +238,23 @@ mod tests {
         assert_eq!(config.failsafe_steering, 0.0);
         assert_eq!(config.failsafe_throttle, 0.0);
         assert_eq!(config.failsafe_brake, 0.3);
+    }
+
+    #[test]
+    fn t20_apply_failsafe_sets_emergency_brake_flag() {
+        let bb = SharedBlackboard::new();
+        let config = WatchdogConfig::default();
+        apply_vjoy_failsafe(&bb, &config);
+        assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn t21_clear_failsafe_resets_emergency_brake_flag() {
+        let bb = SharedBlackboard::new();
+        let config = WatchdogConfig::default();
+        apply_vjoy_failsafe(&bb, &config);
+        clear_vjoy_failsafe(&bb);
+        assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("false"));
     }
 
     #[test]
