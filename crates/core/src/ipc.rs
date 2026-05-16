@@ -320,6 +320,38 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             info!("autopilot reset requested via IPC");
             Vec::new()
         }
+        UiCommand::SetRouterGoal { uid } => {
+            manager
+                .lock()
+                .await
+                .blackboard
+                .set("router.goal_uid", uid.to_string());
+            info!("router goal set via IPC: uid={uid}");
+            Vec::new()
+        }
+        UiCommand::SetRouterStart { uid } => {
+            let bb = manager.lock().await.blackboard.clone();
+            match uid {
+                Some(u) => {
+                    bb.set("router.start_uid", u.to_string());
+                    info!("router start set via IPC: uid={u}");
+                }
+                None => {
+                    bb.remove("router.start_uid");
+                    info!("router start cleared via IPC (use current position)");
+                }
+            }
+            Vec::new()
+        }
+        UiCommand::SetCruiseTarget { kmh } => {
+            manager
+                .lock()
+                .await
+                .blackboard
+                .set("cruise.target_kmh", kmh.to_string());
+            info!("cruise target set via IPC: {kmh} km/h");
+            Vec::new()
+        }
         UiCommand::BlackboardGet { keys } => {
             let bb = manager.lock().await.blackboard.clone();
             let values: std::collections::HashMap<String, String> = keys

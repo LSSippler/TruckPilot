@@ -142,6 +142,15 @@ pub enum UiCommand {
     AutopilotEngage,
     AutopilotDisengage,
     AutopilotReset,
+    SetRouterGoal {
+        uid: u64,
+    },
+    SetRouterStart {
+        uid: Option<u64>,
+    },
+    SetCruiseTarget {
+        kmh: f32,
+    },
     BlackboardGet {
         keys: Vec<String>,
     },
@@ -325,6 +334,41 @@ mod tests {
             let s = serde_json::to_string(&cmd).unwrap();
             assert!(s.contains(expected), "wire form for {cmd:?}: {s}");
             let _back: UiCommand = serde_json::from_str(&s).unwrap();
+        }
+    }
+
+    #[test]
+    fn ui_command_set_router_goal_round_trip() {
+        let cmd = UiCommand::SetRouterGoal { uid: 12345 };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(s.contains(r#""type":"set_router_goal""#));
+        assert!(s.contains(r#""uid":12345"#));
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, UiCommand::SetRouterGoal { uid: 12345 }));
+    }
+
+    #[test]
+    fn ui_command_set_router_start_round_trip() {
+        let cmd = UiCommand::SetRouterStart { uid: Some(99) };
+        let s = serde_json::to_string(&cmd).unwrap();
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, UiCommand::SetRouterStart { uid: Some(99) }));
+
+        let cmd_none = UiCommand::SetRouterStart { uid: None };
+        let s2 = serde_json::to_string(&cmd_none).unwrap();
+        let back2: UiCommand = serde_json::from_str(&s2).unwrap();
+        assert!(matches!(back2, UiCommand::SetRouterStart { uid: None }));
+    }
+
+    #[test]
+    fn ui_command_set_cruise_target_round_trip() {
+        let cmd = UiCommand::SetCruiseTarget { kmh: 85.0 };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(s.contains(r#""type":"set_cruise_target""#));
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        match back {
+            UiCommand::SetCruiseTarget { kmh } => assert!((kmh - 85.0).abs() < 1e-3),
+            _ => panic!("wrong variant"),
         }
     }
 
