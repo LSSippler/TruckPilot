@@ -91,6 +91,10 @@ path = "src/bin/node-parser-hex-audit.rs"
 name = "multi-sector-audit"
 path = "src/bin/multi-sector-audit.rs"
 
+[[bin]]
+name = "bezier-size-scan"
+path = "src/bin/bezier-size-scan.rs"
+
 [dependencies]
 rustc-hash      = "2"
 truckpilot-telemetry = { path = "../telemetry" }

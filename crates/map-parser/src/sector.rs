@@ -822,6 +822,13 @@ fn try_parse_sized_sector(
                         sector.nodes.push(node);
                     }
                 }
+                // ── Plausibility Gate (Phase 6.2b-Fix-5a: Root Cause D) ───────
+                // Reject false-positive sized-sector accepts that would
+                // otherwise prevent the legacy parser from running on a
+                // perfectly good legacy sector.
+                if !sized_sector_plausible(item_count, &sector, data) {
+                    return None;
+                }
                 return Some(sector);
             }
             cur.set_position(pos_before_nodes as u64);
@@ -836,7 +843,55 @@ fn try_parse_sized_sector(
         }
     }
 
+    if !sized_sector_plausible(item_count, &sector, data) {
+        return None;
+    }
     Some(sector)
+}
+
+/// Plausibility gate for sized-sector acceptance (Phase 6.2b-Fix-5a).
+///
+/// Returns `false` when the parsed sector is likely a false-positive
+/// (a legacy sector whose header bytes happened to decode as a valid
+/// sized header). Two-stage check:
+///   1. Item count must be plausible for the file size.
+///   2. If nodes are present, at least one must have valid ETS2 world
+///      coordinates (wrong parse stride produces garbage floats).
+fn sized_sector_plausible(item_count: u32, sector: &ParsedSector, data: &[u8]) -> bool {
+    const MIN_SIZED_ITEMS_FOR_LARGE_SECTOR: u32 = 10;
+    const LARGE_SECTOR_THRESHOLD_BYTES: usize = 50_000;
+    const MAX_WORLD_X_Z: f32 = 250_000.0;
+    const MAX_WORLD_Y: f32 = 10_000.0;
+
+    // Stage 1 — Item-count heuristic
+    if item_count < MIN_SIZED_ITEMS_FOR_LARGE_SECTOR
+        && data.len() > LARGE_SECTOR_THRESHOLD_BYTES
+    {
+        tracing::debug!(
+            target: "map_parser::sector",
+            "try_parse_sized_sector rejected: item_count={} too small for {}-byte sector",
+            item_count, data.len()
+        );
+        return false;
+    }
+
+    // Stage 2 — Node coordinate plausibility
+    if !sector.nodes.is_empty()
+        && !sector.nodes.iter().any(|n| {
+            n.x.abs() < MAX_WORLD_X_Z
+                && n.y.abs() < MAX_WORLD_Y
+                && n.z.abs() < MAX_WORLD_X_Z
+        })
+    {
+        tracing::debug!(
+            target: "map_parser::sector",
+            "try_parse_sized_sector rejected: no node with valid world coords in {}-byte sector ({} nodes)",
+            data.len(), sector.nodes.len()
+        );
+        return false;
+    }
+
+    true
 }
 
 /// Sized-format Road payload (32 B).
@@ -1392,30 +1447,50 @@ fn skip_traffic_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 39 — BezierPatch.
-///
-/// Phase 5.20 investigation. The legacy 117-byte handler under-reads but
-/// tail-recovery rescues 270/282 sectors cleanly. A full TruckLib
-/// `BezierPatchSerializer` rewrite was attempted (kdop + 16 vec3
-/// ControlPoints + Tesselation + Node + Seed + 4 Vegetation entries +
-/// VegetationSpheres list + TerrainQuadData) and field-aligned for the
-/// common empty-patch case (313 bytes), but v907 diverges from TruckLib
-/// for non-empty patches (huge counts read as garbage; cf. Phases 5.6,
-/// 5.7, 5.16 for prior TruckLib drifts). The full rewrite produced the
-/// same 12 audit failures and slightly regressed graph metrics.
-///
-/// Decision: keep the legacy handler. Bezier patches carry no road or
-/// prefab connectivity (terrain visualisation only), so the 12 sectors
-/// with bezier-tail garbage do not affect routing. v907 layout details
-/// remain open. See `outputs/bezier_format_notes.md` for the partial
-/// reverse-engineering notes.
+/// Type 39 — BezierPatch. Full TruckLib layout (Phase 6.2b-Fix-5b Step 2).
+/// Layout: kdop(53) + 16×vec3(192) + tess(4) + node(8) + seed(4)
+///        + vegetation 4×(u64+u16+u8)=44 + sphere_count×20
+///        + TerrainQuadData: mat_count×10, col_count×4, rows, cols,
+///          quad_count×4, off_count×16, norm_count×16
+/// Empty-patch fixed overhead: 329 bytes (all list counts = 0).
 fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
-    let _ = read_kdop_item(cur)?;
-    let _ = read_u64(cur)?;
-    let _ = read_u64(cur)?;
-    for _ in 0..4 {
-        skip_vector3(cur)?;
+    let _ = read_kdop_item(cur)?;                   // 53
+    for _ in 0..16 {
+        skip_vector3(cur)?;                         // 16×12 = 192
     }
+    let _ = read_u16(cur)?;                         // tess_x u16
+    let _ = read_u16(cur)?;                         // tess_z u16
+    let _ = read_u64(cur)?;                         // node uid
+    let _ = read_u32(cur)?;                         // random seed
+    // Vegetation[0..4]: each entry = u64 token + u16 density + u8 type = 11 bytes
+    skip(cur, 4 * 11)?;                             // 44 bytes
+    // VegetationSpheres: u32 count + count × 20 bytes (vec3 + f32 radius + u32 type)
+    let sphere_count = read_u32(cur)? as usize;
+    ensure_count(sphere_count as u32, "bezier_patch vegetation spheres")?;
+    skip(cur, sphere_count * 20)?;
+    // TerrainQuadData
+    // Materials: u16 count + count × 10 bytes (u64 token + u16 rotation)
+    let mat_count = read_u16(cur)? as usize;
+    ensure_count(mat_count as u32, "bezier_patch materials")?;
+    skip(cur, mat_count * 10)?;
+    // Colors: u16 count + count × 4 bytes (RGBA)
+    let col_count = read_u16(cur)? as usize;
+    ensure_count(col_count as u32, "bezier_patch colors")?;
+    skip(cur, col_count * 4)?;
+    let _ = read_u16(cur)?;                         // rows
+    let _ = read_u16(cur)?;                         // cols
+    // Quads: u32 count + count × 4 bytes (u32 index)
+    let quad_count = read_u32(cur)? as usize;
+    ensure_count(quad_count as u32, "bezier_patch quads")?;
+    skip(cur, quad_count * 4)?;
+    // Offsets: u32 count + count × 16 bytes (u16 X + u16 Y + vec3)
+    let off_count = read_u32(cur)? as usize;
+    ensure_count(off_count as u32, "bezier_patch offsets")?;
+    skip(cur, off_count * 16)?;
+    // Normals: u32 count + count × 16 bytes
+    let norm_count = read_u32(cur)? as usize;
+    ensure_count(norm_count as u32, "bezier_patch normals")?;
+    skip(cur, norm_count * 16)?;
     Ok(())
 }
 

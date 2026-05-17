@@ -56,6 +56,11 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - Router-Perf-Audit Binary restored — pending Execution + Verdict (commit dea41c73)
 - Blackboard-Key-Inventory — docs/blackboard_keys.md (commit 0f906112)
 - Phase 6.2i — PID Hotswap + Live Telemetry Logging (tick_log/fault_log/pid_tuning_log, commit a71d1e2a)
+- [[01-Phases/Phase-6.2b-Diag-3-Road-Drop-Audit]] — **2026-05-16**: Road-Drop-Audit-CLI. RoadParseFailed=0, BothUnresolved=5.940 (1.81%), Berlin-Snap-Node hat 0 Road-Refs → Cross-Sector-UID-Gap bestätigt. KEIN commit bis Review.
+- [[01-Phases/Phase-6.2b-Diag-4-Sign-Precrash-Audit]] — **2026-05-17**: Pre-Crash-Audit für 9 Sign-Handler-Crashes (type=36). Crash-Lokation: `skip_sign_override_list`. Cursor korrekt beim Dispatch. Garbage-Counts variieren extrem → Format-Misalignment VOR Override-List. Nächster Schritt: raw_hex-Fenster auf 256B erweitern oder Fix-Hypothese "4 Tokens/Board" testen.
+- [[01-Phases/Phase-6.2b-Diag-5-BothUnresolved-Forensik]] — **2026-05-17**: BothUnresolved-Forensik-CLI. 5940 Events, 75.5% BothFound, davon 99.98% RoadPlusBothSameSector. **ROOT = SAME_SECTOR_NODE_PARSE_FAILURE** — Node-UIDs sind im Sektor-Binary vorhanden (Byte-Scan bestätigt), landen aber nicht im Node-Map. Berlin: 11 BothFound, alle im selben Sektor. Fix würde BothUnresolved 5940→~1456 (-75.5%) reduzieren.
+- [[01-Phases/Phase-6.2b-Fix-4-Node-Parser-Hex-Audit]] — **2026-05-17**: Hex-Audit an sec+0008+0011 + sec-0004-0001 (Berlin). **Zwei Root Causes identifiziert:** C=Cursor-Desync→recover_nodes_from_tail-Failure (bezier_patch 0x27 Kandidat, ~75% Events), D=try_parse_sized_sector-False-Positive für Legacy-Sektoren (~25% Events). Node-UIDs physisch vorhanden, zwei verschiedene Parser-Pfade lassen sie durchfallen. Fix-Direktiven für Phase 6.2b-Fix-5 definiert.
+- [[01-Phases/Phase-6.2b-Fix-5b-Multi-Sector-Audit]] — **2026-05-17**: Multi-Sector-Audit (6 Sektoren: Top-5 BothFound + Berlin). **Szenario 1 CONFIRMED: bezier_patch (0x27) = LastOK in 6/6 Sektoren.** `LastOK End == Failure Offset` in allen — Handler under-reads, Rest-Bytes (Vertex-Daten) werden als next item_type gelesen. Predecessor variiert → Fault liegt *innerhalb* bezier_patch, nicht upstream. Nächster Schritt: Fix-5b Step 2 — bezier_patch handler in sector.rs korrigieren.
 - [[01-Phases/Phase-6.2a-vJoy-Probe]] — **CLOSED 2026-05-15**: GATE-0 PASS. `truckpilot-vjoy-probe` Binary validated (Spec Final v1.0, 15/15 unit tests, alle 4 Manual-ETS2-Kriterien PASS). vJoy Device 1 X/Y/Z = Steering/Throttle/Brake. Phase 6.2c (vJoy Real Wiring) freigegeben.
 
 ## Reviews
@@ -91,6 +96,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 | 6.2h | Test-Plan-Infrastructure | DONE | 2a86bdac |
 | 6.2i | PID Hotswap + Tick/Fault/PID-Tuning Logging | DONE | a71d1e2a |
 | 6.2h-real | First Live Drive | PLANNED |  |
+| 6.2b-A1 | Engage CLI End-to-End (Failsafe-Wiring + IPC + engage-cli + Doku) | CODE READY, Live-Test pending | [[01-Phases/Phase-6.2b-Engage-CLI]] (5ea8adc9 + 8d7195f9 + 761c89bc) |
 | UI Status-Card | AutopilotStatusCard | DONE | 2e9c4a76 |
 | Diag/Probe | ets2la_traffic_probe | DONE | c0e3b9dc |
 | Diag/Perf | router_perf_audit restored | PARTIAL (build green, run deferred) | dea41c73 |
