@@ -207,6 +207,9 @@ impl Plugin for RouterPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
+        if let Some(g) = ctx.blackboard.get_f64("router.goal_uid") {
+            self.goal_uid = g as u64;
+        }
         if ctx.is_replan_tick() && self.goal_uid != 0 && !self.nodes.is_empty() {
             let (px, pz) = telemetry
                 .map(|t| (t.position[0], t.position[2]))
