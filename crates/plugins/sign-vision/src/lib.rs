@@ -562,38 +562,45 @@ fn publish_diag(p: &SignVisionPlugin, ctx: &PluginContext, last_skip_reason: &st
 // ---------------------------------------------------------------------------
 
 /// Load an ONNX session from `model_path`, trying DirectML first (if compiled)
-/// then falling back to CPU. Returns the session and a static label for
-/// the EP that actually loaded ("DirectML" or "CPU"), or `None` on any
-/// hard failure. The label is propagated to the host log via `ctx_warn!`
-/// in `on_load` — raw `tracing::warn!` from a plugin DLL goes to the
-/// plugin's own (unsubscribed) tracing global and is silently dropped.
+/// then falling back to CPU. Returns `(session, ep_label, directml_warn)`:
+/// - `ep_label`: "DirectML" or "CPU" — truthful, reflects the EP that
+///   actually loaded. Propagated to the host log via `ctx_warn!` in `on_load`.
+/// - `directml_warn`: `Some(msg)` when DirectML was tried and failed; `None`
+///   on DirectML success or when the feature is not compiled. Logged via
+///   `ctx_warn!` by the caller so it reaches the host tracing subscriber
+///   (raw `tracing::warn!` from a plugin cdylib is silently dropped).
 #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
 fn load_onnx_session(
     model_path: &std::path::Path,
-) -> Option<(ort::session::Session, &'static str)> {
+) -> Option<(ort::session::Session, &'static str, Option<String>)> {
     use ort::session::Session;
 
-    #[cfg(feature = "onnx-directml")]
-    {
-        use ort::ep::DirectML;
-        if let Ok(builder) = Session::builder() {
-            if let Ok(mut builder) = builder.with_execution_providers([DirectML::default().build()])
-            {
-                match builder.commit_from_file(model_path) {
-                    Ok(sess) => return Some((sess, "DirectML")),
-                    Err(_) => { /* fall through to CPU */ }
-                }
+    // Try DirectML first. `error_on_failure()` forces unavailability to surface
+    // as `Err` instead of ort's default silent-fallback: without it,
+    // `with_execution_providers` always returns `Ok`, `commit_from_file` creates
+    // a CPU session, and we'd report ep_label = "DirectML" falsely.
+    let directml_warn: Option<String> = {
+        #[cfg(feature = "onnx-directml")]
+        {
+            use ort::ep::DirectML;
+            let ep = DirectML::default().build().error_on_failure();
+            let result = Session::builder().and_then(|b| {
+                Ok(b.with_execution_providers([ep])?)
+            });
+            match result.and_then(|mut b| b.commit_from_file(model_path)) {
+                Ok(sess) => return Some((sess, "DirectML", None)),
+                Err(e) => Some(format!("DirectML init failed ({e}), falling back to CPU")),
             }
         }
-    }
+        #[cfg(not(feature = "onnx-directml"))]
+        None
+    };
 
-    // CPU fallback (also the only path when only `onnx-cpu` is enabled).
-    if let Ok(mut builder) = Session::builder() {
-        if let Ok(sess) = builder.commit_from_file(model_path) {
-            return Some((sess, "CPU"));
-        }
+    // CPU fallback (also the only path when only `onnx-cpu` is compiled).
+    match Session::builder().and_then(|mut b| b.commit_from_file(model_path)) {
+        Ok(sess) => Some((sess, "CPU", directml_warn)),
+        Err(_) => None,
     }
-    None
 }
 
 /// Run the full YOLOv8s inference pipeline on one RGB8 frame.
@@ -1176,10 +1183,10 @@ impl Plugin for SignVisionPlugin {
             #[cfg(any(feature = "onnx-directml", feature = "onnx-cpu"))]
             {
                 match load_onnx_session(&self.model_path) {
-                    Some((sess, ep_label)) => {
-                        // Spawn the inference worker thread and move
-                        // the session into it; the tick path never
-                        // touches the session directly.
+                    Some((sess, ep_label, directml_warn)) => {
+                        if let Some(ref warn) = directml_warn {
+                            ctx_warn!(ctx, target: LOG_TARGET, "{warn}");
+                        }
                         self.worker = Some(InferenceWorker::spawn(
                             sess,
                             self.speed_mapper.clone(),
