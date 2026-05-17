@@ -156,6 +156,7 @@ fn print_help() {
     println!("OPTIONS (parse-map):");
     println!("  --ets2-dir <path>         ETS2 installation directory");
     println!("  --mods-dir <path>         ETS2 mods directory (optional)");
+    println!("  --verbose, -v             Show per-sector progress (INFO log level)");
     println!();
     println!("OPTIONS (route / autopilot):");
     println!("  --from <uid>              Start node UID (hex or decimal)");
@@ -456,13 +457,22 @@ fn angle_diff(a: f64, b: f64) -> f64 {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Check verbose flag before tracing init so we can set the right level.
+    let raw_args: Vec<String> = std::env::args().collect();
+    let verbose = raw_args.iter().any(|a| a == "--verbose" || a == "-v");
+
+    let max_level = if verbose {
+        tracing::Level::INFO
+    } else {
+        tracing::Level::WARN
+    };
+    tracing_subscriber::fmt().with_max_level(max_level).init();
 
     let cmd = parse_args();
 
     match cmd {
         Command::ParseMap { ets2_dir, mods_dir } => {
-            cmd_parse_map(&ets2_dir, mods_dir); // PathBuf deref to Path
+            cmd_parse_map(&ets2_dir, mods_dir);
         }
         Command::Route { from, to } => {
             cmd_route(from, to);

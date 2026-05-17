@@ -331,8 +331,8 @@ fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapG
     if !sector_paths.is_empty() {
         info!("Parsing {} sector and prefab files...", sector_paths.len());
         for (i, path) in sector_paths.iter().enumerate() {
-            if i > 0 && i % 500 == 0 {
-                info!("  ...parsed {}/{} files", i, sector_paths.len());
+            if i > 0 && i % 100 == 0 {
+                info!("  sector {}/{}: {}", i, sector_paths.len(), path);
             }
             // Find the last archive that contains this path (highest priority)
             let data = archives

@@ -1447,12 +1447,12 @@ fn skip_traffic_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 39 — BezierPatch. Full TruckLib layout (Phase 6.2b-Fix-5b Step 2).
+/// Type 39 — BezierPatch. Full layout (Phase 6.2b-Fix-5c: vegetation=3 entries).
 /// Layout: kdop(53) + 16×vec3(192) + tess(4) + node(8) + seed(4)
-///        + vegetation 4×(u64+u16+u8)=44 + sphere_count×20
+///        + vegetation 3×(u64+u16+u8)=33 + sphere_count×20
 ///        + TerrainQuadData: mat_count×10, col_count×4, rows, cols,
 ///          quad_count×4, off_count×16, norm_count×16
-/// Empty-patch fixed overhead: 329 bytes (all list counts = 0).
+/// Empty-patch fixed overhead: 318 bytes (all list counts = 0).
 fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;                   // 53
     for _ in 0..16 {
@@ -1462,8 +1462,8 @@ fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_u16(cur)?;                         // tess_z u16
     let _ = read_u64(cur)?;                         // node uid
     let _ = read_u32(cur)?;                         // random seed
-    // Vegetation[0..4]: each entry = u64 token + u16 density + u8 type = 11 bytes
-    skip(cur, 4 * 11)?;                             // 44 bytes
+    // Vegetation[0..3]: each entry = u64 token + u16 density + u8 type = 11 bytes
+    skip(cur, 3 * 11)?;                             // 33 bytes
     // VegetationSpheres: u32 count + count × 20 bytes (vec3 + f32 radius + u32 type)
     let sphere_count = read_u32(cur)? as usize;
     ensure_count(sphere_count as u32, "bezier_patch vegetation spheres")?;
