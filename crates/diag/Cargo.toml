@@ -79,7 +79,20 @@ path = "src/bin/sign-precrash-audit.rs"
 name = "sign-format-compare"
 path = "src/bin/sign-format-compare.rs"
 
+[[bin]]
+name = "bothunresolved-forensik"
+path = "src/bin/bothunresolved-forensik.rs"
+
+[[bin]]
+name = "node-parser-hex-audit"
+path = "src/bin/node-parser-hex-audit.rs"
+
+[[bin]]
+name = "multi-sector-audit"
+path = "src/bin/multi-sector-audit.rs"
+
 [dependencies]
+rustc-hash      = "2"
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
 truckpilot-ipc-protocol = { path = "../ipc-protocol" }
