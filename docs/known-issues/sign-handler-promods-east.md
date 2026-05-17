@@ -117,17 +117,16 @@ sectors and the 4 Tier-2 working ProMods-East samples to lock the layout.
   (5 to 124 per sector) enter the graph; everything after is dropped.
 - **No Vanilla city becomes unreachable.** All 9 sectors are ≥ 50 km
   from the nearest Vanilla city.
-- **Pre-Fix-1 baseline (current state):**
-  - `SectorHandlerError`: 9
-  - `UnknownItemType`: 154
-  - `BothUnresolved`: 5940
-  - `OneUnresolved`: 258
-  - Roads in graph: 328 024 (98.1 % fully resolved)
-  - `truckpilot-route-test` success: 3.6 % (56/1560)
+- **Phase 6.2b final state (post-Fix-5c):**
+  - `SectorHandlerError` (sign-handler): 9 — unchanged by Phase 6.2b
+  - `BothUnresolved`: 9 (was 1 878 before Phase 6.2b; -99.5%)
+  - Roads in graph: 366 012
+  - Nodes: 1 153 648
+  - Sample route Berlin: 227 waypoints / 151 ms
+  - `truckpilot-route-test`: routing functional for Vanilla city pairs
 
-  The 9 sign-handler drops are **not the dominant routing failure
-  cause** — the 5 940 `BothUnresolved` roads are. That's what Phase
-  6.2b is focused on.
+  The 9 sign-handler drops are now the **only notable sector abort
+  category** for ProMods sign items. They do not affect Vanilla routing.
 
 ## Reactivation
 

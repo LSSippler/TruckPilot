@@ -21,6 +21,17 @@
 - ipc-protocol-guard     — IPC-Synchronität prüfen
 - shadcn-styler          — UI-Polish-Reviews
 
+## Phase-Status (Map-Parser)
+
+| Phase | Status | Ergebnis |
+|---|---|---|
+| 6.2b | CLOSED | Routing functional. BothUnresolved 1 878 → 9 (-99.5%). Roads 366 012, Nodes 1 153 648. Berlin-Sample 227 Waypoints / 151 ms. |
+| 6.4 | offen | ProMods Support. Deferred Known-Issues: promods-bezier-desync, sign-handler-promods-east, remaining-sector-aborts. |
+
+Smoke-Validation: `.\target\release\truckpilot-route-test.exe --all-pairs` — muss Berlin und andere cities.toml-Paare routen.
+
+Deferred Known-Issues: `docs/known-issues/` — drei Dateien mit Kontext für Phase 6.4.
+
 
 ## Outputs-Ordner — Dateibasierte Organisation
 
