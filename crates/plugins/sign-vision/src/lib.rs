@@ -1029,6 +1029,7 @@ impl SignVisionPlugin {
         );
 
         // --- Confidence histogram ---
+        #[allow(clippy::needless_range_loop)]
         for i in 0..NUM_CONF_BUCKETS {
             let key = conf_bucket_key(i);
             bb.set(format!("sign.conf.bucket_{key}.total"), self.conf_bucket_totals[i].to_string());

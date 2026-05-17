@@ -67,6 +67,14 @@ path = "src/bin/routing-islands.rs"
 name = "cross-sector-audit"
 path = "src/bin/cross-sector-audit.rs"
 
+[[bin]]
+name = "road-drop-audit"
+path = "src/bin/road-drop-audit.rs"
+
+[[bin]]
+name = "sign-precrash-audit"
+path = "src/bin/sign-precrash-audit.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }

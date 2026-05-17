@@ -25,6 +25,7 @@ use std::io::{Cursor, Read};
 use binrw::BinRead;
 use tracing::{debug, instrument, warn};
 
+use crate::drop_tracer::{DropCategory, DropEvent, DropTracer};
 use crate::error::ParseError;
 use crate::road_full::RoadFixedHeader;
 
@@ -191,7 +192,7 @@ const MAX_PASCAL_STRING_LEN: u64 = 1_048_576;
 /// falls back to `parse_sector_legacy` so existing test fixtures keep passing.
 #[instrument(skip(data), fields(bytes = data.len()))]
 pub fn parse_sector(data: &[u8]) -> Result<ParsedSector, ParseError> {
-    if let Some(sector) = try_parse_sized_sector(data) {
+    if let Some(sector) = try_parse_sized_sector(data, None) {
         debug!(
             roads = sector.roads.len(),
             nodes = sector.nodes.len(),
@@ -204,6 +205,27 @@ pub fn parse_sector(data: &[u8]) -> Result<ParsedSector, ParseError> {
 }
 
 fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
+    parse_sector_legacy_inner(data, None)
+}
+
+/// Same as [`parse_sector`] but instruments every drop point with a
+/// [`DropEvent`] recorded into `tracer`. Both the sized-format path
+/// (`SizedRoadParseFailed`) and the legacy path are instrumented.
+pub fn parse_sector_with_tracer(
+    data: &[u8],
+    sector_path: &str,
+    tracer: &DropTracer,
+) -> Result<ParsedSector, ParseError> {
+    if let Some(sector) = try_parse_sized_sector(data, Some((tracer, sector_path))) {
+        return Ok(sector);
+    }
+    parse_sector_legacy_inner(data, Some((tracer, sector_path)))
+}
+
+fn parse_sector_legacy_inner(
+    data: &[u8],
+    tracer_ctx: Option<(&DropTracer, &str)>,
+) -> Result<ParsedSector, ParseError> {
     let mut cur = Cursor::new(data);
     let mut sector = ParsedSector::default();
 
@@ -232,10 +254,28 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
             Ok(t) => t,
             Err(e) => {
                 warn!("sector item #{idx} type read failed: {e} — partial sector accepted");
+                if let Some((tracer, sector_path)) = tracer_ctx {
+                    tracer.record(DropEvent {
+                        category: DropCategory::SectorHandlerError,
+                        sector_path: sector_path.to_string(),
+                        item_type: 0,
+                        item_uid: None,
+                        node_a: None,
+                        node_b: None,
+                        node_a_resolved: None,
+                        node_b_resolved: None,
+                        x: None,
+                        z: None,
+                        raw_hex: Vec::new(),
+                    });
+                }
                 all_items_parsed = false;
                 break;
             }
         };
+        // Capture body-start offset AFTER reading item_type, so raw_hex covers
+        // the item body bytes (not the 4-byte type prefix).
+        let item_body_start = cur.position() as usize;
         let dispatch_result: Result<(), ParseError> = match item_type {
             ITEM_TYPE_ROAD => parse_road(&mut cur, &mut sector),
             ITEM_TYPE_PREFAB => parse_prefab(&mut cur, &mut sector),
@@ -265,6 +305,36 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
         };
         if let Err(e) = dispatch_result {
             warn!("sector item #{idx} (type={item_type}) failed: {e} — partial sector accepted");
+            if let Some((tracer, sector_path)) = tracer_ctx {
+                let category = if item_type == ITEM_TYPE_ROAD {
+                    DropCategory::RoadParseFailed
+                } else if is_known_item_type(item_type) {
+                    DropCategory::SectorHandlerError
+                } else {
+                    DropCategory::UnknownItemType
+                };
+                let body = &data[item_body_start..];
+                let hex_cap = tracer.hex_limit.min(body.len());
+                let raw_hex = body[..hex_cap].to_vec();
+                let (item_uid, node_a, node_b) = if item_type == ITEM_TYPE_ROAD {
+                    try_extract_road_uids(body)
+                } else {
+                    (None, None, None)
+                };
+                tracer.record(DropEvent {
+                    category,
+                    sector_path: sector_path.to_string(),
+                    item_type,
+                    item_uid,
+                    node_a,
+                    node_b,
+                    node_a_resolved: None,
+                    node_b_resolved: None,
+                    x: None,
+                    z: None,
+                    raw_hex,
+                });
+            }
             all_items_parsed = false;
             break;
         }
@@ -292,6 +362,60 @@ fn parse_sector_legacy(data: &[u8]) -> Result<ParsedSector, ParseError> {
     }
 
     Ok(sector)
+}
+
+/// Returns `true` for every item_type that has a dispatch branch in
+/// `parse_sector_legacy_inner`. Used to distinguish `SectorHandlerError`
+/// (known type, handler failed) from `UnknownItemType` (no branch exists).
+fn is_known_item_type(t: u32) -> bool {
+    matches!(
+        t,
+        ITEM_TYPE_TERRAIN
+            | ITEM_TYPE_BUILDINGS
+            | ITEM_TYPE_ROAD
+            | ITEM_TYPE_PREFAB
+            | ITEM_TYPE_MODEL
+            | ITEM_TYPE_COMPANY
+            | ITEM_TYPE_SERVICE
+            | ITEM_TYPE_CUT_PLANE
+            | ITEM_TYPE_CITY
+            | ITEM_TYPE_MAP_OVERLAY
+            | ITEM_TYPE_FERRY
+            | ITEM_TYPE_GARAGE
+            | ITEM_TYPE_TRIGGER
+            | ITEM_TYPE_FUEL_PUMP
+            | ITEM_TYPE_SIGN
+            | ITEM_TYPE_BUS_STOP
+            | ITEM_TYPE_TRAFFIC_AREA
+            | ITEM_TYPE_BEZIER_PATCH
+            | ITEM_TYPE_TRAJECTORY
+            | ITEM_TYPE_MAP_AREA
+            | ITEM_TYPE_FAR_MODEL
+            | ITEM_TYPE_CURVE
+            | ITEM_TYPE_CUTSCENE
+            | ITEM_TYPE_VISIBILITY_AREA
+    )
+}
+
+/// Try to extract uid / start_node_uid / end_node_uid from raw road body bytes.
+/// Offsets are fixed by the `RoadFixedHeader` layout (265 B):
+///   uid at 0, start_node_uid at 0xF5 (245), end_node_uid at 0xFD (253).
+fn try_extract_road_uids(body: &[u8]) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let uid = read_u64_at(body, 0);
+    let node_a = read_u64_at(body, 245);
+    let node_b = read_u64_at(body, 253);
+    (uid, node_a, node_b)
+}
+
+fn read_u64_at(data: &[u8], offset: usize) -> Option<u64> {
+    let end = offset + 8;
+    if end <= data.len() {
+        Some(u64::from_le_bytes(
+            data[offset..end].try_into().unwrap(),
+        ))
+    } else {
+        None
+    }
 }
 
 /// Tail-rebuild used after partial-item parsing — see `parse_sector_legacy`.
@@ -554,7 +678,10 @@ pub fn audit_sector(data: &[u8]) -> AuditReport {
 /// Detection: we treat the data as sized format when the 20-byte header parses
 /// cleanly **and** the first `min(4, item_count)` items walk through cleanly
 /// using the `type+size+payload` pattern without overrunning the buffer.
-fn try_parse_sized_sector(data: &[u8]) -> Option<ParsedSector> {
+fn try_parse_sized_sector(
+    data: &[u8],
+    tracer_ctx: Option<(&DropTracer, &str)>,
+) -> Option<ParsedSector> {
     const HEADER_LEN: usize = 4 + 8 + 8; // u32 + u64 + u64
 
     if data.len() < HEADER_LEN + 4 {
@@ -635,8 +762,29 @@ fn try_parse_sized_sector(data: &[u8]) -> Option<ParsedSector> {
 
         match item_type {
             ITEM_TYPE_ROAD => {
-                if let Ok(road) = parse_sized_road(&mut cur) {
-                    sector.roads.push(road);
+                match parse_sized_road(&mut cur) {
+                    Ok(road) => sector.roads.push(road),
+                    Err(_) => {
+                        if let Some((tracer, sector_path)) = tracer_ctx {
+                            let hex_cap = tracer.hex_limit.min(item_size as usize);
+                            let body = data
+                                .get(item_start as usize..item_start as usize + hex_cap)
+                                .unwrap_or(&[]);
+                            tracer.record(DropEvent {
+                                category: DropCategory::SizedRoadParseFailed,
+                                sector_path: sector_path.to_string(),
+                                item_type: ITEM_TYPE_ROAD,
+                                item_uid: None,
+                                node_a: None,
+                                node_b: None,
+                                node_a_resolved: None,
+                                node_b_resolved: None,
+                                x: None,
+                                z: None,
+                                raw_hex: body.to_vec(),
+                            });
+                        }
+                    }
                 }
             }
             ITEM_TYPE_PREFAB => {

@@ -10,7 +10,8 @@ use crate::cache::{compute_cache_key, load_cache, save_cache};
 use crate::error::ParseError;
 use crate::graph::{GraphBuilder, MapGraph};
 use crate::hashfs::HashFsArchive;
-use crate::sector::parse_sector;
+use crate::drop_tracer::DropTracer;
+use crate::sector::{parse_sector, parse_sector_with_tracer};
 use crate::zip_archive::ZipArchive;
 
 /// A single archive file to be loaded.
@@ -225,6 +226,55 @@ pub fn load_and_build(
         );
         Ok(graph)
     }
+}
+
+/// Like [`parse_sectors_from_archives`] but records every sector-level and
+/// (optionally) graph-level drop into `tracer`. Returns the `GraphBuilder`
+/// (not yet built) and a `Vec<(sector_path, sector_data)>` of every sector
+/// that was successfully read, for caller-side road-sector mapping.
+///
+/// The caller owns the `DropTracer` and calls `tracer.take_events()` after
+/// this returns.
+pub fn parse_sectors_with_drop_tracer(
+    archives: &mut [Box<dyn Archive>],
+    tracer: &DropTracer,
+) -> Result<(GraphBuilder, Vec<String>), ParseError> {
+    let mut builder = GraphBuilder::new();
+    let mut parsed_paths: Vec<String> = Vec::new();
+    let mut all_paths = std::collections::HashSet::new();
+
+    for arc in archives.iter() {
+        let mut files = arc.list_files();
+        if files.is_empty() {
+            if let Some(hashfs_arc) = arc.as_any().downcast_ref::<crate::hashfs::HashFsArchive>() {
+                files = hashfs_arc.probe_sector_paths();
+            }
+        }
+        all_paths.extend(files);
+    }
+
+    let sector_paths: Vec<String> = all_paths
+        .into_iter()
+        .filter(|p| p.ends_with(".base"))
+        .collect();
+
+    for path in &sector_paths {
+        let data = archives
+            .iter_mut()
+            .rev()
+            .find_map(|arc| arc.read_path(path).ok());
+        let Some(data) = data else { continue };
+
+        match parse_sector_with_tracer(&data, path, tracer) {
+            Ok(sector) => {
+                builder.merge_sector(sector);
+                parsed_paths.push(path.clone());
+            }
+            Err(e) => warn!("Failed to parse sector {path}: {e}"),
+        }
+    }
+
+    Ok((builder, parsed_paths))
 }
 
 fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapGraph, ParseError> {

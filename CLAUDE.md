@@ -22,6 +22,21 @@
 - shadcn-styler          — UI-Polish-Reviews
 
 
+## Outputs-Ordner — Dateibasierte Organisation
+
+Alle generierten Dateien (Specs, Logs, Reports, Dumps) landen in `outputs/YYYY-MM-DD/` — flach nach Datum sortiert, kein Unterordner-Chaos mehr.
+
+- JEDE Ausgabedatei direkt in den Ordner des ERSTELLDATUMS legen
+- Niemals `outputs/claude/`, `outputs/deepseek/` o.ä. verwenden
+- Niemals Dateien direkt in `outputs/` root ablegen
+- Immer den Pfad als `outputs/YYYY-MM-DD/filename.ext` angeben
+- Datum aus `date +%Y-%m-%d` (Linux) oder `Get-Date -Format 'yyyy-MM-dd'` (PowerShell)
+
+Prompt-Snippet zum Anhängen:
+```
+OUTPUT: Alle generierten Dateien nach outputs/YYYY-MM-DD/ schreiben (flach nach Datum, keine Unterordner wie claude/deepseek). Datum = heute (YYYY-MM-DD).
+```
+
 ## Obsidian Vault — Dokumentations-Workflow
 
 Lokaler Vault unter `docs/vault/` (nicht in Git, komplett privat). Claude Code liest und schreibt dort wie auf jeden anderen Ordner.

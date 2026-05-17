@@ -73,6 +73,16 @@ pub struct MapGraph {
     pub stats: BuildStats,
 }
 
+/// Result of [`GraphBuilder::analyze_roads_for_audit`] — road classification
+/// before graph build, used by the road-drop-audit binary.
+pub struct RoadAuditResult {
+    /// Roads where BOTH endpoints are absent from the merged node map.
+    pub both_unresolved: Vec<crate::sector::RawRoad>,
+    /// Roads where exactly ONE endpoint resolves.
+    /// Tuple: (road, resolved_node_uid, resolved_pos \[x, y, z\] in metres).
+    pub one_unresolved: Vec<(crate::sector::RawRoad, u64, [f64; 3])>,
+}
+
 /// Timing and count statistics from a graph build.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, bincode::Encode, bincode::Decode)]
 pub struct BuildStats {
@@ -574,6 +584,75 @@ impl GraphBuilder {
             edges,
             signs,
             prefabs,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit helpers — read-only, must be called BEFORE build() consumes self.
+    // -----------------------------------------------------------------------
+
+    /// All roads accumulated so far (before graph build).
+    pub fn roads(&self) -> &[RawRoad] {
+        &self.roads
+    }
+
+    /// All raw nodes accumulated so far.
+    pub fn raw_nodes(&self) -> &HashMap<u64, RawNode> {
+        &self.nodes
+    }
+
+    /// Find the nearest node to `(x, z)` in XZ-plane within `max_dist` metres.
+    /// Returns `(uid, distance_m)` or `None` if nothing is within range.
+    pub fn find_nearest_node(&self, x: f32, z: f32, max_dist: f32) -> Option<(u64, f32)> {
+        let max_dist_sq = (max_dist as f64).powi(2);
+        let mut best: Option<(u64, f64)> = None;
+        for node in self.nodes.values() {
+            let dx = node.x as f64 - x as f64;
+            let dz = node.z as f64 - z as f64;
+            let d2 = dx * dx + dz * dz;
+            if d2 <= max_dist_sq && best.is_none_or(|(_, bd)| d2 < bd) {
+                best = Some((node.uid, d2));
+            }
+        }
+        best.map(|(uid, d2)| (uid, d2.sqrt() as f32))
+    }
+
+    /// Count accumulated roads that reference `uid` as either endpoint.
+    pub fn roads_referencing_node(&self, uid: u64) -> usize {
+        self.roads
+            .iter()
+            .filter(|r| r.node_a == uid || r.node_b == uid)
+            .count()
+    }
+
+    /// Classify all accumulated roads by graph-level node-resolution status.
+    ///
+    /// This is a pure read — it does NOT modify `self` and can be called
+    /// immediately before `build()` (which moves `self`).
+    pub fn analyze_roads_for_audit(&self) -> RoadAuditResult {
+        let mut both_unresolved = Vec::new();
+        let mut one_unresolved = Vec::new();
+        for road in &self.roads {
+            let a = self.nodes.get(&road.node_a);
+            let b = self.nodes.get(&road.node_b);
+            match (a, b) {
+                (None, None) => both_unresolved.push(road.clone()),
+                (Some(n), None) => one_unresolved.push((
+                    road.clone(),
+                    road.node_a,
+                    [n.x as f64, n.y as f64, n.z as f64],
+                )),
+                (None, Some(n)) => one_unresolved.push((
+                    road.clone(),
+                    road.node_b,
+                    [n.x as f64, n.y as f64, n.z as f64],
+                )),
+                (Some(_), Some(_)) => {}
+            }
+        }
+        RoadAuditResult {
+            both_unresolved,
+            one_unresolved,
         }
     }
 }

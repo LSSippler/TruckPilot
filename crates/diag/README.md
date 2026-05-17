@@ -66,6 +66,39 @@ cargo run --release --bin truckpilot-vis-uid-audit -- `
 
 Output: `outputs/vis_uid_audit.txt` (mirrored to `outputs/claude/`).
 
+### `road-drop-audit`
+
+Phase 6.2b-Diag-3. Instruments the full parse pipeline to trace every point
+where a road item is silently discarded before it can contribute an edge to the
+routing graph. Two drop layers are probed:
+
+- **Sector-level** (`parse_sector_with_tracer`): `RoadParseFailed`,
+  `SectorHandlerError`, `UnknownItemType`
+- **Graph-level** (`GraphBuilder::analyze_roads_for_audit`): `BothUnresolved`,
+  `OneUnresolved`
+
+```powershell
+cargo run --release -p truckpilot-diag --bin road-drop-audit -- `
+  --ets2-dir "C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2" `
+  --output-dir outputs/2026-05-17 `
+  --focus-city Berlin `
+  --hex-dump-limit 64
+```
+
+Outputs to `--output-dir`:
+- `road_drop_audit.md` — Markdown summary with per-category counts, top-20
+  sector hot-spots, auto-diagnosis text, and optional focus-city snap-node check
+- `road_drop_audit.json` — all `DropEvent` records as structured JSON
+- `road_drop_<City>_trace.md` — detailed per-city trace (only with `--focus-city`)
+
+`--focus-city` accepts any city name from the built-in list
+(Berlin, Hamburg, Wien, Paris, Amsterdam, Köln, Frankfurt, München, Prag, Warschau).
+`--focus-sector` additionally filters sector-level events by filename substring.
+
+The tracer infrastructure (`crates/map-parser/src/drop_tracer.rs`) has
+zero overhead in the production parser path — the `None` branch is compiled
+away entirely.
+
 ### `truckpilot-anchor-junction-audit`
 
 Phase 5.26d (H4b probe). Counts how many Single-Anchor-Items
