@@ -75,6 +75,10 @@ path = "src/bin/road-drop-audit.rs"
 name = "sign-precrash-audit"
 path = "src/bin/sign-precrash-audit.rs"
 
+[[bin]]
+name = "sign-format-compare"
+path = "src/bin/sign-format-compare.rs"
+
 [dependencies]
 truckpilot-telemetry = { path = "../telemetry" }
 truckpilot-map-parser = { path = "../map-parser" }
