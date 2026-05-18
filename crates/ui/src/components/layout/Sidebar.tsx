@@ -1,50 +1,68 @@
-import { NavLink } from "react-router-dom";
-import { Activity, Boxes, Gauge, Map, ScrollText, Settings as SettingsIcon, Truck } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useEffect } from "react";
+import {
+  Activity,
+  Boxes,
+  Database,
+  Map,
+  ScrollText,
+  Settings as SettingsIcon,
+  Truck,
+  SlidersHorizontal,
+} from "lucide-react";
+import { NavGroup } from "@/components/sidebar/NavGroup";
+import { NavItem } from "@/components/sidebar/NavItem";
+import { ETS2StatusIndicator, type ETS2State } from "@/components/ETS2StatusIndicator";
+import { useConnectionStore } from "@/stores/connection";
+import { useBlackboardStore } from "@/stores/blackboard";
+import { subscribeBlackboardKeys } from "@/lib/ipc";
 
-interface NavItem {
-  to: string;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  end?: boolean;
+const TELE_KEY = ["telemetry.available"] as const;
+
+function useEts2State(): ETS2State {
+  const status = useConnectionStore((s) => s.status);
+  const teleAvailable = useBlackboardStore((s) => s.values["telemetry.available"]);
+  if (status !== "connected") return "disconnected";
+  if (teleAvailable === "true") return "connected";
+  return "waiting";
 }
 
-const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: Activity, end: true },
-  { to: "/plugins", label: "Plugins", icon: Boxes },
-  { to: "/mods", label: "Mods", icon: Map },
-  { to: "/pid", label: "PID Tuning", icon: Gauge },
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/logs", label: "Logs", icon: ScrollText },
-];
-
 export function Sidebar() {
+  useEffect(() => subscribeBlackboardKeys(TELE_KEY), []);
+  const ets2State = useEts2State();
+
   return (
-    <aside className="flex h-full w-56 flex-col border-r bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 items-center gap-2 border-b px-4">
-        <Truck className="size-5 text-sidebar-primary" />
-        <span className="text-base font-semibold">TruckPilot</span>
+    <aside
+      className="flex h-full flex-col border-r border-subtle"
+      style={{ width: "var(--sidebar-w)", background: "var(--surface-base)" }}
+    >
+      {/* Logo strip */}
+      <div
+        className="flex items-center gap-2 px-3 shrink-0 border-b border-subtle"
+        style={{ height: "var(--header-h)" }}
+      >
+        <Truck className="size-4 text-brand shrink-0" />
+        <span className="text-sm font-sans font-medium text-fg tracking-tight">TruckPilot</span>
+        <span className="ml-auto font-mono text-[10px] text-fg-muted">v0.2.0</span>
       </div>
-      <nav className="flex-1 space-y-1 p-2">
-        {NAV.map(({ to, label, icon: Icon, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
-                "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                isActive && "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-              )
-            }
-          >
-            <Icon className="size-4" />
-            <span>{label}</span>
-          </NavLink>
-        ))}
+
+      {/* Navigation */}
+      <nav className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-4">
+        <NavGroup label="Operation">
+          <NavItem to="/" end icon={<Activity size={14} />}>Dashboard</NavItem>
+          <NavItem to="/blackboard" icon={<Database size={14} />}>Blackboard</NavItem>
+          <NavItem to="/logs" icon={<ScrollText size={14} />}>Logs</NavItem>
+        </NavGroup>
+
+        <NavGroup label="Configuration">
+          <NavItem to="/plugins" icon={<Boxes size={14} />}>Plugins</NavItem>
+          <NavItem to="/pid" icon={<SlidersHorizontal size={14} />}>PID Tuning</NavItem>
+          <NavItem to="/mods" icon={<Map size={14} />}>Mods</NavItem>
+          <NavItem to="/settings" icon={<SettingsIcon size={14} />}>Settings</NavItem>
+        </NavGroup>
       </nav>
-      <div className="border-t p-3 text-xs text-muted-foreground">v0.2.0</div>
+
+      {/* ETS2 status foot */}
+      <ETS2StatusIndicator state={ets2State} className="border-t border-subtle shrink-0" />
     </aside>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +14,132 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useSettingsStore } from "@/stores/settings";
-import { detectEts2Path } from "@/lib/tauri-bridge";
+import {
+  detectEts2Path,
+  daemonGetAutoStart,
+  daemonSetAutoStart,
+  daemonStatus,
+  daemonStart,
+  daemonStop,
+  daemonRestart,
+  type DaemonStatus,
+} from "@/lib/tauri-bridge";
+
+function DaemonCard() {
+  const [status, setStatus] = useState<DaemonStatus | null>(null);
+  const [autoStart, setAutoStart] = useState<boolean>(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      setStatus(await daemonStatus());
+    } catch (err) {
+      toast.error("Daemon status failed", { description: String(err) });
+    }
+  };
+
+  useEffect(() => {
+    void daemonGetAutoStart().then(setAutoStart).catch(() => undefined);
+    void refresh();
+    const id = setInterval(() => void refresh(), 2000);
+    return () => clearInterval(id);
+  }, []);
+
+  const toggleAuto = async (v: boolean) => {
+    setAutoStart(v);
+    try {
+      await daemonSetAutoStart(v);
+    } catch (err) {
+      toast.error("Persist failed", { description: String(err) });
+    }
+  };
+
+  const wrap = (fn: () => Promise<DaemonStatus>, label: string) => async () => {
+    setBusy(true);
+    try {
+      setStatus(await fn());
+    } catch (err) {
+      toast.error(`${label} failed`, { description: String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dot = (() => {
+    switch (status?.state) {
+      case "runningmanaged":
+        return { color: "bg-success", label: "Running (managed)" };
+      case "runningexternal":
+        return { color: "bg-info", label: "Running (external)" };
+      case "crashed":
+        return { color: "bg-danger", label: "Crashed" };
+      case "stopped":
+      default:
+        return { color: "bg-fg-muted", label: "Stopped" };
+    }
+  })();
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Daemon</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <Label className="text-sm">Auto-start daemon on launch</Label>
+            <p className="text-xs text-muted-foreground">
+              Spawn truckpilot-core when the UI starts.
+            </p>
+          </div>
+          <Switch checked={autoStart} onCheckedChange={(v) => void toggleAuto(v)} />
+        </div>
+
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`h-2.5 w-2.5 rounded-full ${dot.color}`} />
+          <span>{dot.label}</span>
+          {status?.pid != null && (
+            <span className="text-xs text-muted-foreground">pid {status.pid}</span>
+          )}
+        </div>
+
+        {status?.binary_path && (
+          <p className="text-xs text-muted-foreground break-all">{status.binary_path}</p>
+        )}
+        {status?.last_error && (
+          <p className="text-xs text-red-500 break-all">{status.last_error}</p>
+        )}
+
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || status?.state === "runningmanaged" || status?.state === "runningexternal"}
+            onClick={() => void wrap(daemonStart, "Start")()}
+          >
+            Start
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || status?.state !== "runningmanaged"}
+            onClick={() => void wrap(daemonStop, "Stop")()}
+          >
+            Stop
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => void wrap(daemonRestart, "Restart")()}
+          >
+            Restart
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function Settings() {
   const settings = useSettingsStore();
@@ -70,6 +195,8 @@ export function Settings() {
         </CardContent>
       </Card>
 
+      <DaemonCard />
+
       <Card>
         <CardHeader>
           <CardTitle>Connection</CardTitle>
@@ -108,6 +235,23 @@ export function Settings() {
               />
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>IPC</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-xs">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">WebSocket port</span>
+            <span className="font-mono">127.0.0.1:8765</span>
+          </div>
+          <p className="text-muted-foreground">
+            Port is hard-coded in the daemon (Phase 6.x). Change in
+            <code className="mx-1 font-mono">crates/core/src/ipc.rs</code>
+            and recompile.
+          </p>
         </CardContent>
       </Card>
 

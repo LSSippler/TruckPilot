@@ -7,13 +7,18 @@ import { openExternalDashboard } from "@/lib/tauri-bridge";
 function applyTheme(theme: Theme) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  root.classList.remove("dark", "light");
-  if (theme === "dark") root.classList.add("dark");
-  else if (theme === "light") root.classList.add("light");
+  let resolved: "dark" | "light";
+  if (theme === "dark") resolved = "dark";
+  else if (theme === "light") resolved = "light";
   else {
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    root.classList.add(prefersDark ? "dark" : "light");
+    resolved = prefersDark ? "dark" : "light";
   }
+  // Legacy class — shadcn components style off `.dark` selector.
+  root.classList.remove("dark", "light");
+  root.classList.add(resolved);
+  // New token system — TruckPilot design tokens key off [data-theme="…"].
+  root.dataset.theme = resolved;
 }
 
 export function TopBar() {

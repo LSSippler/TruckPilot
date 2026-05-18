@@ -10,16 +10,33 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, RefreshCw } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { sendCommand } from "@/lib/ipc";
 import { usePluginsStore } from "@/stores/plugins";
 import { useConnectionStore } from "@/stores/connection";
 import { SchemaForm } from "@/components/schema-form/SchemaForm";
+import { PluginToggleItem, type PluginInfo, type PluginRunState } from "@/components/PluginToggleItem";
+
+function toPluginInfo(p: { name: string; version: string; enabled: boolean; state?: string }): PluginInfo {
+  const stateMap: Record<string, PluginRunState> = {
+    running: "running",
+    stopped: "stopped",
+    error: "error",
+    disabled: "disabled",
+    starting: "starting",
+  };
+  return {
+    id: p.name,
+    name: p.name,
+    version: p.version,
+    state: p.enabled
+      ? (stateMap[p.state ?? ""] ?? "running")
+      : "stopped",
+  };
+}
 
 export function Plugins() {
   const status = useConnectionStore((s) => s.status);
@@ -45,7 +62,10 @@ export function Plugins() {
     [order, list]
   );
 
-  const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor),
+  );
 
   const onDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -61,52 +81,74 @@ export function Plugins() {
 
   return (
     <div className="grid h-full gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-      <Card>
-        <CardHeader>
-          <CardTitle>Plugins</CardTitle>
-        </CardHeader>
-        <CardContent>
+      {/* Plugin list */}
+      <div className="bg-surface-card border border-subtle rounded-md flex flex-col">
+        <div className="px-4 py-3 border-b border-subtle">
+          <h2 className="text-sm font-sans font-medium text-fg">Plugins</h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2">
           {status !== "connected" ? (
-            <p className="text-sm text-muted-foreground">Not connected.</p>
+            <p className="text-xs text-fg-muted font-sans px-2 py-2">Not connected.</p>
           ) : ordered.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No plugins reported by the core.</p>
+            <p className="text-xs text-fg-muted font-sans px-2 py-2">No plugins reported by the core.</p>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
               <SortableContext items={ordered.map((p) => p.name)} strategy={verticalListSortingStrategy}>
-                <ul className="space-y-1">
+                <div className="space-y-0.5">
                   {ordered.map((plugin) => (
-                    <PluginRow
+                    <SortablePluginItem
                       key={plugin.name}
                       plugin={plugin}
-                      active={selected === plugin.name}
+                      selected={selected === plugin.name}
                       onSelect={() => select(plugin.name)}
                     />
                   ))}
-                </ul>
+                </div>
               </SortableContext>
             </DndContext>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{selectedPlugin ? selectedPlugin.name : "Settings"}</CardTitle>
-        </CardHeader>
-        <CardContent>
+      {/* Detail panel */}
+      <div className="bg-surface-card border border-subtle rounded-md flex flex-col">
+        <div className="px-4 py-3 border-b border-subtle flex items-center gap-2">
+          <h2 className="text-sm font-sans font-medium text-fg flex-1">
+            {selectedPlugin ? selectedPlugin.name : "Settings"}
+          </h2>
+          {selectedPlugin && (
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={`Reload ${selectedPlugin.name}`}
+              onClick={() => void sendCommand({ type: "plugin_reload", name: selectedPlugin.name })}
+              className="h-7 w-7"
+            >
+              <RefreshCw size={13} />
+            </Button>
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
           {!selectedPlugin ? (
-            <p className="text-sm text-muted-foreground">Select a plugin to view its settings.</p>
+            <p className="text-xs text-fg-muted font-sans">Select a plugin to view its settings.</p>
           ) : !selectedSchema ? (
-            <p className="text-sm text-muted-foreground">Loading schema…</p>
+            <p className="text-xs text-fg-muted font-sans">Loading schema…</p>
           ) : (
             <>
-              <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
-                <Badge variant="outline">v{selectedPlugin.version}</Badge>
-                <Badge variant={selectedPlugin.enabled ? "success" : "secondary"}>
+              <div className="mb-3 flex items-center gap-2 text-xs">
+                <Badge variant="outline" className="border-subtle text-fg-muted">v{selectedPlugin.version}</Badge>
+                <Badge
+                  variant="secondary"
+                  className={
+                    selectedPlugin.enabled
+                      ? "bg-success-soft text-success border-0"
+                      : "bg-surface-elevated text-fg-muted border-0"
+                  }
+                >
                   {selectedPlugin.enabled ? "enabled" : "disabled"}
                 </Badge>
               </div>
-              <Separator className="mb-4" />
+              <Separator className="mb-4 bg-border-subtle" />
               <SchemaForm
                 schema={selectedSchema}
                 onSubmit={(values) =>
@@ -119,19 +161,19 @@ export function Plugins() {
               />
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
 
-function PluginRow({
+function SortablePluginItem({
   plugin,
-  active,
+  selected,
   onSelect,
 }: {
   plugin: { name: string; version: string; enabled: boolean };
-  active: boolean;
+  selected: boolean;
   onSelect: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -145,31 +187,17 @@ function PluginRow({
 
   const onToggle = (enabled: boolean) =>
     sendCommand({ type: "plugin_toggle", name: plugin.name, enabled });
-  const onReload = () => sendCommand({ type: "plugin_reload", name: plugin.name });
 
   return (
-    <li
-      ref={setNodeRef}
-      style={style}
-      className={`flex items-center gap-2 rounded-md border bg-card p-2 ${active ? "border-primary" : ""}`}
-    >
-      <button
-        type="button"
-        className="cursor-grab rounded p-1 text-muted-foreground hover:text-foreground"
-        aria-label="Drag to reorder"
-        {...attributes}
-        {...listeners}
-      >
-        <GripVertical className="size-4" />
-      </button>
-      <button type="button" className="flex-1 text-left" onClick={onSelect}>
-        <div className="text-sm font-medium">{plugin.name}</div>
-        <div className="text-xs text-muted-foreground">v{plugin.version}</div>
-      </button>
-      <Switch checked={plugin.enabled} onCheckedChange={(v) => void onToggle(Boolean(v))} />
-      <Button size="icon" variant="ghost" aria-label={`Reload ${plugin.name}`} onClick={() => void onReload()}>
-        <RefreshCw className="size-4" />
-      </Button>
-    </li>
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <PluginToggleItem
+        plugin={toPluginInfo(plugin)}
+        enabled={plugin.enabled}
+        selected={selected}
+        onToggle={(v) => void onToggle(v)}
+        onSelect={onSelect}
+        draggable
+      />
+    </div>
   );
 }

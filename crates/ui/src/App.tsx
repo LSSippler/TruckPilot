@@ -8,8 +8,11 @@ import { ModManager } from "@/routes/ModManager";
 import { PidTuning } from "@/routes/PidTuning";
 import { Settings } from "@/routes/Settings";
 import { Logs } from "@/routes/Logs";
+import { Blackboard } from "@/routes/Blackboard";
 import { ExternalDashboard } from "@/routes/ExternalDashboard";
 import { initIpcSubscriptions } from "@/lib/ipc";
+import { HotkeyHandler } from "@/components/HotkeyHandler";
+import { AutopilotToastWatcher } from "@/components/AutopilotToastWatcher";
 
 export function App() {
   useEffect(() => {
@@ -21,6 +24,8 @@ export function App() {
 
   return (
     <>
+      <HotkeyHandler />
+      <AutopilotToastWatcher />
       <Routes>
         <Route element={<RouteShell />}>
           <Route index element={<Dashboard />} />
@@ -29,6 +34,7 @@ export function App() {
           <Route path="pid" element={<PidTuning />} />
           <Route path="settings" element={<Settings />} />
           <Route path="logs" element={<Logs />} />
+          <Route path="blackboard" element={<Blackboard />} />
         </Route>
         <Route path="external-dashboard" element={<ExternalDashboard />} />
         <Route path="*" element={<Navigate to="/" replace />} />

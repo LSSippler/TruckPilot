@@ -13,7 +13,7 @@ export function RouteShell() {
       <Sidebar />
       <div className="flex h-full flex-1 flex-col">
         <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-4 animate-tp-fade-in">
           <Outlet />
         </main>
         <StatusBar />

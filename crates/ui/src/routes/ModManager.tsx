@@ -48,14 +48,17 @@ export function ModManager() {
         </CardHeader>
         <CardContent>
           {list.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No mods detected.</p>
+            <p className="text-xs text-fg-muted font-sans">No mods detected.</p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="space-y-0.5">
               {list.map((mod) => (
-                <li key={mod.path} className="flex items-center justify-between rounded-md border p-2">
-                  <div>
-                    <div className="text-sm font-medium">{mod.name}</div>
-                    <div className="text-xs text-muted-foreground">{mod.path}</div>
+                <li
+                  key={mod.path}
+                  className="flex items-center justify-between px-3 h-11 rounded-sm border border-transparent hover:bg-surface-elevated transition-colors"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-sans text-fg truncate">{mod.name}</div>
+                    <div className="text-[10px] font-mono text-fg-muted truncate">{mod.path}</div>
                   </div>
                   <Switch
                     checked={active.includes(mod.name)}

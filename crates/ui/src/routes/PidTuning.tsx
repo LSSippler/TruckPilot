@@ -172,15 +172,21 @@ function PidPlot({ samples }: { samples: { tMs: number; setpoint: number; actual
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <CartesianGrid strokeDasharray="2 4" stroke="var(--border-subtle)" />
               <XAxis dataKey="t" hide />
-              <YAxis stroke="var(--muted-foreground)" fontSize={11} />
+              <YAxis stroke="var(--text-muted)" fontSize={11} />
               <ChartTooltip
-                contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)" }}
+                contentStyle={{
+                  background: "var(--surface-overlay)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  fontFamily: "var(--tp-font-mono, monospace)",
+                  fontSize: "11px",
+                }}
                 labelFormatter={() => ""}
               />
-              <Line type="monotone" dataKey="setpoint" stroke="var(--chart-2)" dot={false} isAnimationActive={false} />
-              <Line type="monotone" dataKey="actual" stroke="var(--chart-1)" dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="setpoint" stroke="var(--chart-2)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="actual" stroke="var(--chart-1)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         )}
