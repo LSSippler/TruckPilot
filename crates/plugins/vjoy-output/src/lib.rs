@@ -53,6 +53,21 @@ pub fn should_emergency_brake(ctx: &PluginContext) -> bool {
     ctx.blackboard.get("safety.emergency_brake").as_deref() == Some("true")
 }
 
+/// Returns `true` when autopilot is Off (or state is unknown). Used to skip
+/// the emergency-brake override and write neutral instead.
+pub fn is_autopilot_off(ctx: &PluginContext) -> bool {
+    !matches!(
+        ctx.blackboard.get("autopilot.state").as_deref(),
+        Some("Engaging" | "Active" | "Paused" | "Fault")
+    )
+}
+
+/// Neutral axis values: steering centered, throttle and brake released.
+/// Call this instead of a hard brake whenever autopilot is not engaged.
+pub fn write_neutral_axes() -> (f64, f64, f64) {
+    (0.0, 0.0, 0.0)
+}
+
 /// Returns true if the watchdog has expired: more than `timeout_ms / 20` ticks
 /// have passed since `last_tick`. Uses wrapping subtraction for u64 safety.
 pub fn is_watchdog_expired(last_tick: u64, current_tick: u64, timeout_ms: u64) -> bool {
@@ -132,9 +147,9 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard.remove("vjoy.last_error");
         ctx.blackboard.set("vjoy.last_write_tick", "0");
         ctx.blackboard.set("vjoy.idle_centered", "false");
-        ctx.blackboard.set("vjoy.last_raw_x", "0");
-        ctx.blackboard.set("vjoy.last_raw_y", "0");
-        ctx.blackboard.set("vjoy.last_raw_z", "0");
+        ctx.blackboard.set("vjoy.last_raw_x",   "0");
+        ctx.blackboard.set("vjoy.last_raw_sl0", "0");
+        ctx.blackboard.set("vjoy.last_raw_sl1", "0");
         ctx.blackboard.set("vjoy.last_raw_source", "none");
 
         #[cfg(windows)]
@@ -147,15 +162,16 @@ impl Plugin for VJoyOutputPlugin {
                     // blackboard so the very first frame the UI shows is
                     // accurate.
                     match handle.set_axes_verified(0.0, 0.0, 0.0) {
-                        Ok((rx, ry, rz)) => {
+                        Ok((rx, rsl0, rsl1)) => {
                             self.idle_centered = true;
                             ctx.blackboard.set("vjoy.idle_centered", "true");
-                            ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
-                            ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
-                            ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                             ctx.blackboard.set("vjoy.last_raw_source", "on_load");
                             tracing::info!(
-                                "[vjoy-output] axes centered on acquire raw=({rx},{ry},{rz})"
+                                "[vjoy-output] axes centered on acquire \
+                                 X={rx} SL0={rsl0} SL1={rsl1}"
                             );
                         }
                         Err(e) => {
@@ -166,9 +182,14 @@ impl Plugin for VJoyOutputPlugin {
                     self.vjoy = Some(handle);
                     ctx.blackboard.set("vjoy.connected", "true");
                     tracing::info!(
-                        "[vjoy-output] vJoy device {} acquired (failsafe={}ms)",
+                        "[vjoy-output] vJoy device {} acquired (failsafe={}ms) \
+                         HID: X=0x30 (steering), SL0=0x36 (throttle), SL1=0x37 (brake)",
                         self.device_id,
                         self.failsafe_timeout_ms
+                    );
+                    tracing::info!(
+                        "[vjoy-output] failsafe neutral: steer=16384 (center), \
+                         throttle=0, brake=0"
                     );
                 }
                 Err(e) => {
@@ -215,13 +236,23 @@ impl Plugin for VJoyOutputPlugin {
             return;
         }
 
-        // Emergency brake overrides everything else
+        // Emergency brake overrides everything else — but only when autopilot
+        // is engaged. If autopilot is Off (manual drive), write neutral instead
+        // of hard brake so the driver retains control.
         if should_emergency_brake(ctx) {
+            let (s, t, b) = if is_autopilot_off(ctx) {
+                tracing::info!(
+                    "[vjoy-output] emergency_brake set but autopilot Off — writing neutral"
+                );
+                write_neutral_axes()
+            } else {
+                tracing::warn!("[vjoy-output] EMERGENCY BRAKE — throttle=0 brake=full");
+                (0.0, 0.0, 1.0)
+            };
             #[cfg(windows)]
             if let Some(ref mut handle) = self.vjoy {
-                let _ = handle.set_axes(0.0, 0.0, 1.0);
+                let _ = handle.set_axes(s, t, b);
             }
-            tracing::warn!("[vjoy-output] EMERGENCY BRAKE — throttle=0 brake=full");
             return;
         }
 
@@ -243,15 +274,15 @@ impl Plugin for VJoyOutputPlugin {
             #[cfg(windows)]
             if let Some(ref mut handle) = self.vjoy {
                 match handle.set_axes_verified(0.0, 0.0, 0.0) {
-                    Ok((rx, ry, rz)) => {
+                    Ok((rx, rsl0, rsl1)) => {
                         self.idle_centered = true;
                         self.last_write_tick = ctx.tick_count;
                         ctx.blackboard.set("vjoy.idle_centered", "true");
                         ctx.blackboard
                             .set("vjoy.last_write_tick", ctx.tick_count.to_string());
-                        ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
-                        ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
-                        ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                         ctx.blackboard.set("vjoy.last_raw_source", "watchdog");
                     }
                     Err(e) => {
@@ -304,7 +335,7 @@ impl VJoyOutputPlugin {
         }
 
         match handle.set_axes_verified(output.steering, output.throttle, output.brake) {
-            Ok((rx, ry, rz)) => {
+            Ok((rx, rsl0, rsl1)) => {
                 self.tick_count_since_reconnect = 0;
                 let idle = is_idle_output(output.steering, output.throttle, output.brake);
                 self.idle_centered = idle;
@@ -313,9 +344,9 @@ impl VJoyOutputPlugin {
                     .set("vjoy.idle_centered", if idle { "true" } else { "false" });
                 ctx.blackboard
                     .set("vjoy.last_write_tick", ctx.tick_count.to_string());
-                ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
-                ctx.blackboard.set("vjoy.last_raw_y", ry.to_string());
-                ctx.blackboard.set("vjoy.last_raw_z", rz.to_string());
+                ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
+                ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                 ctx.blackboard.set("vjoy.last_raw_source", "tick");
             }
             Err(e) => {
@@ -405,6 +436,34 @@ mod tests {
         let ctx = PluginContext::test();
         ctx.blackboard.set("safety.emergency_brake", "false");
         assert!(!should_emergency_brake(&ctx));
+    }
+
+    #[test]
+    fn autopilot_off_when_state_missing() {
+        let ctx = PluginContext::test();
+        assert!(is_autopilot_off(&ctx));
+    }
+
+    #[test]
+    fn autopilot_off_when_state_is_off() {
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("autopilot.state", "Off");
+        assert!(is_autopilot_off(&ctx));
+    }
+
+    #[test]
+    fn autopilot_not_off_when_active() {
+        for state in ["Engaging", "Active", "Paused", "Fault"] {
+            let ctx = PluginContext::test();
+            ctx.blackboard.set("autopilot.state", state);
+            assert!(!is_autopilot_off(&ctx), "expected not-off for state={state}");
+        }
+    }
+
+    #[test]
+    fn write_neutral_axes_returns_zeros() {
+        let (s, t, b) = write_neutral_axes();
+        assert_eq!((s, t, b), (0.0, 0.0, 0.0));
     }
 
     // --- Watchdog ---

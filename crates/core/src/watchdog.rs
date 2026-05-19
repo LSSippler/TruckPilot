@@ -114,19 +114,37 @@ pub fn check_telemetry_stale(
 /// virtual stick to (steer=0, throttle=0, brake=1.0) regardless of the
 /// arbitrated ControlOutput. The watchdog clears the flag in
 /// [`clear_vjoy_failsafe`] on recovery.
-pub fn apply_vjoy_failsafe(bb: &SharedBlackboard, config: &WatchdogConfig) {
+pub fn apply_vjoy_failsafe(bb: &SharedBlackboard, config: &WatchdogConfig, reason: &str) {
     tracing::warn!(
-        "VJOY FAILSAFE ACTIVE: steer={}, throttle={}, brake={} (via safety.emergency_brake)",
+        "[watchdog] FAILSAFE ACTIVE — reason={reason} steer={} throttle={} brake={} (via safety.emergency_brake)",
         config.failsafe_steering,
         config.failsafe_throttle,
         config.failsafe_brake,
     );
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
     bb.set("safety.emergency_brake", "true");
+    bb.set("safety.failsafe_active", "true");
+    bb.set("safety.failsafe_reason", reason);
+    bb.set("safety.last_failsafe_at", now_ms.to_string());
 }
 
 /// Clear the failsafe flag so vjoy-output resumes normal arbitration.
 pub fn clear_vjoy_failsafe(bb: &SharedBlackboard) {
     bb.set("safety.emergency_brake", "false");
+    bb.set("safety.failsafe_active", "false");
+}
+
+/// Returns `true` when the autopilot is in a state that requires failsafe
+/// protection (Engaging, Active, Paused, or Fault). In `Off` state the
+/// truck is under manual driver control and a failsafe brake would block it.
+pub fn is_autopilot_active(bb: &SharedBlackboard) -> bool {
+    matches!(
+        bb.get("autopilot.state").as_deref(),
+        Some("Engaging" | "Active" | "Paused" | "Fault")
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -141,44 +159,58 @@ pub async fn watchdog_loop(
 ) {
     let config = WatchdogConfig::default();
     let mut last_good_telemetry = Instant::now();
-    let mut failsafe_active = false;
-    // Rate-limit "FAILSAFE ACTIVE" repeats — the watchdog runs at 40 Hz
-    // and would otherwise flood the log with one line per poll while a
-    // stall persists.
-    let mut last_failsafe_log: Option<Instant> = None;
-    const FAILSAFE_LOG_INTERVAL: Duration = Duration::from_secs(1);
+    // Track each condition independently so clearing one doesn't mask the other.
+    let mut heartbeat_failsafe = false;
+    let mut telem_failsafe = false;
 
     let mut interval = tokio::time::interval(Duration::from_millis(config.watchdog_poll_ms));
 
     loop {
         interval.tick().await;
 
+        let ap_active = is_autopilot_active(&bb);
+
         // --- Heartbeat check (failsafe on/off, no Fault) ---
         let heartbeat_stale = check_heartbeat_stall(&heartbeat, daemon_start, &config);
 
-        if heartbeat_stale && !failsafe_active {
-            tracing::warn!("Heartbeat stall detected, activating failsafe");
-            apply_vjoy_failsafe(&bb, &config);
-            failsafe_active = true;
-            last_failsafe_log = Some(Instant::now());
-        } else if !heartbeat_stale && failsafe_active {
-            tracing::info!("Heartbeat recovered, deactivating failsafe");
+        if heartbeat_stale && ap_active && !heartbeat_failsafe {
+            tracing::warn!("[watchdog] heartbeat stall — autopilot active, activating failsafe");
+            apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
+            heartbeat_failsafe = true;
+        } else if heartbeat_stale && !ap_active && heartbeat_failsafe {
+            // Autopilot disengaged while stall was active — release brake.
+            tracing::info!("[watchdog] heartbeat stall but autopilot Off — clearing failsafe, writing neutral");
             clear_vjoy_failsafe(&bb);
-            failsafe_active = false;
-            last_failsafe_log = None;
+            heartbeat_failsafe = false;
+        } else if !heartbeat_stale && heartbeat_failsafe {
+            tracing::info!("[watchdog] heartbeat recovered — deactivating failsafe");
+            clear_vjoy_failsafe(&bb);
+            heartbeat_failsafe = false;
         }
 
         // --- Telemetry-stale check (Fault) ---
-        if let Some(reason) = check_telemetry_stale(&bb, &mut last_good_telemetry, &config) {
-            let mut sm = state_machine.lock().await;
-            sm.report_fault(reason, &bb);
-            drop(sm);
-            let should_log = last_failsafe_log
-                .map(|t| t.elapsed() >= FAILSAFE_LOG_INTERVAL)
-                .unwrap_or(true);
-            if should_log {
-                apply_vjoy_failsafe(&bb, &config);
-                last_failsafe_log = Some(Instant::now());
+        match check_telemetry_stale(&bb, &mut last_good_telemetry, &config) {
+            Some(reason) => {
+                {
+                    let mut sm = state_machine.lock().await;
+                    sm.report_fault(reason, &bb);
+                }
+                if ap_active && !telem_failsafe {
+                    tracing::warn!("[watchdog] telemetry stale — autopilot active, activating failsafe");
+                    apply_vjoy_failsafe(&bb, &config, "telemetry_stale");
+                    telem_failsafe = true;
+                } else if !ap_active && telem_failsafe {
+                    tracing::info!("[watchdog] telemetry stale but autopilot Off — clearing failsafe");
+                    clear_vjoy_failsafe(&bb);
+                    telem_failsafe = false;
+                }
+            }
+            None => {
+                if telem_failsafe {
+                    tracing::info!("[watchdog] telemetry recovered — deactivating failsafe");
+                    clear_vjoy_failsafe(&bb);
+                    telem_failsafe = false;
+                }
             }
         }
     }
@@ -244,7 +276,7 @@ mod tests {
     fn t20_apply_failsafe_sets_emergency_brake_flag() {
         let bb = SharedBlackboard::new();
         let config = WatchdogConfig::default();
-        apply_vjoy_failsafe(&bb, &config);
+        apply_vjoy_failsafe(&bb, &config, "test");
         assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("true"));
     }
 
@@ -252,7 +284,7 @@ mod tests {
     fn t21_clear_failsafe_resets_emergency_brake_flag() {
         let bb = SharedBlackboard::new();
         let config = WatchdogConfig::default();
-        apply_vjoy_failsafe(&bb, &config);
+        apply_vjoy_failsafe(&bb, &config, "test");
         clear_vjoy_failsafe(&bb);
         assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("false"));
     }
@@ -266,5 +298,51 @@ mod tests {
         let config = WatchdogConfig::default();
         let result = check_telemetry_stale(&bb, &mut last_good, &config);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn t22_failsafe_not_applied_when_autopilot_off() {
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Off");
+        assert!(!is_autopilot_active(&bb));
+    }
+
+    #[test]
+    fn t23_failsafe_applied_when_autopilot_active() {
+        for state in ["Engaging", "Active", "Paused", "Fault"] {
+            let bb = SharedBlackboard::new();
+            bb.set("autopilot.state", state);
+            assert!(is_autopilot_active(&bb), "expected active for state={state}");
+        }
+    }
+
+    #[test]
+    fn t24_failsafe_keys_set_on_apply() {
+        let bb = SharedBlackboard::new();
+        let config = WatchdogConfig::default();
+        apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
+        assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("true"));
+        assert_eq!(bb.get("safety.failsafe_active").as_deref(), Some("true"));
+        assert_eq!(bb.get("safety.failsafe_reason").as_deref(), Some("heartbeat_stall"));
+        assert!(bb.get("safety.last_failsafe_at").is_some());
+    }
+
+    #[test]
+    fn t25_failsafe_keys_cleared_on_clear() {
+        let bb = SharedBlackboard::new();
+        let config = WatchdogConfig::default();
+        apply_vjoy_failsafe(&bb, &config, "test");
+        clear_vjoy_failsafe(&bb);
+        assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("false"));
+        assert_eq!(bb.get("safety.failsafe_active").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn t26_autopilot_unknown_state_not_active() {
+        let bb = SharedBlackboard::new();
+        // Missing key → Off / unknown → not active
+        assert!(!is_autopilot_active(&bb));
+        bb.set("autopilot.state", "Off");
+        assert!(!is_autopilot_active(&bb));
     }
 }
