@@ -95,6 +95,18 @@ path = "src/bin/multi-sector-audit.rs"
 name = "bezier-size-scan"
 path = "src/bin/bezier-size-scan.rs"
 
+[[bin]]
+name = "sec-single-inspect"
+path = "src/bin/sec-single-inspect.rs"
+
+[[bin]]
+name = "validate-cities"
+path = "src/bin/validate-cities.rs"
+
+[[bin]]
+name = "uid-lookup"
+path = "src/bin/uid-lookup.rs"
+
 [dependencies]
 rustc-hash      = "2"
 truckpilot-telemetry = { path = "../telemetry" }

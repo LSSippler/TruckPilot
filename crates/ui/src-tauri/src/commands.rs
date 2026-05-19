@@ -1,13 +1,27 @@
+use std::sync::Arc;
+
 use tauri::{AppHandle, Manager, State};
+use tracing::info;
 use truckpilot_ipc_protocol::UiCommand;
 
+use crate::daemon::{DaemonManager, DaemonStatus};
+use crate::daemon_config::{self, DaemonConfig};
 use crate::ipc_bridge::{ConnectionStatusEvent, IpcBridge};
 use crate::steam_detect::detect_ets2_install;
 use crate::window_manager;
 
 #[tauri::command]
 pub async fn send_command(bridge: State<'_, IpcBridge>, cmd: UiCommand) -> Result<(), String> {
-    bridge.send(cmd).await
+    // Log SetRouterGoal so we can verify the UID string is not corrupted
+    // between the UI and the WebSocket send (Task 5, Phase 6.5c).
+    if let UiCommand::SetRouterGoal { uid } = &cmd {
+        info!("[tauri] SetRouterGoal received from UI: uid='{uid}'");
+    }
+    let result = bridge.send(cmd).await;
+    if let Ok(()) = &result {
+        // Could also log here, but the daemon-side ipc.rs already logs "router goal set via IPC".
+    }
+    result
 }
 
 #[tauri::command]
@@ -39,4 +53,34 @@ pub async fn close_external_dashboard(app: AppHandle) -> Result<(), String> {
         window.close().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn daemon_status(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
+    Ok(daemon.status())
+}
+
+#[tauri::command]
+pub async fn daemon_start(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
+    daemon.start()
+}
+
+#[tauri::command]
+pub async fn daemon_stop(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
+    daemon.stop()
+}
+
+#[tauri::command]
+pub async fn daemon_restart(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
+    daemon.restart()
+}
+
+#[tauri::command]
+pub async fn daemon_get_auto_start(app: AppHandle) -> Result<bool, String> {
+    Ok(daemon_config::load(&app).auto_start)
+}
+
+#[tauri::command]
+pub async fn daemon_set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String> {
+    daemon_config::save(&app, &DaemonConfig { auto_start: enabled })
 }
