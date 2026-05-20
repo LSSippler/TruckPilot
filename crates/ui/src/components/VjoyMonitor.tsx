@@ -8,8 +8,8 @@ const VJOY_KEYS = [
   "vjoy.connected",
   "vjoy.idle_centered",
   "vjoy.last_raw_x",
-  "vjoy.last_raw_y",
-  "vjoy.last_raw_z",
+  "vjoy.last_raw_sl0",
+  "vjoy.last_raw_sl1",
   "vjoy.last_raw_source",
   "vjoy.last_error",
   "vjoy.last_write_tick",
@@ -30,17 +30,17 @@ export function VjoyMonitor() {
 
   useEffect(() => subscribeBlackboardKeys(VJOY_KEYS), []);
 
-  const rx = Number(values["vjoy.last_raw_x"] ?? "0");
-  const ry = Number(values["vjoy.last_raw_y"] ?? "0");
-  const rz = Number(values["vjoy.last_raw_z"] ?? "0");
+  const rx   = Number(values["vjoy.last_raw_x"]   ?? "0");
+  const rsl0 = Number(values["vjoy.last_raw_sl0"] ?? "0");
+  const rsl1 = Number(values["vjoy.last_raw_sl1"] ?? "0");
   const connected = values["vjoy.connected"] === "true";
   const idle = values["vjoy.idle_centered"] === "true";
   const source = values["vjoy.last_raw_source"] ?? "—";
   const lastError = values["vjoy.last_error"];
 
-  const steer = Number.isFinite(rx) ? steerNorm(rx) : 0;
-  const throttle = Number.isFinite(ry) ? unitNorm(ry) : 0;
-  const brake = Number.isFinite(rz) ? unitNorm(rz) : 0;
+  const steer    = Number.isFinite(rx)   ? steerNorm(rx)   : 0;
+  const throttle = Number.isFinite(rsl0) ? unitNorm(rsl0) : 0;
+  const brake    = Number.isFinite(rsl1) ? unitNorm(rsl1) : 0;
   const failsafeActive = idle && source === "watchdog";
 
   return (

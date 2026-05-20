@@ -4,7 +4,7 @@ import type { TelemetrySnapshot } from "@/lib/types";
 interface TelemetryState {
   latest: TelemetrySnapshot | null;
   lastUpdateMs: number;
-  history: { tMs: number; speed_ms: number }[];
+  history: { tMs: number; speed_ms: number; engine_rpm: number }[];
   push: (snap: TelemetrySnapshot) => void;
 }
 
@@ -42,8 +42,9 @@ function commit(
 ) {
   lastWriteAt = performance.now();
   const tMs = Date.now();
-  const history = [...get().history, { tMs, speed_ms: snap.speed_ms }].filter(
-    (entry) => tMs - entry.tMs <= HISTORY_WINDOW_MS
-  );
+  const history = [
+    ...get().history,
+    { tMs, speed_ms: snap.speed_ms, engine_rpm: snap.engine_rpm },
+  ].filter((entry) => tMs - entry.tMs <= HISTORY_WINDOW_MS);
   set({ latest: snap, lastUpdateMs: tMs, history });
 }

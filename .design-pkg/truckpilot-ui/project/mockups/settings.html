@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Settings</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="Settings">
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand"><img src="../assets/logo.png" alt=""><span>TruckPilot</span></div>
+    <div class="tp-titlebar__sub">Settings</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">Pop out</button>
+  </div>
+
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Dashboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>Blackboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>Logs</a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>Plugins</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>PID Tuning</a>
+      <a class="tp-nav tp-nav--active"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4.9a7 7 0 0 0-2-1.2l-.4-2.5h-4l-.4 2.5a7 7 0 0 0-2 1.2l-2.4-.9-2 3.4 2 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.2l-2 1.6 2 3.4 2.4-.9a7 7 0 0 0 2 1.2l.4 2.5h4l.4-2.5a7 7 0 0 0 2-1.2l2.4.9 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>Settings</a>
+    </div>
+  </nav>
+
+  <main class="tp-main">
+
+    <div class="settings-grid">
+
+      <!-- Appearance -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Appearance</h3>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Theme</div>
+            <div class="settings-row__sub">Follow system or pin a preference</div>
+          </div>
+          <div class="settings-row__control">
+            <div class="pid-tabs" style="margin:0">
+              <span class="pid-tab">System</span>
+              <span class="pid-tab active">Dark</span>
+              <span class="pid-tab">Light</span>
+            </div>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Accent</div>
+            <div class="settings-row__sub">Brand gradient direction</div>
+          </div>
+          <div class="settings-row__control" style="gap:6px">
+            <span style="width:24px;height:24px;border-radius:6px;background:linear-gradient(100deg,#1ED891,#1FB3DB,#8C5BF2);box-shadow:0 0 0 2px var(--tp-brand-teal)"></span>
+            <span style="width:24px;height:24px;border-radius:6px;background:linear-gradient(100deg,#8C5BF2,#1FB3DB,#1ED891);opacity:0.6"></span>
+            <span style="width:24px;height:24px;border-radius:6px;background:linear-gradient(100deg,#1ED891,#F5B83D);opacity:0.6"></span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Density</div>
+            <div class="settings-row__sub">Compact reduces padding by 25%</div>
+          </div>
+          <div class="settings-row__control">
+            <div class="pid-tabs" style="margin:0">
+              <span class="pid-tab active">Comfortable</span>
+              <span class="pid-tab">Compact</span>
+            </div>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Reduce motion</div>
+            <div class="settings-row__sub">Disable pulse and sweep animations</div>
+          </div>
+          <div class="settings-row__control">
+            <span class="tp-toggle"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Connection -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Connection</h3>
+          <span class="tp-pill tp-pill--ok" style="font-size:10px">connected</span>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Auto-connect on startup</div>
+            <div class="settings-row__sub">Reconnect to the core daemon automatically</div>
+          </div>
+          <div class="settings-row__control"><span class="tp-toggle tp-toggle--on"></span></div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Daemon endpoint</div>
+            <div class="settings-row__sub">WebSocket URL of core</div>
+          </div>
+          <div class="settings-row__control">
+            <input class="settings-input settings-input--mono" value="ws://localhost:8765" style="width:220px">
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Reconnect backoff</div>
+            <div class="settings-row__sub">Exponential, capped at 30s</div>
+          </div>
+          <div class="settings-row__control">
+            <input class="settings-input settings-input--mono" value="2.0" style="width:64px;text-align:right">
+            <span class="tp-mono tp-dim" style="font-size:11px">×</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Telemetry frame budget</div>
+            <div class="settings-row__sub">Drop frames if exceeded</div>
+          </div>
+          <div class="settings-row__control">
+            <input class="settings-input settings-input--mono" value="16" style="width:64px;text-align:right">
+            <span class="tp-mono tp-dim" style="font-size:11px">ms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hotkeys -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Hotkeys</h3>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Engage autopilot</div>
+            <div class="settings-row__sub">Requires all preconditions</div>
+          </div>
+          <div class="settings-row__control"><span class="settings-kbd">F5</span></div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Disengage autopilot</div>
+            <div class="settings-row__sub">Hand back to driver immediately</div>
+          </div>
+          <div class="settings-row__control"><span class="settings-kbd">F6</span></div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Pop-out dashboard</div>
+            <div class="settings-row__sub">Detach into floating window</div>
+          </div>
+          <div class="settings-row__control"><span class="settings-kbd">F2</span></div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Focus search</div>
+            <div class="settings-row__sub">Blackboard / Logs</div>
+          </div>
+          <div class="settings-row__control">
+            <span class="settings-kbd" style="width:auto;padding:0 10px">⌘ K</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Paths -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Paths</h3>
+        </div>
+        <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div class="settings-row__label">
+            <div class="settings-row__title">ETS2 install directory</div>
+            <div class="settings-row__sub">Used for map parsing</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <input class="settings-input settings-input--mono settings-input--wide" value="C:\Program Files (x86)\Steam\steamapps\common\Euro Truck Simulator 2">
+            <button class="tp-btn">Browse</button>
+            <button class="tp-btn tp-btn--ghost">Auto-detect</button>
+          </div>
+        </div>
+        <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+          <div class="settings-row__label">
+            <div class="settings-row__title">Cache directory</div>
+            <div class="settings-row__sub">Parsed sectors + node graph (~480 MB)</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <input class="settings-input settings-input--mono settings-input--wide" value="%LOCALAPPDATA%\TruckPilot\cache">
+            <button class="tp-btn">Browse</button>
+            <button class="tp-btn tp-btn--danger">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diagnostic mode (HIDDEN) -->
+      <div class="tp-card" style="grid-column:1/-1">
+        <div class="diag-banner">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6h4V2zM12 8v6M5 14h14l-2 8H7z"/></svg>
+          <span><b>Diagnostic mode.</b> Bypasses ETS2 navigation. Only use for routing tests in isolation.</span>
+          <div style="flex:1"></div>
+          <span class="tp-toggle tp-toggle--on"></span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div>
+            <div class="settings-row__title">Manual goal UID (hex)</div>
+            <input class="settings-input settings-input--mono" value="0x7F4A_E12B_0C00" style="width:100%;margin-top:4px">
+          </div>
+          <div>
+            <div class="settings-row__title">Manual goal UID (dec)</div>
+            <input class="settings-input settings-input--mono" value="139843224289792" style="width:100%;margin-top:4px">
+          </div>
+          <div style="display:flex;align-items:end;gap:8px">
+            <button class="tp-btn tp-btn--ghost" style="flex:1">Validate</button>
+            <button class="tp-btn tp-btn--primary" style="flex:1">Set goal</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <span>ETS2 1.49 · DLL 1.12</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+</div>
+</body>
+</html>

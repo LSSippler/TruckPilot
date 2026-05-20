@@ -7,12 +7,43 @@ import type { CoreMessage, CoreMessageOf, CoreMessageType, UiCommand } from "@/l
 import { useConnectionStore } from "@/stores/connection";
 import { useTelemetryStore } from "@/stores/telemetry";
 import { usePluginsStore } from "@/stores/plugins";
-import { useLogsStore } from "@/stores/logs";
+import { useLogsStore, type LogEntry } from "@/stores/logs";
 import { usePidStore } from "@/stores/pid";
 import { useModsStore } from "@/stores/mods";
 import { useAutopilotStore } from "@/stores/autopilot";
+import { useBlackboardStore } from "@/stores/blackboard";
 
 type AnyHandler = (msg: CoreMessage) => void;
+
+// Log ingestion is coalesced via rAF so bursts (e.g. backlog flushes) trigger
+// at most one setState per frame, not one per log line.
+let pendingLogs: LogEntry[] = [];
+let flushScheduled = false;
+
+function enqueueLog(entry: LogEntry) {
+  pendingLogs.push(entry);
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const schedule =
+    typeof requestAnimationFrame !== "undefined"
+      ? requestAnimationFrame
+      : (cb: () => void) => setTimeout(cb, 16);
+  schedule(() => {
+    flushScheduled = false;
+    if (pendingLogs.length === 0) return;
+    const batch = pendingLogs;
+    pendingLogs = [];
+    useLogsStore.getState().pushMany(batch);
+  });
+}
+
+// Exposed for tests / dev tools.
+export function __flushPendingLogsForTest() {
+  if (pendingLogs.length === 0) return;
+  const batch = pendingLogs;
+  pendingLogs = [];
+  useLogsStore.getState().pushMany(batch);
+}
 
 const handlers = new Map<CoreMessageType, Set<AnyHandler>>();
 
@@ -62,9 +93,60 @@ export async function initIpcSubscriptions(): Promise<() => void> {
     }
   });
 
+  const stopPoll = startBlackboardPoller();
+
   return () => {
     unlistenCore();
     unlistenStatus();
+    stopPoll();
+  };
+}
+
+// ── Blackboard polling ─────────────────────────────────────────────────────
+//
+// The daemon's IPC has no push-stream for blackboard values. We poll instead:
+//
+//  * `BlackboardList(null)` every 5 s refreshes the key inventory.
+//  * `BlackboardGet([...subscribed])` every 500 ms refreshes interesting keys.
+//
+// Components register interest via `subscribeBlackboardKeys(keys)` so the
+// poller only asks for what's actually rendered.
+
+const subscribedKeys = new Map<string, number>();
+
+export function subscribeBlackboardKeys(keys: readonly string[]): () => void {
+  for (const k of keys) subscribedKeys.set(k, (subscribedKeys.get(k) ?? 0) + 1);
+  return () => {
+    for (const k of keys) {
+      const n = (subscribedKeys.get(k) ?? 0) - 1;
+      if (n <= 0) subscribedKeys.delete(k);
+      else subscribedKeys.set(k, n);
+    }
+  };
+}
+
+function startBlackboardPoller(): () => void {
+  const valueTick = setInterval(() => {
+    if (useConnectionStore.getState().status !== "connected") return;
+    if (subscribedKeys.size === 0) return;
+    void invokeSendCommand({
+      type: "blackboard_get",
+      keys: Array.from(subscribedKeys.keys()),
+    });
+  }, 500);
+  const keysTick = setInterval(() => {
+    if (useConnectionStore.getState().status !== "connected") return;
+    void invokeSendCommand({ type: "blackboard_list", prefix: null });
+  }, 5_000);
+  // Kick once on startup so the first paint isn't empty.
+  setTimeout(() => {
+    if (useConnectionStore.getState().status === "connected") {
+      void invokeSendCommand({ type: "blackboard_list", prefix: null });
+    }
+  }, 250);
+  return () => {
+    clearInterval(valueTick);
+    clearInterval(keysTick);
   };
 }
 
@@ -89,7 +171,7 @@ function routeCoreMessage(msg: CoreMessage) {
       usePluginsStore.getState().setSchema(msg.plugin, msg.schema);
       break;
     case "log":
-      useLogsStore.getState().push({
+      enqueueLog({
         level: msg.level,
         message: msg.message,
         plugin: msg.plugin,
@@ -140,9 +222,10 @@ function routeCoreMessage(msg: CoreMessage) {
       }
       break;
     case "blackboard_snapshot":
+      useBlackboardStore.getState().ingest(msg.values);
+      break;
     case "blackboard_keys":
-      // Responses to one-shot blackboard queries — consumed via
-      // subscribeToCoreEvents() by the caller; no store update needed here.
+      useBlackboardStore.getState().setKeys(msg.keys);
       break;
     default: {
       const _exhaustive: never = msg;

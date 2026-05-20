@@ -592,12 +592,24 @@ async fn run_daemon() {
         let dt_s = last_tick.elapsed().as_secs_f64().max(0.001);
         last_tick = Instant::now();
 
+        // Phase 6.5h: total-tick start — placed before state machine so the
+        // full work budget (sm + plugins + IPC) is captured.
+        let tick_start = Instant::now();
+
         // State machine drives `autopilot.state` BEFORE plugins tick so
         // they see the most recent value via ctx helpers. Engage/disengage
         // requests arrive through the blackboard (set by IPC handlers
         // and any hotkey path).
         let status_payload = {
+            let lock_start = Instant::now();
             let mut sm = state_machine.lock().await;
+            let lock_elapsed = lock_start.elapsed();
+            if lock_elapsed.as_millis() > 20 {
+                warn!(
+                    "[tick-profile] state_machine lock acquisition took {} ms",
+                    lock_elapsed.as_millis()
+                );
+            }
             sm.consume_requests(&blackboard);
             let current_state = sm.evaluate(telemetry.as_ref(), &blackboard);
 
@@ -619,6 +631,7 @@ async fn run_daemon() {
             }
         };
         if let Some((state_str, fault_reason, preconditions, tick_count)) = status_payload {
+            let ipc_start = Instant::now();
             let _ = ipc_tx.send(CoreMessage::AutopilotStatus {
                 v: CoreMessage::VERSION,
                 state: state_str,
@@ -626,9 +639,21 @@ async fn run_daemon() {
                 preconditions,
                 tick_count,
             });
+            let ipc_elapsed = ipc_start.elapsed();
+            if ipc_elapsed.as_millis() > 20 {
+                warn!("[tick-profile] IPC send took {} ms", ipc_elapsed.as_millis());
+            }
         }
 
+        let lock_start = Instant::now();
         let mut mgr = manager.lock().await;
+        let lock_elapsed = lock_start.elapsed();
+        if lock_elapsed.as_millis() > 20 {
+            warn!(
+                "[tick-profile] manager lock acquisition took {} ms",
+                lock_elapsed.as_millis()
+            );
+        }
         mgr.process_reloads();
         mgr.tick_all(telemetry.as_ref(), &mut output, dt_s);
 
@@ -643,6 +668,18 @@ async fn run_daemon() {
             last_log = Instant::now();
         }
         drop(mgr);
+
+        // Phase 6.5h: full-tick elapsed — covers sm + IPC send + plugins.
+        let tick_elapsed = tick_start.elapsed();
+        if tick_elapsed.as_millis() > 80 {
+            let plugins_count = manager.lock().await.list().len();
+            warn!(
+                "[tick-profile] FULL TICK took {} ms (state={}, plugins_count={})",
+                tick_elapsed.as_millis(),
+                last_status_state.as_deref().unwrap_or("unknown"),
+                plugins_count
+            );
+        }
 
         // Bump heartbeat *after* a full tick completed so the watchdog
         // measures end-to-end progress, not just async-task entry.

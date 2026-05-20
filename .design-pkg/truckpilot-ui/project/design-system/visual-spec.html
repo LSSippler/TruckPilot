@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>TruckPilot — Visual Spec</title>
+  <meta name="viewport" content="width=1440" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ------------------------------------------------------------------
+       TruckPilot design tokens (mirrors design-system/tokens.md)
+       ------------------------------------------------------------------ */
+    :root, [data-theme="dark"] {
+      --surface-base: #0B0C0E;
+      --surface-card: #111317;
+      --surface-elevated: #161A20;
+      --surface-overlay: #1C2128;
+      --border-subtle: #1E2228;
+      --border-strong: #2A2F37;
+      --text-primary: #E6E8EC;
+      --text-secondary: #9CA3AF;
+      --text-muted: #6B7280;
+      --text-disabled: #44485042;
+      --brand: #2DD4BF;
+      --brand-hover: #34E0CB;
+      --brand-pressed: #1FB8A4;
+      --brand-soft: #2DD4BF14;
+      --brand-soft-strong: #2DD4BF24;
+      --brand-gradient: linear-gradient(100deg, #2DD4BF 0%, #22D3EE 35%, #3B82F6 65%, #A78BFA 100%);
+      --success: #2DD4A0;
+      --success-soft: #2DD4A018;
+      --warning: #E0A52C;
+      --warning-soft: #E0A52C18;
+      --danger: #E5484D;
+      --danger-soft: #E5484D18;
+      --info: #3B82F6;
+      --info-soft: #3B82F618;
+      --chart-1: #2DD4BF;
+      --chart-2: #6BA8FF;
+      --chart-3: #A78BFA;
+      --font-sans: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-full: 999px;
+      --dur-1: 120ms;
+      --dur-2: 180ms;
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --sidebar-w: 220px;
+      --header-h: 44px;
+      --footer-h: 28px;
+    }
+    [data-theme="light"] {
+      --surface-base: #FBFBFC;
+      --surface-card: #FFFFFF;
+      --surface-elevated: #FFFFFF;
+      --surface-overlay: #FFFFFF;
+      --border-subtle: #ECEEF1;
+      --border-strong: #DADDE2;
+      --text-primary: #0B0C0E;
+      --text-secondary: #4A5160;
+      --text-muted: #6B7280;
+      --brand: #0EA890;
+      --brand-soft: #0EA89014;
+      --brand-soft-strong: #0EA89024;
+      --brand-gradient: linear-gradient(100deg, #0EA890 0%, #0891B2 35%, #2563EB 65%, #7C3AED 100%);
+      --success: #0E9A6E;
+      --warning: #A6741B;
+      --danger: #C0383D;
+      --info: #2563EB;
+      --info-soft: #2563EB14;
+      --danger-soft: #C0383D14;
+      --warning-soft: #A6741B14;
+    }
+
+    @keyframes pulse-soft {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.55; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      background: var(--surface-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---------- layout ---------- */
+    .app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100vh; }
+    .sidebar { background: var(--surface-base); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; }
+    .sidebar-head { height: var(--header-h); padding: 0 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-subtle); }
+    .sidebar-head .name { font-weight: 500; letter-spacing: -0.01em; }
+    .sidebar-head .ver { margin-left: auto; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
+    .nav { flex: 1; overflow-y: auto; padding: 12px 8px; display: flex; flex-direction: column; gap: 16px; }
+    .nav-group-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 500; padding: 0 8px; margin-bottom: 4px; }
+    .nav-item { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 8px; height: 28px; border-radius: var(--radius-sm); color: var(--text-secondary); cursor: pointer; transition: color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+    .nav-item:hover { background: var(--surface-card); color: var(--text-primary); }
+    .nav-item.active { background: var(--brand-soft); color: var(--text-primary); }
+    .nav-item.active::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; background: var(--brand); border-radius: 2px; }
+    .nav-item svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+    .main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+    .header { height: var(--header-h); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; gap: 12px; padding: 0 16px; }
+    .header h1 { margin: 0; font-size: 14px; font-weight: 500; }
+    .header .spacer { flex: 1; }
+    .header-btn { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 1px solid var(--border-strong); background: var(--surface-card); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+    .header-btn:hover { background: var(--surface-elevated); }
+    .header-btn kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); background: var(--surface-elevated); border: 1px solid var(--border-subtle); border-radius: 3px; padding: 1px 4px; }
+    .theme-toggle { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    .theme-toggle button { background: var(--surface-card); border: 0; color: var(--text-secondary); padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    .theme-toggle button.active { background: var(--surface-elevated); color: var(--text-primary); }
+
+    .content { flex: 1; overflow-y: auto; }
+    .section { padding: 16px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+    .section:last-of-type { border-bottom: 0; }
+    .card { background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 16px; }
+    .card h3 { margin: 0 0 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 500; }
+
+    .footer { height: var(--footer-h); border-top: 1px solid var(--border-subtle); display: flex; align-items: center; padding: 0 16px; gap: 12px; font-size: 11px; color: var(--text-muted); }
+    .footer .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--success); }
+
+    /* ---------- logo ---------- */
+    .logo {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--brand-gradient);
+      position: relative;
+      flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .logo::after {
+      content: ""; position: absolute; inset: 3px; border-radius: 50%;
+      background: var(--surface-base);
+    }
+    .logo span {
+      position: relative; z-index: 1;
+      font-family: var(--font-sans); font-weight: 600;
+      font-size: 11px; color: var(--text-primary);
+      letter-spacing: -0.02em;
+    }
+
+    /* ---------- engage button ---------- */
+    .engage-wrap { position: relative; display: inline-flex; }
+    .engage-ring {
+      position: absolute; inset: -1px;
+      border-radius: var(--radius-md);
+      padding: 1px;
+      background: var(--brand-gradient);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor; mask-composite: exclude;
+      animation: pulse-soft 2.4s ease-in-out infinite;
+      pointer-events: none;
+    }
+    .engage {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 8px;
+      height: 40px; padding: 0 16px;
+      background: var(--surface-card);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+      cursor: pointer;
+      transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+    }
+    .engage:hover { background: var(--surface-elevated); border-color: var(--brand-soft-strong); }
+    .engage--engaged { color: var(--brand); border-color: transparent; }
+    .engage--fault { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+    .engage--disabled { opacity: 0.5; cursor: not-allowed; }
+    .engage svg { width: 16px; height: 16px; }
+    .engage kbd {
+      margin-left: 4px;
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 22px; height: 18px; padding: 0 4px;
+      font-family: var(--font-mono); font-size: 10px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 3px;
+      color: var(--text-muted);
+    }
+
+    /* ---------- precondition pills ---------- */
+    .preconds { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 24px; padding: 0 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: var(--surface-card);
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .pill--missing { color: var(--text-muted); }
+    .pill .pdot { width: 6px; height: 6px; border-radius: 999px; }
+    .pill .pdot.ok { background: var(--success); }
+    .pill .pdot.missing { background: var(--text-muted); }
+    .pill .pdot.warn { background: var(--warning); animation: pulse-soft 2.4s ease-in-out infinite; }
+    .pill .pdot.err { background: var(--danger); }
+
+    /* ---------- navi status ---------- */
+    .navi {
+      display: grid; grid-template-columns: 6fr 3fr 3fr; gap: 16px; align-items: center;
+      background: var(--surface-card); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md); padding: 16px; height: 100%;
+    }
+    .navi-maneuver { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .maneuver-icon {
+      width: 48px; height: 48px; border-radius: var(--radius-md);
+      display: flex; align-items: center; justify-content: center;
+      background: var(--brand-soft); color: var(--brand); border: 1px solid transparent;
+    }
+    .maneuver-icon svg { width: 24px; height: 24px; }
+    .navi-dist { font-family: var(--font-mono); font-size: 28px; line-height: 1.1; letter-spacing: -0.01em; }
+    .navi-hint { color: var(--text-secondary); margin-top: 4px; }
+    .navi-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .navi-on { font-size: 13px; margin-top: 4px; }
+    .navi-right { text-align: right; display: flex; flex-direction: column; gap: 4px; }
+    .navi-eta { color: var(--text-secondary); font-family: var(--font-mono); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+    .navi-total { color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end; }
+
+    /* ---------- big number ---------- */
+    .big { font-family: var(--font-mono); font-size: 48px; line-height: 1.05; letter-spacing: -0.02em; }
+    .big-row { display: flex; align-items: baseline; gap: 6px; }
+    .big-unit { color: var(--text-muted); font-family: var(--font-sans); font-size: 12px; }
+    .big-target { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ---------- vJoy bars ---------- */
+    .vjoy-row { display: flex; flex-direction: column; gap: 6px; }
+    .vjoy-row + .vjoy-row { margin-top: 8px; }
+    .vjoy-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; }
+    .vjoy-head .v { font-family: var(--font-mono); color: var(--text-muted); }
+    .vjoy-track { position: relative; height: 6px; border-radius: var(--radius-sm); background: var(--surface-elevated); border: 1px solid var(--border-subtle); overflow: hidden; }
+    .vjoy-center { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--border-strong); }
+    .vjoy-fill { position: absolute; top: 0; bottom: 0; background: var(--brand); transition: left var(--dur-1) var(--ease-out), width var(--dur-1) var(--ease-out); }
+
+    /* ---------- failsafe ---------- */
+    .failsafe {
+      position: relative;
+      display: flex; gap: 10px; align-items: flex-start;
+      padding: 8px 8px 8px 12px;
+      background: var(--danger-soft);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+    .failsafe::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--danger); animation: pulse-soft 2.4s ease-in-out infinite; border-radius: 2px 0 0 2px; }
+    .failsafe svg { color: var(--danger); flex-shrink: 0; margin-top: 1px; }
+    .failsafe .lbl { color: var(--danger); font-weight: 500; }
+
+    /* ---------- cruise slider ---------- */
+    .cruise-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+    .cruise-val { font-family: var(--font-mono); font-size: 15px; }
+    .cruise-track {
+      position: relative; height: 4px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+    }
+    .cruise-range { position: absolute; top: 0; bottom: 0; left: 0; width: 67%; background: var(--brand); border-radius: var(--radius-sm); }
+    .cruise-tick { position: absolute; top: -2px; width: 1px; height: 8px; background: var(--border-strong); }
+    .cruise-thumb { position: absolute; top: 50%; transform: translate(-50%, -50%); width: 14px; height: 14px; border-radius: 999px; background: var(--text-primary); border: 2px solid var(--brand); }
+    .cruise-labels { position: relative; height: 14px; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+    .cruise-labels span { position: absolute; transform: translateX(-50%); }
+
+    /* ---------- sparkline ---------- */
+    .spark { width: 100%; height: 36px; position: relative; }
+    .spark svg { width: 100%; height: 100%; }
+    .spark .dot { position: absolute; top: 50%; transform: translateY(-50%); right: 4px; width: 6px; height: 6px; border-radius: 999px; background: var(--brand); }
+
+    /* ---------- route map ---------- */
+    .map { position: relative; width: 100%; height: 220px; background: var(--surface-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); overflow: hidden; }
+    .map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .map .badge { position: absolute; top: 8px; left: 8px; font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding: 0 6px; height: 20px; display: inline-flex; align-items: center; border: 1px solid var(--border-subtle); background: var(--surface-overlay); border-radius: var(--radius-sm); }
+    .map .speed-limit { position: absolute; top: 12px; right: 12px; }
+    .map-badges { position: absolute; top: 8px; left: 8px; display: inline-flex; gap: 6px; pointer-events: none; }
+    .map-chip { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 6px; border: 1px solid var(--border-subtle); background: var(--surface-overlay); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+    .map-chip.mono { text-transform: none; letter-spacing: 0; color: var(--text-secondary); }
+    .map-chip .dot { width: 6px; height: 6px; border-radius: 999px; }
+    .map-chip .dot.success { background: var(--success); }
+    .map-zoom { position: absolute; top: 8px; right: 8px; display: inline-flex; flex-direction: column; border: 1px solid var(--border-subtle); background: var(--surface-overlay); border-radius: var(--radius-sm); overflow: hidden; }
+    .map-zoom button { width: 24px; height: 24px; background: transparent; border: 0; color: var(--text-secondary); font-family: inherit; font-size: 14px; cursor: pointer; }
+    .map-zoom button:last-child { border-top: 1px solid var(--border-subtle); }
+    .map-zoom button:hover { background: var(--surface-elevated); color: var(--text-primary); }
+    .map-footer { position: absolute; left: 0; right: 0; bottom: 0; height: 28px; display: flex; align-items: center; gap: 12px; padding: 0 8px; border-top: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--surface-overlay) 80%, transparent); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); font-size: 10px; }
+    .map-footer .mono { font-family: var(--font-mono); }
+    .map-footer .muted { color: var(--text-muted); }
+    .map-toggle { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+    .map-toggle.on { color: var(--brand); }
+    .speed-limit-badge {
+      width: 44px; height: 44px; border-radius: 999px;
+      background: var(--surface-card); border: 2px solid var(--border-strong);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-weight: 500;
+    }
+
+    /* ---------- plugin list ---------- */
+    .plugin-row { display: flex; align-items: center; gap: 12px; padding: 0 12px; height: 44px; border-radius: var(--radius-sm); border: 1px solid transparent; }
+    .plugin-row:hover { background: var(--surface-elevated); }
+    .plugin-row.selected { background: var(--brand-soft); border-color: var(--border-subtle); }
+    .pdot-sm { width: 6px; height: 6px; border-radius: 999px; }
+    .pdot-sm.run { background: var(--success); }
+    .pdot-sm.stop { background: var(--text-muted); }
+    .pdot-sm.err { background: var(--danger); }
+    .plugin-name { font-size: 13px; }
+    .plugin-ver { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: 6px; }
+    .switch { width: 28px; height: 16px; background: var(--surface-elevated); border: 1px solid var(--border-strong); border-radius: 999px; position: relative; }
+    .switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 12px; height: 12px; border-radius: 999px; background: var(--text-secondary); transition: left var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
+    .switch.on { background: var(--brand); border-color: var(--brand); }
+    .switch.on::after { left: 13px; background: var(--surface-base); }
+
+    /* ---------- log lines ---------- */
+    .log-line { display: flex; align-items: center; gap: 12px; height: 24px; padding-left: 8px; padding-right: 12px; border-left: 2px solid var(--border-strong); font-family: var(--font-mono); font-size: 12px; }
+    .log-line:hover { background: var(--surface-elevated); }
+    .log-line.info { border-left-color: var(--info); }
+    .log-line.warn { border-left-color: var(--warning); }
+    .log-line.error { border-left-color: var(--danger); }
+    .log-ts { color: var(--text-muted); font-size: 11px; width: 88px; }
+    .log-lvl { font-size: 10px; text-transform: uppercase; width: 48px; }
+    .log-lvl.info { color: var(--info); }
+    .log-lvl.warn { color: var(--warning); }
+    .log-lvl.error { color: var(--danger); }
+    .log-lvl.debug { color: var(--text-muted); }
+    .log-src { color: var(--text-secondary); width: 96px; }
+    .log-msg { color: var(--text-primary); flex: 1; }
+
+    /* ---------- swatch grid for reference ---------- */
+    .swatch-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+    .swatch { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+    .swatch .box { height: 32px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); }
+    .swatch .lbl { color: var(--text-secondary); }
+    .swatch .val { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+
+    /* ---------- toast row ---------- */
+    .toasts { display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+    .toast {
+      display: flex; gap: 10px; align-items: flex-start;
+      background: var(--surface-overlay); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm); padding: 10px 12px;
+      border-left-width: 2px;
+    }
+    .toast.info { border-left-color: var(--info); }
+    .toast.warn { border-left-color: var(--warning); }
+    .toast.danger { border-left-color: var(--danger); }
+    .toast.success { border-left-color: var(--success); }
+    .toast .ti { flex-shrink: 0; margin-top: 1px; width: 14px; height: 14px; }
+    .toast.info .ti { color: var(--info); }
+    .toast.warn .ti { color: var(--warning); }
+    .toast.danger .ti { color: var(--danger); }
+    .toast.success .ti { color: var(--success); }
+    .toast .body { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Type scale spec */
+    .type-scale { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; }
+    .type-row .lbl { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    .type-row .ex { color: var(--text-primary); }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <span class="logo"><span>T</span></span>
+      <span class="name">TruckPilot</span>
+      <span class="ver">v0.8.4</span>
+    </div>
+    <nav class="nav">
+      <div>
+        <div class="nav-group-label">Operation</div>
+        <div class="nav-item active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          Dashboard
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+          Blackboard
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>
+          Logs
+        </div>
+      </div>
+      <div>
+        <div class="nav-group-label">Configuration</div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-6 9 6-9 6-9-6z"/><path d="M3 15l9 6 9-6"/><path d="M3 12l9 6 9-6"/></svg>
+          Plugins
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h13M3 12h6M3 18h11"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+          PID Tuning
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/><circle cx="12" cy="12" r="3"/></svg>
+          Mods
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6M7 12H1m17.07-7.07l-4.24 4.24M9.17 14.83l-4.24 4.24M19.07 19.07l-4.24-4.24M9.17 9.17L4.93 4.93"/></svg>
+          Settings
+        </div>
+      </div>
+    </nav>
+    <div class="footer" style="border-top: 1px solid var(--border-subtle); border-bottom: 0;">
+      <span class="dot"></span>
+      <span style="color: var(--text-secondary);">ETS2 connected</span>
+      <span style="margin-left:auto; font-family: var(--font-mono); color: var(--text-muted); font-size: 10px;">60 Hz</span>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <header class="header">
+      <h1>Dashboard</h1>
+      <div class="spacer"></div>
+      <div class="theme-toggle" role="tablist" aria-label="Theme">
+        <button class="active" data-theme-set="dark">Dark</button>
+        <button data-theme-set="light">Light</button>
+      </div>
+      <button class="header-btn">Pop-out <kbd>F2</kbd></button>
+    </header>
+
+    <div class="content">
+
+      <!-- HERO ZONE -->
+      <section class="section">
+        <div style="grid-column: span 5;">
+          <div style="display:flex; flex-direction:column; gap: 12px;">
+            <div class="engage-wrap">
+              <span class="engage-ring"></span>
+              <button class="engage engage--engaged">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+                Engaged
+                <kbd>F5</kbd>
+              </button>
+            </div>
+
+            <div class="preconds">
+              <span class="pill"><span class="pdot ok"></span>Engine</span>
+              <span class="pill"><span class="pdot ok"></span>Cruise</span>
+              <span class="pill"><span class="pdot ok"></span>ETS2 Navi</span>
+              <span class="pill"><span class="pdot ok"></span>Telemetry</span>
+              <span class="pill"><span class="pdot ok"></span>vJoy</span>
+            </div>
+
+            <p style="color: var(--text-muted); font-size: 12px; margin: 4px 0 0;">
+              Engaged at 0 km/h. Following ETS2 in-game route.
+            </p>
+          </div>
+        </div>
+
+        <div style="grid-column: span 7;">
+          <div class="navi">
+            <div class="navi-maneuver">
+              <div class="maneuver-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 14V8a4 4 0 0 0-4-4H7"/><path d="M11 8l-4-4 4-4"/></svg>
+              </div>
+              <div>
+                <div class="navi-dist">420 m</div>
+                <div class="navi-hint">Onto E45 — keep left</div>
+              </div>
+            </div>
+            <div>
+              <div class="navi-label">On</div>
+              <div class="navi-on">B3 Bornholmer Straße</div>
+            </div>
+            <div class="navi-right">
+              <div class="navi-eta">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                17:42
+              </div>
+              <div class="navi-total">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h11l4 4-4 4H3z"/></svg>
+                184 km
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LIVE ZONE -->
+      <section class="section">
+        <div class="card" style="grid-column: span 3;">
+          <h3>Speed</h3>
+          <div class="big-row"><span class="big">62</span><span class="big-unit">km/h</span></div>
+          <div class="big-target">target 80 km/h</div>
+          <div class="spark" style="margin-top:12px;">
+            <svg viewBox="0 0 200 36" preserveAspectRatio="none">
+              <path d="M0,28 L20,24 L40,26 L60,20 L80,22 L100,16 L120,18 L140,12 L160,14 L180,8 L200,10" stroke="var(--brand)" stroke-width="1.5" fill="none"/>
+            </svg>
+            <span class="dot"></span>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: span 3;">
+          <h3>RPM</h3>
+          <div class="big-row"><span class="big">1420</span></div>
+          <div class="big-target">redline 2200</div>
+          <div class="spark" style="margin-top:12px;">
+            <svg viewBox="0 0 200 36" preserveAspectRatio="none">
+              <path d="M0,18 L20,16 L40,20 L60,18 L80,14 L100,18 L120,22 L140,18 L160,14 L180,16 L200,12" stroke="var(--chart-2)" stroke-width="1.5" fill="none"/>
+            </svg>
+            <span class="dot" style="background: var(--chart-2);"></span>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: span 6;">
+          <h3>vJoy Output</h3>
+
+          <div class="vjoy-row">
+            <div class="vjoy-head"><span style="color: var(--text-secondary);">Steering</span><span class="v">−12%</span></div>
+            <div class="vjoy-track">
+              <span class="vjoy-center"></span>
+              <span class="vjoy-fill" style="left: 44%; width: 6%;"></span>
+            </div>
+          </div>
+          <div class="vjoy-row">
+            <div class="vjoy-head"><span style="color: var(--text-secondary);">Throttle</span><span class="v">38%</span></div>
+            <div class="vjoy-track">
+              <span class="vjoy-fill" style="left: 0; width: 38%;"></span>
+            </div>
+          </div>
+          <div class="vjoy-row">
+            <div class="vjoy-head"><span style="color: var(--text-secondary);">Brake</span><span class="v">0%</span></div>
+            <div class="vjoy-track">
+              <span class="vjoy-fill" style="left: 0; width: 0%;"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- DETAIL ZONE -->
+      <section class="section">
+        <div class="card" style="grid-column: span 4;">
+          <h3>Cruise</h3>
+          <div class="cruise-head">
+            <span style="color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;">target</span>
+            <span class="cruise-val">80 <span style="color: var(--text-muted); font-size: 11px;">km/h</span></span>
+          </div>
+          <div class="cruise-track">
+            <span class="cruise-range" style="width: 67%;"></span>
+            <span class="cruise-tick" style="left: 41.7%;"></span>
+            <span class="cruise-tick" style="left: 66.7%;"></span>
+            <span class="cruise-tick" style="left: 83.3%;"></span>
+            <span class="cruise-thumb" style="left: 67%;"></span>
+          </div>
+          <div class="cruise-labels">
+            <span style="left: 41.7%;">50</span>
+            <span style="left: 66.7%;">80</span>
+            <span style="left: 83.3%;">100</span>
+          </div>
+
+          <h3 style="margin-top: 24px;">Plugins</h3>
+          <div style="display: flex; flex-direction: column; gap: 2px; margin: 0 -8px;">
+            <div class="plugin-row selected">
+              <span class="pdot-sm run"></span>
+              <span class="plugin-name">Steering<span class="plugin-ver">v0.4.1</span></span>
+              <span style="flex:1"></span>
+              <span class="switch on"></span>
+            </div>
+            <div class="plugin-row">
+              <span class="pdot-sm run"></span>
+              <span class="plugin-name">Throttle<span class="plugin-ver">v0.4.1</span></span>
+              <span style="flex:1"></span>
+              <span class="switch on"></span>
+            </div>
+            <div class="plugin-row">
+              <span class="pdot-sm stop"></span>
+              <span class="plugin-name">Lane Detection<span class="plugin-ver">v0.2.0</span></span>
+              <span style="flex:1"></span>
+              <span class="switch"></span>
+            </div>
+            <div class="plugin-row">
+              <span class="pdot-sm err"></span>
+              <span class="plugin-name">Sign Detection<span class="plugin-ver">v0.1.3</span></span>
+              <span style="flex:1"></span>
+              <span class="switch"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column: span 8;">
+          <h3>Route preview</h3>
+          <div class="map" style="height: 320px;">
+            <!-- top-left badges -->
+            <div class="map-badges">
+              <span class="map-chip"><span class="dot success"></span>live</span>
+              <span class="map-chip mono">62 <span style="color: var(--text-muted); margin-left: 2px;">km/h</span></span>
+            </div>
+            <!-- top-right zoom -->
+            <div class="map-zoom">
+              <button aria-label="Zoom in">+</button>
+              <button aria-label="Zoom out">−</button>
+            </div>
+            <!-- viewBox in pixel space; everything inside <g.world> is in world meters -->
+            <svg viewBox="0 0 800 320" preserveAspectRatio="xMidYMid slice">
+              <!-- matrix: scale 0.32 px/m, world (0,0) → (400, 160) -->
+              <g transform="matrix(0.32 0 0 -0.32 400 160)">
+                <!-- Roads — minor -->
+                <g stroke="var(--text-muted)" stroke-opacity="0.30" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <path stroke-width="1.4" vector-effect="non-scaling-stroke"
+                    d="M-1100 -300L-900 -200L-700 -180L-500 -260L-300 -300L-100 -240L100 -120L300 -40L500 60L700 80L900 40L1100 -20
+                       M-900 400L-700 360L-500 400L-300 360L-100 400L100 380L300 460L500 400L700 480L900 440
+                       M-200 -600L-180 -400L-160 -200L-140 0L-120 200L-100 400L-80 600
+                       M400 -600L380 -400L360 -200L340 0L320 200L300 400L280 600
+                       M-1000 100L-800 80L-600 60L-400 80L-200 100L0 80L200 100L400 120L600 100L800 80L1000 60"/>
+                </g>
+                <!-- Roads — highway (the route corridor + main artery) -->
+                <g stroke="var(--text-muted)" stroke-opacity="0.45" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                  <path stroke-width="2.4" vector-effect="non-scaling-stroke"
+                    d="M-1200 200L-900 160L-600 80L-300 -20L0 -120L300 -180L600 -160L900 -100L1200 0"/>
+                </g>
+
+                <!-- Debug nodes (debug=off in this preview — uncomment for screenshot) -->
+                <!-- <g fill="var(--text-muted)" opacity="0.4">
+                  <circle cx="-300" cy="-20" r="2"/>...
+                </g> -->
+
+                <!-- Planned route (teal) -->
+                <path
+                  fill="none"
+                  stroke="var(--brand)"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  vector-effect="non-scaling-stroke"
+                  d="M-50 -40L0 -50L80 -80L180 -100L300 -180L420 -200L560 -160L720 -120L880 -60L1050 20"/>
+              </g>
+
+              <!-- Markers in pixel space (outside the matrix group, sizes constant at any zoom) -->
+
+              <!-- Next maneuver marker at world (180, -100) → screen (457.6, 192) -->
+              <g transform="translate(457.6 192)">
+                <circle r="12" fill="var(--brand-soft)" stroke="var(--brand)" stroke-width="1.5"
+                        style="transform-origin: center; transform-box: fill-box; animation: pulse-soft 2.4s ease-in-out infinite;"/>
+                <circle r="2" fill="var(--brand)"/>
+              </g>
+
+              <!-- Goal pin at world (1050, 20) → screen (736, 153.6) -->
+              <g transform="translate(736 153.6)">
+                <circle r="7" fill="var(--surface-card)" stroke="#A78BFA" stroke-width="2"/>
+                <circle r="2.6" fill="#A78BFA"/>
+              </g>
+
+              <!-- Truck at world (-50, -40) → screen (384, 172.8) with heading 20° -->
+              <g transform="translate(384 172.8) rotate(20)">
+                <circle r="16" fill="none" stroke="var(--brand)" stroke-opacity="0.5" stroke-width="1.5"
+                        style="transform-origin: center; transform-box: fill-box; animation: pulse-soft 2.4s ease-in-out infinite;"/>
+                <circle r="5" fill="var(--brand)"/>
+                <path d="M0 -12 L4.5 -3 L-4.5 -3 Z" fill="var(--brand)"/>
+              </g>
+            </svg>
+            <!-- footer controls -->
+            <div class="map-footer">
+              <span class="mono muted">1:3125</span>
+              <span class="mono muted">1 km</span>
+              <span style="margin-left:auto; display:inline-flex; gap: 12px;">
+                <span class="map-toggle on">⊕ follow on</span>
+                <span class="map-toggle">⌗ debug off</span>
+              </span>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px;">
+            <div class="failsafe">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <p style="margin:0;"><span class="lbl">Failsafe — </span>Steering plugin timeout &gt; 200 ms</p>
+                <p style="margin: 2px 0 0; color: var(--text-muted); font-size: 11px;">Disengaged automatically. Restart plugin to re-arm.</p>
+              </div>
+            </div>
+            <div class="toasts">
+              <div class="toast info">
+                <svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+                <div>
+                  <div>Engaged at 0 km/h</div>
+                </div>
+              </div>
+              <div class="toast info">
+                <svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+                <div>
+                  <div>Following ETS2 route</div>
+                  <div class="body">to Hannover</div>
+                </div>
+              </div>
+              <div class="toast warn">
+                <svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <div>
+                  <div>Sign Detection — error</div>
+                  <div class="body">model not loaded</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGS ZONE -->
+      <section class="section">
+        <div class="card" style="grid-column: span 12;">
+          <div style="display:flex; align-items:center; gap: 8px; margin-bottom: 12px;">
+            <h3 style="margin: 0;">Logs</h3>
+            <div style="display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow:hidden;">
+              <button style="background: var(--surface-elevated); border:0; color: var(--text-primary); font-family: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer;">ALL</button>
+              <button style="background: var(--surface-card); border:0; border-left:1px solid var(--border-strong); color: var(--text-muted); font-family: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer;">DEBUG</button>
+              <button style="background: var(--surface-card); border:0; border-left:1px solid var(--border-strong); color: var(--info); font-family: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer;">INFO</button>
+              <button style="background: var(--surface-card); border:0; border-left:1px solid var(--border-strong); color: var(--warning); font-family: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer;">WARN</button>
+              <button style="background: var(--surface-card); border:0; border-left:1px solid var(--border-strong); color: var(--danger); font-family: inherit; font-size: 11px; padding: 4px 10px; cursor: pointer;">ERROR</button>
+            </div>
+            <span style="margin-left:auto; font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);">tail · 1,284 lines</span>
+          </div>
+          <div style="margin: 0 -4px;">
+            <div class="log-line"><span class="log-ts">17:24:08.041</span><span class="log-lvl debug">DEBUG</span><span class="log-src">steering</span><span class="log-msg">pid output 0.123 (e=0.04, de=−0.01)</span></div>
+            <div class="log-line info"><span class="log-ts">17:24:08.108</span><span class="log-lvl info">INFO</span><span class="log-src">navi</span><span class="log-msg">next maneuver: keep_left in 420m onto E45</span></div>
+            <div class="log-line info"><span class="log-ts">17:24:08.291</span><span class="log-lvl info">INFO</span><span class="log-src">engage</span><span class="log-msg">engaged at 0 km/h (preconditions ok)</span></div>
+            <div class="log-line"><span class="log-ts">17:24:08.404</span><span class="log-lvl debug">DEBUG</span><span class="log-src">throttle</span><span class="log-msg">setpoint=80.0, measured=62.4, output=0.38</span></div>
+            <div class="log-line warn"><span class="log-ts">17:24:09.022</span><span class="log-lvl warn">WARN</span><span class="log-src">signs</span><span class="log-msg">model inference 18.4ms exceeded budget (16ms)</span></div>
+            <div class="log-line error"><span class="log-ts">17:24:09.514</span><span class="log-lvl error">ERROR</span><span class="log-src">signs</span><span class="log-msg">tensor allocation failed: out of memory on CUDA:0</span></div>
+            <div class="log-line"><span class="log-ts">17:24:09.620</span><span class="log-lvl debug">DEBUG</span><span class="log-src">blackboard</span><span class="log-msg">tick #84120, 482 keys, 12.0KB</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- REFERENCE: TYPE SCALE + SWATCHES -->
+      <section class="section">
+        <div class="card" style="grid-column: span 12;">
+          <h3>Type scale</h3>
+          <div class="type-scale">
+            <div class="type-row">
+              <div class="lbl">3xl · big readout</div>
+              <div class="ex" style="font-family: var(--font-mono); font-size: 48px; line-height: 1.05;">62</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">2xl · headline</div>
+              <div class="ex" style="font-size: 32px; line-height: 1.2;">Dashboard</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">md · body large</div>
+              <div class="ex" style="font-size: 15px;">Follow ETS2 in-game route</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">base · UI default</div>
+              <div class="ex" style="font-size: 13px;">Engage to begin autonomous control</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">sm · captions</div>
+              <div class="ex" style="font-size: 12px; color: var(--text-secondary);">Steering plugin healthy</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">xs · labels</div>
+              <div class="ex" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted);">live</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">mono · values</div>
+              <div class="ex" style="font-family: var(--font-mono); font-size: 13px;">vjoy.steering = −0.124</div>
+            </div>
+            <div class="type-row">
+              <div class="lbl">mono · timestamp</div>
+              <div class="ex" style="font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);">17:24:09.514</div>
+            </div>
+          </div>
+
+          <h3 style="margin-top: 24px;">Color tokens</h3>
+          <div class="swatch-grid">
+            <div class="swatch"><div class="box" style="background: var(--surface-base);"></div><div class="lbl">surface-base</div><div class="val">#0B0C0E</div></div>
+            <div class="swatch"><div class="box" style="background: var(--surface-card);"></div><div class="lbl">surface-card</div><div class="val">#111317</div></div>
+            <div class="swatch"><div class="box" style="background: var(--surface-elevated);"></div><div class="lbl">surface-elevated</div><div class="val">#161A20</div></div>
+            <div class="swatch"><div class="box" style="background: var(--surface-overlay);"></div><div class="lbl">surface-overlay</div><div class="val">#1C2128</div></div>
+            <div class="swatch"><div class="box" style="background: var(--brand);"></div><div class="lbl">brand</div><div class="val">#2DD4BF</div></div>
+            <div class="swatch"><div class="box" style="background: var(--success);"></div><div class="lbl">success</div><div class="val">#2DD4A0</div></div>
+            <div class="swatch"><div class="box" style="background: var(--warning);"></div><div class="lbl">warning</div><div class="val">#E0A52C</div></div>
+            <div class="swatch"><div class="box" style="background: var(--danger);"></div><div class="lbl">danger</div><div class="val">#E5484D</div></div>
+          </div>
+
+          <div style="margin-top: 16px;">
+            <div class="lbl" style="color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">brand gradient — rarely used</div>
+            <div style="height: 32px; border-radius: var(--radius-sm); background: var(--brand-gradient);"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ENGAGE STATE GALLERY -->
+      <section class="section">
+        <div class="card" style="grid-column: span 12;">
+          <h3>EngageButton — all states</h3>
+          <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center;">
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+              <button class="engage">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+                Engage <kbd>F5</kbd>
+              </button>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">off-ready</span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+              <button class="engage engage--disabled">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+                Engage <kbd>F5</kbd>
+              </button>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">off-disabled</span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+              <button class="engage">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation: pulse-soft 1s linear infinite;"><circle cx="12" cy="12" r="10" stroke-dasharray="40 20"/></svg>
+                Engaging… <kbd>F5</kbd>
+              </button>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">engaging</span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+              <div class="engage-wrap">
+                <span class="engage-ring"></span>
+                <button class="engage engage--engaged">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+                  Engaged <kbd>F5</kbd>
+                </button>
+              </div>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">engaged</span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+              <button class="engage engage--fault">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Fault — tap to clear <kbd>F5</kbd>
+              </button>
+              <span style="color: var(--text-muted); font-size: 11px; font-family: var(--font-mono);">fault</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <footer class="footer">
+      <span class="dot"></span>
+      <span>Connected · ws://localhost:8421</span>
+      <span style="margin-left:auto; font-family: var(--font-mono);">TruckPilot 0.8.4 · build a4f1c</span>
+    </footer>
+  </main>
+</div>
+
+<script>
+  // Theme toggle wiring — flips data-theme on <html>.
+  document.querySelectorAll('[data-theme-set]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('data-theme-set');
+      document.documentElement.setAttribute('data-theme', next);
+      document.querySelectorAll('[data-theme-set]').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

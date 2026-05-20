@@ -44,7 +44,7 @@ impl Default for WatchdogConfig {
             watchdog_poll_ms: 25,
             failsafe_steering: 0.0,
             failsafe_throttle: 0.0,
-            failsafe_brake: 0.3,
+            failsafe_brake: 0.0,
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn check_telemetry_stale(
 /// [`clear_vjoy_failsafe`] on recovery.
 pub fn apply_vjoy_failsafe(bb: &SharedBlackboard, config: &WatchdogConfig, reason: &str) {
     tracing::warn!(
-        "[watchdog] FAILSAFE ACTIVE — reason={reason} steer={} throttle={} brake={} (via safety.emergency_brake)",
+        "[watchdog] FAILSAFE ACTIVE — reason={reason} steer={} throttle={} brake={} (neutral, no auto-brake). User must take over.",
         config.failsafe_steering,
         config.failsafe_throttle,
         config.failsafe_brake,
@@ -269,7 +269,7 @@ mod tests {
         let config = WatchdogConfig::default();
         assert_eq!(config.failsafe_steering, 0.0);
         assert_eq!(config.failsafe_throttle, 0.0);
-        assert_eq!(config.failsafe_brake, 0.3);
+        assert_eq!(config.failsafe_brake, 0.0);
     }
 
     #[test]

@@ -1,0 +1,234 @@
+/* =========================================================================
+   TruckPilot — Page-specific layout grids
+   ========================================================================= */
+
+/* ============================== DASHBOARD =============================== */
+.dash-hero {
+  display: grid; grid-template-columns: minmax(360px, 1fr) 1.4fr;
+  gap: 16px; margin-bottom: 16px;
+}
+.dash-hero__engage {
+  display: flex; flex-direction: column;
+  background: var(--tp-bg-card);
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-3);
+  padding: var(--tp-s-5);
+  position: relative; overflow: hidden;
+}
+.dash-hero__engage::before {
+  content: ""; position: absolute; right: -120px; top: -120px;
+  width: 280px; height: 280px;
+  background: radial-gradient(circle, rgba(30,216,145,0.10), transparent 70%);
+  pointer-events: none;
+}
+
+.dash-live {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-areas:
+    "speed   rpm    cruise"
+    "limit   vjoy   map"
+    "limit   vjoy   map";
+  gap: 16px;
+}
+.dash-card-speed  { grid-area: speed; }
+.dash-card-rpm    { grid-area: rpm; }
+.dash-card-cruise { grid-area: cruise; }
+.dash-card-limit  { grid-area: limit; }
+.dash-card-vjoy   { grid-area: vjoy; }
+.dash-card-map    { grid-area: map; }
+
+/* ============================== PLUGINS PAGE ============================ */
+.plugins-page {
+  display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px;
+  height: 100%;
+}
+.plugin-detail-head {
+  display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--tp-s-4);
+  padding-bottom: var(--tp-s-4); border-bottom: 1px solid var(--tp-border);
+}
+.plugin-detail-head__title {
+  font-size: 22px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--tp-fg-strong); margin: 0;
+  display: flex; align-items: center; gap: 10px;
+}
+.plugin-detail-head__meta {
+  display: flex; gap: 16px;
+  font-family: var(--tp-font-mono); font-size: 11px; color: var(--tp-fg-muted);
+}
+.plugin-detail-head__meta b { color: var(--tp-fg); font-weight: 500; }
+
+.plugin-stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+}
+.plugin-stat {
+  padding: 12px 14px;
+  background: var(--tp-bg-input);
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-2);
+}
+.plugin-stat__label {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--tp-fg-dim); font-weight: 600; margin-bottom: 4px;
+}
+.plugin-stat__value {
+  font-family: var(--tp-font-mono); font-size: 18px; font-weight: 500;
+  color: var(--tp-fg-strong); letter-spacing: -0.01em;
+}
+.plugin-stat__sub {
+  font-family: var(--tp-font-mono); font-size: 10px; color: var(--tp-fg-dim);
+  margin-top: 2px;
+}
+
+/* ============================== BLACKBOARD PAGE ========================= */
+.bb-page {
+  display: grid; grid-template-columns: 320px 1fr; gap: 16px;
+}
+.bb-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-bottom: 10px;
+  background: var(--tp-bg-input);
+  border: 1px solid var(--tp-border); border-radius: var(--tp-r-2);
+}
+.bb-search input {
+  background: transparent; border: none; outline: none;
+  color: var(--tp-fg); font-family: var(--tp-font-mono); font-size: 12px;
+  flex: 1;
+}
+.bb-search svg { width: 14px; height: 14px; color: var(--tp-fg-dim); }
+.bb-search kbd {
+  font-family: var(--tp-font-mono); font-size: 10px; color: var(--tp-fg-dim);
+  padding: 1px 5px; border: 1px solid var(--tp-border); border-radius: 3px;
+}
+
+.bb-detail__head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--tp-s-4); gap: var(--tp-s-3);
+}
+.bb-kv {
+  display: grid; grid-template-columns: 120px 1fr;
+  padding: 8px 0; border-bottom: 1px solid var(--tp-border);
+  font-family: var(--tp-font-mono); font-size: 12px;
+}
+.bb-kv:last-child { border-bottom: none; }
+.bb-kv__k { color: var(--tp-fg-dim); }
+.bb-kv__v { color: var(--tp-fg-strong); }
+
+/* ============================== LOGS PAGE =============================== */
+.logs-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 12px;
+  background: var(--tp-bg-card); border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-2);
+}
+.logs-level {
+  display: flex; gap: 4px; padding: 3px;
+  background: var(--tp-bg-input); border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-pill);
+}
+.logs-level__chip {
+  padding: 4px 10px; border-radius: var(--tp-r-pill);
+  font-family: var(--tp-font-mono); font-size: 10px; font-weight: 600;
+  color: var(--tp-fg-dim); cursor: pointer;
+  border: 1px solid transparent;
+  letter-spacing: 0.06em;
+}
+.logs-level__chip.on {
+  background: var(--tp-bg-elev); color: var(--tp-fg);
+  border-color: var(--tp-border-strong);
+}
+.logs-level__chip.on--info  { color: var(--tp-info); }
+.logs-level__chip.on--warn  { color: var(--tp-warning); }
+.logs-level__chip.on--error { color: var(--tp-error); }
+
+.logs-stream {
+  background: var(--tp-bg-card); border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-2);
+  overflow: hidden;
+}
+
+/* ============================== PID PAGE ================================ */
+.pid-tabs {
+  display: inline-flex; gap: 4px; padding: 4px;
+  background: var(--tp-bg-card); border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-pill);
+  margin-bottom: var(--tp-s-4);
+}
+.pid-tab {
+  padding: 6px 16px; border-radius: var(--tp-r-pill);
+  font-size: 12px; font-weight: 500; color: var(--tp-fg-muted);
+  cursor: pointer; transition: all var(--tp-dur-2);
+}
+.pid-tab.active {
+  background: var(--tp-bg-elev); color: var(--tp-fg-strong);
+  box-shadow: 0 0 0 1px var(--tp-border-strong);
+}
+
+.pid-slider {
+  display: grid; grid-template-columns: 80px 1fr 80px;
+  align-items: center; gap: 16px;
+  padding: 14px 0; border-bottom: 1px solid var(--tp-border);
+}
+.pid-slider:last-child { border-bottom: none; }
+.pid-slider__name {
+  font-family: var(--tp-font-mono); font-size: 12px; color: var(--tp-fg);
+  font-weight: 500;
+}
+.pid-slider__value {
+  font-family: var(--tp-font-mono); font-variant-numeric: tabular-nums;
+  font-size: 14px; color: var(--tp-fg-strong); text-align: right;
+}
+
+/* ============================== SETTINGS PAGE =========================== */
+.settings-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.settings-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 0; border-bottom: 1px solid var(--tp-border);
+  gap: 16px;
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-row__label { display: flex; flex-direction: column; gap: 2px; }
+.settings-row__title { font-size: 13px; color: var(--tp-fg); font-weight: 500; }
+.settings-row__sub { font-size: 12px; color: var(--tp-fg-muted); }
+.settings-row__control { display: flex; align-items: center; gap: 8px; }
+
+.settings-input {
+  height: 32px; padding: 0 10px;
+  background: var(--tp-bg-input);
+  border: 1px solid var(--tp-border);
+  border-radius: var(--tp-r-2);
+  color: var(--tp-fg);
+  font-family: var(--tp-font-mono); font-size: 12px;
+  outline: none;
+  transition: border-color var(--tp-dur-2), box-shadow var(--tp-dur-2);
+}
+.settings-input:focus { border-color: var(--tp-brand-teal); box-shadow: 0 0 0 3px rgba(30,216,145,0.15); }
+.settings-input--mono { font-family: var(--tp-font-mono); }
+.settings-input--wide { flex: 1; min-width: 0; }
+.settings-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 56px; height: 32px;
+  font-family: var(--tp-font-mono); font-size: 13px; color: var(--tp-fg-strong);
+  background: var(--tp-bg-input);
+  border: 1px solid var(--tp-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--tp-r-2);
+}
+
+/* ============================== ROUTE MAP STANDALONE ==================== */
+.routemap-page {
+  display: grid; grid-template-columns: 1fr 320px; gap: 16px;
+}
+
+/* ============================== DIAG (HIDDEN) =========================== */
+.diag-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 16px;
+  background: var(--tp-tint-warning);
+  border: 1px dashed rgba(245,184,61,0.40);
+  border-radius: var(--tp-r-2);
+  font-size: 12px; color: var(--tp-warning);
+}
+.diag-banner b { color: var(--tp-fg-strong); }

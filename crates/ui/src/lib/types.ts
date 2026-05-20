@@ -115,8 +115,10 @@ export type UiCommand =
   | { type: "autopilot_engage" }
   | { type: "autopilot_disengage" }
   | { type: "autopilot_reset" }
-  | { type: "set_router_goal"; uid: number }
-  | { type: "set_router_start"; uid: number | null }
+  // uid carries a u64; sent as a decimal or `0x…` hex string to preserve
+  // precision (JS numbers lose bits above 2^53).
+  | { type: "set_router_goal"; uid: string }
+  | { type: "set_router_start"; uid: string | null }
   | { type: "set_cruise_target"; kmh: number }
   | { type: "blackboard_get"; keys: string[] }
   | { type: "blackboard_list"; prefix: string | null };

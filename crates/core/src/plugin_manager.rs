@@ -9,7 +9,7 @@ use std::mem::ManuallyDrop;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -318,6 +318,7 @@ impl PluginManager {
             if !should_tick(phase, tick_count) {
                 continue;
             }
+            let plugin_start = Instant::now();
             let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                 .with_dt(dt_s)
                 .with_phase(phase)
@@ -350,6 +351,15 @@ impl PluginManager {
                     p.enabled = false;
                 }
             }
+            let plugin_elapsed = plugin_start.elapsed();
+            if plugin_elapsed.as_millis() > 30 {
+                warn!(
+                    "[tick-profile] plugin '{}' took {} ms (tick={})",
+                    p.name,
+                    plugin_elapsed.as_millis(),
+                    tick_count
+                );
+            }
         }
 
         *output = arbitrate(legacy, &requests);
@@ -357,6 +367,7 @@ impl PluginManager {
         if let Some(idx) = vjoy_idx {
             let p = &mut self.plugins[idx];
             if p.enabled {
+                let plugin_start = Instant::now();
                 let phase = p.plugin.default_phase();
                 let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                     .with_dt(dt_s)
@@ -370,6 +381,15 @@ impl PluginManager {
                 if let Err(panic) = tick_result {
                     log_plugin_panic(&p.name, "tick", panic);
                     p.enabled = false;
+                }
+                let plugin_elapsed = plugin_start.elapsed();
+                if plugin_elapsed.as_millis() > 30 {
+                    warn!(
+                        "[tick-profile] plugin '{}' took {} ms (tick={})",
+                        p.name,
+                        plugin_elapsed.as_millis(),
+                        tick_count
+                    );
                 }
             }
         }

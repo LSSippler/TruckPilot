@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Blackboard</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="Blackboard">
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand"><img src="../assets/logo.png" alt=""><span>TruckPilot</span></div>
+    <div class="tp-titlebar__sub">Blackboard inspector</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">Pop out</button>
+  </div>
+
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Dashboard</a>
+      <a class="tp-nav tp-nav--active"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>Blackboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>Logs</a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>Plugins</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>PID Tuning</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+    </div>
+  </nav>
+
+  <main class="tp-main">
+    <div class="bb-page">
+
+      <!-- TREE -->
+      <div class="tp-card tp-card--inset">
+        <div class="bb-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input placeholder="Search keys…" value="">
+          <kbd>⌘K</kbd>
+        </div>
+
+        <div class="tp-tree">
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev tp-tree__chev--open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">telemetry</span>
+            <span class="tp-tree__val">12 keys</span>
+          </div>
+          <div style="padding-left:18px;display:flex;flex-direction:column;gap:2px">
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">speed_kmh</span>
+              <span class="tp-type tp-type--f32">f32</span>
+              <span class="tp-tree__val tp-mono tp-strong">82.4</span>
+            </div>
+            <div class="tp-tree__node tp-tree__node--active">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">rpm</span>
+              <span class="tp-type tp-type--f32">f32</span>
+              <span class="tp-tree__val tp-mono tp-strong">1420.0</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">gear</span>
+              <span class="tp-type tp-type--u64">u64</span>
+              <span class="tp-tree__val tp-mono">9</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">engine_on</span>
+              <span class="tp-type tp-type--bool">bool</span>
+              <span class="tp-tree__val tp-mono" style="color:var(--tp-success)">true</span>
+            </div>
+            <div class="tp-tree__node">
+              <svg class="tp-tree__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+              <span class="tp-tree__key">position</span>
+              <span class="tp-type tp-type--vec">vec3</span>
+            </div>
+          </div>
+
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev tp-tree__chev--open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">navi</span>
+            <span class="tp-tree__val">8 keys</span>
+          </div>
+          <div style="padding-left:18px;display:flex;flex-direction:column;gap:2px">
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">active</span>
+              <span class="tp-type tp-type--bool">bool</span>
+              <span class="tp-tree__val tp-mono" style="color:var(--tp-success)">true</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">road_name</span>
+              <span class="tp-type tp-type--string">str</span>
+              <span class="tp-tree__val tp-mono">"A100"</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">dist_to_next</span>
+              <span class="tp-type tp-type--f32">f32</span>
+              <span class="tp-tree__val tp-mono">1240.0</span>
+            </div>
+          </div>
+
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">vjoy</span>
+            <span class="tp-tree__val">6 keys</span>
+          </div>
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">vision</span>
+            <span class="tp-tree__val">14 keys</span>
+          </div>
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">router</span>
+            <span class="tp-tree__val">9 keys</span>
+          </div>
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">watchdog</span>
+            <span class="tp-tree__val">5 keys</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- DETAIL -->
+      <div class="tp-card">
+        <div class="tp-crumb" style="margin-bottom:12px">
+          <span>telemetry</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+          <b>rpm</b>
+        </div>
+        <div class="bb-detail__head">
+          <div style="display:flex;align-items:center;gap:12px">
+            <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.02em;margin:0;color:var(--tp-fg-strong)">rpm</h2>
+            <span class="tp-type tp-type--f32" style="font-size:11px;padding:3px 8px">f32</span>
+          </div>
+          <button class="tp-btn tp-btn--ghost" style="height:28px;font-size:11px">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            Copy value
+          </button>
+        </div>
+
+        <div class="tp-bignum" style="margin-bottom:18px">
+          <div class="tp-bignum__label">Current value</div>
+          <div>
+            <span class="tp-bignum__value tp-num" style="font-size:48px">1,420.0</span>
+            <span class="tp-bignum__unit">rpm</span>
+          </div>
+        </div>
+
+        <div class="tp-spark" style="height:120px;margin-bottom:20px">
+          <svg class="tp-spark__svg" viewBox="0 0 600 120" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="bbspark" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1ED891" stop-opacity="0.55"/>
+                <stop offset="60%" stop-color="#1FB3DB" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#8C5BF2" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="bbstroke" x1="0" x2="1">
+                <stop offset="0%" stop-color="#1FB3DB"/>
+                <stop offset="100%" stop-color="#1ED891"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="60" x2="600" y2="60" stroke="var(--tp-grid-line)" stroke-dasharray="2 4"/>
+            <path d="M0 90 C 30 80, 60 60, 90 70 S 150 90, 180 70 S 240 40, 270 50 S 330 80, 360 65 S 420 35, 450 50 S 510 80, 540 60 S 580 30, 600 35 L 600 120 L 0 120 Z" fill="url(#bbspark)"/>
+            <path d="M0 90 C 30 80, 60 60, 90 70 S 150 90, 180 70 S 240 40, 270 50 S 330 80, 360 65 S 420 35, 450 50 S 510 80, 540 60 S 580 30, 600 35" fill="none" stroke="url(#bbstroke)" stroke-width="2"/>
+          </svg>
+          <span class="tp-spark__max">2400</span>
+          <span class="tp-spark__min">600</span>
+          <div class="tp-spark__dot" style="left:100%;top:30%"></div>
+        </div>
+
+        <div class="tp-eyebrow" style="margin-bottom:8px">Metadata</div>
+        <div class="bb-kv"><span class="bb-kv__k">Owner</span><span class="bb-kv__v">telemetry-plugin</span></div>
+        <div class="bb-kv"><span class="bb-kv__k">Updated</span><span class="bb-kv__v">14:34:11.408 · 4 ms ago</span></div>
+        <div class="bb-kv"><span class="bb-kv__k">Frequency</span><span class="bb-kv__v">240 hz</span></div>
+        <div class="bb-kv"><span class="bb-kv__k">Subscribers</span><span class="bb-kv__v">acc, speed-controller, stats-logger</span></div>
+        <div class="bb-kv"><span class="bb-kv__k">Range</span><span class="bb-kv__v">600.0 — 2400.0</span></div>
+        <div class="bb-kv"><span class="bb-kv__k">Path</span><span class="bb-kv__v">/telemetry/rpm</span></div>
+      </div>
+
+    </div>
+  </main>
+
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+</div>
+</body>
+</html>

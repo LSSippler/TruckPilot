@@ -20,9 +20,9 @@ use std::fmt;
 const AXIS_MIN: i32 = 0;
 const AXIS_MAX: i32 = 32_767;
 
-pub const HID_USAGE_X: u32 = 0x30;
-pub const HID_USAGE_Y: u32 = 0x31;
-pub const HID_USAGE_Z: u32 = 0x32;
+pub const HID_USAGE_X:   u32 = 0x30; // Steering (bipolar, center = 16384)
+pub const HID_USAGE_SL0: u32 = 0x36; // Slider       — Throttle (unipolar)
+pub const HID_USAGE_SL1: u32 = 0x37; // Dial/Slider2 — Brake    (unipolar)
 
 // VjdStat values returned by GetVJDStatus (vJoy SDK).
 const VJD_STAT_OWN: i32 = 0;
@@ -65,7 +65,7 @@ impl fmt::Display for VJoyInitError {
             Self::DeviceMissing(id) => write!(
                 f,
                 "Device {id} is not configured in vJoyConf. Enable Device {id} \
-                 with X/Y/Z axes."
+                 with X, Slider and Dial/Slider2 axes."
             ),
             Self::DeviceUnknown(id, status) => write!(
                 f,
@@ -129,11 +129,12 @@ pub fn map_unsigned_to_raw(value: f64) -> i32 {
 
 // All vJoyInterface exports use the Windows stdcall convention; on x64
 // stdcall == fastcall == "system" so `extern "system"` is correct.
-type FnVJoyEnabled = unsafe extern "system" fn() -> i32;
-type FnAcquireVJD = unsafe extern "system" fn(u32) -> i32;
-type FnRelinquishVJD = unsafe extern "system" fn(u32);
-type FnGetVJDStatus = unsafe extern "system" fn(u32) -> i32;
-type FnSetAxis = unsafe extern "system" fn(i32, u32, u32) -> i32;
+type FnVJoyEnabled       = unsafe extern "system" fn() -> i32;
+type FnAcquireVJD        = unsafe extern "system" fn(u32) -> i32;
+type FnRelinquishVJD     = unsafe extern "system" fn(u32);
+type FnGetVJDStatus      = unsafe extern "system" fn(u32) -> i32;
+type FnSetAxis           = unsafe extern "system" fn(i32, u32, u32) -> i32;
+type FnGetVJDAxisExist   = unsafe extern "system" fn(u32, u32) -> i32;
 
 // ---------------------------------------------------------------------------
 // VJoyHandle (Windows only)
@@ -227,6 +228,26 @@ impl VJoyHandle {
             )));
         }
 
+        // Optional axis-existence pre-check: warn if SL0/SL1 are not
+        // configured in vJoyConf. Non-fatal — the acquire already succeeded
+        // and SetAxis will simply return FALSE on missing axes.
+        if let Ok(axis_exists_fn) =
+            unsafe { load_sym::<FnGetVJDAxisExist>(dll, "GetVJDAxisExist") }
+        {
+            for (hid, name) in [
+                (HID_USAGE_SL0, "Slider (Throttle)"),
+                (HID_USAGE_SL1, "Dial/Slider2 (Brake)"),
+            ] {
+                if unsafe { axis_exists_fn(device_id, hid) } == 0 {
+                    tracing::warn!(
+                        "[vjoy-output] vJoy axis 0x{hid:02x} ({name}) is NOT enabled in \
+                         vJoyConf — activate it and restart. TruckPilot writes throttle/brake \
+                         to Slider and Dial/Slider2, NOT to Y/Z."
+                    );
+                }
+            }
+        }
+
         // Commit the device to a known neutral state, then wait 100 ms
         // before returning. The blocking sleep is part of the fix, not a
         // diagnostic: the caller (plugin `on_load`) runs on a tokio task
@@ -237,8 +258,8 @@ impl VJoyHandle {
         let center = map_signed_to_raw(0.0);
         unsafe {
             let _ = set_axis(center, device_id, HID_USAGE_X);
-            let _ = set_axis(0, device_id, HID_USAGE_Y);
-            let _ = set_axis(0, device_id, HID_USAGE_Z);
+            let _ = set_axis(0, device_id, HID_USAGE_SL0);
+            let _ = set_axis(0, device_id, HID_USAGE_SL1);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         unsafe {
@@ -277,11 +298,11 @@ impl VJoyHandle {
             if (self.set_axis)(steer_raw, self.device_id, HID_USAGE_X) == 0 {
                 return Err(VJoySendError::AxisError(HID_USAGE_X));
             }
-            if (self.set_axis)(throttle_raw, self.device_id, HID_USAGE_Y) == 0 {
-                return Err(VJoySendError::AxisError(HID_USAGE_Y));
+            if (self.set_axis)(throttle_raw, self.device_id, HID_USAGE_SL0) == 0 {
+                return Err(VJoySendError::AxisError(HID_USAGE_SL0));
             }
-            if (self.set_axis)(brake_raw, self.device_id, HID_USAGE_Z) == 0 {
-                return Err(VJoySendError::AxisError(HID_USAGE_Z));
+            if (self.set_axis)(brake_raw, self.device_id, HID_USAGE_SL1) == 0 {
+                return Err(VJoySendError::AxisError(HID_USAGE_SL1));
             }
         }
 
@@ -298,8 +319,8 @@ impl VJoyHandle {
         if self.connected {
             unsafe {
                 let _ = (self.set_axis)(map_signed_to_raw(0.0), self.device_id, HID_USAGE_X);
-                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_Y);
-                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_Z);
+                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_SL0);
+                let _ = (self.set_axis)(0, self.device_id, HID_USAGE_SL1);
                 (self.relinquish_vjd)(self.device_id);
             }
             self.connected = false;

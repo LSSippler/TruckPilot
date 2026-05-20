@@ -1,10 +1,17 @@
 mod commands;
+mod daemon;
+mod daemon_config;
 mod ipc_bridge;
 mod steam_detect;
 mod window_manager;
 
+use std::sync::Arc;
+
 use ipc_bridge::IpcBridge;
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
+use tracing::{info, warn};
+
+use crate::daemon::DaemonManager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,14 +24,30 @@ pub fn run() {
         .try_init()
         .ok();
 
+    let daemon = Arc::new(DaemonManager::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            let bridge = IpcBridge::spawn(app.handle().clone());
-            app.manage(bridge);
-            Ok(())
+        .manage(daemon.clone())
+        .setup({
+            let daemon = daemon.clone();
+            move |app| {
+                let bridge = IpcBridge::spawn(app.handle().clone());
+                app.manage(bridge);
+
+                let cfg = daemon_config::load(app.handle());
+                if cfg.auto_start {
+                    match daemon.start() {
+                        Ok(status) => info!("daemon auto-start: {:?}", status.state),
+                        Err(err) => warn!("daemon auto-start failed: {err}"),
+                    }
+                } else {
+                    info!("daemon auto-start disabled by config");
+                }
+                Ok(())
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::send_command,
@@ -33,7 +56,18 @@ pub fn run() {
             commands::detect_ets2_path,
             commands::open_external_dashboard,
             commands::close_external_dashboard,
+            commands::daemon_status,
+            commands::daemon_start,
+            commands::daemon_stop,
+            commands::daemon_restart,
+            commands::daemon_get_auto_start,
+            commands::daemon_set_auto_start,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app, event| {
+            if let RunEvent::Exit = event {
+                daemon.shutdown_for_exit();
+            }
+        });
 }

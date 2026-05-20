@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Logs</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="Logs">
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand"><img src="../assets/logo.png" alt=""><span>TruckPilot</span></div>
+    <div class="tp-titlebar__sub">Logs</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">Pop out</button>
+  </div>
+
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Dashboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>Blackboard</a>
+      <a class="tp-nav tp-nav--active"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>Logs</a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>Plugins</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>PID Tuning</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+    </div>
+  </nav>
+
+  <main class="tp-main">
+
+    <div class="logs-toolbar">
+      <div class="logs-level">
+        <span class="logs-level__chip">trace</span>
+        <span class="logs-level__chip on">debug</span>
+        <span class="logs-level__chip on on--info">info</span>
+        <span class="logs-level__chip on on--warn">warn</span>
+        <span class="logs-level__chip on on--error">error</span>
+      </div>
+      <div class="bb-search" style="flex:1;margin:0;background:var(--tp-bg-input)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input placeholder="Filter messages, e.g. lane-keeper conf<0.5" value="conf">
+        <kbd>/</kbd>
+      </div>
+      <button class="tp-btn tp-btn--ghost" style="height:30px">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M6 12h12M9 18h6"/></svg>
+        Target
+        <span class="tp-mono" style="font-size:10px;color:var(--tp-fg-dim)">all</span>
+      </button>
+      <button class="tp-btn tp-btn--ghost" style="height:30px">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Export
+      </button>
+      <button class="tp-btn tp-btn--ghost" style="height:30px;color:var(--tp-warning);border-color:rgba(245,184,61,0.30)">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>
+        Paused
+      </button>
+    </div>
+
+    <div class="logs-stream">
+      <div style="display:grid;grid-template-columns:96px 72px 1fr;gap:12px;padding:8px 14px;border-bottom:1px solid var(--tp-border);font-family:var(--tp-font-mono);font-size:10px;color:var(--tp-fg-dim);text-transform:uppercase;letter-spacing:0.10em">
+        <span>time</span><span>target</span><span>message</span>
+      </div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:11.118</span><span class="tp-log__tgt">ipc</span><span class="tp-log__msg">frame received seq=144882 t=4.1ms</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:11.221</span><span class="tp-log__tgt">router</span><span class="tp-log__msg">following ETS2 navi waypoint @ 1.24 km (exit right)</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:11.402</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">lane lock <b style="color:var(--tp-success)">conf=0.94</b> · curvature 0.012/m</span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:11.502</span><span class="tp-log__tgt">vjoy</span><span class="tp-log__msg">tick steer=+0.14 throttle=0.46 brake=0.00</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:11.604</span><span class="tp-log__tgt">sign-reader</span><span class="tp-log__msg">SIGN_LIMIT_100 conf=0.97 d=42.0m</span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:11.712</span><span class="tp-log__tgt">speed-controller</span><span class="tp-log__msg">target update 85 → 85 (no change, limit-aware offset −15)</span></div>
+      <div class="tp-log tp-log--warn"><span class="tp-log__ts">14:34:12.040</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">confidence dropped 0.52 → 0.41 (rain occlusion)</span></div>
+      <div class="tp-log tp-log--warn"><span class="tp-log__ts">14:34:12.118</span><span class="tp-log__tgt">acc</span><span class="tp-log__msg">vehicle ahead at 38m — easing target 85 → 72</span></div>
+      <div class="tp-log tp-log--error"><span class="tp-log__ts">14:34:12.412</span><span class="tp-log__tgt">stats-logger</span><span class="tp-log__msg">flush failed: disk full at /cache/stats — entering crash loop</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:13.118</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">recovered <b style="color:var(--tp-success)">conf=0.86</b></span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:13.220</span><span class="tp-log__tgt">router</span><span class="tp-log__msg">junction nodes 4 candidates considered</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:13.402</span><span class="tp-log__tgt">router</span><span class="tp-log__msg">junction lane selection: lane 2 of 3 (matches navi exit)</span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:13.522</span><span class="tp-log__tgt">vision</span><span class="tp-log__msg">frame 144900 features=128 lanes=2 signs=1</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:13.701</span><span class="tp-log__tgt">break-planner</span><span class="tp-log__msg">no break required for the next 184 km</span></div>
+      <div class="tp-log tp-log--warn"><span class="tp-log__ts">14:34:14.012</span><span class="tp-log__tgt">sign-vision</span><span class="tp-log__msg">latency budget exceeded 11.8ms &gt; 10.0ms p99</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:14.118</span><span class="tp-log__tgt">acc</span><span class="tp-log__msg">distance restored 64m — target 85</span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:14.318</span><span class="tp-log__tgt">vjoy</span><span class="tp-log__msg">tick steer=+0.08 throttle=0.42 brake=0.00</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:14.504</span><span class="tp-log__tgt">router</span><span class="tp-log__msg">following ETS2 navi waypoint @ 1.08 km (exit right)</span></div>
+      <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:14.622</span><span class="tp-log__tgt">ipc</span><span class="tp-log__msg">frame received seq=144914 t=3.9ms</span></div>
+      <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:14.804</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">lane lock <b style="color:var(--tp-success)">conf=0.91</b> · curvature 0.011/m</span></div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-family:var(--tp-font-mono);font-size:11px;color:var(--tp-fg-muted)">
+      <span>20 lines · 1 match for <b style="color:var(--tp-fg)">"conf"</b> · scroll paused</span>
+      <span><button class="tp-btn tp-btn--primary" style="height:26px;padding:0 12px;font-size:11px">Resume tail</button></span>
+    </div>
+
+  </main>
+
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+</div>
+</body>
+</html>

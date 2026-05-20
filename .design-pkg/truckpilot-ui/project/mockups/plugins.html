@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Plugins</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="Plugins">
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand"><img src="../assets/logo.png" alt=""><span>TruckPilot</span></div>
+    <div class="tp-titlebar__sub">Plugins</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">Pop out <span class="tp-mono" style="font-size:10px;color:var(--tp-fg-dim);margin-left:4px">F2</span></button>
+  </div>
+
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Dashboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>Blackboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>Logs</a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav tp-nav--active"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>Plugins</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>PID Tuning</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M6 12h12M9 17h6"/></svg>Mods</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+    </div>
+  </nav>
+
+  <main class="tp-main">
+    <div class="plugins-page">
+
+      <!-- PLUGIN LIST -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Plugins <span class="tp-mono tp-dim" style="font-size:11px;font-weight:400;margin-left:4px">11 installed · 9 running</span></h3>
+          <button class="tp-btn tp-btn--ghost" style="height:26px;padding:0 10px;font-size:11px">+ Add</button>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">acc <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">1.4 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">break-planner <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">0.2 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot tp-plugin__dot--off"></span>
+            <div class="tp-plugin__name">fuel-stops <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta tp-dim">disabled</span>
+            <span class="tp-toggle"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">lane-changer <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">2.8 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin" style="border-color:rgba(30,216,145,0.30);background:linear-gradient(90deg,rgba(30,216,145,0.06),transparent 40%)">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name tp-strong">lane-keeper <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">4.2 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">router <small>v0.2.0</small></div>
+            <span class="tp-plugin__meta">2.1 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">sign-reader <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">0.6 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot tp-plugin__dot--warn"></span>
+            <div class="tp-plugin__name">sign-vision <small>v0.3.0</small></div>
+            <span class="tp-plugin__meta tp-mono" style="color:var(--tp-warning)">11.8 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">speed-controller <small>v0.2.0</small></div>
+            <span class="tp-plugin__meta">0.8 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot tp-plugin__dot--err"></span>
+            <div class="tp-plugin__name">stats-logger <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta tp-mono" style="color:var(--tp-error)">crash loop</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">vision-frame-source <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">8.1 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PLUGIN DETAIL -->
+      <div class="tp-card">
+        <div class="plugin-detail-head">
+          <h3 class="plugin-detail-head__title">
+            <span class="tp-plugin__dot"></span>
+            lane-keeper
+            <span class="doc-tag tp-mono">v0.1.0</span>
+          </h3>
+          <div class="plugin-detail-head__meta">
+            <span>by <b>core</b></span>
+            <span>rust 1.78</span>
+            <span>load <b>4.2 ms</b></span>
+            <span>uptime <b>02:14:08</b></span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button class="tp-btn tp-btn--ghost"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v16M4 12h16"/></svg>Restart</button>
+            <button class="tp-btn tp-btn--ghost"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>Reload</button>
+            <div style="flex:1"></div>
+            <button class="tp-btn tp-btn--danger">Disable</button>
+          </div>
+        </div>
+
+        <div class="plugin-stat-grid" style="margin-bottom:16px">
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">Tick rate</div>
+            <div class="plugin-stat__value tp-num">240 <span style="font-size:11px;color:var(--tp-fg-muted)">hz</span></div>
+            <div class="plugin-stat__sub">target 250</div>
+          </div>
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">CPU avg</div>
+            <div class="plugin-stat__value tp-num">4.2 <span style="font-size:11px;color:var(--tp-fg-muted)">ms</span></div>
+            <div class="plugin-stat__sub">p99 6.8 ms</div>
+          </div>
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">Memory</div>
+            <div class="plugin-stat__value tp-num">12.4 <span style="font-size:11px;color:var(--tp-fg-muted)">MB</span></div>
+            <div class="plugin-stat__sub">stable</div>
+          </div>
+        </div>
+
+        <div class="tp-eyebrow" style="margin:6px 0 10px">Configuration</div>
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div class="settings-row">
+            <div class="settings-row__label">
+              <div class="settings-row__title">Lookahead distance</div>
+              <div class="settings-row__sub">How far ahead the keeper anchors</div>
+            </div>
+            <div class="settings-row__control">
+              <input class="settings-input settings-input--mono" value="18.0" style="width:64px;text-align:right">
+              <span class="tp-mono tp-dim" style="font-size:11px">m</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-row__label">
+              <div class="settings-row__title">Lateral tolerance</div>
+              <div class="settings-row__sub">Allowed drift before correction</div>
+            </div>
+            <div class="settings-row__control">
+              <input class="settings-input settings-input--mono" value="0.20" style="width:64px;text-align:right">
+              <span class="tp-mono tp-dim" style="font-size:11px">m</span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-row__label">
+              <div class="settings-row__title">Smoothing kernel</div>
+              <div class="settings-row__sub">Catmull-Rom on detected lane samples</div>
+            </div>
+            <div class="settings-row__control">
+              <span class="tp-toggle tp-toggle--on"></span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <div class="settings-row__label">
+              <div class="settings-row__title">Emergency override</div>
+              <div class="settings-row__sub">Hand back control on confidence < 0.4</div>
+            </div>
+            <div class="settings-row__control">
+              <span class="tp-toggle tp-toggle--on"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tp-eyebrow" style="margin:22px 0 10px">Recent events</div>
+        <div class="logs-stream" style="background:var(--tp-bg-input);padding:6px 0">
+          <div class="tp-log tp-log--info"><span class="tp-log__ts">14:31:08.221</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">attached to vision-frame-source @ 30 fps</span></div>
+          <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:31:08.402</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">smoothing window resized n=12</span></div>
+          <div class="tp-log tp-log--info"><span class="tp-log__ts">14:31:14.118</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">lane lock established conf=0.94</span></div>
+          <div class="tp-log tp-log--warn"><span class="tp-log__ts">14:32:02.940</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">confidence dropped 0.52 → 0.41 (rain)</span></div>
+          <div class="tp-log tp-log--info"><span class="tp-log__ts">14:32:04.118</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">recovered conf=0.86</span></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+</div>
+</body>
+</html>

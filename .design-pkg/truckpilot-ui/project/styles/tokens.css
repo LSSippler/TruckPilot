@@ -1,0 +1,189 @@
+/* =========================================================================
+   TruckPilot — Design Tokens
+   Brand gradient sampled from the logo: emerald → teal → cyan → blue → violet
+   ========================================================================= */
+
+:root {
+  /* ---- Brand gradient (universal, both themes) ---------------------------- */
+  --tp-brand-mint:   #1ED891;
+  --tp-brand-teal:   #14C4B0;
+  --tp-brand-cyan:   #1FB3DB;
+  --tp-brand-blue:   #4D7CFA;
+  --tp-brand-violet: #8C5BF2;
+
+  --tp-gradient-brand: linear-gradient(
+    100deg,
+    #1ED891 0%,
+    #14C4B0 28%,
+    #1FB3DB 52%,
+    #4D7CFA 76%,
+    #8C5BF2 100%
+  );
+  --tp-gradient-brand-soft: linear-gradient(
+    100deg,
+    rgba(30,216,145,0.22) 0%,
+    rgba(31,179,219,0.22) 50%,
+    rgba(140,91,242,0.22) 100%
+  );
+  --tp-gradient-spark: linear-gradient(
+    180deg,
+    rgba(30,216,145,0.55) 0%,
+    rgba(31,179,219,0.18) 60%,
+    rgba(140,91,242,0.00) 100%
+  );
+
+  /* ---- Semantic (theme-stable accents) ----------------------------------- */
+  --tp-success: #1ED891;     /* mint */
+  --tp-info:    #1FB3DB;     /* cyan */
+  --tp-warning: #F5B83D;     /* amber */
+  --tp-error:   #FF5A6E;     /* red — intentionally OUT of brand gradient */
+  --tp-fault:   #FF3344;     /* failsafe pulse red */
+
+  /* ---- Type families ----------------------------------------------------- */
+  --tp-font-sans:    "Geist", "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --tp-font-display: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --tp-font-mono:    "Geist Mono", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ---- Type scale -------------------------------------------------------- */
+  --tp-text-xs:   11px;
+  --tp-text-sm:   12px;
+  --tp-text-base: 13px;
+  --tp-text-md:   14px;
+  --tp-text-lg:   16px;
+  --tp-text-xl:   20px;
+  --tp-text-2xl:  28px;
+  --tp-text-3xl:  40px;
+  --tp-text-hero: 96px;
+
+  /* ---- Spacing (4/8 base) ------------------------------------------------ */
+  --tp-s-1: 4px;
+  --tp-s-2: 8px;
+  --tp-s-3: 12px;
+  --tp-s-4: 16px;
+  --tp-s-5: 24px;
+  --tp-s-6: 32px;
+  --tp-s-7: 48px;
+  --tp-s-8: 64px;
+
+  /* ---- Radii ------------------------------------------------------------- */
+  --tp-r-1: 4px;
+  --tp-r-2: 6px;
+  --tp-r-3: 10px;
+  --tp-r-4: 14px;
+  --tp-r-pill: 999px;
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --tp-dur-1: 80ms;      /* micro: focus ring, tab */
+  --tp-dur-2: 140ms;     /* hover, cross-fade page */
+  --tp-dur-3: 220ms;     /* card lift, tree expand */
+  --tp-dur-4: 420ms;     /* engage state transition */
+  --tp-ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --tp-ease-inout:  cubic-bezier(0.65, 0, 0.35, 1);
+  --tp-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ---- Type-Color tokens (Blackboard) ------------------------------------ */
+  --tp-type-f32:    #1ED891;
+  --tp-type-u64:    #4D7CFA;
+  --tp-type-bool:   #F5B83D;
+  --tp-type-string: #8C5BF2;
+  --tp-type-vec:    #1FB3DB;
+}
+
+/* ============================== DARK THEME ============================== */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces — 5 layers, cool blue-grey tint */
+  --tp-bg-base:     #07090C;
+  --tp-bg-app:      #0B0E14;
+  --tp-bg-card:     #11161E;
+  --tp-bg-elev:     #161C26;
+  --tp-bg-modal:    #1B2230;
+  --tp-bg-input:    #0E131B;
+
+  /* Foregrounds */
+  --tp-fg:          #ECEEF3;
+  --tp-fg-strong:   #FFFFFF;
+  --tp-fg-muted:    #8893A5;
+  --tp-fg-dim:      #5B6678;
+  --tp-fg-faint:    #3A4254;
+
+  /* Borders + dividers (semi-transparent hairlines) */
+  --tp-border:        rgba(255,255,255,0.07);
+  --tp-border-strong: rgba(255,255,255,0.12);
+  --tp-border-brand:  rgba(30,216,145,0.35);
+
+  /* Surface tints */
+  --tp-tint-success: rgba(30,216,145,0.10);
+  --tp-tint-warning: rgba(245,184,61,0.12);
+  --tp-tint-error:   rgba(255,90,110,0.12);
+  --tp-tint-info:    rgba(31,179,219,0.10);
+  --tp-tint-violet:  rgba(140,91,242,0.12);
+
+  /* Effects */
+  --tp-shadow-card:    0 0 0 1px rgba(255,255,255,0.04);
+  --tp-shadow-elev:    0 12px 32px -8px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.05);
+  --tp-shadow-hero:    0 16px 56px -12px rgba(30,216,145,0.18), 0 0 0 1px rgba(255,255,255,0.06);
+  --tp-glow-success:   0 0 24px rgba(30,216,145,0.55);
+  --tp-glow-error:     0 0 24px rgba(255,90,110,0.55);
+  --tp-grid-line:      rgba(255,255,255,0.04);
+}
+
+/* ============================== LIGHT THEME ============================= */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --tp-bg-base:     #EEF0F4;
+  --tp-bg-app:      #F4F6FA;
+  --tp-bg-card:     #FFFFFF;
+  --tp-bg-elev:     #FFFFFF;
+  --tp-bg-modal:    #FFFFFF;
+  --tp-bg-input:    #F4F6FA;
+
+  --tp-fg:          #0F1420;
+  --tp-fg-strong:   #07090C;
+  --tp-fg-muted:    #5B6678;
+  --tp-fg-dim:      #8893A5;
+  --tp-fg-faint:    #B6BDCC;
+
+  --tp-border:        rgba(15,20,32,0.08);
+  --tp-border-strong: rgba(15,20,32,0.14);
+  --tp-border-brand:  rgba(20,196,176,0.50);
+
+  --tp-tint-success: rgba(30,216,145,0.14);
+  --tp-tint-warning: rgba(245,184,61,0.18);
+  --tp-tint-error:   rgba(255,90,110,0.14);
+  --tp-tint-info:    rgba(31,179,219,0.14);
+  --tp-tint-violet:  rgba(140,91,242,0.14);
+
+  --tp-shadow-card:  0 1px 2px rgba(15,20,32,0.04), 0 0 0 1px rgba(15,20,32,0.05);
+  --tp-shadow-elev:  0 6px 18px -8px rgba(15,20,32,0.18), 0 0 0 1px rgba(15,20,32,0.07);
+  --tp-shadow-hero:  0 12px 40px -12px rgba(20,196,176,0.30), 0 0 0 1px rgba(15,20,32,0.06);
+  --tp-glow-success: 0 0 18px rgba(30,216,145,0.45);
+  --tp-glow-error:   0 0 18px rgba(255,90,110,0.45);
+  --tp-grid-line:    rgba(15,20,32,0.05);
+}
+
+/* ============================== RESET / BASE =========================== */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--tp-font-sans);
+  font-size: var(--tp-text-base);
+  font-feature-settings: "ss01", "cv11";
+  color: var(--tp-fg);
+  background: var(--tp-bg-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: rgba(30,216,145,0.30); color: var(--tp-fg-strong); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

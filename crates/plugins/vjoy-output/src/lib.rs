@@ -246,8 +246,10 @@ impl Plugin for VJoyOutputPlugin {
                 );
                 write_neutral_axes()
             } else {
-                tracing::warn!("[vjoy-output] EMERGENCY BRAKE — throttle=0 brake=full");
-                (0.0, 0.0, 1.0)
+                tracing::warn!(
+                    "[vjoy-output] FAILSAFE — writing neutral (no auto-brake). User must take over."
+                );
+                write_neutral_axes()
             };
             #[cfg(windows)]
             if let Some(ref mut handle) = self.vjoy {

@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Dashboard</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="Dashboard">
+
+  <!-- ====================== TITLEBAR ====================== -->
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand">
+      <img src="../assets/logo.png" alt="">
+      <span>TruckPilot</span>
+    </div>
+    <div class="tp-titlebar__sub">Self-Driving for Euro Truck Simulator 2</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3h7v7M10 21H3v-7M21 3l-9 9M3 21l9-9"/></svg>
+      Pop out
+      <span class="tp-mono" style="font-size:10px;color:var(--tp-fg-dim);margin-left:2px">F2</span>
+    </button>
+    <button class="tp-btn tp-btn--ghost" aria-label="Display">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+    </button>
+  </div>
+
+  <!-- ====================== SIDEBAR ====================== -->
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav tp-nav--active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
+        Dashboard
+      </a>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>
+        Blackboard
+      </a>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>
+        Logs
+      </a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>
+        Plugins
+      </a>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        PID Tuning
+      </a>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M6 12h12M9 17h6"/></svg>
+        Mods
+      </a>
+      <a class="tp-nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4.9a7 7 0 0 0-2-1.2l-.4-2.5h-4l-.4 2.5a7 7 0 0 0-2 1.2l-2.4-.9-2 3.4 2 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.2l-2 1.6 2 3.4 2.4-.9a7 7 0 0 0 2 1.2l.4 2.5h4l.4-2.5a7 7 0 0 0 2-1.2l2.4.9 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>
+        Settings
+      </a>
+    </div>
+  </nav>
+
+  <!-- ====================== MAIN ====================== -->
+  <main class="tp-main">
+
+    <!-- HERO ZONE -->
+    <section class="dash-hero">
+      <div class="dash-hero__engage">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Autopilot</div>
+        <button class="tp-engage tp-engage--ready">
+          <span class="tp-engage__label">
+            <span class="tp-engage__dot"></span>
+            Engage
+          </span>
+          <span class="tp-engage__kbd">F5</span>
+        </button>
+        <div class="tp-pill-row" style="margin-top:14px">
+          <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Engine</span>
+          <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Cruise active</span>
+          <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>ETS2 Navigation</span>
+          <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Telemetry</span>
+          <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>vJoy device</span>
+        </div>
+      </div>
+
+      <div class="tp-card dash-hero__navi">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Navigation</h3>
+          <span class="tp-navi__badge">
+            <span style="width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor"></span>
+            ETS2 active
+          </span>
+        </div>
+        <div class="tp-navi__road" style="margin-bottom:10px">A100 · Berlin Stadtring</div>
+        <div class="tp-navi__maneuver">
+          <div class="tp-navi__icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 36V18a6 6 0 0 1 6-6h16"/>
+              <path d="M30 6l6 6-6 6"/>
+            </svg>
+          </div>
+          <div class="tp-navi__desc">
+            <div class="tp-navi__desc-primary">Exit right</div>
+            <div class="tp-navi__desc-sub">toward A115 — Wannsee</div>
+          </div>
+          <div class="tp-navi__dist">
+            1.2<small> km</small>
+          </div>
+        </div>
+        <div class="tp-navi__meta">
+          <span>Destination <b>184 km</b></span>
+          <span>ETA <b>14:32</b></span>
+          <span>Trip <b>02:14</b></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIVE ZONE -->
+    <section class="dash-live">
+
+      <!-- Speed -->
+      <div class="tp-card dash-card-speed">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Speed</h3>
+          <span class="tp-mono tp-dim" style="font-size:11px">km/h</span>
+        </div>
+        <div class="tp-bignum">
+          <div>
+            <span class="tp-bignum__value tp-num">82</span>
+          </div>
+          <div class="tp-bignum__sub">
+            target <b class="tp-num">85</b> · limit <b class="tp-num">100</b>
+          </div>
+        </div>
+        <div class="tp-spark" style="margin-top:14px">
+          <svg class="tp-spark__svg" viewBox="0 0 400 88" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="sparkSpeed" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1ED891" stop-opacity="0.55"/>
+                <stop offset="60%" stop-color="#1FB3DB" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#8C5BF2" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="strokeSpeed" x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0%" stop-color="#1FB3DB"/>
+                <stop offset="100%" stop-color="#1ED891"/>
+              </linearGradient>
+            </defs>
+            <path d="M0 70 C 20 65, 40 55, 60 50 S 100 30, 130 45 S 180 70, 220 55 S 280 30, 320 38 S 370 22, 400 28 L 400 88 L 0 88 Z"
+                  fill="url(#sparkSpeed)"/>
+            <path d="M0 70 C 20 65, 40 55, 60 50 S 100 30, 130 45 S 180 70, 220 55 S 280 30, 320 38 S 370 22, 400 28"
+                  fill="none" stroke="url(#strokeSpeed)" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <span class="tp-spark__max">100</span>
+          <span class="tp-spark__min">0</span>
+          <div class="tp-spark__dot" style="left:100%;top:32%"></div>
+        </div>
+      </div>
+
+      <!-- RPM -->
+      <div class="tp-card dash-card-rpm">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">RPM</h3>
+          <span class="tp-mono tp-dim" style="font-size:11px">×1000</span>
+        </div>
+        <div class="tp-bignum">
+          <div>
+            <span class="tp-bignum__value tp-num" style="color:var(--tp-warning)">1.42</span>
+          </div>
+          <div class="tp-bignum__sub">
+            gear <b>9</b> · load <b class="tp-num">62%</b>
+          </div>
+        </div>
+        <div class="tp-spark" style="margin-top:14px">
+          <svg class="tp-spark__svg" viewBox="0 0 400 88" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="sparkRpm" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#F5B83D" stop-opacity="0.40"/>
+                <stop offset="100%" stop-color="#F5B83D" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <path d="M0 60 C 25 50, 50 30, 80 35 S 140 55, 170 40 S 220 18, 260 30 S 320 60, 360 50 S 390 40, 400 42 L 400 88 L 0 88 Z"
+                  fill="url(#sparkRpm)"/>
+            <path d="M0 60 C 25 50, 50 30, 80 35 S 140 55, 170 40 S 220 18, 260 30 S 320 60, 360 50 S 390 40, 400 42"
+                  fill="none" stroke="#F5B83D" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+          </svg>
+          <span class="tp-spark__max">2.4</span>
+          <span class="tp-spark__min">0.6</span>
+          <div class="tp-spark__dot" style="left:100%;top:50%;background:var(--tp-warning);box-shadow:0 0 0 3px rgba(245,184,61,0.20),0 0 14px var(--tp-warning)"></div>
+        </div>
+      </div>
+
+      <!-- Cruise -->
+      <div class="tp-card dash-card-cruise">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Cruise target</h3>
+          <span class="tp-mono tp-strong" style="font-size:14px">85 km/h</span>
+        </div>
+        <div class="tp-slider" style="margin:24px 8px 16px">
+          <div class="tp-slider__rail">
+            <div class="tp-slider__highlight" style="left:70%;right:15%"></div>
+            <div class="tp-slider__fill" style="width:65%"></div>
+          </div>
+          <span class="tp-slider__tickmark" style="left:0%"></span>
+          <span class="tp-slider__tickmark" style="left:38%"></span>
+          <span class="tp-slider__tickmark" style="left:62%"></span>
+          <span class="tp-slider__tickmark" style="left:77%"></span>
+          <span class="tp-slider__tickmark" style="left:100%"></span>
+          <span class="tp-slider__tick" style="left:0%">0</span>
+          <span class="tp-slider__tick" style="left:38%">50</span>
+          <span class="tp-slider__tick" style="left:62%">80</span>
+          <span class="tp-slider__tick" style="left:77%">100</span>
+          <span class="tp-slider__tick" style="left:100%">130</span>
+          <span class="tp-slider__thumb" style="left:65%"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:28px">
+          <div class="tp-eyebrow">Limit-aware offset</div>
+          <span class="tp-mono tp-muted" style="font-size:12px">limit − 15 km/h</span>
+        </div>
+        <button class="tp-btn tp-btn--primary" style="width:100%;margin-top:14px">Apply</button>
+      </div>
+
+      <!-- Speed limit + signs -->
+      <div class="tp-card dash-card-limit">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Speed limit</h3>
+          <span class="tp-mono tp-dim" style="font-size:11px">last update 0.4s</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:18px;margin-top:6px">
+          <div class="tp-speedsign">100</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div class="tp-eyebrow">Next change</div>
+            <div class="tp-mono tp-strong" style="font-size:20px">80 <small style="font-size:11px;color:var(--tp-fg-muted)">in 2.4 km</small></div>
+          </div>
+        </div>
+        <div style="border-top:1px solid var(--tp-border);margin-top:18px;padding-top:14px">
+          <div class="tp-eyebrow" style="margin-bottom:8px">Recent signs</div>
+          <div style="display:flex;flex-direction:column;gap:6px;font-family:var(--tp-font-mono);font-size:11px">
+            <div style="display:flex;justify-content:space-between;color:var(--tp-fg-muted)">
+              <span><span style="color:var(--tp-fg)">SIGN_LIMIT_100</span> · 0.4s</span>
+              <span>conf 0.97</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:var(--tp-fg-muted)">
+              <span><span style="color:var(--tp-fg)">SIGN_EXIT_A115</span> · 8.1s</span>
+              <span>conf 0.88</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;color:var(--tp-fg-muted)">
+              <span><span style="color:var(--tp-fg)">SIGN_LIMIT_120</span> · 24s</span>
+              <span>conf 0.92</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- vJoy -->
+      <div class="tp-card dash-card-vjoy">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">vJoy output</h3>
+          <span class="tp-mono tp-dim" style="font-size:11px">device 1 · 250 Hz</span>
+        </div>
+        <div class="tp-vjoy">
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Steer</span>
+            <div class="tp-vjoy__track tp-vjoy__track--bipolar">
+              <div class="tp-vjoy__fill" style="left:50%;width:14%;border-radius:0 2px 2px 0"></div>
+            </div>
+            <span class="tp-vjoy__value">+0.14</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Throttle</span>
+            <div class="tp-vjoy__track">
+              <div class="tp-vjoy__fill" style="left:0;width:46%"></div>
+            </div>
+            <span class="tp-vjoy__value">0.46</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Brake</span>
+            <div class="tp-vjoy__track">
+              <div class="tp-vjoy__fill" style="left:0;width:0%"></div>
+            </div>
+            <span class="tp-vjoy__value">0.00</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Clutch</span>
+            <div class="tp-vjoy__track">
+              <div class="tp-vjoy__fill" style="left:0;width:0%"></div>
+            </div>
+            <span class="tp-vjoy__value">0.00</span>
+          </div>
+          <div class="tp-vjoy__ticks" style="margin-left:64px;margin-right:64px">
+            <span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Route map mini -->
+      <div class="tp-card dash-card-map">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Route</h3>
+          <div style="display:flex;gap:6px">
+            <button class="tp-btn" style="height:24px;padding:0 8px;font-size:11px">Follow</button>
+            <button class="tp-btn" style="height:24px;padding:0 8px;font-size:11px">Debug</button>
+          </div>
+        </div>
+        <div class="tp-map" style="aspect-ratio:auto;height:240px">
+          <div class="tp-map__grid"></div>
+          <svg class="tp-map__svg" viewBox="0 0 400 240" preserveAspectRatio="xMidYMid meet">
+            <!-- map nodes (debug) -->
+            <g opacity="0.5" fill="#5B6678">
+              <circle cx="40" cy="200" r="1.5"/><circle cx="70" cy="190" r="1.5"/>
+              <circle cx="110" cy="170" r="1.5"/><circle cx="150" cy="148" r="1.5"/>
+              <circle cx="190" cy="130" r="1.5"/><circle cx="230" cy="120" r="1.5"/>
+              <circle cx="270" cy="100" r="1.5"/><circle cx="310" cy="78" r="1.5"/>
+              <circle cx="350" cy="50" r="1.5"/>
+            </g>
+            <!-- route -->
+            <defs>
+              <linearGradient id="routegrad" x1="0" x2="1">
+                <stop offset="0%" stop-color="#1ED891"/>
+                <stop offset="60%" stop-color="#1FB3DB"/>
+                <stop offset="100%" stop-color="#8C5BF2"/>
+              </linearGradient>
+            </defs>
+            <path d="M40 200 C 100 180, 150 160, 200 130 S 300 80, 360 40"
+                  fill="none" stroke="url(#routegrad)" stroke-width="3" stroke-linecap="round"
+                  filter="drop-shadow(0 0 6px rgba(31,179,219,0.45))"/>
+            <!-- maneuver point -->
+            <circle cx="200" cy="130" r="6" fill="#0B0E14" stroke="#F5B83D" stroke-width="2"/>
+            <circle cx="200" cy="130" r="14" fill="none" stroke="#F5B83D" stroke-width="1" opacity="0.4"/>
+            <!-- truck -->
+            <g transform="translate(90 188) rotate(-20)">
+              <rect x="-10" y="-6" width="20" height="12" rx="2" fill="#1ED891"/>
+              <circle cx="0" cy="0" r="22" fill="none" stroke="#1ED891" stroke-width="1" opacity="0.35"/>
+              <path d="M-3 -10 L 0 -14 L 3 -10 Z" fill="#1ED891"/>
+            </g>
+          </svg>
+          <div class="tp-map__ctrl">
+            <button class="tp-map__btn" aria-label="zoom in">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button class="tp-map__btn" aria-label="zoom out">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+            </button>
+          </div>
+          <div class="tp-map__legend">
+            <span><i style="background:#1ED891"></i>route</span>
+            <span><i style="background:#F5B83D"></i>maneuver</span>
+            <span><i style="background:#5B6678"></i>map nodes</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- DETAIL ZONE -->
+    <section style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Lane detection</h3>
+          <span class="tp-pill tp-pill--ok" style="font-size:10px">tracking</span>
+        </div>
+        <div style="position:relative;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:var(--tp-r-2);aspect-ratio:16/7;overflow:hidden">
+          <!-- placeholder camera frame -->
+          <svg width="100%" height="100%" viewBox="0 0 320 140" preserveAspectRatio="none">
+            <defs>
+              <pattern id="stripe" width="6" height="6" patternUnits="userSpaceOnUse">
+                <path d="M0 6 L 6 0" stroke="#161C26" stroke-width="1"/>
+              </pattern>
+            </defs>
+            <rect width="320" height="140" fill="url(#stripe)"/>
+            <!-- horizon -->
+            <line x1="0" y1="64" x2="320" y2="64" stroke="#5B6678" stroke-width="0.5" opacity="0.5"/>
+            <!-- detected lanes -->
+            <path d="M40 140 C 90 110, 130 80, 152 64" fill="none" stroke="#1ED891" stroke-width="2.5" opacity="0.9"/>
+            <path d="M280 140 C 220 110, 180 80, 168 64" fill="none" stroke="#1ED891" stroke-width="2.5" opacity="0.9"/>
+            <!-- vehicle heading -->
+            <line x1="160" y1="140" x2="160" y2="80" stroke="#4D7CFA" stroke-width="2" stroke-dasharray="3 3"/>
+            <!-- steering output -->
+            <line x1="160" y1="140" x2="172" y2="80" stroke="#8C5BF2" stroke-width="2"/>
+          </svg>
+          <div style="position:absolute;top:8px;left:8px;font-family:var(--tp-font-mono);font-size:10px;color:var(--tp-fg-muted)">CAM_0 · 30 fps · 1280×720</div>
+          <div style="position:absolute;bottom:8px;left:8px;display:flex;gap:10px;font-family:var(--tp-font-mono);font-size:10px">
+            <span style="color:#1ED891"><i style="display:inline-block;width:8px;height:2px;background:currentColor;vertical-align:middle;margin-right:4px"></i>lanes</span>
+            <span style="color:#4D7CFA"><i style="display:inline-block;width:8px;height:2px;background:currentColor;vertical-align:middle;margin-right:4px"></i>heading</span>
+            <span style="color:#8C5BF2"><i style="display:inline-block;width:8px;height:2px;background:currentColor;vertical-align:middle;margin-right:4px"></i>steer</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Diagnostics</h3>
+          <span class="tp-mono tp-dim" style="font-size:11px">last 30s</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;margin-bottom:4px">
+              <span class="tp-muted">lane_keeper</span><span class="tp-strong">4.2 ms</span>
+            </div>
+            <div style="height:6px;background:var(--tp-bg-input);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:18%;background:var(--tp-gradient-brand)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;margin-bottom:4px">
+              <span class="tp-muted">sign_vision</span><span class="tp-strong">11.8 ms</span>
+            </div>
+            <div style="height:6px;background:var(--tp-bg-input);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:52%;background:var(--tp-gradient-brand)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;margin-bottom:4px">
+              <span class="tp-muted">router</span><span class="tp-strong">2.1 ms</span>
+            </div>
+            <div style="height:6px;background:var(--tp-bg-input);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:9%;background:var(--tp-gradient-brand)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;margin-bottom:4px">
+              <span class="tp-muted">speed_controller</span><span class="tp-strong">0.8 ms</span>
+            </div>
+            <div style="height:6px;background:var(--tp-bg-input);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:4%;background:var(--tp-gradient-brand)"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;margin-bottom:4px">
+              <span class="tp-muted">acc</span><span class="tp-strong">1.4 ms</span>
+            </div>
+            <div style="height:6px;background:var(--tp-bg-input);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:6%;background:var(--tp-gradient-brand)"></div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:6px;padding-top:10px;border-top:1px solid var(--tp-border);font-family:var(--tp-font-mono);font-size:11px">
+            <span class="tp-muted">Watchdog</span>
+            <span class="tp-strong"><span style="color:var(--tp-success)">●</span> healthy · IPC 8.4 Mbps</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ====================== FOOTER ====================== -->
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <span>ETS2 1.49 · DLL 1.12 · navi active</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+
+</div>
+</body>
+</html>

@@ -26,6 +26,39 @@ export async function openExternalDashboard(): Promise<void> {
   return invokeCommand("open_external_dashboard");
 }
 
+export type DaemonState = "runningmanaged" | "runningexternal" | "stopped" | "crashed";
+
+export interface DaemonStatus {
+  state: DaemonState;
+  pid: number | null;
+  binary_path: string | null;
+  last_error: string | null;
+}
+
+export async function daemonStatus(): Promise<DaemonStatus> {
+  return invokeCommand<DaemonStatus>("daemon_status");
+}
+
+export async function daemonStart(): Promise<DaemonStatus> {
+  return invokeCommand<DaemonStatus>("daemon_start");
+}
+
+export async function daemonStop(): Promise<DaemonStatus> {
+  return invokeCommand<DaemonStatus>("daemon_stop");
+}
+
+export async function daemonRestart(): Promise<DaemonStatus> {
+  return invokeCommand<DaemonStatus>("daemon_restart");
+}
+
+export async function daemonGetAutoStart(): Promise<boolean> {
+  return invokeCommand<boolean>("daemon_get_auto_start");
+}
+
+export async function daemonSetAutoStart(enabled: boolean): Promise<void> {
+  return invokeCommand("daemon_set_auto_start", { enabled });
+}
+
 export async function listenCoreEvent(handler: (msg: CoreMessage) => void): Promise<UnlistenFn> {
   return listen<CoreMessage>("core-event", (event) => handler(event.payload));
 }

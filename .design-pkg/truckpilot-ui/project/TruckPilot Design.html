@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — Design System</title>
+<meta name="viewport" content="width=1400, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/system.css">
+<link rel="stylesheet" href="styles/components.css">
+<link rel="stylesheet" href="styles/page.css">
+<link rel="stylesheet" href="styles/doc.css">
+</head>
+<body>
+
+<!-- THEME SWITCHER -->
+<div class="doc__theme" role="tablist">
+  <button class="active" data-theme-btn="dark">Dark</button>
+  <button data-theme-btn="light">Light</button>
+</div>
+
+<div class="doc">
+
+  <!-- ======================================================================
+       HERO
+       ====================================================================== -->
+  <header class="doc__hero">
+    <div>
+      <div class="doc__meta">
+        <span>TruckPilot</span>
+        <span>v0.3 · design polish</span>
+        <span>Senior Product Designer</span>
+        <span>2026-05-18</span>
+      </div>
+      <h1 class="doc__hero-title">
+        A cockpit, not a<br><span class="accent">dashboard.</span>
+      </h1>
+      <p class="doc__hero-sub">
+        TruckPilot drives a 40-ton truck on your behalf. The UI should look like
+        something you'd trust to do that — geometric, telemetry-dense, calm at
+        rest, decisive in motion. The brand gradient is the only thing that
+        shouts; everything else gets out of the way.
+      </p>
+    </div>
+    <div class="doc__hero-logo">
+      <img src="assets/logo.png" alt="TruckPilot logo">
+    </div>
+  </header>
+
+  <!-- ======================================================================
+       1. BRAND
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">01</span>
+      <h2 class="doc__section-title">Brand gradient</h2>
+    </div>
+    <p class="doc__section-sub">
+      Sampled directly from the logo. Used sparingly: <b>engaged</b> state of
+      the autopilot, sparkline glows, primary CTAs, the route polyline, the
+      active sidebar rail. Never as a page background — the brand is a signal,
+      not a wallpaper.
+    </p>
+
+    <div class="doc-grad" style="margin-top:24px"></div>
+    <div class="doc-grad__stops">
+      <div class="doc-grad__stop"><i style="background:#1ED891"></i>#1ED891 · mint</div>
+      <div class="doc-grad__stop"><i style="background:#14C4B0"></i>#14C4B0 · teal</div>
+      <div class="doc-grad__stop"><i style="background:#1FB3DB"></i>#1FB3DB · cyan</div>
+      <div class="doc-grad__stop"><i style="background:#4D7CFA"></i>#4D7CFA · blue</div>
+      <div class="doc-grad__stop"><i style="background:#8C5BF2"></i>#8C5BF2 · violet</div>
+    </div>
+
+    <div class="doc__grid doc__grid--3" style="margin-top:32px">
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Voice</div>
+        <div style="font-size:16px;line-height:1.45;color:var(--tp-fg)">
+          Plain, technical, confident. Same tone as flight-deck callouts:
+          <b>"Engaged"</b>, <b>"Cruise active"</b>, <b>"Telemetry lost"</b>.
+          Never marketing copy, never exclamation marks.
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Geometry</div>
+        <div style="font-size:16px;line-height:1.45;color:var(--tp-fg)">
+          Logo is constructive — circle, triangle, sharp cuts. UI mirrors that:
+          <b>6/10px radii</b>, <b>1px hairlines</b>, no fluffy rounding, no
+          decorative shadows.
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Dark-first</div>
+        <div style="font-size:16px;line-height:1.45;color:var(--tp-fg)">
+          Dark theme is hero — the gradient lives there. Light theme is a real
+          design, not a colour invert: it keeps the gradient on accents and
+          ditches the glows.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       2. COLOR
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">02</span>
+      <h2 class="doc__section-title">Color tokens</h2>
+    </div>
+    <p class="doc__section-sub">
+      Five surfaces, four semantic states, three foreground tiers. CSS custom
+      properties — drop into <code class="tp-mono" style="color:var(--tp-brand-cyan)">app.css</code> and Tailwind picks them up via
+      <code class="tp-mono" style="color:var(--tp-brand-cyan)">@theme</code>.
+    </p>
+
+    <h3 class="doc__h3" style="margin-top:32px">Dark surfaces</h3>
+    <div class="doc__grid doc__grid--4">
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#07090C"></div><div class="doc-swatch__name">bg-base</div><div class="doc-swatch__hex">#07090C</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#0B0E14"></div><div class="doc-swatch__name">bg-app</div><div class="doc-swatch__hex">#0B0E14</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#11161E"></div><div class="doc-swatch__name">bg-card</div><div class="doc-swatch__hex">#11161E</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#161C26"></div><div class="doc-swatch__name">bg-elev</div><div class="doc-swatch__hex">#161C26</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#1B2230"></div><div class="doc-swatch__name">bg-modal</div><div class="doc-swatch__hex">#1B2230</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#0E131B"></div><div class="doc-swatch__name">bg-input</div><div class="doc-swatch__hex">#0E131B</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#ECEEF3"></div><div class="doc-swatch__name">fg</div><div class="doc-swatch__hex">#ECEEF3</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#8893A5"></div><div class="doc-swatch__name">fg-muted</div><div class="doc-swatch__hex">#8893A5</div></div>
+    </div>
+
+    <h3 class="doc__h3" style="margin-top:32px">Light surfaces</h3>
+    <div class="doc__grid doc__grid--4">
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#EEF0F4"></div><div class="doc-swatch__name">bg-base</div><div class="doc-swatch__hex">#EEF0F4</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#F4F6FA"></div><div class="doc-swatch__name">bg-app</div><div class="doc-swatch__hex">#F4F6FA</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#FFFFFF;border-color:rgba(0,0,0,.1)"></div><div class="doc-swatch__name">bg-card</div><div class="doc-swatch__hex">#FFFFFF</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#F4F6FA"></div><div class="doc-swatch__name">bg-input</div><div class="doc-swatch__hex">#F4F6FA</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#0F1420"></div><div class="doc-swatch__name">fg</div><div class="doc-swatch__hex">#0F1420</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#5B6678"></div><div class="doc-swatch__name">fg-muted</div><div class="doc-swatch__hex">#5B6678</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#8893A5"></div><div class="doc-swatch__name">fg-dim</div><div class="doc-swatch__hex">#8893A5</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#B6BDCC"></div><div class="doc-swatch__name">fg-faint</div><div class="doc-swatch__hex">#B6BDCC</div></div>
+    </div>
+
+    <h3 class="doc__h3" style="margin-top:32px">Semantic</h3>
+    <div class="doc__grid doc__grid--4">
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#1ED891"></div><div class="doc-swatch__name">success / engaged</div><div class="doc-swatch__hex">#1ED891 · brand</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#1FB3DB"></div><div class="doc-swatch__name">info / active</div><div class="doc-swatch__hex">#1FB3DB · brand</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#F5B83D"></div><div class="doc-swatch__name">warning</div><div class="doc-swatch__hex">#F5B83D</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#FF5A6E"></div><div class="doc-swatch__name">error</div><div class="doc-swatch__hex">#FF5A6E · off-brand</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#FF3344"></div><div class="doc-swatch__name">fault / failsafe</div><div class="doc-swatch__hex">#FF3344 · pulse</div></div>
+      <div class="doc-swatch"><div class="doc-swatch__chip" style="background:#8C5BF2"></div><div class="doc-swatch__name">accent · violet</div><div class="doc-swatch__hex">#8C5BF2 · brand</div></div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       3. TYPOGRAPHY
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">03</span>
+      <h2 class="doc__section-title">Typography</h2>
+    </div>
+    <p class="doc__section-sub">
+      <b>Geist</b> for UI, <b>Geist Mono</b> for values, IDs, timestamps and
+      coordinates. Mono is non-negotiable for telemetry — tabular-nums keeps
+      digits aligned as values flicker at 30 fps.
+    </p>
+
+    <div class="tp-card" style="margin-top:24px">
+      <div class="doc-type">
+        <span class="doc-type__label">hero / numeric</span>
+        <span style="font-family:var(--tp-font-mono);font-size:96px;font-variant-numeric:tabular-nums;letter-spacing:-0.03em;line-height:1;font-weight:500">82</span>
+        <span class="doc-type__meta">Geist Mono · 96 / 92 · tnum · −3% tracking</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">display</span>
+        <span style="font-size:40px;font-weight:600;letter-spacing:-0.02em">Engage autopilot</span>
+        <span class="doc-type__meta">Geist · 40 / 44 · 600 · −2% tracking</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">h2</span>
+        <span style="font-size:28px;font-weight:600;letter-spacing:-0.015em">Navigation status</span>
+        <span class="doc-type__meta">Geist · 28 / 32 · 600</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">h3 / card</span>
+        <span style="font-size:14px;font-weight:600">Plugins</span>
+        <span class="doc-type__meta">Geist · 14 / 20 · 600</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">body</span>
+        <span style="font-size:13px">No telemetry yet — start ETS2 or wait for the first frame.</span>
+        <span class="doc-type__meta">Geist · 13 / 18 · 400</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">mono / value</span>
+        <span class="tp-mono" style="font-size:13px">14:32:08.412 lane-keeper conf=0.94</span>
+        <span class="doc-type__meta">Geist Mono · 12–13 · 400</span>
+      </div>
+      <div class="doc-type">
+        <span class="doc-type__label">eyebrow</span>
+        <span class="tp-eyebrow">Live telemetry</span>
+        <span class="doc-type__meta">Geist · 10 · 600 · uc · +16% tracking</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       4. SPACING
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">04</span>
+      <h2 class="doc__section-title">Spacing</h2>
+    </div>
+    <p class="doc__section-sub">
+      4/8 base, capped at 64. Card padding is always s-5 (24). Telemetry rows
+      are 12. Sidebar items 8. Nothing in between.
+    </p>
+
+    <div class="doc-space" style="margin-top:24px">
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:4px"></div><div class="doc-space__name">s-1</div><div class="doc-space__label">4</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:8px"></div><div class="doc-space__name">s-2</div><div class="doc-space__label">8</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:12px"></div><div class="doc-space__name">s-3</div><div class="doc-space__label">12</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:16px"></div><div class="doc-space__name">s-4</div><div class="doc-space__label">16</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:24px"></div><div class="doc-space__name">s-5</div><div class="doc-space__label">24</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:32px"></div><div class="doc-space__name">s-6</div><div class="doc-space__label">32</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:48px"></div><div class="doc-space__name">s-7</div><div class="doc-space__label">48</div></div>
+      <div class="doc-space__col"><div class="doc-space__bar" style="height:64px"></div><div class="doc-space__name">s-8</div><div class="doc-space__label">64</div></div>
+    </div>
+
+    <div class="doc__grid doc__grid--2" style="margin-top:24px">
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:12px">Radii</div>
+        <div style="display:flex;gap:16px;align-items:center">
+          <div style="width:48px;height:48px;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:4px"></div>
+          <div style="width:48px;height:48px;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:6px"></div>
+          <div style="width:48px;height:48px;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:10px"></div>
+          <div style="width:48px;height:48px;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:14px"></div>
+          <div style="width:48px;height:48px;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:999px"></div>
+        </div>
+        <div style="display:flex;gap:16px;margin-top:8px;font-family:var(--tp-font-mono);font-size:10px;color:var(--tp-fg-dim)">
+          <span style="width:48px;text-align:center">r-1 · 4</span>
+          <span style="width:48px;text-align:center">r-2 · 6</span>
+          <span style="width:48px;text-align:center">r-3 · 10</span>
+          <span style="width:48px;text-align:center">r-4 · 14</span>
+          <span style="width:48px;text-align:center">pill</span>
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:12px">Where they go</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--tp-fg-muted);font-family:var(--tp-font-mono)">
+          <div><span style="color:var(--tp-fg)">r-1</span> · type badge, log-line</div>
+          <div><span style="color:var(--tp-fg)">r-2</span> · buttons, inputs, inner tracks</div>
+          <div><span style="color:var(--tp-fg)">r-3</span> · cards, engage button, toasts</div>
+          <div><span style="color:var(--tp-fg)">r-4</span> · viewport frames, modals</div>
+          <div><span style="color:var(--tp-fg)">pill</span> · preconditions, badges, segmented control</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       5. MOTION
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">05</span>
+      <h2 class="doc__section-title">Motion</h2>
+    </div>
+    <p class="doc__section-sub">
+      Four durations, three easings. Anything longer than dur-4 reads as
+      sluggish at 250 hz telemetry. All honour <code class="tp-mono">prefers-reduced-motion</code>.
+    </p>
+
+    <div class="tp-card" style="margin-top:24px">
+      <div class="doc-motion-row">
+        <span class="doc-motion__name">dur-1</span>
+        <div class="doc-motion__demo" style="animation-duration:0.08s !important"></div>
+        <span class="doc-motion__meta">80 ms · micro</span>
+      </div>
+      <div class="doc-motion-row">
+        <span class="doc-motion__name">dur-2</span>
+        <div class="doc-motion__demo" style="animation-duration:0.14s !important"></div>
+        <span class="doc-motion__meta">140 ms · hover</span>
+      </div>
+      <div class="doc-motion-row">
+        <span class="doc-motion__name">dur-3</span>
+        <div class="doc-motion__demo" style="animation-duration:0.22s !important"></div>
+        <span class="doc-motion__meta">220 ms · expand</span>
+      </div>
+      <div class="doc-motion-row">
+        <span class="doc-motion__name">dur-4</span>
+        <div class="doc-motion__demo" style="animation-duration:0.42s !important"></div>
+        <span class="doc-motion__meta">420 ms · engage</span>
+      </div>
+    </div>
+
+    <div class="doc__grid doc__grid--3" style="margin-top:16px">
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px">ease-out</div>
+        <div class="tp-mono" style="font-size:11px;color:var(--tp-fg-muted)">cubic-bezier(0.22, 1, 0.36, 1)</div>
+        <div class="tp-muted" style="margin-top:8px;font-size:12px">Default for enters / hovers</div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px">ease-inout</div>
+        <div class="tp-mono" style="font-size:11px;color:var(--tp-fg-muted)">cubic-bezier(0.65, 0, 0.35, 1)</div>
+        <div class="tp-muted" style="margin-top:8px;font-size:12px">Engage pulse, value transitions</div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px">spring</div>
+        <div class="tp-mono" style="font-size:11px;color:var(--tp-fg-muted)">cubic-bezier(0.34, 1.56, 0.64, 1)</div>
+        <div class="tp-muted" style="margin-top:8px;font-size:12px">Toggle thumbs, drag-snap</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       6. COMPONENT GALLERY
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">06</span>
+      <h2 class="doc__section-title">Components</h2>
+    </div>
+    <p class="doc__section-sub">
+      The atomic library. Every state is real markup — no screenshots, no
+      after-the-fact composites. Anything not listed here is a shadcn primitive
+      that doesn't need overriding.
+    </p>
+
+    <!-- ENGAGE BUTTON STATES -->
+    <h3 class="doc__h3" style="margin-top:40px">Engage button — six states</h3>
+    <div class="doc__grid doc__grid--3">
+      <div>
+        <div class="state-strip__cap">Ready</div>
+        <button class="tp-engage tp-engage--ready">
+          <span class="tp-engage__label"><span class="tp-engage__dot"></span>Engage</span>
+          <span class="tp-engage__kbd">F5</span>
+        </button>
+      </div>
+      <div>
+        <div class="state-strip__cap">Disabled · missing preconditions</div>
+        <button class="tp-engage tp-engage--disabled">
+          <span class="tp-engage__label"><span class="tp-engage__dot"></span>Engage</span>
+          <span class="tp-engage__kbd">2 of 5 missing</span>
+        </button>
+      </div>
+      <div>
+        <div class="state-strip__cap">Engaging</div>
+        <button class="tp-engage tp-engage--engaging">
+          <span class="tp-engage__bg"></span>
+          <span class="tp-engage__label"><span class="tp-engage__dot" style="background:#1ED891"></span>Engaging…</span>
+          <span class="tp-engage__kbd">F5</span>
+        </button>
+      </div>
+      <div>
+        <div class="state-strip__cap">Engaged · live</div>
+        <button class="tp-engage tp-engage--engaged">
+          <span class="tp-engage__label"><span class="tp-engage__dot"></span>Engaged</span>
+          <span class="tp-engage__kbd" style="color:#07090C;opacity:0.7">F6 to disengage</span>
+        </button>
+      </div>
+      <div>
+        <div class="state-strip__cap">Disengaging</div>
+        <button class="tp-engage tp-engage--engaging" style="background:linear-gradient(100deg,rgba(245,184,61,0.30),rgba(245,184,61,0.10))">
+          <span class="tp-engage__label"><span class="tp-engage__dot" style="background:#F5B83D"></span>Disengaging…</span>
+          <span class="tp-engage__kbd">handing back</span>
+        </button>
+      </div>
+      <div>
+        <div class="state-strip__cap">Fault</div>
+        <button class="tp-engage tp-engage--fault">
+          <span class="tp-engage__label"><span class="tp-engage__dot"></span>Fault · TelemetryLost</span>
+          <span class="tp-engage__kbd" style="color:rgba(255,255,255,0.7)">Reset</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- PRECONDITION PILLS -->
+    <h3 class="doc__h3" style="margin-top:40px">Precondition pills</h3>
+    <div class="tp-card">
+      <div class="tp-pill-row">
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Engine running</span>
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Cruise active</span>
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>ETS2 Navigation</span>
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Telemetry healthy</span>
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>vJoy device</span>
+      </div>
+      <div class="tp-pill-row" style="margin-top:10px">
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Engine running</span>
+        <span class="tp-pill tp-pill--bad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16v.01"/></svg>Cruise not active</span>
+        <span class="tp-pill tp-pill--bad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16v.01"/></svg>Set destination in ETS2</span>
+        <span class="tp-pill tp-pill--ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>Telemetry healthy</span>
+        <span class="tp-pill tp-pill--warn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18v.01"/></svg>vJoy lag 18ms</span>
+      </div>
+    </div>
+
+    <!-- BIG NUMBER + SPARK -->
+    <h3 class="doc__h3" style="margin-top:40px">Big-number display + sparkline</h3>
+    <div class="doc__grid doc__grid--3">
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Speed</h4>
+          <span class="tp-mono tp-dim" style="font-size:11px">km/h</span>
+        </div>
+        <div class="tp-bignum">
+          <span class="tp-bignum__value tp-bignum__value--flash tp-num">82</span>
+          <div class="tp-bignum__sub">target <b class="tp-num">85</b> · limit <b class="tp-num">100</b></div>
+        </div>
+      </div>
+      <div class="tp-card" style="grid-column:span 2">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Sparkline · 30s window</h4>
+          <div class="tp-mono tp-dim" style="font-size:11px">82.4 km/h</div>
+        </div>
+        <div class="tp-spark">
+          <svg class="tp-spark__svg" viewBox="0 0 600 88" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="gallSpark" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1ED891" stop-opacity="0.55"/>
+                <stop offset="60%" stop-color="#1FB3DB" stop-opacity="0.16"/>
+                <stop offset="100%" stop-color="#8C5BF2" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="gallStroke" x1="0" x2="1">
+                <stop offset="0%" stop-color="#1FB3DB"/>
+                <stop offset="100%" stop-color="#1ED891"/>
+              </linearGradient>
+            </defs>
+            <path d="M0 70 C 40 60, 80 50, 120 50 S 200 30, 250 45 S 340 70, 400 55 S 490 28, 550 36 S 590 22, 600 28 L 600 88 L 0 88 Z" fill="url(#gallSpark)"/>
+            <path d="M0 70 C 40 60, 80 50, 120 50 S 200 30, 250 45 S 340 70, 400 55 S 490 28, 550 36 S 590 22, 600 28" fill="none" stroke="url(#gallStroke)" stroke-width="2"/>
+          </svg>
+          <span class="tp-spark__max">100</span>
+          <span class="tp-spark__min">0</span>
+          <div class="tp-spark__dot" style="left:100%;top:32%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- vJOY + FAILSAFE -->
+    <h3 class="doc__h3" style="margin-top:40px">vJoy bars + failsafe</h3>
+    <div class="doc__grid doc__grid--2">
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">vJoy output · nominal</h4>
+          <span class="tp-mono tp-dim" style="font-size:11px">device 1</span>
+        </div>
+        <div class="tp-vjoy">
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Steer</span>
+            <div class="tp-vjoy__track tp-vjoy__track--bipolar">
+              <div class="tp-vjoy__fill" style="left:50%;width:14%"></div>
+            </div>
+            <span class="tp-vjoy__value">+0.14</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Throttle</span>
+            <div class="tp-vjoy__track"><div class="tp-vjoy__fill" style="left:0;width:46%"></div></div>
+            <span class="tp-vjoy__value">0.46</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Brake</span>
+            <div class="tp-vjoy__track"><div class="tp-vjoy__fill" style="left:0;width:0%"></div></div>
+            <span class="tp-vjoy__value">0.00</span>
+          </div>
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-failsafe" style="margin-bottom:14px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18v.01"/></svg>
+          <span><b>Failsafe engaged.</b> vJoy frozen — control returned to driver.</span>
+        </div>
+        <div class="tp-vjoy">
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Steer</span>
+            <div class="tp-vjoy__track tp-vjoy__track--bipolar" style="opacity:0.4">
+              <div class="tp-vjoy__fill" style="left:50%;width:14%;background:#5B6678"></div>
+            </div>
+            <span class="tp-vjoy__value tp-dim">frozen</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Throttle</span>
+            <div class="tp-vjoy__track" style="opacity:0.4"><div class="tp-vjoy__fill" style="left:0;width:0%"></div></div>
+            <span class="tp-vjoy__value tp-dim">frozen</span>
+          </div>
+          <div class="tp-vjoy__row">
+            <span class="tp-vjoy__label">Brake</span>
+            <div class="tp-vjoy__track" style="opacity:0.4"><div class="tp-vjoy__fill" style="left:0;width:0%"></div></div>
+            <span class="tp-vjoy__value tp-dim">frozen</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NAVI CARD -->
+    <h3 class="doc__h3" style="margin-top:40px">Navi-status card — three states</h3>
+    <div class="doc__grid doc__grid--3">
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Navigation</h4>
+          <span class="tp-navi__badge tp-navi__badge--off">No route</span>
+        </div>
+        <div class="tp-navi__empty">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l19-7-7 19-2-8z"/></svg>
+          <div class="tp-navi__empty-title">Set a destination in ETS2</div>
+          <div>The autopilot follows the in-game navi.</div>
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Navigation</h4>
+          <span class="tp-navi__badge">
+            <span style="width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor"></span>
+            ETS2 active
+          </span>
+        </div>
+        <div class="tp-navi__road" style="margin-bottom:10px">A100 · Berlin Stadtring</div>
+        <div class="tp-navi__maneuver">
+          <div class="tp-navi__icon">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M24 36V14M24 14l-7 7M24 14l7 7"/></svg>
+          </div>
+          <div class="tp-navi__desc">
+            <div class="tp-navi__desc-primary">Continue straight</div>
+            <div class="tp-navi__desc-sub">A100 · for 4.8 km</div>
+          </div>
+          <div class="tp-navi__dist">4.8<small> km</small></div>
+        </div>
+      </div>
+      <div class="tp-card" style="border-color:rgba(245,184,61,0.40)">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Navigation</h4>
+          <span class="tp-navi__badge" style="background:var(--tp-tint-warning);color:var(--tp-warning);border-color:rgba(245,184,61,0.30)">
+            <span style="width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor"></span>
+            Maneuver
+          </span>
+        </div>
+        <div class="tp-navi__road" style="margin-bottom:10px">A100 → A115</div>
+        <div class="tp-navi__maneuver" style="border-color:rgba(245,184,61,0.30);background:rgba(245,184,61,0.04)">
+          <div class="tp-navi__icon" style="background:linear-gradient(135deg,rgba(245,184,61,0.20),rgba(255,90,110,0.10));border-color:rgba(245,184,61,0.30);color:var(--tp-warning)">
+            <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 36V18a6 6 0 0 1 6-6h16"/><path d="M30 6l6 6-6 6"/>
+            </svg>
+          </div>
+          <div class="tp-navi__desc">
+            <div class="tp-navi__desc-primary">Exit right</div>
+            <div class="tp-navi__desc-sub">toward A115 — Wannsee</div>
+          </div>
+          <div class="tp-navi__dist" style="color:var(--tp-warning)">240<small style="color:var(--tp-warning);opacity:0.7"> m</small></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRUISE + LIMIT -->
+    <h3 class="doc__h3" style="margin-top:40px">Cruise slider + speed limit</h3>
+    <div class="doc__grid doc__grid--2">
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Cruise target</h4>
+          <span class="tp-mono tp-strong" style="font-size:14px">85 km/h</span>
+        </div>
+        <div class="tp-slider" style="margin:24px 8px 16px">
+          <div class="tp-slider__rail">
+            <div class="tp-slider__highlight" style="left:70%;right:15%"></div>
+            <div class="tp-slider__fill" style="width:65%"></div>
+          </div>
+          <span class="tp-slider__tickmark" style="left:0%"></span>
+          <span class="tp-slider__tickmark" style="left:38%"></span>
+          <span class="tp-slider__tickmark" style="left:62%"></span>
+          <span class="tp-slider__tickmark" style="left:77%"></span>
+          <span class="tp-slider__tickmark" style="left:100%"></span>
+          <span class="tp-slider__tick" style="left:0%">0</span>
+          <span class="tp-slider__tick" style="left:38%">50</span>
+          <span class="tp-slider__tick" style="left:62%">80</span>
+          <span class="tp-slider__tick" style="left:77%">100</span>
+          <span class="tp-slider__tick" style="left:100%">130</span>
+          <span class="tp-slider__thumb" style="left:65%"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:28px">
+          <span class="tp-eyebrow">Limit offset</span>
+          <span class="tp-mono tp-muted" style="font-size:12px">limit − 15 km/h</span>
+        </div>
+      </div>
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h4 class="tp-card__title">Speed limit</h4>
+          <span class="tp-mono tp-dim" style="font-size:11px">last seen 0.4s ago</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:20px;padding:10px 0">
+          <div class="tp-speedsign">100</div>
+          <div>
+            <div class="tp-eyebrow" style="margin-bottom:6px">Next change</div>
+            <div class="tp-mono tp-strong" style="font-size:20px">80 <small style="font-size:11px;color:var(--tp-fg-muted)">in 2.4 km</small></div>
+            <div class="tp-mono tp-dim" style="font-size:11px;margin-top:4px">SIGN_LIMIT_80 · conf 0.97</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PLUGINS + LOGS + TREE -->
+    <h3 class="doc__h3" style="margin-top:40px">Plugin row, log line, blackboard tree</h3>
+    <div class="doc__grid doc__grid--3">
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Plugin rows</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot"></span>
+            <div class="tp-plugin__name">lane-keeper <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta">4.2 ms</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot tp-plugin__dot--off"></span>
+            <div class="tp-plugin__name">fuel-stops <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta tp-dim">disabled</span>
+            <span class="tp-toggle"></span>
+          </div>
+          <div class="tp-plugin">
+            <div class="tp-plugin__drag"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <span class="tp-plugin__dot tp-plugin__dot--err"></span>
+            <div class="tp-plugin__name">stats-logger <small>v0.1.0</small></div>
+            <span class="tp-plugin__meta tp-mono" style="color:var(--tp-error)">crash loop</span>
+            <span class="tp-toggle tp-toggle--on"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tp-card tp-card--inset">
+        <div class="tp-eyebrow" style="margin:6px 0 10px 14px">Log lines</div>
+        <div class="tp-log tp-log--debug"><span class="tp-log__ts">14:34:11.118</span><span class="tp-log__tgt">ipc</span><span class="tp-log__msg">seq=144882 t=4.1ms</span></div>
+        <div class="tp-log tp-log--info"><span class="tp-log__ts">14:34:11.402</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">lock conf=0.94</span></div>
+        <div class="tp-log tp-log--warn"><span class="tp-log__ts">14:34:12.040</span><span class="tp-log__tgt">lane-keeper</span><span class="tp-log__msg">conf 0.52 → 0.41</span></div>
+        <div class="tp-log tp-log--error"><span class="tp-log__ts">14:34:12.412</span><span class="tp-log__tgt">stats-logger</span><span class="tp-log__msg">disk full at /cache/stats</span></div>
+      </div>
+
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:10px">Blackboard tree</div>
+        <div class="tp-tree">
+          <div class="tp-tree__node">
+            <svg class="tp-tree__chev tp-tree__chev--open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+            <span class="tp-tree__key">telemetry</span>
+            <span class="tp-tree__val">12</span>
+          </div>
+          <div style="padding-left:18px">
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">speed_kmh</span>
+              <span class="tp-type tp-type--f32">f32</span>
+              <span class="tp-tree__val tp-mono">82.4</span>
+            </div>
+            <div class="tp-tree__node tp-tree__node--active">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">rpm</span>
+              <span class="tp-type tp-type--f32">f32</span>
+              <span class="tp-tree__val tp-mono">1420.0</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">engine_on</span>
+              <span class="tp-type tp-type--bool">bool</span>
+              <span class="tp-tree__val tp-mono" style="color:var(--tp-success)">true</span>
+            </div>
+            <div class="tp-tree__node">
+              <span style="width:12px"></span>
+              <span class="tp-tree__key">road</span>
+              <span class="tp-type tp-type--string">str</span>
+              <span class="tp-tree__val tp-mono">"A100"</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TOASTS -->
+    <h3 class="doc__h3" style="margin-top:40px">Toasts — four severities</h3>
+    <div class="doc__grid doc__grid--2">
+      <div class="tp-toast tp-toast--success">
+        <div class="tp-toast__rail"></div>
+        <div class="tp-toast__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 7"/></svg>
+        </div>
+        <div class="tp-toast__body">
+          <div class="tp-toast__title">Engaged</div>
+          <div class="tp-toast__msg">Following ETS2 navi · A100 east</div>
+        </div>
+        <div class="tp-toast__close">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18 18 6"/></svg>
+        </div>
+      </div>
+      <div class="tp-toast tp-toast--info">
+        <div class="tp-toast__rail"></div>
+        <div class="tp-toast__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v.01M12 12v4"/></svg>
+        </div>
+        <div class="tp-toast__body">
+          <div class="tp-toast__title">New route detected</div>
+          <div class="tp-toast__msg">Berlin → Hamburg · 284 km · ETA 16:48</div>
+        </div>
+        <div class="tp-toast__close">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18 18 6"/></svg>
+        </div>
+      </div>
+      <div class="tp-toast tp-toast--warn">
+        <div class="tp-toast__rail"></div>
+        <div class="tp-toast__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18v.01"/></svg>
+        </div>
+        <div class="tp-toast__body">
+          <div class="tp-toast__title">Lane confidence low</div>
+          <div class="tp-toast__msg">Rain occlusion · easing speed to 65</div>
+        </div>
+        <div class="tp-toast__close">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18 18 6"/></svg>
+        </div>
+      </div>
+      <div class="tp-toast tp-toast--error">
+        <div class="tp-toast__rail"></div>
+        <div class="tp-toast__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16v.01"/></svg>
+        </div>
+        <div class="tp-toast__body">
+          <div class="tp-toast__title">Telemetry lost</div>
+          <div class="tp-toast__msg">Autopilot disengaged · driver in control</div>
+        </div>
+        <div class="tp-toast__close">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M6 18 18 6"/></svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       7. PAGE MOCKUPS (iframes)
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">07</span>
+      <h2 class="doc__section-title">Page mockups</h2>
+    </div>
+    <p class="doc__section-sub">
+      Each mockup is its own HTML file — open in a new tab to inspect, or
+      pop-out to feel the real density. They share the same token files so
+      changes propagate everywhere.
+    </p>
+
+    <!-- DASHBOARD -->
+    <div style="margin-top:32px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">Dashboard</h3>
+        <a href="mockups/dashboard.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — Dashboard</span>
+        </div>
+        <div class="viewport__body">
+          <iframe src="mockups/dashboard.html" style="width:100%;height:780px;border:0;display:block"></iframe>
+        </div>
+        <div class="viewport__caption">
+          <span><b>Dashboard.</b> Engage zone (hero) + navi card + live telemetry grid + route mini-map + diagnostics rail.</span>
+          <span class="tp-mono">1280 × 800</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- PLUGINS -->
+    <div style="margin-top:48px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">Plugins · detail</h3>
+        <a href="mockups/plugins.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — Plugins</span>
+        </div>
+        <iframe src="mockups/plugins.html" style="width:100%;height:780px;border:0;display:block"></iframe>
+        <div class="viewport__caption">
+          <span><b>Plugins.</b> List with drag handles, status dots, version badges. Detail pane shows live perf stats, config rows, and recent log entries scoped to the plugin.</span>
+          <span class="tp-mono">1280 × 800</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- BLACKBOARD -->
+    <div style="margin-top:48px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">Blackboard inspector</h3>
+        <a href="mockups/blackboard.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — Blackboard</span>
+        </div>
+        <iframe src="mockups/blackboard.html" style="width:100%;height:780px;border:0;display:block"></iframe>
+        <div class="viewport__caption">
+          <span><b>Blackboard.</b> Tree on the left, detail with big-number + sparkline + metadata on the right. Type badges color-coded per primitive.</span>
+          <span class="tp-mono">1280 × 800</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOGS -->
+    <div style="margin-top:48px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">Logs</h3>
+        <a href="mockups/logs.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — Logs</span>
+        </div>
+        <iframe src="mockups/logs.html" style="width:100%;height:780px;border:0;display:block"></iframe>
+        <div class="viewport__caption">
+          <span><b>Logs.</b> Level chips, search with hotkey hint, target filter, pause-tail indicator. Severity is a 2px left rail — present but never shouty.</span>
+          <span class="tp-mono">1280 × 800</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- PID -->
+    <div style="margin-top:48px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">PID tuning</h3>
+        <a href="mockups/pid.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — PID tuning</span>
+        </div>
+        <iframe src="mockups/pid.html" style="width:100%;height:780px;border:0;display:block"></iframe>
+        <div class="viewport__caption">
+          <span><b>PID tuning.</b> Gains on the left, live response chart on the right with setpoint + actual + RMS/overshoot/settle readout.</span>
+          <span class="tp-mono">1280 × 800</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div style="margin-top:48px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px">
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.01em;margin:0">Settings</h3>
+        <a href="mockups/settings.html" target="_blank" class="tp-mono" style="font-size:11px;color:var(--tp-brand-cyan);text-decoration:none">open ↗</a>
+      </div>
+      <div class="viewport">
+        <div class="viewport__chrome">
+          <div class="viewport__dot"></div><div class="viewport__dot"></div><div class="viewport__dot"></div>
+          <span class="viewport__title">TruckPilot — Settings</span>
+        </div>
+        <iframe src="mockups/settings.html" style="width:100%;height:880px;border:0;display:block"></iframe>
+        <div class="viewport__caption">
+          <span><b>Settings.</b> Appearance, connection, hotkeys, paths. Diagnostic override mode is visible at the bottom — toggleable, clearly labelled as a testing-only path.</span>
+          <span class="tp-mono">1280 × 900</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       8. IMPLEMENTATION GUIDE
+       ====================================================================== -->
+  <section class="doc__section">
+    <div class="doc__section-head">
+      <span class="doc__section-num">08</span>
+      <h2 class="doc__section-title">Implementation guide</h2>
+    </div>
+    <p class="doc__section-sub">
+      What to keep from shadcn, what to replace, in what order. Effort sized
+      in dev-days for a single FE engineer.
+    </p>
+
+    <h3 class="doc__h3" style="margin-top:32px">shadcn map</h3>
+    <div class="tp-card tp-card--flush">
+      <table class="doc-impl">
+        <thead>
+          <tr><th>shadcn</th><th>Decision</th><th>Why</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">Button</td><td>Keep, restyle</td><td>Variants map cleanly to <code class="mono">tp-btn</code> / <code class="mono">primary</code> / <code class="mono">danger</code></td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Card</td><td>Keep, restyle</td><td>Replace shadow with hairline border + bg-card</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Slider</td><td>Replace</td><td>Need bipolar mode + highlight range + tickmarks</td><td><span class="effort effort--m">M</span></td></tr>
+          <tr><td class="mono">Switch</td><td>Restyle</td><td>Gradient on-state + spring thumb</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Tabs</td><td>Restyle</td><td>Pill-rail style (see PID/Settings)</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Toast (sonner)</td><td>Theme via tokens</td><td>Map sonner CSS vars to brand tokens, custom icons</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Dialog</td><td>Keep</td><td>bg-modal + backdrop blur, no further changes</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Progress</td><td>Replace with sparkline</td><td>shadcn progress doesn't suit live telemetry</td><td><span class="effort effort--m">M</span></td></tr>
+          <tr><td class="mono">Tooltip</td><td>Keep</td><td>Apply bg-modal + 11px mono</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Select</td><td>Keep, restyle</td><td>Match input chrome</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Form/Input</td><td>Keep, restyle</td><td>Mono variant for paths/UIDs</td><td><span class="effort effort--s">S</span></td></tr>
+          <tr><td class="mono">Recharts</td><td>Keep for PID; custom SVG for sparklines</td><td>Sparklines too lightweight to justify Recharts overhead</td><td><span class="effort effort--m">M</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="doc__h3" style="margin-top:32px">Custom components to build</h3>
+    <div class="tp-card tp-card--flush">
+      <table class="doc-impl">
+        <thead>
+          <tr><th>Component</th><th>Replaces</th><th>Owner</th><th>Effort</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">&lt;EngageButton&gt;</td><td>Autopilot card top half</td><td>FE · 6 states · F5/F6 + WS commands</td><td><span class="effort effort--m">M · 1.5d</span></td></tr>
+          <tr><td class="mono">&lt;PreconditionPill&gt;</td><td>Plain list</td><td>FE · 4 states + tooltip</td><td><span class="effort effort--s">S · 0.5d</span></td></tr>
+          <tr><td class="mono">&lt;Sparkline&gt;</td><td>Recharts mini</td><td>FE · ringbuf + Catmull-Rom + dot</td><td><span class="effort effort--m">M · 1d</span></td></tr>
+          <tr><td class="mono">&lt;BigNumber&gt;</td><td>Telemetry text</td><td>FE · flash on change</td><td><span class="effort effort--s">S · 0.5d</span></td></tr>
+          <tr><td class="mono">&lt;VJoyBar&gt;</td><td>vJoy Monitor card body</td><td>FE · uni/bi-polar + ticks</td><td><span class="effort effort--s">S · 0.5d</span></td></tr>
+          <tr><td class="mono">&lt;FailsafeBanner&gt;</td><td>—</td><td>FE · subscribes to /watchdog</td><td><span class="effort effort--s">S · 0.5d</span></td></tr>
+          <tr><td class="mono">&lt;NaviStatusCard&gt;</td><td>Goal-UID card</td><td>FE+BE · needs ETS2 navi parse</td><td><span class="effort effort--l">L · 2.5d</span></td></tr>
+          <tr><td class="mono">&lt;SpeedSign&gt;</td><td>—</td><td>FE · purely visual</td><td><span class="effort effort--s">S · 0.5d</span></td></tr>
+          <tr><td class="mono">&lt;RouteMap&gt;</td><td>—</td><td>FE+BE · canvas + node-graph debug layer</td><td><span class="effort effort--xl">XL · 5d</span></td></tr>
+          <tr><td class="mono">&lt;LaneCam&gt;</td><td>—</td><td>FE+BE · stream frame + overlays</td><td><span class="effort effort--l">L · 3d</span></td></tr>
+          <tr><td class="mono">&lt;DiagnosticsPanel&gt;</td><td>—</td><td>FE · plugin latencies + watchdog + IPC</td><td><span class="effort effort--m">M · 1.5d</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="doc__h3" style="margin-top:32px">Migration order</h3>
+    <div class="doc__grid doc__grid--3" style="margin-top:0">
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px;color:var(--tp-success)">Phase 1 · Foundation <span style="color:var(--tp-fg-dim);margin-left:6px">~3 days</span></div>
+        <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--tp-fg);line-height:1.7">
+          <li>Drop in <code class="mono">tokens.css</code> and wire Tailwind <code class="mono">@theme</code></li>
+          <li>Load Geist + Geist Mono</li>
+          <li>Restyle Button/Card/Switch/Tabs primitives</li>
+          <li>Theme sonner toasts</li>
+          <li>App shell: titlebar, sidebar groups, footer</li>
+        </ol>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px;color:var(--tp-info)">Phase 2 · Dashboard <span style="color:var(--tp-fg-dim);margin-left:6px">~5 days</span></div>
+        <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--tp-fg);line-height:1.7">
+          <li>EngageButton + PreconditionPill (most visible win)</li>
+          <li>BigNumber + Sparkline → wire Speed/RPM</li>
+          <li>VJoyBar + FailsafeBanner</li>
+          <li>NaviStatusCard (replace Goal-UID)</li>
+          <li>SpeedSign + recent-signs strip</li>
+        </ol>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px;color:var(--tp-brand-violet)">Phase 3 · Detail pages <span style="color:var(--tp-fg-dim);margin-left:6px">~4 days</span></div>
+        <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--tp-fg);line-height:1.7">
+          <li>Plugins list + detail</li>
+          <li>Blackboard tree + inspector</li>
+          <li>Logs toolbar + virtualized stream</li>
+          <li>PID with live-response chart</li>
+          <li>Settings rebuild + Diag override</li>
+        </ol>
+      </div>
+      <div class="tp-card">
+        <div class="tp-eyebrow" style="margin-bottom:8px;color:var(--tp-warning)">Phase 4 · Roadmap <span style="color:var(--tp-fg-dim);margin-left:6px">~10 days</span></div>
+        <ol style="margin:0;padding-left:18px;font-size:13px;color:var(--tp-fg);line-height:1.7">
+          <li>RouteMap with debug node layer</li>
+          <li>LaneCam overlay</li>
+          <li>DiagnosticsPanel</li>
+          <li>SignDetection gallery</li>
+          <li>ETS2 status indicator (footer)</li>
+        </ol>
+      </div>
+      <div class="tp-card" style="grid-column:span 2">
+        <div class="tp-eyebrow" style="margin-bottom:8px">Performance notes</div>
+        <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--tp-fg);line-height:1.7">
+          <li>Sparklines on raf-batched ringbufs, never per-sample setState. Target &lt;0.8ms/frame.</li>
+          <li>VJoyBar uses CSS <code class="mono">transform:translateX</code>, not width — keeps it off the layout pass.</li>
+          <li>Engage gradient pulse uses <code class="mono">box-shadow</code> alpha animation, not blur. Cheap.</li>
+          <li>Pause animations when window is hidden via <code class="mono">visibilitychange</code>.</li>
+          <li>Every animated element honours <code class="mono">prefers-reduced-motion</code>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 class="doc__h3" style="margin-top:32px">Brand tokens — drop-in</h3>
+    <div class="doc-code"><span class="c">/* app.css */</span>
+<span class="k">@import</span> <span class="s">"tailwindcss"</span>;
+<span class="k">@import</span> <span class="s">"./tokens.css"</span>;
+
+<span class="k">@theme</span> {
+  <span class="n">--color-bg</span>:        var(--tp-bg-base);
+  <span class="n">--color-card</span>:      var(--tp-bg-card);
+  <span class="n">--color-fg</span>:        var(--tp-fg);
+  <span class="n">--color-muted</span>:     var(--tp-fg-muted);
+  <span class="n">--color-success</span>:   var(--tp-success);
+  <span class="n">--color-info</span>:      var(--tp-info);
+  <span class="n">--color-warn</span>:      var(--tp-warning);
+  <span class="n">--color-error</span>:     var(--tp-error);
+
+  <span class="n">--font-sans</span>:       var(--tp-font-sans);
+  <span class="n">--font-mono</span>:       var(--tp-font-mono);
+
+  <span class="n">--radius-card</span>:     var(--tp-r-3);
+}</div>
+
+  </section>
+
+  <!-- ======================================================================
+       FOOTER
+       ====================================================================== -->
+  <footer style="margin-top:120px;padding-top:32px;border-top:1px solid var(--tp-border);display:flex;justify-content:space-between;font-family:var(--tp-font-mono);font-size:11px;color:var(--tp-fg-dim)">
+    <span>TruckPilot · design polish v0.3 · 2026-05-18</span>
+    <span>tokens.css · system.css · components.css · page.css · doc.css</span>
+  </footer>
+
+</div>
+
+<script>
+  // Theme switcher
+  const buttons = document.querySelectorAll('[data-theme-btn]');
+  buttons.forEach(b => b.addEventListener('click', () => {
+    const t = b.dataset.themeBtn;
+    document.documentElement.setAttribute('data-theme', t);
+    buttons.forEach(o => o.classList.toggle('active', o === b));
+    try { localStorage.setItem('tp-doc-theme', t); } catch(e) {}
+  }));
+  try {
+    const saved = localStorage.getItem('tp-doc-theme');
+    if (saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      buttons.forEach(b => b.classList.toggle('active', b.dataset.themeBtn === saved));
+    }
+  } catch(e) {}
+</script>
+
+</body>
+</html>

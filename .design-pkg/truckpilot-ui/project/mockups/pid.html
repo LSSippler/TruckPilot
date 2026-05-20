@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>TruckPilot — PID Tuning</title>
+<meta name="viewport" content="width=1280, initial-scale=1">
+<link rel="stylesheet" href="../styles/tokens.css">
+<link rel="stylesheet" href="../styles/system.css">
+<link rel="stylesheet" href="../styles/components.css">
+<link rel="stylesheet" href="../styles/page.css">
+</head>
+<body>
+<div class="tp-app" data-screen-label="PID Tuning">
+  <div class="tp-titlebar">
+    <div class="tp-titlebar__brand"><img src="../assets/logo.png" alt=""><span>TruckPilot</span></div>
+    <div class="tp-titlebar__sub">PID tuning</div>
+    <div class="tp-titlebar__spacer"></div>
+    <button class="tp-btn tp-btn--ghost">Pop out</button>
+  </div>
+
+  <nav class="tp-sidebar">
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Operation</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>Dashboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>Blackboard</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h16"/></svg>Logs</a>
+    </div>
+    <div class="tp-sidebar__group">
+      <div class="tp-sidebar__label">Configuration</div>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3 4 7v6c0 4.5 2.6 8 6 9 3.4-1 6-4.5 6-9V7l-6-4z"/></svg>Plugins</a>
+      <a class="tp-nav tp-nav--active"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>PID Tuning</a>
+      <a class="tp-nav"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>Settings</a>
+    </div>
+  </nav>
+
+  <main class="tp-main">
+
+    <div class="pid-tabs">
+      <span class="pid-tab active">steering</span>
+      <span class="pid-tab">acc</span>
+      <span class="pid-tab">lane_keeper</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:16px">
+
+      <!-- gains -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">steering · gains</h3>
+          <span class="tp-pill tp-pill--ok" style="font-size:10px">live</span>
+        </div>
+
+        <div class="pid-slider">
+          <span class="pid-slider__name">Kp</span>
+          <div class="tp-slider" style="margin:0">
+            <div class="tp-slider__rail">
+              <div class="tp-slider__fill" style="width:62%"></div>
+            </div>
+            <span class="tp-slider__thumb" style="left:62%"></span>
+          </div>
+          <span class="pid-slider__value">1.240</span>
+        </div>
+        <div class="pid-slider">
+          <span class="pid-slider__name">Ki</span>
+          <div class="tp-slider" style="margin:0">
+            <div class="tp-slider__rail">
+              <div class="tp-slider__fill" style="width:8%"></div>
+            </div>
+            <span class="tp-slider__thumb" style="left:8%"></span>
+          </div>
+          <span class="pid-slider__value">0.080</span>
+        </div>
+        <div class="pid-slider">
+          <span class="pid-slider__name">Kd</span>
+          <div class="tp-slider" style="margin:0">
+            <div class="tp-slider__rail">
+              <div class="tp-slider__fill" style="width:18%"></div>
+            </div>
+            <span class="tp-slider__thumb" style="left:18%"></span>
+          </div>
+          <span class="pid-slider__value">0.060</span>
+        </div>
+        <div class="pid-slider">
+          <span class="pid-slider__name">Output limit</span>
+          <div class="tp-slider" style="margin:0">
+            <div class="tp-slider__rail">
+              <div class="tp-slider__fill" style="width:85%"></div>
+            </div>
+            <span class="tp-slider__thumb" style="left:85%"></span>
+          </div>
+          <span class="pid-slider__value">0.850</span>
+        </div>
+        <div class="pid-slider">
+          <span class="pid-slider__name">Deadband</span>
+          <div class="tp-slider" style="margin:0">
+            <div class="tp-slider__rail">
+              <div class="tp-slider__fill" style="width:4%"></div>
+            </div>
+            <span class="tp-slider__thumb" style="left:4%"></span>
+          </div>
+          <span class="pid-slider__value">0.004</span>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:20px;padding-top:16px;border-top:1px solid var(--tp-border)">
+          <span class="tp-mono tp-dim" style="font-size:11px">unsaved changes</span>
+          <div style="display:flex;gap:8px">
+            <button class="tp-btn tp-btn--danger">Reset</button>
+            <button class="tp-btn tp-btn--ghost">Reload from disk</button>
+            <button class="tp-btn tp-btn--primary">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- live response -->
+      <div class="tp-card">
+        <div class="tp-card__head">
+          <h3 class="tp-card__title">Live response</h3>
+          <div style="display:flex;gap:10px;align-items:center;font-family:var(--tp-font-mono);font-size:11px">
+            <span style="color:#4D7CFA">● target</span>
+            <span style="color:#1ED891">● actual</span>
+            <span class="tp-dim">window 8s</span>
+          </div>
+        </div>
+
+        <div style="position:relative;background:var(--tp-bg-input);border:1px solid var(--tp-border);border-radius:var(--tp-r-2);height:300px;overflow:hidden">
+          <svg width="100%" height="100%" viewBox="0 0 600 300" preserveAspectRatio="none">
+            <!-- grid -->
+            <g stroke="var(--tp-grid-line)" stroke-width="1">
+              <line x1="0" y1="60"  x2="600" y2="60"/>
+              <line x1="0" y1="150" x2="600" y2="150"/>
+              <line x1="0" y1="240" x2="600" y2="240"/>
+              <line x1="150" y1="0" x2="150" y2="300"/>
+              <line x1="300" y1="0" x2="300" y2="300"/>
+              <line x1="450" y1="0" x2="450" y2="300"/>
+            </g>
+            <line x1="0" y1="150" x2="600" y2="150" stroke="#5B6678" stroke-dasharray="3 3" opacity="0.4"/>
+            <!-- target (setpoint) -->
+            <path d="M0 150 L 60 150 L 60 80 L 220 80 L 220 220 L 380 220 L 380 110 L 540 110 L 540 150 L 600 150"
+                  fill="none" stroke="#4D7CFA" stroke-width="2" stroke-dasharray="6 4" opacity="0.9"/>
+            <!-- actual response curve -->
+            <defs>
+              <linearGradient id="pidGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#1ED891" stop-opacity="0.30"/>
+                <stop offset="100%" stop-color="#1ED891" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <path d="M0 150 L 60 150 C 80 150, 92 95, 130 82 C 165 76, 200 80, 220 80
+                     C 240 80, 252 215, 290 220 C 325 224, 360 220, 380 220
+                     C 400 220, 412 112, 450 110 C 485 108, 520 110, 540 110
+                     C 560 110, 580 150, 600 150 L 600 300 L 0 300 Z"
+                  fill="url(#pidGrad)"/>
+            <path d="M0 150 L 60 150 C 80 150, 92 95, 130 82 C 165 76, 200 80, 220 80
+                     C 240 80, 252 215, 290 220 C 325 224, 360 220, 380 220
+                     C 400 220, 412 112, 450 110 C 485 108, 520 110, 540 110
+                     C 560 110, 580 150, 600 150"
+                  fill="none" stroke="#1ED891" stroke-width="2.2"/>
+            <!-- live dot -->
+            <circle cx="600" cy="150" r="5" fill="#1ED891">
+              <animate attributeName="r" values="5;7;5" dur="1.8s" repeatCount="indefinite"/>
+            </circle>
+          </svg>
+
+          <div style="position:absolute;left:10px;top:10px;font-family:var(--tp-font-mono);font-size:10px;color:var(--tp-fg-dim)">
+            <div>+1.0</div>
+            <div style="position:absolute;top:140px">0.0</div>
+            <div style="position:absolute;top:230px">−1.0</div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px">
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">RMS error</div>
+            <div class="plugin-stat__value tp-num">0.042</div>
+          </div>
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">Overshoot</div>
+            <div class="plugin-stat__value tp-num">3.2 <span style="font-size:11px;color:var(--tp-fg-muted)">%</span></div>
+          </div>
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">Settle</div>
+            <div class="plugin-stat__value tp-num">0.81 <span style="font-size:11px;color:var(--tp-fg-muted)">s</span></div>
+          </div>
+          <div class="plugin-stat">
+            <div class="plugin-stat__label">Output</div>
+            <div class="plugin-stat__value tp-num">+0.14</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <div class="tp-footer">
+    <span><span class="tp-footer__dot"></span>Connected · core v1.0</span>
+    <div class="tp-footer__spacer"></div>
+    <span>v0.2.0</span>
+    <span>ws://localhost:8765</span>
+  </div>
+</div>
+</body>
+</html>

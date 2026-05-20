@@ -37,4 +37,29 @@ describe("logs store filtering", () => {
     const filtered = selectFilteredLogs(useLogsStore.getState());
     expect(filtered).toHaveLength(1);
   });
+
+  it("pushMany evicts oldest entries when above cap", () => {
+    useLogsStore.setState({ maxEntries: 3, entries: [] });
+    useLogsStore.getState().pushMany([
+      { ts: 1, level: "info", message: "a", plugin: null },
+      { ts: 2, level: "info", message: "b", plugin: null },
+      { ts: 3, level: "info", message: "c", plugin: null },
+      { ts: 4, level: "info", message: "d", plugin: null },
+      { ts: 5, level: "info", message: "e", plugin: null },
+    ]);
+    expect(useLogsStore.getState().entries.map((e) => e.message)).toEqual(["c", "d", "e"]);
+  });
+
+  it("push then pushMany keeps tail of prev plus new batch", () => {
+    useLogsStore.setState({ maxEntries: 4, entries: [] });
+    const push = useLogsStore.getState().push;
+    push({ ts: 1, level: "info", message: "a", plugin: null });
+    push({ ts: 2, level: "info", message: "b", plugin: null });
+    useLogsStore.getState().pushMany([
+      { ts: 3, level: "info", message: "c", plugin: null },
+      { ts: 4, level: "info", message: "d", plugin: null },
+      { ts: 5, level: "info", message: "e", plugin: null },
+    ]);
+    expect(useLogsStore.getState().entries.map((e) => e.message)).toEqual(["b", "c", "d", "e"]);
+  });
 });
