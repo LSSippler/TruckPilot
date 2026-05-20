@@ -91,7 +91,14 @@ impl LaneKeeperPlugin {
         }
     }
 
-    fn compute_heading_error(&mut self, tx: f64, tz: f64, heading: f64, speed_ms: f64) -> f64 {
+    fn compute_heading_error(
+        &mut self,
+        tx: f64,
+        tz: f64,
+        heading: f64,
+        speed_ms: f64,
+        ctx: &PluginContext,
+    ) -> f64 {
         if self.waypoints.len() < 2 {
             return 0.0;
         }
@@ -125,6 +132,18 @@ impl LaneKeeperPlugin {
             }
         }
 
+        // Phase 6.5g: write lookahead diagnostics before atan2
+        ctx.blackboard
+            .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.look_x", format!("{look_x:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.look_z", format!("{look_z:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.dx", format!("{:.2}", look_x - tx));
+        ctx.blackboard
+            .set("lane_keeper.dz", format!("{:.2}", look_z - tz));
+
         let dx = look_x - tx;
         let dz = look_z - tz;
         if dx * dx + dz * dz < 1e-12 {
@@ -139,6 +158,10 @@ impl LaneKeeperPlugin {
         while err < -std::f64::consts::PI {
             err += 2.0 * std::f64::consts::PI;
         }
+
+        ctx.blackboard
+            .set("lane_keeper.target_heading", format!("{target:.6}"));
+
         err
     }
 }
@@ -187,6 +210,10 @@ impl Plugin for LaneKeeperPlugin {
         // so the next engage starts from a clean PID state.
         if !ctx.is_active() {
             self.pid.reset();
+            // Phase 6.5g: mark inactive
+            ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard
+                .set("lane_keeper.skip_reason", "state_not_active");
             return None;
         }
 
@@ -200,6 +227,10 @@ impl Plugin for LaneKeeperPlugin {
         // protects us if the state lags by a tick.)
         if t.engine_rpm < 100.0 {
             self.pid.reset();
+            // Phase 6.5g: mark inactive
+            ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard
+                .set("lane_keeper.skip_reason", "engine_off");
             return None;
         }
 
@@ -207,8 +238,36 @@ impl Plugin for LaneKeeperPlugin {
         // (debug pause, slow disk, etc.).
         let dt = ctx.dt_s.min(0.1);
 
-        let err = self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms);
+        let err = self.compute_heading_error(
+            t.position[0],
+            t.position[2],
+            t.heading,
+            t.speed_ms,
+            ctx,
+        );
         let steering = self.pid.update(err, dt).clamp(-1.0, 1.0);
+
+        // Phase 6.5g: Diagnose-Blackboard-Writes fuer Bug-Hunting
+        ctx.blackboard.set("lane_keeper.active", "true");
+        ctx.blackboard
+            .set("lane_keeper.error_rad", format!("{err:.6}"));
+        ctx.blackboard
+            .set("lane_keeper.steering_out", format!("{steering:.6}"));
+        ctx.blackboard.set(
+            "lane_keeper.waypoints_loaded",
+            self.waypoints.len().to_string(),
+        );
+        ctx.blackboard
+            .set("lane_keeper.progress_idx", self.progress_idx.to_string());
+        ctx.blackboard.set("lane_keeper.dt_s", format!("{dt:.6}"));
+        ctx.blackboard
+            .set("lane_keeper.truck_x", format!("{:.2}", t.position[0]));
+        ctx.blackboard
+            .set("lane_keeper.truck_z", format!("{:.2}", t.position[2]));
+        ctx.blackboard
+            .set("lane_keeper.truck_heading", format!("{:.6}", t.heading));
+        ctx.blackboard
+            .set("lane_keeper.truck_speed_ms", format!("{:.2}", t.speed_ms));
 
         Some(ControlRequest {
             steering: Some(steering),
@@ -285,6 +344,11 @@ mod tests {
         PluginContext::new("lane-keeper", bb)
     }
 
+    fn fresh_ctx() -> PluginContext {
+        let bb = SharedBlackboard::new();
+        PluginContext::new("lane-keeper", bb)
+    }
+
     fn active_plugin_with_straight_path() -> LaneKeeperPlugin {
         LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [0.0, 100.0], [0.0, 200.0]],
@@ -306,7 +370,8 @@ mod tests {
     #[test]
     fn straight_north_zero_error() {
         let mut lk = active_plugin_with_straight_path();
-        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0);
+        let ctx = fresh_ctx();
+        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
         assert!(err.abs() < 0.01, "expected ~0, got {err}");
     }
 
@@ -316,7 +381,8 @@ mod tests {
             waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
             ..Default::default()
         };
-        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0);
+        let ctx = fresh_ctx();
+        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
         assert!(err > 0.0, "expected positive (right turn), got {err}");
     }
 
@@ -381,7 +447,8 @@ mod tests {
             ..Default::default()
         };
         let heading = std::f64::consts::PI - 0.01;
-        let err = lk.compute_heading_error(0.0, 0.0, heading, 10.0);
+        let ctx = fresh_ctx();
+        let err = lk.compute_heading_error(0.0, 0.0, heading, 10.0, &ctx);
         assert!(err.abs() < 0.5, "wraparound produced {err}");
     }
 
