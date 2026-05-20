@@ -165,7 +165,9 @@ impl LaneKeeperPlugin {
             return 0.0;
         }
 
-        let target = dx.atan2(dz);
+        // ETS2-Konvention: heading=0 zeigt Richtung -Z (Nord).
+        // Damit target_heading konsistent mit telemetry.heading ist, muss dz negiert werden.
+        let target = dx.atan2(-dz);
         let mut err = target - heading;
         while err > std::f64::consts::PI {
             err -= 2.0 * std::f64::consts::PI;
@@ -383,8 +385,9 @@ mod tests {
     }
 
     fn active_plugin_with_straight_path() -> LaneKeeperPlugin {
+        // ETS2: North = -Z. Waypoints in -Z direction, heading=0 → near-zero error.
         LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.0, 100.0], [0.0, 200.0]],
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]],
             ..Default::default()
         }
     }
@@ -470,13 +473,59 @@ mod tests {
         assert!(s.abs() < 0.1, "expected near-zero on straight, got {s}");
     }
 
+    // ---- Phase 6.5l Heading-Konvention-Tests (ETS2: heading=0 → -Z / Nord) ----
+
+    #[test]
+    fn heading_convention_north_is_zero() {
+        // Look-Ahead direkt vor Truck (Nord = -Z). Truck-heading = 0. error ~ 0.
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]],
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.0, 13.88, &ctx);
+        assert!(err.abs() < 0.01, "expected ~0, got {err}");
+    }
+
+    #[test]
+    fn heading_convention_east_is_half_pi() {
+        // Look-Ahead direkt rechts (Osten = +X). Truck-heading = π/2. error ~ 0.
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        let err = plugin.compute_heading_error(
+            0.0,
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            13.88,
+            &ctx,
+        );
+        assert!(err.abs() < 0.01, "expected ~0, got {err}");
+    }
+
+    #[test]
+    fn heading_convention_punkt_vor_rechts_kleiner_positiver_error() {
+        // Reproduziert den Live-Fall: Truck-heading 0.353, Look-Ahead bei dx=145, dz=-156.
+        // Erwartet: error ~ +0.4 rad (positiv, klein, kein Vollanschlag).
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [144.89, -156.22]],
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.353, 13.88, &ctx);
+        assert!(err > 0.0 && err < 0.6, "expected ~0.4 positive, got {err}");
+    }
+
     #[test]
     fn test_heading_wraparound() {
-        // Waypoint slightly east of north; truck heading near +π. Naive
-        // subtraction would give a -π+ε error; the wraparound must
-        // normalise it to a small positive value (small left turn).
+        // ETS2: heading=π → South (+Z). Truck nearly south, waypoint slightly
+        // west of south [-0.1, 100]. target ≈ -π+ε (third quadrant, atan2(-0.1,100)
+        // with negated dz). Naive subtraction would give ~-2π; the wraparound
+        // normalises to a small value near 0.
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.1, -100.0]],
+            waypoints: vec![[0.0, 0.0], [-0.1, 100.0]],
             ..Default::default()
         };
         let heading = std::f64::consts::PI - 0.01;
