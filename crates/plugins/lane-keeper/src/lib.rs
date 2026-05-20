@@ -34,6 +34,7 @@ pub struct LaneKeeperPlugin {
     /// Catmull-Rom subdivisions (configurable).
     subdivisions: usize,
     last_gains: (f64, f64, f64),
+    last_waypoints_hash: u64,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -44,6 +45,7 @@ impl Default for LaneKeeperPlugin {
             progress_idx: 0,
             subdivisions: 4,
             last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
+            last_waypoints_hash: 0,
         }
     }
 }
@@ -81,11 +83,24 @@ impl LaneKeeperPlugin {
     fn load_waypoints_from_blackboard(&mut self, ctx: &PluginContext) {
         if let Some(json) = ctx.blackboard.get("router.waypoints") {
             if let Ok(pts) = serde_json::from_str::<Vec<[f64; 2]>>(&json) {
+                let new_hash = hash_str(&json);
                 self.waypoints = smooth_catmull_rom(&pts, self.subdivisions);
                 self.progress_idx = 0;
+                self.last_waypoints_hash = new_hash;
+                if !self.waypoints.is_empty() {
+                    tracing::info!(
+                        "[lane-keeper] first 3 spline pts: [{:.1},{:.1}] [{:.1},{:.1}] [{:.1},{:.1}]",
+                        self.waypoints[0][0], self.waypoints[0][1],
+                        self.waypoints.get(1).map(|p| p[0]).unwrap_or(0.0),
+                        self.waypoints.get(1).map(|p| p[1]).unwrap_or(0.0),
+                        self.waypoints.get(2).map(|p| p[0]).unwrap_or(0.0),
+                        self.waypoints.get(2).map(|p| p[1]).unwrap_or(0.0),
+                    );
+                }
                 tracing::info!(
-                    "[lane-keeper] loaded {} waypoints (smoothed)",
-                    self.waypoints.len()
+                    "[lane-keeper] loaded {} waypoints (smoothed, hash={:x})",
+                    self.waypoints.len(),
+                    new_hash
                 );
             }
         }
@@ -194,10 +209,15 @@ impl Plugin for LaneKeeperPlugin {
     ) {
         // Side-effect-only path: keep waypoint cache fresh.
         // Steering itself is contributed via `tick_request` (Fix 4).
-        if ctx.blackboard.get("router.active").as_deref() == Some("true")
-            && self.waypoints.is_empty()
-        {
-            self.load_waypoints_from_blackboard(ctx);
+        if ctx.blackboard.get("router.active").as_deref() == Some("true") {
+            let current_hash = ctx
+                .blackboard
+                .get("router.waypoints")
+                .map(|j| hash_str(&j))
+                .unwrap_or(0);
+            if self.waypoints.is_empty() || current_hash != self.last_waypoints_hash {
+                self.load_waypoints_from_blackboard(ctx);
+            }
         }
     }
 
@@ -210,6 +230,12 @@ impl Plugin for LaneKeeperPlugin {
         // so the next engage starts from a clean PID state.
         if !ctx.is_active() {
             self.pid.reset();
+            if !self.waypoints.is_empty() {
+                self.waypoints.clear();
+                self.last_waypoints_hash = 0;
+                self.progress_idx = 0;
+                tracing::info!("[lane-keeper] state=Off, cleared waypoint cache");
+            }
             // Phase 6.5g: mark inactive
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard
@@ -312,6 +338,13 @@ fn smooth_catmull_rom(pts: &[[f64; 2]], subdivisions: usize) -> Vec<[f64; 2]> {
         }
     }
     result
+}
+
+fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
 }
 
 truckpilot_plugin_api::export_plugin!(LaneKeeperPlugin);
@@ -468,6 +501,10 @@ mod tests {
         let off = ctx_with_state("Off");
         assert!(lk.tick_request(Some(&t), &off).is_none());
 
+        // Off-state now clears the waypoint cache (Phase 6.5k). Restore
+        // waypoints explicitly so the re-engage check has a path to steer.
+        lk.waypoints = vec![[0.0, 0.0], [100.0, 0.0]];
+
         // Build a fresh plugin for an independent baseline.
         let mut fresh = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
@@ -480,6 +517,34 @@ mod tests {
             (fresh_req.steering.unwrap() - resumed_req.steering.unwrap()).abs() < 1e-6,
             "post-reset response must match a fresh PID"
         );
+    }
+
+    #[test]
+    fn waypoints_reload_on_route_change() {
+        let mut plugin = LaneKeeperPlugin::default();
+
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        bb.set("router.active", "true");
+        bb.set("router.waypoints", "[[0.0,0.0],[10.0,0.0],[20.0,0.0]]");
+        let ctx = PluginContext::new("lane-keeper", bb.clone());
+
+        plugin.tick(None, &mut ControlOutput::default(), &ctx);
+        let first_len = plugin.waypoints.len();
+        let first_hash = plugin.last_waypoints_hash;
+        assert!(first_len > 0);
+        assert!(first_hash != 0);
+
+        // Different route — hash must differ, waypoints must reload.
+        bb.set(
+            "router.waypoints",
+            "[[100.0,100.0],[110.0,100.0],[120.0,100.0]]",
+        );
+        plugin.tick(None, &mut ControlOutput::default(), &ctx);
+
+        assert_ne!(plugin.last_waypoints_hash, first_hash);
+        assert!((plugin.waypoints[0][0] - 100.0).abs() < 1e-6);
+        assert_eq!(plugin.progress_idx, 0);
     }
 
     #[test]
