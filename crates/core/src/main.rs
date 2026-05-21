@@ -11,8 +11,10 @@ use tokio::sync::broadcast;
 
 use tracing::{info, warn};
 use truckpilot_ipc_protocol::{CoreMessage, TelemetrySnapshot};
+use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 
+mod heading_stage;
 mod ipc;
 mod plugin_manager;
 mod state_machine;
@@ -440,6 +442,42 @@ fn load_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
     })
 }
 
+/// Load graph.json into a [`RouterGraph`] for synchronous off-route checks
+/// (Phase 6.5q.1). Hard-exits if the file is missing or malformed — the
+/// daemon cannot operate without a routing graph.
+fn load_router_graph_or_exit() -> RouterGraph {
+    let path = PathBuf::from("graph.json");
+    if !path.exists() {
+        eprintln!("ERROR: graph.json not found.");
+        eprintln!("Run first: truckpilot-core parse-map --ets2-dir <path>");
+        std::process::exit(1);
+    }
+    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("ERROR: Cannot read graph.json: {e}");
+        std::process::exit(1);
+    });
+    let map_graph: truckpilot_map_parser::graph::MapGraph =
+        serde_json::from_str(&json).unwrap_or_else(|e| {
+            eprintln!("ERROR: Cannot parse graph.json: {e}");
+            std::process::exit(1);
+        });
+
+    let nodes: Vec<(u64, f64, f64)> =
+        map_graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+    let edges: Vec<(u64, u64, f64)> = map_graph
+        .edges
+        .iter()
+        .map(|e| (e.from, e.to, e.distance_m))
+        .collect();
+
+    info!(
+        "Loaded routing graph: {} nodes, {} edges",
+        nodes.len(),
+        edges.len()
+    );
+    RouterGraph::new(nodes, edges)
+}
+
 fn angle_diff(a: f64, b: f64) -> f64 {
     let mut d = a - b;
     while d > std::f64::consts::PI {
@@ -498,7 +536,13 @@ async fn run_daemon() {
         std::fs::create_dir_all(&plugin_dir).expect("create plugins dir");
     }
 
+    // ── Phase 6.5q.1: load routing graph ───────────────────────────
+    let graph = load_router_graph_or_exit();
+    let graph = Arc::new(graph);
+
     let mut manager = PluginManager::new(plugin_dir);
+    manager.graph = Some(Arc::clone(&graph));
+    let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());
 
@@ -531,7 +575,11 @@ async fn run_daemon() {
     // telemetry.available has been false for >300 ms.
     let daemon_start = Instant::now();
     let heartbeat = Arc::new(AtomicU64::new(0));
-    let state_machine = Arc::new(Mutex::new(state_machine::AutopilotStateMachine::new()));
+    let state_machine = Arc::new(Mutex::new(
+        state_machine::AutopilotStateMachine::new()
+            .with_graph(Arc::clone(&graph))
+            .with_route_node_ids(route_node_ids),
+    ));
     tokio::spawn(watchdog::watchdog_loop(
         heartbeat.clone(),
         blackboard.clone(),
@@ -556,6 +604,9 @@ async fn run_daemon() {
     let mut output = ControlOutput::default();
     // Wallclock-based dt: PID terms drift if the loop slips below 50 Hz.
     let mut last_tick = Instant::now();
+
+    // Phase 6.5s: three-stage heading response
+    let mut heading_stage_mgr = heading_stage::HeadingStageManager::new();
 
     info!("Running — press Ctrl+C to stop");
 
@@ -613,6 +664,11 @@ async fn run_daemon() {
             sm.consume_requests(&blackboard);
             let current_state = sm.evaluate(telemetry.as_ref(), &blackboard);
 
+            // Phase 6.5s: reset heading stage on state -> Off
+            if sm.state() == state_machine::AutopilotState::Off {
+                heading_stage_mgr.reset();
+            }
+
             // Publish AutopilotStatus to the UI: every 5th tick (10 Hz) and
             // immediately on state change so transitions never wait up to
             // ~100 ms to surface.
@@ -668,6 +724,9 @@ async fn run_daemon() {
             last_log = Instant::now();
         }
         drop(mgr);
+
+        // Phase 6.5s: evaluate heading stage after plugins (gets fresh lane_keeper.error_rad)
+        heading_stage_mgr.evaluate(&blackboard);
 
         // Phase 6.5h: full-tick elapsed — covers sm + IPC send + plugins.
         let tick_elapsed = tick_start.elapsed();

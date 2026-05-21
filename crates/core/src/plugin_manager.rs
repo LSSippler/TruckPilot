@@ -5,15 +5,17 @@
 //!
 //! Race-condition-safe: reloads are queued and applied between tick() calls.
 
+use std::collections::HashSet;
 use std::mem::ManuallyDrop;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{error, info, warn};
+use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{
     ControlOutput, ControlRequest, LogLevel, LogSinkWrapper, Plugin, PluginContext,
     SharedBlackboard, SharedFrameStore, Telemetry, TickPhase,
@@ -127,6 +129,12 @@ pub struct PluginManager {
     /// on cadence without keeping their own counters.
     tick_count: u64,
     _watcher: Option<RecommendedWatcher>,
+    /// Shared routing graph (Phase 6.5q.1). Set by the daemon before
+    /// `load_all()`; injected into every [`PluginContext`].
+    pub graph: Option<Arc<RouterGraph>>,
+    /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
+    /// this each tick; the state machine reads it for engage-time checks.
+    pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
 }
 
 impl PluginManager {
@@ -173,6 +181,8 @@ impl PluginManager {
             frame_store: Arc::new(SharedFrameStore::new()),
             tick_count: 0,
             _watcher: watcher,
+            graph: None,
+            route_node_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -195,7 +205,15 @@ impl PluginManager {
     }
 
     fn load_plugin(&mut self, path: &Path) {
-        match unsafe { load_plugin_from_path(path, &self.blackboard, &self.frame_store) } {
+        match unsafe {
+            load_plugin_from_path(
+                path,
+                &self.blackboard,
+                &self.frame_store,
+                &self.graph,
+                &self.route_node_ids,
+            )
+        } {
             Ok(loaded) => {
                 info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 self.plugins.push(loaded);
@@ -319,12 +337,14 @@ impl PluginManager {
                 continue;
             }
             let plugin_start = Instant::now();
-            let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+            let mut ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                 .with_dt(dt_s)
                 .with_phase(phase)
                 .with_tick_count(tick_count)
                 .with_frame_store(Arc::clone(&self.frame_store))
                 .with_log_sink(make_log_sink());
+            ctx.graph = self.graph.clone();
+            ctx.route_node_ids = Some(Arc::clone(&self.route_node_ids));
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -369,12 +389,14 @@ impl PluginManager {
             if p.enabled {
                 let plugin_start = Instant::now();
                 let phase = p.plugin.default_phase();
-                let ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                let mut ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
                     .with_dt(dt_s)
                     .with_phase(phase)
                     .with_tick_count(tick_count)
                     .with_frame_store(Arc::clone(&self.frame_store))
                     .with_log_sink(make_log_sink());
+                ctx.graph = self.graph.clone();
+                ctx.route_node_ids = Some(Arc::clone(&self.route_node_ids));
                 let tick_result = catch_unwind(AssertUnwindSafe(|| {
                     p.plugin.tick(telemetry, output, &ctx);
                 }));
@@ -531,6 +553,8 @@ unsafe fn load_plugin_from_path(
     path: &Path,
     blackboard: &SharedBlackboard,
     frame_store: &Arc<SharedFrameStore>,
+    graph: &Option<Arc<RouterGraph>>,
+    route_node_ids: &Arc<RwLock<HashSet<u64>>>,
 ) -> Result<LoadedPlugin, String> {
     let lib = Library::new(path).map_err(|e| format!("library load: {e}"))?;
 
@@ -538,17 +562,12 @@ unsafe fn load_plugin_from_path(
         .get(b"create_plugin")
         .map_err(|e| format!("missing create_plugin symbol: {e}"))?;
 
-    // Look up `destroy_plugin` *before* calling `create_plugin` so a
-    // mis-built plugin (one without the matching destructor) fails
-    // cleanly without leaking the partially-constructed instance.
     let destroy: Symbol<DestroyFn> = lib.get(b"destroy_plugin").map_err(|e| {
         format!(
             "missing destroy_plugin symbol: {e} \
              (plugin must use truckpilot_plugin_api::export_plugin!)"
         )
     })?;
-    // Detach the function pointer from the Symbol guard. Validity is
-    // bound to `lib` lifetime, which `LoadedPlugin` holds in `_lib`.
     let destroy_fn: DestroyFn = *destroy;
 
     let plugin_ptr = create();
@@ -556,17 +575,16 @@ unsafe fn load_plugin_from_path(
         return Err("create_plugin returned null".into());
     }
 
-    // The Box here is only used as a typed handle for trait dispatch
-    // — its destructor must NOT run on the host side. `LoadedPlugin`
-    // wraps it in `ManuallyDrop` and frees via `destroy_fn`.
     let mut plugin = Box::from_raw(plugin_ptr);
 
     let name = plugin.name().to_string();
     let version = plugin.version().to_string();
 
-    let ctx = PluginContext::new(name.clone(), blackboard.clone())
+    let mut ctx = PluginContext::new(name.clone(), blackboard.clone())
         .with_frame_store(Arc::clone(frame_store))
         .with_log_sink(make_log_sink());
+    ctx.graph = graph.clone();
+    ctx.route_node_ids = Some(Arc::clone(route_node_ids));
     plugin.on_load(&ctx);
 
     Ok(LoadedPlugin {

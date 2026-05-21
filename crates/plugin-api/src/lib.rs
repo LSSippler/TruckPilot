@@ -15,6 +15,7 @@
 //! will not perform actual reloads until ABI stability is restored (either by
 //! re-introducing `abi_stable` or by using a stable C ABI boundary).
 
+pub mod graph;
 pub mod pid;
 
 use std::collections::HashMap;
@@ -438,7 +439,7 @@ pub enum TickPhase {
 // ---------------------------------------------------------------------------
 
 /// Context passed to plugins on load and every tick.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PluginContext {
     /// Plugin name (for logging).
     pub plugin_name: String,
@@ -463,6 +464,25 @@ pub struct PluginContext {
     /// this closure into the host's tracing subscriber, bridging the
     /// cross-DLL dispatcher gap. `None` in unit tests and legacy contexts.
     pub(crate) log_sink: Option<LogSinkWrapper>,
+    /// Shared routing graph (Phase 6.5q.1). Set by the daemon; plugins
+    /// that need routing may use it instead of loading graph.json themselves.
+    pub graph: Option<Arc<crate::graph::RouterGraph>>,
+    /// Shared route node IDs (Phase 6.5q.1). The router plugin writes this
+    /// each tick; the state machine reads it for synchronous off-route checks.
+    pub route_node_ids: Option<Arc<RwLock<std::collections::HashSet<u64>>>>,
+}
+
+impl std::fmt::Debug for PluginContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginContext")
+            .field("plugin_name", &self.plugin_name)
+            .field("dt_s", &self.dt_s)
+            .field("tick_phase", &self.tick_phase)
+            .field("tick_count", &self.tick_count)
+            .field("has_graph", &self.graph.is_some())
+            .field("has_route_node_ids", &self.route_node_ids.is_some())
+            .finish()
+    }
 }
 
 impl PluginContext {
@@ -476,6 +496,8 @@ impl PluginContext {
             tick_count: 0,
             frame_store: None,
             log_sink: None,
+            graph: None,
+            route_node_ids: None,
         }
     }
 

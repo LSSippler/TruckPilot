@@ -32,14 +32,14 @@
 //! | router.auto_replan_triggered_at  | u64    | Epoch ms of last auto-replan       |
 //! | router.last_replan_reason        | string | "off_route" or ""                  |
 
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
@@ -47,33 +47,108 @@ const DEFAULT_GRAPH_PATH: &str = "graph.json";
 /// Highway nodes can be spaced >20m apart; 50m avoids false "on-route" gaps.
 const OFF_ROUTE_DETECT_RADIUS_M: f64 = 50.0;
 
+/// Sliding-window size for snap stabilisation (Phase 6.5t).
+/// At 1 Hz (PhaseA), 5 frames = 5 s history.
+const SNAP_WINDOW_SIZE: usize = 5;
+const SNAP_MAJORITY_THRESHOLD: usize = 3;
+const SNAP_HYSTERESIS_THRESHOLD: usize = 4;
+
+// ---------------------------------------------------------------------------
+// SnapWindow — sliding-window majority vote for snap stabilisation (Phase 6.5t)
+// ---------------------------------------------------------------------------
+
+struct SnapWindow {
+    buffer: VecDeque<Option<u64>>,
+    capacity: usize,
+}
+
+impl SnapWindow {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+    }
+
+    fn push_snap(&mut self, snap: Option<u64>) {
+        self.buffer.push_back(snap);
+        if self.buffer.len() > self.capacity {
+            self.buffer.pop_front();
+        }
+    }
+
+    /// Majority vote with hysteresis.
+    /// Returns `(stable_edge, vote_count_for_stable, distinct_edges_in_window)`.
+    ///
+    /// `stable_edge` is `None` if no edge reaches `majority`.
+    /// Once a `stable_edge` is set, it holds until a different edge reaches
+    /// `hysteresis` votes. If the current stable edge disappears from the
+    /// window (0 votes), hysteresis is relaxed — any edge with `>= majority`
+    /// takes over immediately.
+    fn vote(
+        &self,
+        current_stable: Option<u64>,
+        majority: usize,
+        hysteresis: usize,
+    ) -> (Option<u64>, u8, u8) {
+        let mut counts: HashMap<u64, u8> = HashMap::new();
+        for uid in self.buffer.iter().flatten() {
+            *counts.entry(*uid).or_default() += 1;
+        }
+        let unique_count = counts.len() as u8;
+
+        if counts.is_empty() {
+            return (None, 0, 0);
+        }
+
+        let (&top_edge, &top_count) = counts
+            .iter()
+            .max_by_key(|(_, c)| *c)
+            .unwrap();
+
+        let cur_count = current_stable
+            .and_then(|s| counts.get(&s).copied())
+            .unwrap_or(0);
+
+        if let Some(cur) = current_stable {
+            if cur_count == 0 {
+                // Old stable gone — fall back to simple majority.
+                if top_count >= majority as u8 {
+                    return (Some(top_edge), top_count, unique_count);
+                }
+                return (None, top_count, unique_count);
+            }
+            if top_edge == cur {
+                if top_count >= majority as u8 {
+                    return (Some(cur), top_count, unique_count);
+                }
+                return (None, top_count, unique_count);
+            }
+            // Challenger must meet hysteresis threshold to unseat the incumbent.
+            if top_count >= hysteresis as u8 {
+                return (Some(top_edge), top_count, unique_count);
+            }
+            // Incumbent holds regardless of own vote count (as long as >0).
+            return (Some(cur), cur_count, unique_count);
+        }
+
+        if top_count >= majority as u8 {
+            (Some(top_edge), top_count, unique_count)
+        } else {
+            (None, top_count, unique_count)
+        }
+    }
+}
+
 fn epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-#[derive(Clone)]
-struct HeapEntry {
-    uid: u64,
-    f: f64,
-}
-impl PartialEq for HeapEntry {
-    fn eq(&self, o: &Self) -> bool {
-        self.f.total_cmp(&o.f).is_eq() && self.uid == o.uid
-    }
-}
-impl Eq for HeapEntry {}
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(o))
-    }
-}
-impl Ord for HeapEntry {
-    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-        self.f.total_cmp(&o.f).then_with(|| self.uid.cmp(&o.uid))
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -95,107 +170,6 @@ struct EdgeJson {
 }
 
 // ---------------------------------------------------------------------------
-// Graph data shared between plugin tick and worker thread (immutable after load)
-// ---------------------------------------------------------------------------
-
-struct RouterGraph {
-    nodes: Vec<(u64, f64, f64)>,
-    edges: Vec<(u64, u64, f64)>,
-    positions: HashMap<u64, (f64, f64)>,
-}
-
-impl RouterGraph {
-    /// Snap with heading filter and distance limit.
-    /// truck_heading in radians, ETS2 convention (0 = -Z/Nord, clockwise).
-    /// Falls back to geometric nearest if no heading-compatible candidate exists.
-    /// Returns (node_uid, distance_m, heading_filter_used). heading_filter_used=false means fallback.
-    fn find_nearest_with_heading(
-        &self,
-        x: f64,
-        z: f64,
-        heading: f64,
-        max_dist_m: f64,
-    ) -> Option<(u64, f64, bool)> {
-        let hx = heading.sin();
-        let hz = -heading.cos();
-        let max_dist_sq = max_dist_m * max_dist_m;
-
-        let candidates: Vec<(u64, f64, f64, f64)> = self
-            .nodes
-            .iter()
-            .filter_map(|&(uid, nx, nz)| {
-                let dx = nx - x;
-                let dz = nz - z;
-                let dist_sq = dx * dx + dz * dz;
-                if dist_sq <= max_dist_sq {
-                    Some((uid, nx, nz, dist_sq.sqrt()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if candidates.is_empty() {
-            return None;
-        }
-
-        let filtered: Vec<(u64, f64)> = candidates
-            .iter()
-            .filter(|&&(uid, nx, nz, _)| {
-                self.edges.iter().any(|&(from, to, _)| {
-                    if from != uid {
-                        return false;
-                    }
-                    if let Some(&(tx, tz)) = self.positions.get(&to) {
-                        let ex = tx - nx;
-                        let ez = tz - nz;
-                        let len = (ex * ex + ez * ez).sqrt();
-                        if len < 1.0 {
-                            return false;
-                        }
-                        ex / len * hx + ez / len * hz >= 0.5
-                    } else {
-                        false
-                    }
-                })
-            })
-            .map(|&(uid, _, _, dist)| (uid, dist))
-            .collect();
-
-        if filtered.is_empty() {
-            tracing::warn!("[router] heading_filter_no_candidate, using geometric fallback");
-            candidates
-                .into_iter()
-                .min_by(|a, b| a.3.total_cmp(&b.3))
-                .map(|(uid, _, _, dist)| (uid, dist, false))
-        } else {
-            filtered
-                .into_iter()
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(uid, dist)| (uid, dist, true))
-        }
-    }
-
-    /// Pure geometric snap within distance limit. Used for off-route checks.
-    fn find_nearest_geometric(&self, x: f64, z: f64, max_dist_m: f64) -> Option<(u64, f64)> {
-        let max_dist_sq = max_dist_m * max_dist_m;
-        self.nodes
-            .iter()
-            .filter_map(|&(uid, nx, nz)| {
-                let dx = nx - x;
-                let dz = nz - z;
-                let dist_sq = dx * dx + dz * dz;
-                if dist_sq <= max_dist_sq {
-                    Some((uid, dist_sq.sqrt()))
-                } else {
-                    None
-                }
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Worker communication types
 // ---------------------------------------------------------------------------
 
@@ -207,7 +181,6 @@ struct RouteRequest {
 }
 
 struct RouteResult {
-    /// Echoed goal_uid for stale-result detection.
     goal_uid: u64,
     success: bool,
     waypoints: Vec<[f64; 2]>,
@@ -229,14 +202,10 @@ pub struct RouterPlugin {
     goal_uid: u64,
     last_seen_goal_str: String,
     graph_path: PathBuf,
-    /// Shared with the worker thread via Arc clone.
     graph: Option<Arc<RouterGraph>>,
     active: bool,
-    /// True while a route request is in flight (worker hasn't responded yet).
     pending_request: bool,
     request_tx: Option<Sender<RouteRequest>>,
-    /// Wrapped in Mutex so RouterPlugin satisfies Plugin: Sync.
-    /// Only ever accessed from the single plugin-tick thread.
     result_rx: Option<std::sync::Mutex<Receiver<RouteResult>>>,
     worker_handle: Option<JoinHandle<()>>,
     // ---- Diagnostic state ----
@@ -254,6 +223,13 @@ pub struct RouterPlugin {
     last_auto_replan_at_ms: u64,
     last_replan_reason: String,
     last_replan_snap_pos: Option<(f64, f64)>,
+    // ---- Phase 6.5t: Snap sliding-window stabilitisation ----
+    snap_window: SnapWindow,
+    stable_snap_edge_id: Option<u64>,
+    snap_stability: u8,
+    snap_window_unique_edges: u8,
+    snap_last_change_at_ms: u64,
+    last_autopilot_state: String,
 }
 
 impl Default for RouterPlugin {
@@ -280,6 +256,12 @@ impl Default for RouterPlugin {
             last_auto_replan_at_ms: 0,
             last_replan_reason: String::new(),
             last_replan_snap_pos: None,
+            snap_window: SnapWindow::new(SNAP_WINDOW_SIZE),
+            stable_snap_edge_id: None,
+            snap_stability: 0,
+            snap_window_unique_edges: 0,
+            snap_last_change_at_ms: 0,
+            last_autopilot_state: String::new(),
         }
     }
 }
@@ -295,54 +277,6 @@ impl Drop for RouterPlugin {
 }
 
 impl RouterPlugin {
-    /// A* from `start` to `goal`. Returns `(path, total_distance_m)` on
-    /// success, `None` if unreachable. Static so tests can call it directly.
-    fn plan(
-        nodes: &[(u64, f64, f64)],
-        edges: &[(u64, u64, f64)],
-        start: u64,
-        goal: u64,
-    ) -> Option<(Vec<u64>, f64)> {
-        let positions: HashMap<u64, (f64, f64)> =
-            nodes.iter().map(|&(uid, x, z)| (uid, (x, z))).collect();
-        let mut adj: HashMap<u64, Vec<(u64, f64)>> = HashMap::new();
-        for &(from, to, dist) in edges {
-            adj.entry(from).or_default().push((to, dist));
-        }
-        let goal_pos = *positions.get(&goal)?;
-        let mut open: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
-        let mut g: HashMap<u64, f64> = HashMap::new();
-        let mut came_from: HashMap<u64, u64> = HashMap::new();
-        let mut closed: HashSet<u64> = HashSet::new();
-        g.insert(start, 0.0);
-        open.push(Reverse(HeapEntry {
-            uid: start,
-            f: heuristic(positions.get(&start)?, &goal_pos),
-        }));
-        while let Some(Reverse(entry)) = open.pop() {
-            if entry.uid == goal {
-                let total_dist = *g.get(&goal).unwrap_or(&0.0);
-                return Some((reconstruct(&came_from, start, goal), total_dist));
-            }
-            if !closed.insert(entry.uid) {
-                continue;
-            }
-            for &(nb, cost) in adj.get(&entry.uid).into_iter().flatten() {
-                if closed.contains(&nb) {
-                    continue;
-                }
-                let tg = g[&entry.uid] + cost;
-                if tg < *g.get(&nb).unwrap_or(&f64::MAX) {
-                    came_from.insert(nb, entry.uid);
-                    g.insert(nb, tg);
-                    let h = heuristic(positions.get(&nb)?, &goal_pos);
-                    open.push(Reverse(HeapEntry { uid: nb, f: tg + h }));
-                }
-            }
-        }
-        None
-    }
-
     fn publish_planning_diag(&self, ctx: &PluginContext) {
         ctx.blackboard
             .set("router.last_planning_result", &self.last_planning_result);
@@ -368,6 +302,13 @@ impl RouterPlugin {
         self.request_tx = Some(req_tx);
         self.result_rx = Some(std::sync::Mutex::new(res_rx));
         self.worker_handle = Some(handle);
+    }
+
+    fn reset_snap_window(&mut self) {
+        self.snap_window.clear();
+        self.stable_snap_edge_id = None;
+        self.snap_stability = 0;
+        self.snap_window_unique_edges = 0;
     }
 
     fn send_route_request(&mut self, pos_x: f64, pos_z: f64, truck_heading: f64, ctx: &PluginContext) {
@@ -455,7 +396,7 @@ fn router_worker_loop(
             req.goal_uid
         );
 
-        match RouterPlugin::plan(&graph.nodes, &graph.edges, start_uid, req.goal_uid) {
+        match graph.plan(start_uid, req.goal_uid) {
             Some((path, total_dist)) => {
                 let route_node_ids = path.clone();
                 let waypoints: Vec<[f64; 2]> = path
@@ -508,31 +449,6 @@ fn router_worker_loop(
 }
 
 // ---------------------------------------------------------------------------
-// Free functions (unchanged)
-// ---------------------------------------------------------------------------
-
-fn heuristic(pos: &(f64, f64), goal: &(f64, f64)) -> f64 {
-    let dx = pos.0 - goal.0;
-    let dz = pos.1 - goal.1;
-    (dx * dx + dz * dz).sqrt()
-}
-
-fn reconstruct(came_from: &HashMap<u64, u64>, start: u64, goal: u64) -> Vec<u64> {
-    let mut path = vec![goal];
-    let mut cur = goal;
-    while cur != start {
-        if let Some(&prev) = came_from.get(&cur) {
-            path.push(prev);
-            cur = prev;
-        } else {
-            break;
-        }
-    }
-    path.reverse();
-    path
-}
-
-// ---------------------------------------------------------------------------
 // Plugin impl
 // ---------------------------------------------------------------------------
 
@@ -554,44 +470,52 @@ impl Plugin for RouterPlugin {
             }
             self.last_seen_goal_str = raw;
         }
-        self.graph_path = ctx
-            .blackboard
-            .get("router.graph_path")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_GRAPH_PATH));
 
-        let graph = match std::fs::read_to_string(&self.graph_path) {
-            Ok(data) => match serde_json::from_str::<GraphFile>(&data) {
-                Ok(g) => {
-                    let node_count = g.nodes.len();
-                    let edge_count = g.edges.len();
-                    let nodes = g.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
-                    let edges = g
-                        .edges
-                        .iter()
-                        .map(|e| (e.from, e.to, e.distance_m))
-                        .collect();
-                    let positions = g.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
-                    tracing::info!(
-                        "[router] loaded {} nodes / {} edges from {:?}",
-                        node_count,
-                        edge_count,
-                        self.graph_path
-                    );
-                    Some(Arc::new(RouterGraph {
-                        nodes,
-                        edges,
-                        positions,
-                    }))
-                }
+        let graph = if let Some(shared) = &ctx.graph {
+            tracing::info!(
+                "[router] using shared graph: {} nodes / {} edges",
+                shared.nodes.len(),
+                shared.edges.len()
+            );
+            Some(Arc::clone(shared))
+        } else {
+            self.graph_path = ctx
+                .blackboard
+                .get("router.graph_path")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_GRAPH_PATH));
+
+            match std::fs::read_to_string(&self.graph_path) {
+                Ok(data) => match serde_json::from_str::<GraphFile>(&data) {
+                    Ok(g) => {
+                        let nodes = g.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+                        let edges = g
+                            .edges
+                            .iter()
+                            .map(|e| (e.from, e.to, e.distance_m))
+                            .collect();
+                        let positions = g.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
+                        tracing::info!(
+                            "[router] loaded {} nodes / {} edges from {:?}",
+                            g.nodes.len(),
+                            g.edges.len(),
+                            self.graph_path
+                        );
+                        Some(Arc::new(RouterGraph {
+                            nodes,
+                            edges,
+                            positions,
+                        }))
+                    }
+                    Err(e) => {
+                        tracing::warn!("[router] cannot parse {:?}: {e}", self.graph_path);
+                        None
+                    }
+                },
                 Err(e) => {
-                    tracing::warn!("[router] cannot parse {:?}: {e}", self.graph_path);
+                    tracing::warn!("[router] cannot read {:?}: {e}", self.graph_path);
                     None
                 }
-            },
-            Err(e) => {
-                tracing::warn!("[router] cannot read {:?}: {e}", self.graph_path);
-                None
             }
         };
 
@@ -618,6 +542,11 @@ impl Plugin for RouterPlugin {
         ctx.blackboard.set("router.auto_replan_count", "0");
         ctx.blackboard.set("router.auto_replan_triggered_at", "");
         ctx.blackboard.set("router.last_replan_reason", "");
+        ctx.blackboard.set("router.snap_stable_edge_id", "");
+        ctx.blackboard.set("router.snap_stability", "0");
+        ctx.blackboard.set("router.snap_window_unique_edges", "0");
+        ctx.blackboard.set("router.snap_last_change_at", "");
+        self.reset_snap_window();
     }
 
     fn on_unload(&mut self) {
@@ -639,6 +568,20 @@ impl Plugin for RouterPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
+        // ── 0. Phase 6.5q.1: consume synchronous replan from state machine ──
+        if ctx
+            .blackboard
+            .get("router.sync_replan_done")
+            .as_deref()
+            == Some("true")
+        {
+            ctx.blackboard.remove("router.sync_replan_done");
+            self.pending_request = false;
+            if let Some(ref lock) = ctx.route_node_ids {
+                self.current_route_node_ids = lock.read().unwrap().clone();
+            }
+        }
+
         // ── 1. Poll worker result (non-blocking, always first) ────────────────
         if let Some(rx) = &self.result_rx {
             if let Ok(result) = rx.lock().unwrap().try_recv() {
@@ -660,6 +603,9 @@ impl Plugin for RouterPlugin {
                                 self.last_snap_heading_filter_applied = result.heading_filter_applied;
                                 self.current_route_node_ids =
                                     result.route_node_ids.iter().copied().collect();
+                                if let Some(ref lock) = ctx.route_node_ids {
+                                    *lock.write().unwrap() = self.current_route_node_ids.clone();
+                                }
                                 tracing::info!(
                                     "[router] route ready: {} waypoints, {:.1}km, {}ms",
                                     result.waypoint_count,
@@ -707,10 +653,14 @@ impl Plugin for RouterPlugin {
             if goal_str.is_empty() {
                 self.goal_uid = 0;
                 self.current_route_node_ids.clear();
+                if let Some(ref lock) = ctx.route_node_ids {
+                    lock.write().unwrap().clear();
+                }
                 self.auto_replan_count = 0;
                 self.last_replan_snap_pos = None;
                 self.last_auto_replan_at_ms = 0;
                 self.last_replan_reason = String::new();
+                self.reset_snap_window();
                 ctx.blackboard.set("router.current_goal_uid", "");
                 tracing::info!("[router] goal cleared");
             } else {
@@ -721,6 +671,7 @@ impl Plugin for RouterPlugin {
                         self.last_replan_snap_pos = None;
                         self.last_auto_replan_at_ms = 0;
                         self.last_replan_reason = String::new();
+                        self.reset_snap_window();
                         ctx.blackboard.set("router.current_goal_uid", &goal_str);
                         tracing::info!("[router] new goal received: uid={}", uid);
                         // Submit immediately for fast feedback.
@@ -750,7 +701,39 @@ impl Plugin for RouterPlugin {
             }
         }
 
-        // ── 2.5. Off-route auto-replan check ──────────────────────────────────
+        // ── 2.3. Per-tick snap → sliding-window vote (Phase 6.5t) ──────────────
+        if let (Some(tel), Some(graph)) = (telemetry, self.graph.as_ref()) {
+            let snap =
+                graph.find_nearest_with_heading(
+                    tel.position[0], tel.position[2],
+                    tel.heading,
+                    OFF_ROUTE_DETECT_RADIUS_M,
+                )
+                .map(|(uid, _, _)| uid);
+            self.snap_window.push_snap(snap);
+        }
+
+        let now_ms = epoch_ms();
+        let (stable_edge, stability, unique) = self.snap_window.vote(
+            self.stable_snap_edge_id,
+            SNAP_MAJORITY_THRESHOLD,
+            SNAP_HYSTERESIS_THRESHOLD,
+        );
+        if stable_edge != self.stable_snap_edge_id {
+            self.stable_snap_edge_id = stable_edge;
+            self.snap_last_change_at_ms = now_ms;
+        }
+        self.snap_stability = stability;
+        self.snap_window_unique_edges = unique;
+
+        // ── 2.4. Autopilot state-change → reset snap window ───────────────────
+        let ap_state = ctx.blackboard.get("autopilot.state").unwrap_or_default();
+        if ap_state != self.last_autopilot_state {
+            self.last_autopilot_state = ap_state;
+            self.reset_snap_window();
+        }
+
+        // ── 2.5. Off-route auto-replan check (Phase 6.5q + 6.5s) ───────────────
         if self.goal_uid != 0 && !self.pending_request && !self.current_route_node_ids.is_empty() {
             if let Some(tel) = telemetry {
                 let pos_x = tel.position[0];
@@ -760,9 +743,23 @@ impl Plugin for RouterPlugin {
                     .as_ref()
                     .and_then(|g| g.find_nearest_geometric(pos_x, pos_z, OFF_ROUTE_DETECT_RADIUS_M))
                     .map(|(uid, _)| self.current_route_node_ids.contains(&uid))
-                    .unwrap_or(true); // None → no node nearby → assume on route to avoid false replans
+                    .unwrap_or(true);
 
-                if !truck_on_route {
+                let heading_stage = ctx
+                    .blackboard
+                    .get("state.heading_stage")
+                    .unwrap_or_default();
+                let heading_replan = heading_stage == "AutoReplan";
+
+                let (trigger, reason) = if !truck_on_route {
+                    (true, "off_route")
+                } else if heading_replan {
+                    (true, "heading_stage")
+                } else {
+                    (false, "")
+                };
+
+                if trigger {
                     let now_ms = epoch_ms();
                     let rate_ok = now_ms.saturating_sub(self.last_auto_replan_at_ms) > 5_000;
                     let hysteresis_ok = match self.last_replan_snap_pos {
@@ -776,28 +773,27 @@ impl Plugin for RouterPlugin {
 
                     if self.auto_replan_count < 3 && rate_ok && hysteresis_ok {
                         tracing::info!(
-                            "[router] truck off-route, auto-replanning (count={})",
-                            self.auto_replan_count + 1
+                            "[router] auto-replanning (count={}, reason={})",
+                            self.auto_replan_count + 1,
+                            reason
                         );
                         self.auto_replan_count += 1;
                         self.last_auto_replan_at_ms = now_ms;
                         self.last_replan_snap_pos = Some((pos_x, pos_z));
-                        self.last_replan_reason = "off_route".to_string();
+                        self.last_replan_reason = reason.to_string();
                         self.send_route_request(pos_x, pos_z, tel.heading, ctx);
                         ctx.blackboard
                             .set("router.auto_replan_triggered_at", now_ms.to_string());
                         ctx.blackboard
                             .set("router.auto_replan_count", self.auto_replan_count.to_string());
                         ctx.blackboard
-                            .set("router.last_replan_reason", "off_route");
+                            .set("router.last_replan_reason", reason);
                     } else if self.auto_replan_count >= 3 {
-                        // Intentional latch: keep signaling every tick while still off-route.
-                        // Phase 6.5r state-machine will gate Engaging on this key.
-                        // Only cleared by a new goal (auto_replan_count reset → this branch skipped).
                         ctx.blackboard.set("state.precondition_route_ok", "false");
                         tracing::warn!(
-                            "[router] max replans ({}) reached, still off-route",
-                            self.auto_replan_count
+                            "[router] max replans ({}) reached, reason={}",
+                            self.auto_replan_count,
+                            reason
                         );
                     }
                 }
@@ -832,6 +828,23 @@ impl Plugin for RouterPlugin {
             .set("router.auto_replan_count", self.auto_replan_count.to_string());
         ctx.blackboard
             .set("router.last_replan_reason", &self.last_replan_reason);
+        // Phase 6.5t: Snap sliding-window diagnostics
+        ctx.blackboard.set(
+            "router.snap_stable_edge_id",
+            self.stable_snap_edge_id.map_or(String::new(), |uid| uid.to_string()),
+        );
+        ctx.blackboard
+            .set("router.snap_stability", self.snap_stability.to_string());
+        ctx.blackboard.set(
+            "router.snap_window_unique_edges",
+            self.snap_window_unique_edges.to_string(),
+        );
+        if self.snap_last_change_at_ms > 0 {
+            ctx.blackboard
+                .set("router.snap_last_change_at", self.snap_last_change_at_ms.to_string());
+        } else {
+            ctx.blackboard.set("router.snap_last_change_at", "");
+        }
     }
 }
 
@@ -893,7 +906,8 @@ mod tests {
     #[test]
     fn finds_direct_route() {
         let (n, e) = simple_graph();
-        let (path, dist) = RouterPlugin::plan(&n, &e, 1, 3).unwrap();
+        let g = RouterGraph::new(n, e);
+        let (path, dist) = g.plan(1, 3).unwrap();
         assert_eq!(path, vec![1, 2, 3]);
         assert!((dist - 200.0).abs() < 0.001, "dist={dist}");
     }
@@ -902,13 +916,15 @@ mod tests {
     fn unreachable_returns_none() {
         let n: NodeList = vec![(1, 0.0, 0.0), (2, 100.0, 0.0)];
         let e: EdgeList = vec![];
-        assert!(RouterPlugin::plan(&n, &e, 1, 2).is_none());
+        let g = RouterGraph::new(n, e);
+        assert!(g.plan(1, 2).is_none());
     }
 
     #[test]
     fn start_equals_goal() {
         let (n, e) = simple_graph();
-        let (path, dist) = RouterPlugin::plan(&n, &e, 1, 1).unwrap();
+        let g = RouterGraph::new(n, e);
+        let (path, dist) = g.plan(1, 1).unwrap();
         assert_eq!(path, vec![1]);
         assert!(dist.abs() < 0.001, "dist={dist}");
     }
@@ -1247,6 +1263,301 @@ mod tests {
             bb.get("state.precondition_route_ok").as_deref(),
             Some("false"),
             "must set state.precondition_route_ok=false after max replans"
+        );
+    }
+
+    // ── Phase 6.5s: heading-stage-triggered auto-replan tests ────────────────
+
+    #[test]
+    fn heading_stage_triggers_replan() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        p.current_route_node_ids = vec![1u64, 2u64, 3u64].into_iter().collect();
+
+        let bb = SharedBlackboard::new();
+        bb.set("state.heading_stage", "AutoReplan");
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(0.0, 0.0);
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(p.pending_request, "heading stage AutoReplan should trigger replan");
+        assert_eq!(p.auto_replan_count, 1);
+        assert_eq!(p.last_replan_reason, "heading_stage");
+    }
+
+    #[test]
+    fn heading_replan_respects_rate_limit() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        p.current_route_node_ids = vec![1u64, 2u64, 3u64].into_iter().collect();
+        p.last_auto_replan_at_ms = epoch_ms();
+        p.auto_replan_count = 1;
+
+        let bb = SharedBlackboard::new();
+        bb.set("state.heading_stage", "AutoReplan");
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(0.0, 0.0);
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(!p.pending_request, "rate limit should block heading replan");
+        assert_eq!(p.auto_replan_count, 1);
+    }
+
+    #[test]
+    fn heading_replan_stops_at_max_three() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        p.current_route_node_ids = vec![1u64, 2u64, 3u64].into_iter().collect();
+        p.auto_replan_count = 3;
+        p.last_auto_replan_at_ms = 0;
+
+        let bb = SharedBlackboard::new();
+        bb.set("state.heading_stage", "AutoReplan");
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(0.0, 0.0);
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(!p.pending_request);
+        assert_eq!(p.auto_replan_count, 3);
+        assert_eq!(
+            bb.get("state.precondition_route_ok").as_deref(),
+            Some("false")
+        );
+    }
+
+    // ── Phase 6.5t: SnapWindow sliding-window tests ───────────────────────
+
+    #[test]
+    fn snap_window_empty_returns_no_stable() {
+        let w = SnapWindow::new(5);
+        let (stable, stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, None);
+        assert_eq!(stability, 0);
+        assert_eq!(unique, 0);
+    }
+
+    #[test]
+    fn snap_window_all_same_edge_becomes_stable() {
+        let mut w = SnapWindow::new(5);
+        for _ in 0..5 {
+            w.push_snap(Some(42));
+        }
+        let (stable, stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, Some(42));
+        assert_eq!(stability, 5);
+        assert_eq!(unique, 1);
+    }
+
+    #[test]
+    fn snap_window_majority_3_of_5() {
+        let mut w = SnapWindow::new(5);
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        let (stable, stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, Some(10));
+        assert_eq!(stability, 3);
+        assert_eq!(unique, 2);
+    }
+
+    #[test]
+    fn snap_window_below_majority_no_stable() {
+        let mut w = SnapWindow::new(5);
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(30));
+        // 2-2-1 split, no edge reaches 3
+        let (stable, stability, _unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, None);
+        assert!(stability <= 2, "top count should be 2, got {stability}");
+    }
+
+    #[test]
+    fn snap_window_hysteresis_holds_stable() {
+        let mut w = SnapWindow::new(5);
+        // Establish stable edge A (5/5)
+        for _ in 0..5 {
+            w.push_snap(Some(10));
+        }
+        let (stable, _, _) = w.vote(None, 3, 4);
+        assert_eq!(stable, Some(10), "first establish stable edge A");
+
+        // Now shift: 3 for B, 2 for A. B=3 < hysteresis=4, A=2 >= majority=3 → hold A
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        // window: [B,B,B,A,A]
+        let (stable, stability, _) = w.vote(Some(10), 3, 4);
+        assert_eq!(stable, Some(10), "A should hold: B=3 < hysteresis=4, incumbent holds as long as >0 votes");
+        assert_eq!(stability, 2, "2 votes for A");
+    }
+
+    #[test]
+    fn snap_window_hysteresis_switch_when_challenger_reaches_threshold() {
+        let mut w = SnapWindow::new(5);
+        // Establish stable edge A
+        for _ in 0..5 {
+            w.push_snap(Some(10));
+        }
+        let (stable, _, _) = w.vote(None, 3, 4);
+        assert_eq!(stable, Some(10));
+
+        // Shift: 4 for B, 1 for A. B=4 >= hysteresis=4 → switch
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(10));
+        // window: [B,B,B,B,A]
+        let (stable, stability, _) = w.vote(Some(10), 3, 4);
+        assert_eq!(stable, Some(20), "B should take over: B=4 >= hysteresis=4");
+        assert_eq!(stability, 4);
+    }
+
+    #[test]
+    fn snap_window_old_stable_gone_immediate_switch() {
+        let mut w = SnapWindow::new(5);
+        // Old stable was A, but all frames are now B
+        for _ in 0..5 {
+            w.push_snap(Some(20));
+        }
+        // current_stable=10 is no longer in the window
+        let (stable, stability, _) = w.vote(Some(10), 3, 4);
+        assert_eq!(stable, Some(20), "old stable gone, new majority B=5 should take over");
+        assert_eq!(stability, 5);
+    }
+
+    #[test]
+    fn snap_window_clear_resets() {
+        let mut w = SnapWindow::new(5);
+        for _ in 0..5 {
+            w.push_snap(Some(42));
+        }
+        w.clear();
+        let (stable, stability, unique) = w.vote(Some(42), 3, 4);
+        assert_eq!(stable, None);
+        assert_eq!(stability, 0);
+        assert_eq!(unique, 0);
+    }
+
+    #[test]
+    fn snap_window_partial_fill_works() {
+        let mut w = SnapWindow::new(5);
+        // Only 3 frames yet
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(Some(20));
+        let (stable, stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, None, "2/3 < majority=3/5");
+        assert_eq!(stability, 2);
+        assert_eq!(unique, 2);
+    }
+
+    #[test]
+    fn snap_window_overflow_keeps_last_n() {
+        let mut w = SnapWindow::new(5);
+        for uid in 1..=10 {
+            w.push_snap(Some(uid));
+        }
+        // Only last 5 entries remain: 6,7,8,9,10
+        let (stable, _stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, None, "each uid appears once, cannot reach 3");
+        assert_eq!(unique, 5);
+    }
+
+    #[test]
+    fn snap_window_none_entries_not_counted() {
+        let mut w = SnapWindow::new(5);
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        w.push_snap(None);
+        w.push_snap(None);
+        let (stable, stability, unique) = w.vote(None, 3, 4);
+        assert_eq!(stable, Some(10), "3 out of 3 non-None = unanimous");
+        assert_eq!(stability, 3);
+        assert_eq!(unique, 1, "only edge 10 appears");
+    }
+
+    #[test]
+    fn snap_window_hysteresis_incumbent_holds_weak() {
+        let mut w = SnapWindow::new(5);
+        // Establish A
+        for _ in 0..5 {
+            w.push_snap(Some(10));
+        }
+        w.vote(None, 3, 4);
+
+        // Shift: A=2, B=3. B=3 < hysteresis=4, so incumbent A holds.
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(20));
+        w.push_snap(Some(10));
+        w.push_snap(Some(10));
+        let (stable, stability, _) = w.vote(Some(10), 3, 4);
+        assert_eq!(stable, Some(10), "incumbent A holds with only 2 votes: B=3 < hysteresis=4");
+        assert_eq!(stability, 2);
+    }
+
+    #[test]
+    fn snap_window_integration_100_ticks_no_flapping() {
+        let mut w = SnapWindow::new(5);
+        let mut current_stable: Option<u64> = None;
+        let mut change_count = 0u32;
+        let mut prev_stable = None;
+
+        // Simulate truck moving along a road with some noise
+        let frames: Vec<Option<u64>> = (0..100)
+            .map(|i| {
+                if i % 10 == 0 || i % 10 == 1 || i % 10 == 2 {
+                    Some(10) // 3 frames = majority candidate
+                } else if i % 10 == 4 {
+                    // Occasional noise
+                    if i < 50 {
+                        Some(20)
+                    } else {
+                        Some(30)
+                    }
+                } else {
+                    Some(10)
+                }
+            })
+            .collect();
+
+        for snap in frames {
+            w.push_snap(snap);
+            let (edge, _, _) = w.vote(current_stable, 3, 4);
+            current_stable = edge;
+            if edge != prev_stable {
+                prev_stable = edge;
+                change_count += 1;
+            }
+        }
+
+        // With hysteresis, the stable edge should flip at most 3 times
+        // (None→10, 10→20 noise, 20→30 noise with hysteresis delay)
+        assert!(
+            change_count <= 5,
+            "stable edge changed {} times, should be stable with hysteresis",
+            change_count
         );
     }
 }

@@ -43,6 +43,8 @@ pub struct LaneKeeperPlugin {
     last_gains: (f64, f64, f64),
     last_waypoints_hash: u64,
     previous_steering_out: f64,
+    heading_stage: Option<String>,
+    previous_heading_stage: Option<String>,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -55,6 +57,8 @@ impl Default for LaneKeeperPlugin {
             last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
             last_waypoints_hash: 0,
             previous_steering_out: 0.0,
+            heading_stage: None,
+            previous_heading_stage: None,
         }
     }
 }
@@ -251,6 +255,8 @@ impl Plugin for LaneKeeperPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
+        self.heading_stage = ctx.blackboard.get("state.heading_stage");
+
         // Side-effect-only path: keep waypoint cache fresh.
         // Steering itself is contributed via `tick_request` (Fix 4).
         if ctx.blackboard.get("router.active").as_deref() == Some("true") {
@@ -332,7 +338,38 @@ impl Plugin for LaneKeeperPlugin {
         }
         ctx.blackboard.set("lane_keeper.heading_mismatch", "false");
 
-        let raw = self.pid.update(err, dt).clamp(-1.0, 1.0);
+        // Phase 6.5s: heading stage behavior
+        let stage = self.heading_stage.as_deref().unwrap_or("Normal");
+
+        if matches!(stage, "AutoReplan" | "Disengaging") {
+            ctx.blackboard.set("lane_keeper.skip_reason", "heading_stage");
+            ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
+            ctx.blackboard.set("lane_keeper.error_rad", format!("{err:.6}"));
+            ctx.blackboard.set("lane_keeper.steering_out", "0.000000");
+            ctx.blackboard.set("lane_keeper.active", "true");
+            ctx.blackboard.set("lane_keeper.steering_rate_limited", "false");
+            ctx.blackboard.set("lane_keeper.steering_delta_clamped", "0.0000");
+            self.previous_steering_out = 0.0;
+            self.pid.reset();
+            return None;
+        }
+
+        let stage_changed = self.previous_heading_stage != self.heading_stage;
+        let transitional = stage_changed
+            && (self.heading_stage.as_deref() == Some("SoftLaneKeep")
+                || self.previous_heading_stage.as_deref() == Some("SoftLaneKeep"));
+        if transitional {
+            self.pid.reset();
+        }
+        self.previous_heading_stage = self.heading_stage.clone();
+
+        let effective_err = if self.heading_stage.as_deref() == Some("SoftLaneKeep") {
+            err * 0.3
+        } else {
+            err
+        };
+
+        let raw = self.pid.update(effective_err, dt).clamp(-1.0, 1.0);
 
         let delta_raw = raw - self.previous_steering_out;
         let delta_clamped = delta_raw.clamp(-STEERING_MAX_DELTA_PER_TICK, STEERING_MAX_DELTA_PER_TICK);
@@ -911,6 +948,87 @@ mod tests {
         assert_eq!(
             ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
             Some("false")
+        );
+    }
+
+    // ---- Phase 6.5s: heading stage tests ------------------------------------
+
+    #[test]
+    fn auto_replan_stage_returns_none() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("AutoReplan".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let result = lk.tick_request(Some(&t), &ctx);
+        assert!(result.is_none());
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("heading_stage")
+        );
+    }
+
+    #[test]
+    fn disengaging_stage_returns_none() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Disengaging".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let result = lk.tick_request(Some(&t), &ctx);
+        assert!(result.is_none());
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("heading_stage")
+        );
+    }
+
+    #[test]
+    fn stage_change_soft_to_normal_resets_pid() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("SoftLaneKeep".to_string()),
+            previous_heading_stage: Some("Normal".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert_eq!(lk.previous_heading_stage, Some("SoftLaneKeep".to_string()));
+    }
+
+    #[test]
+    fn normal_stage_produces_steering() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Normal".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let result = lk.tick_request(Some(&t), &ctx);
+        assert!(result.is_some());
+        assert!(result.unwrap().steering.is_some());
+    }
+
+    #[test]
+    fn phase_6_5p_guard_takes_priority_over_heading_stage() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, 100.0]], // err ≈ π >> 1.4
+            heading_stage: Some("Normal".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let result = lk.tick_request(Some(&t), &ctx);
+        assert!(result.is_none());
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("heading_mismatch")
         );
     }
 }

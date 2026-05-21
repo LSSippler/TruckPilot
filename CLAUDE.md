@@ -31,7 +31,7 @@
 | `cargo deploy-ets2 [DIR]` | `truckpilot_telemetry.dll` nach ETS2 deployen (manuell, benötigt `ETS2_PLUGINS_DIR` env oder DIR-Arg) |
 | `.\scripts\ship.ps1` | Fallback-PowerShell-Wrapper, identisch zu `cargo build-release` |
 
-Hinweis bei laufendem Daemon: DLL-Copy kann fehlschlagen (locked). `cargo build-release` gibt dann eine **Warnung**, kein Fehler. Daemon stoppen und `cargo xtask copy-plugins` nachfahren.
+Hinweis bei laufendem Daemon: DLL-Copy schlaegt hart fehl (locked). `cargo build-release` gibt dann ERROR mit Exit-Code 2. Daemon stoppen und `cargo xtask copy-plugins` nachfahren.
 
 ## Phase-Status (Map-Parser)
 

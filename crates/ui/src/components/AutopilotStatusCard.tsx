@@ -1,21 +1,25 @@
 import { useEffect, useState } from "react";
 import { useAutopilotStore } from "@/stores/autopilot";
 import { useConnectionStore } from "@/stores/connection";
-import { sendCommand } from "@/lib/ipc";
+import { useBlackboardStore } from "@/stores/blackboard";
+import { sendCommand, subscribeBlackboardKeys } from "@/lib/ipc";
 import { EngageButton, type EngageState } from "@/components/EngageButton";
 import { PreconditionRow, type Precondition } from "@/components/PreconditionPill";
+import { EngagementChecklist } from "@/components/EngagementChecklist";
 import type { AutopilotState, PreconditionSnapshot } from "@/lib/types";
 
 function toEngageState(
   ap: AutopilotState,
   preconditions: PreconditionSnapshot,
   disconnected: boolean,
+  engageReady: boolean | null,
 ): EngageState {
   if (disconnected) return "off-disabled";
   switch (ap) {
     case "Off": {
       const missing = missingPreconditions(preconditions);
-      return missing.length > 0 ? "off-disabled" : "off-ready";
+      const blockedByEngage = engageReady === false;
+      return (missing.length > 0 || blockedByEngage) ? "off-disabled" : "off-ready";
     }
     case "Engaging":     return "engaging";
     case "Active":       return "engaged";
@@ -71,6 +75,8 @@ function missingPreconditions(p: PreconditionSnapshot): string[] {
 
 type Command = "engage" | "disengage" | "reset";
 
+const ENGAGE_READY_KEYS = ["state.engage_ready", "state.engage_blocked_by"] as const;
+
 export function AutopilotStatusCard() {
   const connection = useConnectionStore((s) => s.status);
   const state = useAutopilotStore((s) => s.state);
@@ -78,11 +84,14 @@ export function AutopilotStatusCard() {
   const preconditions = useAutopilotStore((s) => s.preconditions);
   const tickCount = useAutopilotStore((s) => s.tickCount);
   const lastUpdateMs = useAutopilotStore((s) => s.lastUpdateMs);
+  const bbValues = useBlackboardStore((s) => s.values);
 
   const disconnected = connection !== "connected";
   const [pendingCommand, setPendingCommand] = useState<Command | null>(null);
   const [pendingSince, setPendingSince] = useState(0);
   const [warnNoResponse, setWarnNoResponse] = useState(false);
+
+  useEffect(() => subscribeBlackboardKeys(ENGAGE_READY_KEYS), []);
 
   useEffect(() => {
     if (!pendingCommand) return;
@@ -112,10 +121,21 @@ export function AutopilotStatusCard() {
   };
 
   const effectiveState: AutopilotState = state ?? "Off";
-  const engageState = toEngageState(effectiveState, preconditions, disconnected || pendingCommand !== null);
+  const engageReadyVal = bbValues["state.engage_ready"];
+  const engageReady: boolean | null =
+    engageReadyVal === "true" ? true : engageReadyVal === "false" ? false : null;
+  const engageBlockedBy = bbValues["state.engage_blocked_by"];
+  const engageState = toEngageState(effectiveState, preconditions, disconnected || pendingCommand !== null, engageReady);
   const pills = toPreconditions(preconditions);
   const activeSeconds = Math.floor(tickCount / 50);
   const missing = missingPreconditions(preconditions);
+
+  const disabledReason = (() => {
+    const reasons: string[] = [];
+    if (missing.length > 0) reasons.push(`Missing: ${missing.join(", ")}`);
+    if (engageReady === false && engageBlockedBy) reasons.push(`Blocked: ${engageBlockedBy}`);
+    return reasons.length > 0 ? reasons.join(" | ") : undefined;
+  })();
 
   const handleEngageClick = () => {
     if (effectiveState === "Off") dispatch("engage");
@@ -139,7 +159,7 @@ export function AutopilotStatusCard() {
           state={engageState}
           hotkey={effectiveState === "Off" ? "F5" : "F6"}
           onClick={handleEngageClick}
-          disabledReason={missing.length > 0 ? `Missing: ${missing.join(", ")}` : undefined}
+          disabledReason={disabledReason}
         />
         {effectiveState === "Fault" && faultReason && (
           <p className="text-xs font-mono text-danger">{faultReason}</p>
@@ -147,6 +167,8 @@ export function AutopilotStatusCard() {
       </div>
 
       <PreconditionRow preconditions={pills} />
+
+      <EngagementChecklist />
 
       {disconnected && (
         <p className="text-xs text-fg-muted">Daemon offline.</p>

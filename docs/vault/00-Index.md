@@ -131,6 +131,20 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-6.5p-Steering-Safeguards]] — **CLOSED 2026-05-21**: Heading-Mismatch-Detection (1.4 rad Threshold) + Steering-Rate-Limiter (±0.1/Tick). Vollanschlag bei falschem Engage-Heading verhindert. 26/26 Tests grün.
 - [[01-Phases/Phase-6.5q-Heading-Filter-Auto-Replan]] — **CLOSED 2026-05-21**: Heading-Filter beim Router-Snap (dot>=0.5) + Auto-Replan wenn Truck off-route. OFF_ROUTE_DETECT_RADIUS=50m. 5 Diagnose-Keys. 18/18 Tests grün.
 
+## Block 2 — Engagement-Stabilisierung (6.5o.1–6.5t)
+
+**→ [[01-Phases/Block-2-Engagement]]** — Abschluss-Report des gesamten Blocks.
+
+| Phase | Status | Commit | Kernfeature |
+|---|---|---|---|
+| 6.5o.1 | CLOSED 2026-05-21 | uncommitted | Locked-DLL als Error (Exit 2), Fehler-Collection statt Silent-Fail |
+| 6.5p | CLOSED 2026-05-21 | `1e4bad13` | Heading-Mismatch-Stop (1.4 rad) + Steering-Rate-Limiter (±0.1/Tick) |
+| 6.5q | CLOSED 2026-05-21 | `5b874ed3` | Heading-Filter beim Snap (dot>=0.5) + Auto-Replan (max 3/Engagement) |
+| 6.5q.1 | CLOSED 2026-05-21 | uncommitted | Synchroner A*-Replan bei UserEngage (~170ms, verhindert stale Route) |
+| 6.5r | CLOSED 2026-05-21 | uncommitted | UI Engagement-Checklist (6 Preconditions mit Live-Detail-Werten) |
+| 6.5s | CLOSED 2026-05-21 | uncommitted | Drei-Stufen Heading-Response (Normal/SoftLaneKeep/AutoReplan/Disengaging) |
+| 6.5t | CLOSED 2026-05-21 | uncommitted | Sliding-Window Snap-Stabilisierung (5 Ticks, Majority 3/5, Hysterese 4/5) |
+
 ## Open Threads (Phase 6.2 follow-ups)
 
 - Watchdog 6.2g (Sub-Session A,B,C per outputs/claude/watchdog_6_2g.txt)
