@@ -129,17 +129,36 @@ impl LaneKeeperPlugin {
             }
         }
 
+        // Route-End-Guard: at last waypoint, no look-ahead possible
+        if self.progress_idx + 1 >= self.waypoints.len() {
+            ctx.blackboard.set("lane_keeper.skip_reason", "route_end");
+            ctx.blackboard.set("lane_keeper.error_rad", "0.0");
+            ctx.blackboard.set("lane_keeper.progress_idx_after_advance", self.progress_idx.to_string());
+            ctx.blackboard.set("lane_keeper.waypoints_remaining", "0");
+            ctx.blackboard.set("lane_keeper.advance_check_dist", "0.00");
+            ctx.blackboard.set("lane_keeper.walk_iterations", "0");
+            ctx.blackboard.set("lane_keeper.walk_accumulated_m", "0.00");
+            return 0.0;
+        }
+
+        // Distanz Truck → nächster WP (nach Guard garantiert in-bounds)
+        let [nx, nz] = self.waypoints[self.progress_idx + 1];
+        let advance_check_dist = ((tx - nx).powi(2) + (tz - nz).powi(2)).sqrt();
+
         // Speed-adaptive look-ahead
         let look_ahead = BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR;
 
-        // Walk forward along waypoints to find look-ahead point
-        let mut look_x = self.waypoints[self.progress_idx][0];
-        let mut look_z = self.waypoints[self.progress_idx][1];
+        // Walk forward along waypoints to find look-ahead point.
+        // Start from truck position so accumulated distance matches actual look-ahead.
+        let mut look_x = tx;
+        let mut look_z = tz;
         let mut accumulated = 0.0;
+        let mut walk_iterations: usize = 0;
 
         for &[px, pz] in &self.waypoints[(self.progress_idx + 1)..] {
             let seg = ((px - look_x).powi(2) + (pz - look_z).powi(2)).sqrt();
             accumulated += seg;
+            walk_iterations += 1;
             look_x = px;
             look_z = pz;
             if accumulated >= look_ahead {
@@ -158,6 +177,18 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.dx", format!("{:.2}", look_x - tx));
         ctx.blackboard
             .set("lane_keeper.dz", format!("{:.2}", look_z - tz));
+        ctx.blackboard
+            .set("lane_keeper.walk_iterations", walk_iterations.to_string());
+        ctx.blackboard
+            .set("lane_keeper.walk_accumulated_m", format!("{accumulated:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.advance_check_dist", format!("{advance_check_dist:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.progress_idx_after_advance", self.progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.waypoints_remaining",
+            self.waypoints.len().saturating_sub(self.progress_idx + 1).to_string(),
+        );
 
         let dx = look_x - tx;
         let dz = look_z - tz;
@@ -613,5 +644,106 @@ mod tests {
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
         assert!((-1.0..=1.0).contains(&s), "output out of range: {s}");
+    }
+
+    // ---- Phase 6.5m: Route-End-Guard + Walk-from-Truck-Position tests --------
+
+    /// Route-End-Guard: when progress_idx is at the last waypoint,
+    /// compute_heading_error must return 0.0 and set skip_reason = "route_end".
+    #[test]
+    fn route_end_returns_zero_error() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [10.0, 0.0]],
+            progress_idx: 1, // last waypoint
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck near last waypoint but not at it
+        let err = plugin.compute_heading_error(9.0, 0.0, 0.0, 0.0, &ctx);
+        assert_eq!(err, 0.0, "Route-End-Guard must return 0.0, got {err}");
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("route_end"),
+            "skip_reason must be 'route_end'"
+        );
+    }
+
+    /// Progress advances when truck is within WAYPOINT_REACH_M of next waypoint,
+    /// and stops when the following waypoint is out of range.
+    #[test]
+    fn progress_advances_when_truck_near_next_waypoint() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]],
+            progress_idx: 0,
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck at (6, 0): dist to WP[1]=(10,0) is 4.0 < 5.0 → advance to 1.
+        // dist to WP[2]=(20,0) is 14.0 > 5.0 → stop advancing.
+        plugin.compute_heading_error(6.0, 0.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            plugin.progress_idx, 1,
+            "progress_idx must be 1 after advancing past WP[1], got {}",
+            plugin.progress_idx
+        );
+    }
+
+    /// Look-ahead walk starts from the truck's position (progress_idx waypoint),
+    /// not from progress_idx+1. Verifies the look point for a simple straight route.
+    #[test]
+    fn lookahead_starts_from_truck_position() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, 0.0], [40.0, 0.0]],
+            progress_idx: 0,
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck at (0,0). Walk over waypoints[0..]:
+        //   iter 1: (0,0)→WP[0](0,0) = 0m, accumulated=0, look=(0,0)
+        //   iter 2: (0,0)→WP[1](20,0) = 20m, accumulated=20 >= 5 → break, look=(20,0)
+        plugin.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.look_x").as_deref(),
+            Some("20.00"),
+            "look_x must be 20.00"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.look_z").as_deref(),
+            Some("0.00"),
+            "look_z must be 0.00"
+        );
+    }
+
+    /// Walk accumulates distance across multiple short waypoint segments until
+    /// the look-ahead distance is reached.
+    #[test]
+    fn lookahead_walks_through_multiple_waypoints() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![
+                [0.0, 0.0],
+                [3.0, 0.0],
+                [6.0, 0.0],
+                [9.0, 0.0],
+                [12.0, 0.0],
+            ],
+            progress_idx: 0,
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck at (0,0). The advance loop first runs: dist to WP[1]=(3,0) is 3m < 5m
+        // → progress_idx advances to 1. dist to WP[2]=(6,0) is 6m > 5m → stops.
+        // Walk iterates waypoints[(1+1)..] = waypoints[2..], starting from truck (0,0):
+        //   iter 1: (0,0)→WP[2](6,0) = 6m, accumulated=6 >= 5 → break, look=(6,0)
+        plugin.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.walk_iterations").as_deref(),
+            Some("1"),
+            "walk_iterations must be 1 (truck→WP[2] = 6m satisfies look_ahead=5m immediately)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.look_x").as_deref(),
+            Some("6.00"),
+            "look_x must be 6.00"
+        );
     }
 }
