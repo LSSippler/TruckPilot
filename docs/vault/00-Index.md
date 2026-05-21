@@ -122,6 +122,14 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 ## Build-System Improvements
 
 - **xtask copy-plugins** (2026-05-15): `cargo xtask copy-plugins` deploys all `truckpilot_plugin_*.dll` from `target/release/` to `plugins/`. `hello-world` demo moved from `crates/plugins/` to `crates/examples/`, `libhello_world.so` removed from `plugins/`.
+- [[01-Phases/Phase-6.5o-Plugin-DLL-Auto-Copy]] — **CLOSED 2026-05-21**: `cargo build-release` alias (xtask build-release subcommand) auto-deploys all plugin DLLs after build. `cargo deploy-ets2` for Telemetry-DLL. `scripts/ship.ps1` as PowerShell fallback. Commit `bd9d885c`.
+
+- [[01-Phases/Phase-6.5k-Lane-Keeper-Waypoint-Reload]] — **CLOSED 2026-05-20**: Stale-Waypoint-Bug behoben. Hash-basierter Reload-Trigger ersetzt `is_empty()`-Guard. Disengage leert Cache. 12/12 Tests grün.
+- [[01-Phases/Phase-6.5l-Heading-Konvention-Fix]] — **CLOSED 2026-05-20**: ETS2-Konvention-Fix `atan2(dz)` → `atan2(-dz)`. error_rad 2.08→0.39 rad, kein Vollanschlag mehr. 15/15 Tests grün.
+- [[01-Phases/Phase-6.5m-Progress-Idx-Advance-Fix]] — **CLOSED 2026-05-21**: Route-End-Guard + Walk ab Truck-Position. Reviewer-Agent verhinderte Backward-Walk-Bug. 19/19 Tests grün.
+- [[01-Phases/Phase-6.5n-Engaging-Timeout-Fix]] — **CLOSED 2026-05-21**: Glitch-Tolerance für Engaging-Preconditions. Hard-Reset bei Glitches verhindert, PRECONDITION_GLITCH_TOLERANCE=10. 7 Diagnose-BB-Keys. 63/63 Tests grün.
+- [[01-Phases/Phase-6.5p-Steering-Safeguards]] — **CLOSED 2026-05-21**: Heading-Mismatch-Detection (1.4 rad Threshold) + Steering-Rate-Limiter (±0.1/Tick). Vollanschlag bei falschem Engage-Heading verhindert. 26/26 Tests grün.
+- [[01-Phases/Phase-6.5q-Heading-Filter-Auto-Replan]] — **CLOSED 2026-05-21**: Heading-Filter beim Router-Snap (dot>=0.5) + Auto-Replan wenn Truck off-route. OFF_ROUTE_DETECT_RADIUS=50m. 5 Diagnose-Keys. 18/18 Tests grün.
 
 ## Open Threads (Phase 6.2 follow-ups)
 

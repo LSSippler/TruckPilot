@@ -24,6 +24,13 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 | `router.active` | router plugin | core/state_machine, lane-keeper | `"true"`/`"false"` | `"false"` | per-PhaseA-tick |
 | `router.waypoints` | router plugin | lane-keeper | JSON `[[x,z],...]` | absent | per-replan (PhaseA, 1Hz) |
 | `router.graph_path` | UI/config | router (on_load) | path string | (default) | persistent |
+| `router.last_planning_attempt_at` | router plugin | diag | u64 epoch ms | `""` | per-request |
+| `router.last_snap_dist` | router plugin | diag | f64 metres `"{:.1}"` | `"0"` | per-replan |
+| `router.last_snap_heading_filter_applied` | router plugin | diag | `"true"`/`"false"` | `"false"` | per-replan |
+| `router.auto_replan_count` | router plugin | diag, UI | u32 | `"0"` | per-tick |
+| `router.auto_replan_triggered_at` | router plugin | diag | u64 epoch ms | `""` | per-auto-replan |
+| `router.last_replan_reason` | router plugin | diag | `"off_route"` or `""` | `""` | per-tick |
+| `state.precondition_route_ok` | router plugin (on max-replan-exhaustion) | core/state_machine | `"false"` | absent | written on failure |
 | `sign.speed_limit_kmh` | sign-reader (`source=map`), sign-vision (`source=vision`) | speed-controller | f64 km/h | absent | persistent until next sign |
 | `sign.source` | sign-reader / sign-vision | sign-vision (gate-check) | `"map"`/`"vision"` | absent | per-sign |
 | `sign_vision.speed_limit_kmh` | speed-controller (test fixture) | speed-controller (test) | f64 | absent | test-only |

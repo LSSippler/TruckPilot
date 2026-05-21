@@ -7,10 +7,11 @@
 //! The plugin tick is non-blocking (<5 ms):
 //!   1. Poll worker result via `try_recv` (zero-copy if no result ready)
 //!   2. Detect goal changes; submit a new request immediately
+//!      2.5 Off-route auto-replan check (Phase 6.5q)
 //!   3. Trigger a periodic replan on PhaseA cadence if not pending
 //!   4. Publish current state to the blackboard
 //!
-//! Heavy A* work (find_nearest + A*) runs on the `router-worker` thread.
+//! Heavy A* work (heading-aware snap + A*) runs on the `router-worker` thread.
 //!
 //! ## Diagnostic Blackboard Keys (Phase 6.5c)
 //!
@@ -25,6 +26,11 @@
 //! | router.last_planning_error_detail| string | Human-readable failure reason      |
 //! | router.waypoint_count            | u32    | Waypoints in current plan (0=none) |
 //! | router.path_total_distance_m     | f64    | Total route distance in metres     |
+//! | router.last_snap_dist            | f64    | Distance to snapped start node (m) |
+//! | router.last_snap_heading_filter_applied | bool | Whether heading filter was used |
+//! | router.auto_replan_count         | u32    | Number of auto-replans triggered   |
+//! | router.auto_replan_triggered_at  | u64    | Epoch ms of last auto-replan       |
+//! | router.last_replan_reason        | string | "off_route" or ""                  |
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -37,6 +43,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
+/// Wider radius for off-route detection vs the 20m A*-snap limit.
+/// Highway nodes can be spaced >20m apart; 50m avoids false "on-route" gaps.
+const OFF_ROUTE_DETECT_RADIUS_M: f64 = 50.0;
 
 fn epoch_ms() -> u64 {
     SystemTime::now()
@@ -96,16 +105,93 @@ struct RouterGraph {
 }
 
 impl RouterGraph {
-    fn find_nearest(&self, x: f64, z: f64) -> Option<u64> {
-        self.nodes
+    /// Snap with heading filter and distance limit.
+    /// truck_heading in radians, ETS2 convention (0 = -Z/Nord, clockwise).
+    /// Falls back to geometric nearest if no heading-compatible candidate exists.
+    /// Returns (node_uid, distance_m, heading_filter_used). heading_filter_used=false means fallback.
+    fn find_nearest_with_heading(
+        &self,
+        x: f64,
+        z: f64,
+        heading: f64,
+        max_dist_m: f64,
+    ) -> Option<(u64, f64, bool)> {
+        let hx = heading.sin();
+        let hz = -heading.cos();
+        let max_dist_sq = max_dist_m * max_dist_m;
+
+        let candidates: Vec<(u64, f64, f64, f64)> = self
+            .nodes
             .iter()
-            .map(|&(uid, nx, nz)| {
+            .filter_map(|&(uid, nx, nz)| {
                 let dx = nx - x;
                 let dz = nz - z;
-                (uid, dx * dx + dz * dz)
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq <= max_dist_sq {
+                    Some((uid, nx, nz, dist_sq.sqrt()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let filtered: Vec<(u64, f64)> = candidates
+            .iter()
+            .filter(|&&(uid, nx, nz, _)| {
+                self.edges.iter().any(|&(from, to, _)| {
+                    if from != uid {
+                        return false;
+                    }
+                    if let Some(&(tx, tz)) = self.positions.get(&to) {
+                        let ex = tx - nx;
+                        let ez = tz - nz;
+                        let len = (ex * ex + ez * ez).sqrt();
+                        if len < 1.0 {
+                            return false;
+                        }
+                        ex / len * hx + ez / len * hz >= 0.5
+                    } else {
+                        false
+                    }
+                })
+            })
+            .map(|&(uid, _, _, dist)| (uid, dist))
+            .collect();
+
+        if filtered.is_empty() {
+            tracing::warn!("[router] heading_filter_no_candidate, using geometric fallback");
+            candidates
+                .into_iter()
+                .min_by(|a, b| a.3.total_cmp(&b.3))
+                .map(|(uid, _, _, dist)| (uid, dist, false))
+        } else {
+            filtered
+                .into_iter()
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(uid, dist)| (uid, dist, true))
+        }
+    }
+
+    /// Pure geometric snap within distance limit. Used for off-route checks.
+    fn find_nearest_geometric(&self, x: f64, z: f64, max_dist_m: f64) -> Option<(u64, f64)> {
+        let max_dist_sq = max_dist_m * max_dist_m;
+        self.nodes
+            .iter()
+            .filter_map(|&(uid, nx, nz)| {
+                let dx = nx - x;
+                let dz = nz - z;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq <= max_dist_sq {
+                    Some((uid, dist_sq.sqrt()))
+                } else {
+                    None
+                }
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(uid, _)| uid)
     }
 }
 
@@ -116,6 +202,7 @@ impl RouterGraph {
 struct RouteRequest {
     truck_x: f64,
     truck_z: f64,
+    truck_heading: f64,
     goal_uid: u64,
 }
 
@@ -129,6 +216,9 @@ struct RouteResult {
     plan_ms: u64,
     result_kind: String,
     error_detail: String,
+    route_node_ids: Vec<u64>,
+    snap_dist_m: f64,
+    heading_filter_applied: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +245,15 @@ pub struct RouterPlugin {
     last_planning_duration_ms: u64,
     waypoint_count: u32,
     path_total_distance_m: f64,
+    // ---- Phase 6.5q: Snap diagnostic ----
+    last_snap_dist_m: f64,
+    last_snap_heading_filter_applied: bool,
+    // ---- Phase 6.5q: Off-route auto-replan ----
+    current_route_node_ids: HashSet<u64>,
+    auto_replan_count: u32,
+    last_auto_replan_at_ms: u64,
+    last_replan_reason: String,
+    last_replan_snap_pos: Option<(f64, f64)>,
 }
 
 impl Default for RouterPlugin {
@@ -174,6 +273,13 @@ impl Default for RouterPlugin {
             last_planning_duration_ms: 0,
             waypoint_count: 0,
             path_total_distance_m: 0.0,
+            last_snap_dist_m: 0.0,
+            last_snap_heading_filter_applied: false,
+            current_route_node_ids: HashSet::new(),
+            auto_replan_count: 0,
+            last_auto_replan_at_ms: 0,
+            last_replan_reason: String::new(),
+            last_replan_snap_pos: None,
         }
     }
 }
@@ -264,13 +370,14 @@ impl RouterPlugin {
         self.worker_handle = Some(handle);
     }
 
-    fn send_route_request(&mut self, pos_x: f64, pos_z: f64, ctx: &PluginContext) {
+    fn send_route_request(&mut self, pos_x: f64, pos_z: f64, truck_heading: f64, ctx: &PluginContext) {
         if let Some(chan) = &self.request_tx {
             ctx.blackboard
                 .set("router.last_planning_attempt_at", epoch_ms().to_string());
             let _ = chan.send(RouteRequest {
                 truck_x: pos_x,
                 truck_z: pos_z,
+                truck_heading,
                 goal_uid: self.goal_uid,
             });
             self.pending_request = true;
@@ -305,26 +412,41 @@ fn router_worker_loop(
                     req.goal_uid,
                     graph.nodes.len()
                 ),
+                route_node_ids: vec![],
+                snap_dist_m: 0.0,
+                heading_filter_applied: false,
             });
             continue;
         }
 
-        // Find nearest graph node to the truck's current position.
-        let Some(start_uid) = graph.find_nearest(req.truck_x, req.truck_z) else {
-            let _ = res_tx.send(RouteResult {
-                goal_uid: req.goal_uid,
-                success: false,
-                waypoints: vec![],
-                waypoint_count: 0,
-                distance_m: 0.0,
-                plan_ms: t_start.elapsed().as_millis() as u64,
-                result_kind: "start_node_unknown".to_string(),
-                error_detail: format!(
-                    "Start position ({:.1}, {:.1}) has no nearby graph node",
-                    req.truck_x, req.truck_z,
-                ),
-            });
-            continue;
+        // Find nearest graph node to the truck's current position (heading-aware).
+        let snap_result = graph.find_nearest_with_heading(
+            req.truck_x,
+            req.truck_z,
+            req.truck_heading,
+            20.0,
+        );
+        let (start_uid, snap_dist_m, heading_filter_applied) = match snap_result {
+            Some(r) => r,
+            None => {
+                let _ = res_tx.send(RouteResult {
+                    goal_uid: req.goal_uid,
+                    success: false,
+                    waypoints: vec![],
+                    waypoint_count: 0,
+                    distance_m: 0.0,
+                    plan_ms: t_start.elapsed().as_millis() as u64,
+                    result_kind: "start_node_unknown".to_string(),
+                    error_detail: format!(
+                        "Start position ({:.1}, {:.1}) has no nearby graph node within 20m",
+                        req.truck_x, req.truck_z,
+                    ),
+                    route_node_ids: vec![],
+                    snap_dist_m: 0.0,
+                    heading_filter_applied: false,
+                });
+                continue;
+            }
         };
 
         tracing::info!(
@@ -335,6 +457,7 @@ fn router_worker_loop(
 
         match RouterPlugin::plan(&graph.nodes, &graph.edges, start_uid, req.goal_uid) {
             Some((path, total_dist)) => {
+                let route_node_ids = path.clone();
                 let waypoints: Vec<[f64; 2]> = path
                     .iter()
                     .filter_map(|uid| graph.positions.get(uid).copied().map(|(x, z)| [x, z]))
@@ -356,6 +479,9 @@ fn router_worker_loop(
                     plan_ms,
                     result_kind: "ok".to_string(),
                     error_detail: String::new(),
+                    route_node_ids,
+                    snap_dist_m,
+                    heading_filter_applied,
                 });
             }
             None => {
@@ -371,6 +497,9 @@ fn router_worker_loop(
                         "No path from start UID {} to goal UID {} after graph search",
                         start_uid, req.goal_uid
                     ),
+                    route_node_ids: vec![],
+                    snap_dist_m: 0.0,
+                    heading_filter_applied: false,
                 });
             }
         }
@@ -484,6 +613,11 @@ impl Plugin for RouterPlugin {
                 &self.last_seen_goal_str
             },
         );
+        ctx.blackboard.set("router.last_snap_dist", "0");
+        ctx.blackboard.set("router.last_snap_heading_filter_applied", "false");
+        ctx.blackboard.set("router.auto_replan_count", "0");
+        ctx.blackboard.set("router.auto_replan_triggered_at", "");
+        ctx.blackboard.set("router.last_replan_reason", "");
     }
 
     fn on_unload(&mut self) {
@@ -522,6 +656,10 @@ impl Plugin for RouterPlugin {
                                 self.waypoint_count = result.waypoint_count as u32;
                                 self.path_total_distance_m = result.distance_m;
                                 self.active = true;
+                                self.last_snap_dist_m = result.snap_dist_m;
+                                self.last_snap_heading_filter_applied = result.heading_filter_applied;
+                                self.current_route_node_ids =
+                                    result.route_node_ids.iter().copied().collect();
                                 tracing::info!(
                                     "[router] route ready: {} waypoints, {:.1}km, {}ms",
                                     result.waypoint_count,
@@ -568,19 +706,29 @@ impl Plugin for RouterPlugin {
 
             if goal_str.is_empty() {
                 self.goal_uid = 0;
+                self.current_route_node_ids.clear();
+                self.auto_replan_count = 0;
+                self.last_replan_snap_pos = None;
+                self.last_auto_replan_at_ms = 0;
+                self.last_replan_reason = String::new();
                 ctx.blackboard.set("router.current_goal_uid", "");
                 tracing::info!("[router] goal cleared");
             } else {
                 match goal_str.trim().parse::<u64>() {
                     Ok(uid) => {
                         self.goal_uid = uid;
+                        self.auto_replan_count = 0;
+                        self.last_replan_snap_pos = None;
+                        self.last_auto_replan_at_ms = 0;
+                        self.last_replan_reason = String::new();
                         ctx.blackboard.set("router.current_goal_uid", &goal_str);
                         tracing::info!("[router] new goal received: uid={}", uid);
                         // Submit immediately for fast feedback.
                         let (pos_x, pos_z) = telemetry
                             .map(|t| (t.position[0], t.position[2]))
                             .unwrap_or((0.0, 0.0));
-                        self.send_route_request(pos_x, pos_z, ctx);
+                        let truck_heading = telemetry.map(|t| t.heading).unwrap_or(0.0);
+                        self.send_route_request(pos_x, pos_z, truck_heading, ctx);
                     }
                     Err(_) => {
                         self.goal_uid = 0;
@@ -602,12 +750,67 @@ impl Plugin for RouterPlugin {
             }
         }
 
+        // ── 2.5. Off-route auto-replan check ──────────────────────────────────
+        if self.goal_uid != 0 && !self.pending_request && !self.current_route_node_ids.is_empty() {
+            if let Some(tel) = telemetry {
+                let pos_x = tel.position[0];
+                let pos_z = tel.position[2];
+                let truck_on_route = self
+                    .graph
+                    .as_ref()
+                    .and_then(|g| g.find_nearest_geometric(pos_x, pos_z, OFF_ROUTE_DETECT_RADIUS_M))
+                    .map(|(uid, _)| self.current_route_node_ids.contains(&uid))
+                    .unwrap_or(true); // None → no node nearby → assume on route to avoid false replans
+
+                if !truck_on_route {
+                    let now_ms = epoch_ms();
+                    let rate_ok = now_ms.saturating_sub(self.last_auto_replan_at_ms) > 5_000;
+                    let hysteresis_ok = match self.last_replan_snap_pos {
+                        None => true,
+                        Some((lx, lz)) => {
+                            let dx = pos_x - lx;
+                            let dz = pos_z - lz;
+                            dx * dx + dz * dz > 50.0 * 50.0
+                        }
+                    };
+
+                    if self.auto_replan_count < 3 && rate_ok && hysteresis_ok {
+                        tracing::info!(
+                            "[router] truck off-route, auto-replanning (count={})",
+                            self.auto_replan_count + 1
+                        );
+                        self.auto_replan_count += 1;
+                        self.last_auto_replan_at_ms = now_ms;
+                        self.last_replan_snap_pos = Some((pos_x, pos_z));
+                        self.last_replan_reason = "off_route".to_string();
+                        self.send_route_request(pos_x, pos_z, tel.heading, ctx);
+                        ctx.blackboard
+                            .set("router.auto_replan_triggered_at", now_ms.to_string());
+                        ctx.blackboard
+                            .set("router.auto_replan_count", self.auto_replan_count.to_string());
+                        ctx.blackboard
+                            .set("router.last_replan_reason", "off_route");
+                    } else if self.auto_replan_count >= 3 {
+                        // Intentional latch: keep signaling every tick while still off-route.
+                        // Phase 6.5r state-machine will gate Engaging on this key.
+                        // Only cleared by a new goal (auto_replan_count reset → this branch skipped).
+                        ctx.blackboard.set("state.precondition_route_ok", "false");
+                        tracing::warn!(
+                            "[router] max replans ({}) reached, still off-route",
+                            self.auto_replan_count
+                        );
+                    }
+                }
+            }
+        }
+
         // ── 3. Periodic replan (PhaseA cadence, skip if request in flight) ────
         if ctx.is_replan_tick() && !self.pending_request && self.goal_uid != 0 {
             let (pos_x, pos_z) = telemetry
                 .map(|t| (t.position[0], t.position[2]))
                 .unwrap_or((0.0, 0.0));
-            self.send_route_request(pos_x, pos_z, ctx);
+            let truck_heading = telemetry.map(|t| t.heading).unwrap_or(0.0);
+            self.send_route_request(pos_x, pos_z, truck_heading, ctx);
         }
 
         // ── 4. Publish current state (every tick) ─────────────────────────────
@@ -619,6 +822,16 @@ impl Plugin for RouterPlugin {
             "router.path_total_distance_m",
             format!("{:.1}", self.path_total_distance_m),
         );
+        ctx.blackboard
+            .set("router.last_snap_dist", format!("{:.1}", self.last_snap_dist_m));
+        ctx.blackboard.set(
+            "router.last_snap_heading_filter_applied",
+            self.last_snap_heading_filter_applied.to_string(),
+        );
+        ctx.blackboard
+            .set("router.auto_replan_count", self.auto_replan_count.to_string());
+        ctx.blackboard
+            .set("router.last_replan_reason", &self.last_replan_reason);
     }
 }
 
@@ -863,6 +1076,177 @@ mod tests {
         assert_eq!(
             bb.get("router.last_planning_result").as_deref(),
             Some("uid_not_in_graph")
+        );
+    }
+
+    // ── Phase 6.5q: Snap und Auto-Replan Tests ──────────────────────────────────
+
+    /// Graph with two parallel anti-parallel lanes for heading filter tests.
+    fn dual_lane_graph() -> RouterGraph {
+        let nodes: Vec<(u64, f64, f64)> = vec![
+            (10, 0.0, 0.0),   // forward start
+            (11, 100.0, 0.0), // forward end
+            (20, 100.0, 5.0), // backward start (close to forward end)
+            (21, 0.0, 5.0),   // backward end
+        ];
+        let edges: Vec<(u64, u64, f64)> = vec![
+            (10, 11, 100.0), // forward: east (+X)
+            (20, 21, 100.0), // backward: west (-X)
+        ];
+        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
+        RouterGraph { nodes, edges, positions }
+    }
+
+    #[test]
+    fn heading_filter_accepts_forward_edge() {
+        let graph = dual_lane_graph();
+        // Truck at (2,0), heading π/2 (east): hx=1,hz=0
+        // Node 10 at (0,0) dist=2: edge 10→11 dir=(1,0), dot=1.0 ≥ 0.5 → accept
+        let result = graph.find_nearest_with_heading(2.0, 0.0, std::f64::consts::FRAC_PI_2, 20.0);
+        assert!(result.is_some());
+        let (uid, _, filter_used) = result.unwrap();
+        assert_eq!(uid, 10, "should snap to forward node 10, got {uid}");
+        assert!(filter_used, "heading filter should have found a candidate");
+    }
+
+    #[test]
+    fn heading_filter_falls_back_when_no_compatible_candidate() {
+        let graph = dual_lane_graph();
+        // Truck at (98,5), heading π/2 (east): only node 20 in range (dist≈2)
+        // Node 20's edge 20→21 dir=(-1,0), dot((-1,0),(1,0))=-1 < 0.5 → filter fails → fallback
+        let result = graph.find_nearest_with_heading(98.0, 5.0, std::f64::consts::FRAC_PI_2, 20.0);
+        assert!(result.is_some(), "fallback should return a result when filter has no candidates");
+        let (_, _, filter_used) = result.unwrap();
+        assert!(!filter_used, "fallback path should report heading_filter_applied=false");
+    }
+
+    #[test]
+    fn heading_filter_boundary_dot_at_threshold() {
+        // Edge at exactly 60° from truck heading: dot = cos(60°) = 0.5 → accepted
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 50.0, 86.6)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
+        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
+        let graph = RouterGraph { nodes, edges, positions };
+        // heading π/2 (east), edge dir ≈ (0.5, 0.866) normalized, dot with (1,0) ≈ 0.5
+        let result = graph.find_nearest_with_heading(0.0, 0.0, std::f64::consts::FRAC_PI_2, 20.0);
+        assert!(result.is_some());
+        let (uid, _, filter_used) = result.unwrap();
+        assert_eq!(uid, 1, "boundary dot≈0.5 should be accepted");
+        assert!(filter_used, "boundary case should be accepted by heading filter, not fallback");
+    }
+
+    #[test]
+    fn geometric_snap_returns_none_beyond_distance_limit() {
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![];
+        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
+        let graph = RouterGraph { nodes, edges, positions };
+        // Truck 25m from node 1
+        assert!(graph.find_nearest_geometric(25.0, 0.0, 20.0).is_none());
+    }
+
+    #[test]
+    fn geometric_snap_returns_node_within_limit() {
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![];
+        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
+        let graph = RouterGraph { nodes, edges, positions };
+        let result = graph.find_nearest_geometric(10.0, 0.0, 20.0);
+        assert!(result.is_some());
+        let (uid, dist) = result.unwrap();
+        assert_eq!(uid, 1);
+        assert!((dist - 10.0).abs() < 0.01, "dist={dist}");
+    }
+
+    #[test]
+    fn auto_replan_triggers_when_truck_off_route() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        // Simulate route only covering nodes 1 and 2
+        p.current_route_node_ids = vec![1u64, 2u64].into_iter().collect();
+
+        let bb = SharedBlackboard::new();
+        // PhaseC so periodic replan doesn't fire
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        // Truck at node 3 (200,0) — not in route {1,2}
+        let t = fake_telemetry_at(200.0, 0.0);
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(p.pending_request, "off-route should trigger auto-replan");
+        assert_eq!(p.auto_replan_count, 1);
+        assert_eq!(p.last_replan_reason, "off_route");
+    }
+
+    #[test]
+    fn auto_replan_does_not_trigger_when_on_route() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        // Truck at node 1 (0,0), route includes node 1 → on-route
+        p.current_route_node_ids = vec![1u64, 2u64, 3u64].into_iter().collect();
+
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(0.0, 0.0); // at node 1, dist=0 < 20m
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(!p.pending_request, "on-route should not trigger replan");
+        assert_eq!(p.auto_replan_count, 0);
+    }
+
+    #[test]
+    fn auto_replan_rate_limited() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        p.current_route_node_ids = vec![1u64].into_iter().collect();
+        // Simulate last replan just happened
+        p.last_auto_replan_at_ms = epoch_ms();
+        p.auto_replan_count = 1;
+
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        // Truck at node 2 (100,0) — not in route {1}
+        let t = fake_telemetry_at(100.0, 0.0);
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(!p.pending_request, "rate limit should block rapid replan");
+        assert_eq!(p.auto_replan_count, 1, "count must not increase");
+    }
+
+    #[test]
+    fn auto_replan_stops_at_max_three_and_sets_precondition() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+        p.current_route_node_ids = vec![1u64].into_iter().collect();
+        p.auto_replan_count = 3;
+        p.last_auto_replan_at_ms = 0; // rate limit expired
+
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(200.0, 0.0); // off-route
+
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(!p.pending_request, "no 4th replan");
+        assert_eq!(p.auto_replan_count, 3);
+        assert_eq!(
+            bb.get("state.precondition_route_ok").as_deref(),
+            Some("false"),
+            "must set state.precondition_route_ok=false after max replans"
         );
     }
 }
