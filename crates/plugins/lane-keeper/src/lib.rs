@@ -27,6 +27,13 @@ const DEFAULT_KP: f64 = 0.8;
 const DEFAULT_KI: f64 = 0.1;
 const DEFAULT_KD: f64 = 0.3;
 
+/// Max heading error before lane-keeper suspends steering and waits for user correction.
+/// ~80°: covers normal curves/lane-changes (≤45°) but blocks clear engage-mismatch cases.
+pub(crate) const HEADING_MISMATCH_THRESHOLD_RAD: f64 = 1.4;
+
+/// Max steering change per tick (~10% of full lock). At 3 Hz: 30%/s.
+const STEERING_MAX_DELTA_PER_TICK: f64 = 0.1;
+
 pub struct LaneKeeperPlugin {
     pid: Pid,
     waypoints: Vec<[f64; 2]>, // (x, z) pairs
@@ -35,6 +42,7 @@ pub struct LaneKeeperPlugin {
     subdivisions: usize,
     last_gains: (f64, f64, f64),
     last_waypoints_hash: u64,
+    previous_steering_out: f64,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -46,6 +54,7 @@ impl Default for LaneKeeperPlugin {
             subdivisions: 4,
             last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
             last_waypoints_hash: 0,
+            previous_steering_out: 0.0,
         }
     }
 }
@@ -102,6 +111,8 @@ impl LaneKeeperPlugin {
                     self.waypoints.len(),
                     new_hash
                 );
+                self.previous_steering_out = 0.0;
+                self.pid.reset();
             }
         }
     }
@@ -263,6 +274,7 @@ impl Plugin for LaneKeeperPlugin {
         // so the next engage starts from a clean PID state.
         if !ctx.is_active() {
             self.pid.reset();
+            self.previous_steering_out = 0.0;
             if !self.waypoints.is_empty() {
                 self.waypoints.clear();
                 self.last_waypoints_hash = 0;
@@ -286,6 +298,7 @@ impl Plugin for LaneKeeperPlugin {
         // protects us if the state lags by a tick.)
         if t.engine_rpm < 100.0 {
             self.pid.reset();
+            self.previous_steering_out = 0.0;
             // Phase 6.5g: mark inactive
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard
@@ -304,7 +317,34 @@ impl Plugin for LaneKeeperPlugin {
             t.speed_ms,
             ctx,
         );
-        let steering = self.pid.update(err, dt).clamp(-1.0, 1.0);
+
+        if err.abs() > HEADING_MISMATCH_THRESHOLD_RAD {
+            ctx.blackboard.set("lane_keeper.skip_reason", "heading_mismatch");
+            ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
+            ctx.blackboard.set("lane_keeper.error_rad", format!("{err:.6}"));
+            ctx.blackboard.set("lane_keeper.steering_out", "0.000000");
+            ctx.blackboard.set("lane_keeper.active", "true");
+            ctx.blackboard.set("lane_keeper.steering_rate_limited", "false");
+            ctx.blackboard.set("lane_keeper.steering_delta_clamped", "0.0000");
+            self.previous_steering_out = 0.0;
+            self.pid.reset();
+            return None;
+        }
+        ctx.blackboard.set("lane_keeper.heading_mismatch", "false");
+
+        let raw = self.pid.update(err, dt).clamp(-1.0, 1.0);
+
+        let delta_raw = raw - self.previous_steering_out;
+        let delta_clamped = delta_raw.clamp(-STEERING_MAX_DELTA_PER_TICK, STEERING_MAX_DELTA_PER_TICK);
+        let steering = self.previous_steering_out + delta_clamped;
+        self.previous_steering_out = steering;
+
+        let was_rate_limited = (delta_clamped - delta_raw).abs() > 1e-9;
+        ctx.blackboard.set("lane_keeper.steering_rate_limited", was_rate_limited.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.steering_delta_clamped",
+            format!("{:.4}", delta_raw - delta_clamped),
+        );
 
         // Phase 6.5g: Diagnose-Blackboard-Writes fuer Bug-Hunting
         ctx.blackboard.set("lane_keeper.active", "true");
@@ -481,7 +521,7 @@ mod tests {
     #[test]
     fn test_active_steering_with_waypoints() {
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [100.0, 0.0]], // east
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]], // leicht rechts von Nord: err ≈ 0.2 rad
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0); // heading north → must turn right
@@ -568,7 +608,7 @@ mod tests {
     #[test]
     fn test_pid_reset_on_state_exit() {
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
@@ -583,11 +623,11 @@ mod tests {
 
         // Off-state now clears the waypoint cache (Phase 6.5k). Restore
         // waypoints explicitly so the re-engage check has a path to steer.
-        lk.waypoints = vec![[0.0, 0.0], [100.0, 0.0]];
+        lk.waypoints = vec![[0.0, 0.0], [20.0, -100.0]];
 
         // Build a fresh plugin for an independent baseline.
         let mut fresh = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
         };
         let active2 = ctx_with_state("Active");
@@ -634,7 +674,7 @@ mod tests {
         // ctx.dt_s and assert the output is still within the controller
         // clamp range [-1, 1].
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]], // err ≈ 0.2 rad < threshold
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
@@ -744,6 +784,133 @@ mod tests {
             ctx.blackboard.get("lane_keeper.look_x").as_deref(),
             Some("6.00"),
             "look_x must be 6.00"
+        );
+    }
+
+    // ---- Phase 6.5p: Heading-Mismatch + Rate-Limiter tests --------------------
+
+    #[test]
+    fn heading_mismatch_above_threshold_returns_none() {
+        // err = π ≈ 3.14 >> 1.4 → mismatch, returns None
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, 100.0]], // Süd, truck heading Nord → err = π
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("heading_mismatch")
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn heading_mismatch_at_threshold_is_allowed() {
+        // err ≈ 0.2 rad << 1.4 → should NOT be blocked
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        assert!(lk.tick_request(Some(&t), &ctx).is_some());
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn steering_rate_limit_clamps_large_delta() {
+        // Large error → PID output large → rate limiter must clamp first tick to MAX_DELTA
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let req = lk.tick_request(Some(&t), &ctx).unwrap();
+        let s = req.steering.unwrap();
+        // From 0, delta cannot exceed STEERING_MAX_DELTA_PER_TICK
+        assert!(
+            s.abs() <= STEERING_MAX_DELTA_PER_TICK + 1e-9,
+            "first tick must not exceed max delta {}, got {s}",
+            STEERING_MAX_DELTA_PER_TICK
+        );
+    }
+
+    #[test]
+    fn steering_rate_limit_passes_small_delta() {
+        // Straight path → err ≈ 0 → PID output ≈ 0 → well within MAX_DELTA
+        let mut lk = active_plugin_with_straight_path();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let req = lk.tick_request(Some(&t), &ctx).unwrap();
+        let s = req.steering.unwrap();
+        assert!(s.abs() < STEERING_MAX_DELTA_PER_TICK, "straight path should be within rate limit, got {s}");
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.steering_rate_limited").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn previous_steering_resets_on_disengage() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        // Pump a few ticks to build up previous_steering_out
+        let active = ctx_with_state("Active");
+        for _ in 0..5 {
+            let _ = lk.tick_request(Some(&t), &active);
+        }
+        assert!(lk.previous_steering_out.abs() > 0.0, "should have non-zero previous_steering after 5 ticks");
+        // Disengage
+        let off = ctx_with_state("Off");
+        lk.tick_request(Some(&t), &off);
+        assert_eq!(lk.previous_steering_out, 0.0, "previous_steering must reset on disengage");
+    }
+
+    #[test]
+    fn previous_steering_resets_on_heading_mismatch() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        // Build up previous_steering_out
+        let active = ctx_with_state("Active");
+        for _ in 0..5 {
+            let _ = lk.tick_request(Some(&t), &active);
+        }
+        assert!(lk.previous_steering_out.abs() > 0.0);
+        // Now trigger mismatch (Süd-Waypoints, truck heading Nord)
+        lk.waypoints = vec![[0.0, 0.0], [0.0, 100.0]];
+        let _ = lk.tick_request(Some(&t), &active);
+        assert_eq!(lk.previous_steering_out, 0.0, "previous_steering must reset on heading_mismatch skip");
+    }
+
+    #[test]
+    fn heading_convention_north_regression_unaffected_by_mismatch() {
+        // Phase 6.5l regression: err ≈ 0 for straight north → mismatch check must not fire
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]], // Nord
+            ..Default::default()
+        };
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        let req = lk.tick_request(Some(&t), &ctx);
+        assert!(req.is_some(), "straight north must not trigger mismatch");
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
+            Some("false")
         );
     }
 }
