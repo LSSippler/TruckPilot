@@ -1,10 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("copy-plugins") => copy_plugins(args),
+        Some("copy-plugins") => copy_plugins(args, false),
+        Some("build-release") => build_release(),
+        Some("deploy-ets2-telemetry") => deploy_ets2_telemetry(args),
         Some(cmd) => {
             eprintln!("Unknown command: {cmd}");
             eprintln!();
@@ -22,13 +25,79 @@ fn print_usage() {
     eprintln!("Usage: cargo xtask <command>");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  copy-plugins [--debug]  Copy plugin DLLs from target/ to plugins/");
+    eprintln!("  copy-plugins [--debug]       Copy plugin DLLs from target/ to plugins/");
+    eprintln!("  build-release                cargo build --workspace --release, then copy-plugins");
+    eprintln!("  deploy-ets2-telemetry [DIR]  Copy truckpilot_telemetry.dll to ETS2 plugins dir");
     eprintln!();
-    eprintln!("Flags:");
+    eprintln!("Flags for copy-plugins:");
     eprintln!("  --debug   Copy from target/debug/ instead of target/release/");
+    eprintln!();
+    eprintln!("deploy-ets2-telemetry DIR: path to ETS2 bin/win_x64/plugins/");
+    eprintln!("  Falls back to ETS2_PLUGINS_DIR env var if DIR is omitted.");
 }
 
-fn copy_plugins(args: impl Iterator<Item = String>) {
+fn build_release() {
+    println!("==> cargo build --workspace --release");
+    let status = Command::new("cargo")
+        .args(["build", "--workspace", "--release"])
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to spawn cargo: {e}");
+            std::process::exit(1);
+        });
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    println!();
+    println!("==> Deploying plugin DLLs to plugins/");
+    // warn_on_error=true: a locked DLL from a running daemon is non-fatal
+    copy_plugins_impl("release", true);
+}
+
+fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
+    let root = workspace_root();
+    let src = root
+        .join("target")
+        .join("release")
+        .join("truckpilot_telemetry.dll");
+
+    if !src.exists() {
+        eprintln!("truckpilot_telemetry.dll not found at {}", src.display());
+        eprintln!("Run `cargo build --workspace --release` first.");
+        std::process::exit(1);
+    }
+
+    let dst_dir = args
+        .next()
+        .or_else(|| std::env::var("ETS2_PLUGINS_DIR").ok())
+        .unwrap_or_else(|| {
+            eprintln!("No destination directory provided.");
+            eprintln!("Usage: cargo deploy-ets2 <path/to/bin/win_x64/plugins/>");
+            eprintln!("  or set ETS2_PLUGINS_DIR env var.");
+            std::process::exit(1);
+        });
+
+    let dst_dir = PathBuf::from(&dst_dir);
+    if !dst_dir.exists() {
+        eprintln!("Destination directory does not exist: {}", dst_dir.display());
+        std::process::exit(1);
+    }
+
+    let dst = dst_dir.join("truckpilot_telemetry.dll");
+    match fs::copy(&src, &dst) {
+        Ok(_) => println!(
+            "Deployed truckpilot_telemetry.dll -> {}",
+            dst.display()
+        ),
+        Err(e) => {
+            eprintln!("Copy failed: {e}");
+            eprintln!("Is ETS2 running? Close it first.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn copy_plugins(args: impl Iterator<Item = String>, _warn_on_error: bool) {
     let mut debug = false;
     for arg in args {
         match arg.as_str() {
@@ -39,8 +108,11 @@ fn copy_plugins(args: impl Iterator<Item = String>) {
             }
         }
     }
-
     let profile = if debug { "debug" } else { "release" };
+    copy_plugins_impl(profile, false);
+}
+
+fn copy_plugins_impl(profile: &str, warn_on_error: bool) {
     let root = workspace_root();
     let src = root.join("target").join(profile);
     let dst = root.join("plugins");
@@ -77,6 +149,7 @@ fn copy_plugins(args: impl Iterator<Item = String>) {
 
     // Copy matching plugin files from target/<profile>/.
     let mut copied = 0usize;
+    let mut warnings = 0usize;
     let entries = fs::read_dir(&src).unwrap_or_else(|e| {
         eprintln!("Cannot read {}: {e}", src.display());
         std::process::exit(1);
@@ -95,20 +168,38 @@ fn copy_plugins(args: impl Iterator<Item = String>) {
             continue;
         }
         let dst_path = dst.join(file_name);
-        fs::copy(&path, &dst_path).unwrap_or_else(|e| {
-            eprintln!(
-                "Cannot copy {} -> {}: {e}",
-                path.display(),
-                dst_path.display()
-            );
-            std::process::exit(1);
-        });
-        println!("  copied   {}", file_name.to_string_lossy());
-        copied += 1;
+        match fs::copy(&path, &dst_path) {
+            Ok(_) => {
+                println!("  copied   {}", file_name.to_string_lossy());
+                copied += 1;
+            }
+            Err(e) if warn_on_error => {
+                eprintln!(
+                    "  WARNING: cannot copy {} (daemon running?): {e}",
+                    file_name.to_string_lossy()
+                );
+                warnings += 1;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Cannot copy {} -> {}: {e}",
+                    path.display(),
+                    dst_path.display()
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     println!();
-    println!("{} plugin(s) deployed to plugins/", copied);
+    if warnings > 0 {
+        println!(
+            "{} plugin(s) deployed, {} skipped (file locked — stop daemon and run `cargo xtask copy-plugins`)",
+            copied, warnings
+        );
+    } else {
+        println!("{} plugin(s) deployed to plugins/", copied);
+    }
 }
 
 fn is_plugin_file(path: &Path) -> bool {

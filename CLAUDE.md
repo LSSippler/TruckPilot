@@ -20,6 +20,18 @@
 ## Sub-Agents
 - ipc-protocol-guard     — IPC-Synchronität prüfen
 - shadcn-styler          — UI-Polish-Reviews
+- engage-diagnostician   — Engage/Lane-Keeper/Blackboard-Diagnose (kein Code, nur Befund + Fix-Plan)
+
+## Build & Deploy
+
+| Befehl | Wann |
+|---|---|
+| `cargo build-release` | **Standard** — baut Workspace + deployed alle Plugin-DLLs nach `plugins/` automatisch |
+| `cargo xtask copy-plugins` | Manuell nachträglich deployen (z.B. nach abgebrochenem Deploy) |
+| `cargo deploy-ets2 [DIR]` | `truckpilot_telemetry.dll` nach ETS2 deployen (manuell, benötigt `ETS2_PLUGINS_DIR` env oder DIR-Arg) |
+| `.\scripts\ship.ps1` | Fallback-PowerShell-Wrapper, identisch zu `cargo build-release` |
+
+Hinweis bei laufendem Daemon: DLL-Copy kann fehlschlagen (locked). `cargo build-release` gibt dann eine **Warnung**, kein Fehler. Daemon stoppen und `cargo xtask copy-plugins` nachfahren.
 
 ## Phase-Status (Map-Parser)
 

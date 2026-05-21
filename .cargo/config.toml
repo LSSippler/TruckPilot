@@ -1,2 +1,4 @@
 [alias]
-xtask = "run --package xtask --release --"
+xtask         = "run --package xtask --release --"
+build-release = "run --package xtask --release -- build-release"
+deploy-ets2   = "run --package xtask --release -- deploy-ets2-telemetry"
