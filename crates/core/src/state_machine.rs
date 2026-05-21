@@ -28,6 +28,9 @@ const PAUSE_DETECT: u64 = 250; // 5 s stopped
 const PAUSE_TIMEOUT: u64 = 15_000; // 5 min
 const PRECONDITION_STABLE: u64 = 50; // 1 s
 const TELEMETRY_LOSS: u64 = 25; // 500 ms
+const CRUISE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before CruiseDeactivated fault
+const ENGINE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before EngineStopped fault
+const PRECONDITION_GLITCH_TOLERANCE: u64 = 10; // 200 ms at 50 Hz daemon tick rate
 const ZERO_SPEED_MS: f64 = 0.028; // ≈ 0.1 km/h
 
 // ---- AutopilotState --------------------------------------------------------
@@ -128,6 +131,19 @@ pub struct AutopilotStateMachine {
     /// Ticks-since-entering-current-state. Reset on every state transition
     /// initiated by `evaluate` or `handle_event`.
     state_entry_ticks: u64,
+    /// Consecutive ticks with cruise_control_kmh <= 0. Faults only after
+    /// [`CRUISE_OFF_TOLERANCE`] — protects against single-frame torn reads.
+    cruise_off_ticks: u64,
+    /// Consecutive ticks with engine_rpm <= 100. Faults only after
+    /// [`ENGINE_OFF_TOLERANCE`] — protects against single-frame glitches.
+    engine_off_ticks: u64,
+    /// Consecutive ticks where at least one precondition failed in Engaging.
+    /// Stable counter is only reset after this exceeds PRECONDITION_GLITCH_TOLERANCE.
+    precondition_failure_streak: u64,
+    /// Highest precondition_stable_ticks value reached during the current Engaging session.
+    max_stable_counter_in_engaging: u64,
+    /// Human-readable reason the last precondition check failed (diagnostic).
+    last_failure_reason: String,
 }
 
 impl Default for AutopilotStateMachine {
@@ -148,6 +164,11 @@ impl AutopilotStateMachine {
             precondition_stable_ticks: 0,
             ticks: 0,
             state_entry_ticks: 0,
+            cruise_off_ticks: 0,
+            engine_off_ticks: 0,
+            precondition_failure_streak: 0,
+            max_stable_counter_in_engaging: 0,
+            last_failure_reason: String::new(),
         }
     }
 
@@ -201,19 +222,47 @@ impl AutopilotStateMachine {
                 let pre = check_preconditions(telemetry, bb);
                 if pre.all_met() {
                     self.precondition_stable_ticks += 1;
+                    self.precondition_failure_streak = 0;
+                    if self.precondition_stable_ticks > self.max_stable_counter_in_engaging {
+                        self.max_stable_counter_in_engaging = self.precondition_stable_ticks;
+                    }
                 } else {
-                    self.precondition_stable_ticks = 0;
+                    self.precondition_failure_streak += 1;
+                    self.last_failure_reason = precondition_failure_reason(&pre).to_owned();
+                    if self.precondition_failure_streak >= PRECONDITION_GLITCH_TOLERANCE {
+                        if self.precondition_stable_ticks > 0 {
+                            tracing::warn!(
+                                "[state] Engaging: preconditions failed for {} ticks, resetting stable counter (was {}, reason: {})",
+                                self.precondition_failure_streak,
+                                self.precondition_stable_ticks,
+                                self.last_failure_reason,
+                            );
+                        }
+                        self.precondition_stable_ticks = 0;
+                    }
                 }
+                self.publish_precondition_diag(&pre, telemetry, bb);
                 if self.precondition_stable_ticks > PRECONDITION_STABLE {
                     tracing::info!("[state] Engaging -> Active (preconditions stable)");
                     self.state = AutopilotState::Active;
                     self.engaging_ticks = 0;
                     self.precondition_stable_ticks = 0;
+                    self.precondition_failure_streak = 0;
+                    self.cruise_off_ticks = 0;
+                    self.engine_off_ticks = 0;
                 } else if self.engaging_ticks > ENGAGE_TIMEOUT {
-                    tracing::warn!("[state] Engaging timed out -> Off");
+                    tracing::warn!(
+                        "[state] Engaging timed out -> Off (max_stable={}, last_failure={})",
+                        self.max_stable_counter_in_engaging,
+                        self.last_failure_reason,
+                    );
                     self.state = AutopilotState::Off;
                     self.engaging_ticks = 0;
                     self.precondition_stable_ticks = 0;
+                    self.precondition_failure_streak = 0;
+                    self.max_stable_counter_in_engaging = 0;
+                    self.cruise_off_ticks = 0;
+                    self.engine_off_ticks = 0;
                 }
             }
             AutopilotState::Active => {
@@ -224,18 +273,30 @@ impl AutopilotStateMachine {
                     if check_steering_override(Some(t)) {
                         tracing::info!("[state] Active -> Off (steering override)");
                         self.state = AutopilotState::Off;
+                        self.cruise_off_ticks = 0;
+                        self.engine_off_ticks = 0;
                         self.publish(bb);
                         return self.state;
                     }
                     if t.engine_rpm <= 100.0 {
-                        self.transition_to_fault(FailureReason::EngineStopped);
-                        self.publish(bb);
-                        return self.state;
+                        self.engine_off_ticks += 1;
+                        if self.engine_off_ticks > ENGINE_OFF_TOLERANCE {
+                            self.transition_to_fault(FailureReason::EngineStopped);
+                            self.publish(bb);
+                            return self.state;
+                        }
+                    } else {
+                        self.engine_off_ticks = 0;
                     }
                     if t.cruise_control_kmh <= 0.0 {
-                        self.transition_to_fault(FailureReason::CruiseDeactivated);
-                        self.publish(bb);
-                        return self.state;
+                        self.cruise_off_ticks += 1;
+                        if self.cruise_off_ticks > CRUISE_OFF_TOLERANCE {
+                            self.transition_to_fault(FailureReason::CruiseDeactivated);
+                            self.publish(bb);
+                            return self.state;
+                        }
+                    } else {
+                        self.cruise_off_ticks = 0;
                     }
                     if t.speed_ms.abs() < ZERO_SPEED_MS {
                         self.stopped_ticks += 1;
@@ -247,6 +308,8 @@ impl AutopilotStateMachine {
                         self.state = AutopilotState::Paused;
                         self.paused_ticks = 0;
                         self.stopped_ticks = 0;
+                        self.cruise_off_ticks = 0;
+                        self.engine_off_ticks = 0;
                     }
                 }
             }
@@ -257,10 +320,14 @@ impl AutopilotStateMachine {
                     self.state = AutopilotState::Active;
                     self.paused_ticks = 0;
                     self.stopped_ticks = 0;
+                    self.cruise_off_ticks = 0;
+                    self.engine_off_ticks = 0;
                 } else if self.paused_ticks > PAUSE_TIMEOUT {
                     tracing::info!("[state] Paused -> Off (5 min timeout)");
                     self.state = AutopilotState::Off;
                     self.paused_ticks = 0;
+                    self.cruise_off_ticks = 0;
+                    self.engine_off_ticks = 0;
                 }
             }
             AutopilotState::Fault => {}
@@ -286,6 +353,11 @@ impl AutopilotStateMachine {
                 self.state = AutopilotState::Engaging;
                 self.engaging_ticks = 0;
                 self.precondition_stable_ticks = 0;
+                self.precondition_failure_streak = 0;
+                self.max_stable_counter_in_engaging = 0;
+                self.last_failure_reason = String::new();
+                self.cruise_off_ticks = 0;
+                self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
             }
             (AutopilotState::Engaging, AutopilotEvent::UserDisengage)
@@ -297,12 +369,16 @@ impl AutopilotStateMachine {
                 self.paused_ticks = 0;
                 self.stopped_ticks = 0;
                 self.precondition_stable_ticks = 0;
+                self.cruise_off_ticks = 0;
+                self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
             }
             (AutopilotState::Fault, AutopilotEvent::UserReset) => {
                 tracing::info!("[state] Fault -> Off (user reset)");
                 self.state = AutopilotState::Off;
                 self.fault_reason = None;
+                self.cruise_off_ticks = 0;
+                self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
             }
             (_, AutopilotEvent::FaultDetected(reason)) => {
@@ -360,6 +436,11 @@ impl AutopilotStateMachine {
         }
     }
 
+    fn reset_debounce_counters(&mut self) {
+        self.cruise_off_ticks = 0;
+        self.engine_off_ticks = 0;
+    }
+
     fn transition_to_fault(&mut self, reason: FailureReason) {
         self.state = AutopilotState::Fault;
         self.fault_reason = Some(reason);
@@ -367,6 +448,10 @@ impl AutopilotStateMachine {
         self.paused_ticks = 0;
         self.stopped_ticks = 0;
         self.precondition_stable_ticks = 0;
+        self.precondition_failure_streak = 0;
+        self.max_stable_counter_in_engaging = 0;
+        self.last_failure_reason = String::new();
+        self.reset_debounce_counters();
         self.state_entry_ticks = 0;
     }
 
@@ -376,6 +461,42 @@ impl AutopilotStateMachine {
             (Some(r), AutopilotState::Fault) => bb.set("autopilot.fault_reason", r.as_str()),
             _ => bb.set("autopilot.fault_reason", ""),
         }
+    }
+
+    fn publish_precondition_diag(
+        &self,
+        pre: &Preconditions,
+        telemetry: Option<&Telemetry>,
+        bb: &SharedBlackboard,
+    ) {
+        if self.state != AutopilotState::Engaging {
+            return;
+        }
+        bb.set("state.precondition_cruise_ok", pre.cruise_active.to_string());
+        bb.set("state.precondition_engine_ok", pre.engine_running.to_string());
+        bb.set(
+            "state.precondition_no_fault",
+            (pre.telemetry_ok && pre.critical_plugins_loaded && pre.router_active).to_string(),
+        );
+        bb.set(
+            "state.precondition_stable_ticks",
+            self.precondition_stable_ticks.to_string(),
+        );
+        bb.set(
+            "state.precondition_last_failure_reason",
+            &self.last_failure_reason,
+        );
+        bb.set(
+            "state.precondition_max_stable_counter",
+            self.max_stable_counter_in_engaging.to_string(),
+        );
+        bb.set(
+            "state.precondition_speed_ok",
+            telemetry
+                .map(|t| t.speed_ms > ZERO_SPEED_MS)
+                .unwrap_or(false)
+                .to_string(),
+        );
     }
 }
 
@@ -415,6 +536,20 @@ fn is_engine_running(telemetry: Option<&Telemetry>) -> bool {
 
 fn check_steering_override(_telemetry: Option<&Telemetry>) -> bool {
     false
+}
+
+fn precondition_failure_reason(pre: &Preconditions) -> &'static str {
+    if !pre.telemetry_ok {
+        "telemetry_lost"
+    } else if !pre.engine_running {
+        "engine_off"
+    } else if !pre.cruise_active {
+        "cruise_inactive"
+    } else if !pre.critical_plugins_loaded {
+        "plugins_missing"
+    } else {
+        "router_inactive"
+    }
 }
 
 // ---- Tests -----------------------------------------------------------------
@@ -592,9 +727,52 @@ mod tests {
         }
         let mut stalled = running;
         stalled.engine_rpm = 0.0;
+        // One bad frame should NOT trigger fault immediately — debounce check.
         sm.evaluate(Some(&stalled), &bb);
+        assert_eq!(sm.state(), AutopilotState::Active);
+        // After ENGINE_OFF_TOLERANCE + 1 ticks, fault fires.
+        for _ in 0..25 {
+            sm.evaluate(Some(&stalled), &bb);
+        }
         assert_eq!(sm.state(), AutopilotState::Fault);
         assert_eq!(sm.fault_reason(), Some(&FailureReason::EngineStopped));
+    }
+
+    fn engage_to_active(sm: &mut AutopilotStateMachine, bb: &SharedBlackboard, t: &Telemetry) {
+        sm.handle_event(AutopilotEvent::UserEngage, bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(t), bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    #[test]
+    fn single_cruise_glitch_does_not_fault() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let running = mock_running();
+        engage_to_active(&mut sm, &bb, &running);
+        let mut cc_off = running.clone();
+        cc_off.cruise_control_kmh = 0.0;
+        sm.evaluate(Some(&cc_off), &bb);
+        assert_eq!(sm.state(), AutopilotState::Active);
+        sm.evaluate(Some(&running), &bb);
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    #[test]
+    fn sustained_cruise_off_triggers_fault() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let running = mock_running();
+        engage_to_active(&mut sm, &bb, &running);
+        let mut cc_off = running.clone();
+        cc_off.cruise_control_kmh = 0.0;
+        for _ in 0..26 {
+            sm.evaluate(Some(&cc_off), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Fault);
+        assert_eq!(sm.fault_reason(), Some(&FailureReason::CruiseDeactivated));
     }
 
     #[test]
@@ -672,5 +850,200 @@ mod tests {
         sm.consume_requests(&bb);
         assert_eq!(sm.state(), AutopilotState::Engaging);
         assert!(bb.get("autopilot.engage_requested").is_none());
+    }
+
+    // ---- Phase 6.5n tests: glitch tolerance, reset logic, diag keys ----------
+
+    /// Glitch within PRECONDITION_GLITCH_TOLERANCE (5 bad frames ≤ 10) must NOT
+    /// reset stable_ticks. After 40 good + 5 bad + 12 good = stable reaches 52 → Active.
+    #[test]
+    fn precondition_glitch_within_tolerance_does_not_reset() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let good = mock_running();
+        let bad = mock_off();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        // 40 good ticks → stable_ticks = 40
+        for _ in 0..40 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 5 bad ticks (streak = 5 ≤ 10 → no reset)
+        for _ in 0..5 {
+            sm.evaluate(Some(&bad), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 12 good ticks: streak resets on first good tick, then stable increments
+        // stable_ticks goes 41, 42, … 52 on tick 12 → exceeds 50 → Active
+        for _ in 0..12 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    /// Glitch beyond PRECONDITION_GLITCH_TOLERANCE (11 bad frames > 10) resets
+    /// stable_ticks to 0. Machine stays in Engaging, then needs another 51 good
+    /// ticks to reach Active.
+    #[test]
+    fn precondition_failure_beyond_tolerance_resets() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let good = mock_running();
+        let bad = mock_off();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        // 40 good ticks → stable_ticks = 40
+        for _ in 0..40 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 11 bad ticks (streak = 11 > 10 → stable_ticks reset to 0)
+        for _ in 0..11 {
+            sm.evaluate(Some(&bad), &bb);
+        }
+        // Still Engaging — not Active, not Off (timeout is 250 ticks, only 51 elapsed)
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 51 more good ticks → stable_ticks reaches 51 → Active
+        for _ in 0..51 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    /// 30 good + 5 bad (streak ≤ 10, no reset) + 25 good = stable 55 > 50 → Active.
+    #[test]
+    fn engaging_to_active_with_glitches_within_tolerance() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let good = mock_running();
+        let bad = mock_off();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        for _ in 0..30 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        for _ in 0..5 {
+            sm.evaluate(Some(&bad), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 25 more good ticks: stable_ticks = 30 + 25 = 55 > 50 → Active
+        // (transition happens at stable_ticks = 51, so well within 25 ticks)
+        for _ in 0..25 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    /// max_stable_counter_in_engaging tracks the highest stable_ticks seen.
+    /// After reset it stays at the previous high-water mark.
+    #[test]
+    fn max_stable_counter_tracks_highest_value() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let good = mock_running();
+        let bad = mock_off();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        // 30 good ticks → stable_ticks = 30, max = 30
+        for _ in 0..30 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 11 bad ticks → streak = 11 > 10, stable_ticks reset to 0, max stays at 30
+        for _ in 0..11 {
+            sm.evaluate(Some(&bad), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // 20 good ticks → stable_ticks = 20, max still 30
+        for _ in 0..20 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        // State is still Engaging (stable_ticks = 20, not yet > 50)
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        // BB key is published in Engaging state — check high-water mark via blackboard
+        assert_eq!(
+            bb.get("state.precondition_max_stable_counter").as_deref(),
+            Some("30")
+        );
+    }
+
+    /// Last failure reason key is set before timeout. Check at tick 250
+    /// (still Engaging), then one more tick → Off.
+    #[test]
+    fn last_failure_reason_set_after_timeout() {
+        let mut sm = AutopilotStateMachine::new();
+        // No preconditions → all precondition checks fail; cruise checked first → "cruise_inactive"
+        let bb = SharedBlackboard::new();
+        let bad = mock_off();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        // Tick 250 times — engaging_ticks = 250, NOT yet > 250, still Engaging
+        for _ in 0..250 {
+            sm.evaluate(Some(&bad), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+        // Failure reason: mock_off has telemetry present but engine_rpm=0 →
+        // telemetry_ok=true, engine_running=false → "engine_off" (telemetry_lost has priority 1,
+        // engine_off has priority 2 in precondition_failure_reason)
+        assert_eq!(
+            bb.get("state.precondition_last_failure_reason").as_deref(),
+            Some("engine_off")
+        );
+
+        // One more tick: engaging_ticks = 251 > 250 → Off
+        sm.evaluate(Some(&bad), &bb);
+        assert_eq!(sm.state(), AutopilotState::Off);
+    }
+
+    /// Diagnostics BB keys are published correctly while in Engaging state.
+    #[test]
+    fn engaging_diag_keys_published_in_engaging() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        let good = mock_running();
+
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+
+        for _ in 0..5 {
+            sm.evaluate(Some(&good), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Engaging);
+
+        assert_eq!(
+            bb.get("state.precondition_cruise_ok").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("state.precondition_engine_ok").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("state.precondition_no_fault").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("state.precondition_speed_ok").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("state.precondition_stable_ticks").as_deref(),
+            Some("5")
+        );
     }
 }
