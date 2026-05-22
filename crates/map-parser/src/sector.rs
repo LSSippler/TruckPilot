@@ -172,6 +172,14 @@ const ITEM_TYPE_FAR_MODEL: u32 = 43;
 const ITEM_TYPE_CURVE: u32 = 44;
 const ITEM_TYPE_CUTSCENE: u32 = 46;
 const ITEM_TYPE_VISIBILITY_AREA: u32 = 48;
+const ITEM_TYPE_MOVER: u32 = 9;
+const ITEM_TYPE_NO_WEATHER: u32 = 11;
+const ITEM_TYPE_HINGE: u32 = 13;
+const ITEM_TYPE_CAMERA_POINT: u32 = 23;
+const ITEM_TYPE_COMPOUND: u32 = 40;
+const ITEM_TYPE_CAMERA_PATH: u32 = 45;
+const ITEM_TYPE_HOOKUP: u32 = 47;
+const ITEM_TYPE_GATE: u32 = 49;
 
 /// Hard cap on `item_count` / `node_count` to reject corrupt headers up front.
 const MAX_LIST_COUNT: u32 = 2_000_000;
@@ -305,6 +313,14 @@ fn parse_sector_legacy_inner(
             ITEM_TYPE_CURVE => skip_curve(&mut cur),
             ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur),
             ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur),
+            ITEM_TYPE_MOVER => skip_mover(&mut cur),
+            ITEM_TYPE_NO_WEATHER => skip_no_weather(&mut cur),
+            ITEM_TYPE_HINGE => skip_hinge(&mut cur),
+            ITEM_TYPE_CAMERA_POINT => skip_camera_point(&mut cur),
+            ITEM_TYPE_COMPOUND => skip_compound(&mut cur),
+            ITEM_TYPE_CAMERA_PATH => skip_camera_path(&mut cur),
+            ITEM_TYPE_HOOKUP => skip_hookup(&mut cur),
+            ITEM_TYPE_GATE => skip_gate(&mut cur),
             other => Err(ParseError::Binary(format!("unsupported item type {other}"))),
         };
         if let Err(e) = dispatch_result {
@@ -398,6 +414,14 @@ fn is_known_item_type(t: u32) -> bool {
             | ITEM_TYPE_CURVE
             | ITEM_TYPE_CUTSCENE
             | ITEM_TYPE_VISIBILITY_AREA
+            | ITEM_TYPE_MOVER
+            | ITEM_TYPE_NO_WEATHER
+            | ITEM_TYPE_HINGE
+            | ITEM_TYPE_CAMERA_POINT
+            | ITEM_TYPE_COMPOUND
+            | ITEM_TYPE_CAMERA_PATH
+            | ITEM_TYPE_HOOKUP
+            | ITEM_TYPE_GATE
     )
 }
 
@@ -647,6 +671,14 @@ pub fn audit_sector(data: &[u8]) -> AuditReport {
             ITEM_TYPE_CURVE => skip_curve(&mut cur).map(|_| "curve"),
             ITEM_TYPE_CUTSCENE => skip_cutscene(&mut cur).map(|_| "cutscene"),
             ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(&mut cur).map(|_| "visibility_area"),
+            ITEM_TYPE_MOVER => skip_mover(&mut cur).map(|_| "mover"),
+            ITEM_TYPE_NO_WEATHER => skip_no_weather(&mut cur).map(|_| "no_weather"),
+            ITEM_TYPE_HINGE => skip_hinge(&mut cur).map(|_| "hinge"),
+            ITEM_TYPE_CAMERA_POINT => skip_camera_point(&mut cur).map(|_| "camera_point"),
+            ITEM_TYPE_COMPOUND => skip_compound(&mut cur).map(|_| "compound"),
+            ITEM_TYPE_CAMERA_PATH => skip_camera_path(&mut cur).map(|_| "camera_path"),
+            ITEM_TYPE_HOOKUP => skip_hookup(&mut cur).map(|_| "hookup"),
+            ITEM_TYPE_GATE => skip_gate(&mut cur).map(|_| "gate"),
             other => Err(ParseError::Binary(format!("unsupported item type {other}"))),
         };
 
@@ -1626,6 +1658,174 @@ fn skip_visibility_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_f32(cur)?;
     let _ = read_f32(cur)?;
     skip_item_ref_list(cur)
+}
+
+/// Type 9 — Mover. Binary layout (after KdopItem): tags(token list) +
+/// model/look/variant(3×u64) + speed/endDelay/width(3×f32) + count(u32) +
+/// lengths(f32 list) + nodeUids(u64 list).
+fn skip_mover(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token_list(cur)?;
+    skip_token(cur)?; // model
+    skip_token(cur)?; // look
+    skip_token(cur)?; // variant
+    let _ = read_f32(cur)?; // speed
+    let _ = read_f32(cur)?; // endDelay
+    let _ = read_f32(cur)?; // width
+    let _ = read_u32(cur)?; // count
+    let len_count = read_u32(cur)?;
+    ensure_count(len_count, "mover lengths")?;
+    ensure_capacity(cur, len_count, 4, "mover lengths")?;
+    for _ in 0..len_count {
+        let _ = read_f32(cur)?;
+    }
+    let node_count = read_u32(cur)?;
+    ensure_count(node_count, "mover node uids")?;
+    ensure_capacity(cur, node_count, 8, "mover node uids")?;
+    for _ in 0..node_count {
+        let _ = read_u64(cur)?;
+    }
+    Ok(())
+}
+
+/// Type 11 — NoWeather. Binary layout (after KdopItem): width(f32) +
+/// height(f32) + fogMaskPresetId(i32) + reserved(16 bytes) + nodeUid(u64).
+fn skip_no_weather(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    let _ = read_f32(cur)?; // width
+    let _ = read_f32(cur)?; // height
+    let _ = read_i32(cur)?; // fogMaskPresetId
+    skip(cur, 16)?;          // reserved (new in v901)
+    let _ = read_u64(cur)?; // nodeUid
+    Ok(())
+}
+
+/// Type 13 — Hinge. Binary layout (after KdopItem): token(u64) + look(u64) +
+/// nodeUid(u64) + minRot(f32) + maxRot(f32).
+fn skip_hinge(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token(cur)?;    // token
+    skip_token(cur)?;    // look
+    let _ = read_u64(cur)?; // nodeUid
+    let _ = read_f32(cur)?; // minRot
+    let _ = read_f32(cur)?; // maxRot
+    Ok(())
+}
+
+/// Type 23 — CameraPoint. Binary layout (after KdopItem): tags(token list) +
+/// nodeUid(u64).
+fn skip_camera_point(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token_list(cur)?;
+    let _ = read_u64(cur)?; // nodeUid
+    Ok(())
+}
+
+/// Type 40 — Compound. Binary layout (after KdopItem): nodeUid(u64) +
+/// childItems(count u32 + count × SimpleItem) + childNodes(count u32 +
+/// count × 56-byte SectorNode).
+///
+/// Phase 5.28-A: skip-only, no child-node extraction. Phase 5.28-B will
+/// extract child nodes and add them to the routing graph.
+fn skip_compound(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    let _ = read_u64(cur)?; // nodeUid
+    let child_item_count = read_u32(cur)?;
+    ensure_count(child_item_count, "compound child items")?;
+    for i in 0..child_item_count {
+        skip_child_simple_item(cur).map_err(|e| {
+            ParseError::Binary(format!("compound child item #{i}: {e}"))
+        })?;
+    }
+    let child_node_count = read_u32(cur)?;
+    ensure_count(child_node_count, "compound child nodes")?;
+    ensure_capacity(cur, child_node_count, 56, "compound child nodes")?;
+    skip(cur, child_node_count as usize * 56)
+}
+
+/// Skip a single SimpleItem (type u32 + KdopItem + type-specific body).
+/// Used inside [`skip_compound`] for child items.
+fn skip_child_simple_item(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let item_type = read_u32(cur)?;
+    match item_type {
+        ITEM_TYPE_TERRAIN => skip_terrain(cur),
+        ITEM_TYPE_BUILDINGS => skip_buildings(cur),
+        ITEM_TYPE_MODEL => skip_model(cur),
+        ITEM_TYPE_COMPANY => skip_company(cur),
+        ITEM_TYPE_SERVICE => skip_service(cur),
+        ITEM_TYPE_CUT_PLANE => skip_cut_plane(cur),
+        ITEM_TYPE_CITY => skip_city(cur),
+        ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(cur),
+        ITEM_TYPE_FERRY => skip_ferry(cur),
+        ITEM_TYPE_GARAGE => skip_garage(cur),
+        ITEM_TYPE_TRIGGER => skip_trigger(cur),
+        ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(cur),
+        ITEM_TYPE_SIGN => skip_sign(cur),
+        ITEM_TYPE_BUS_STOP => skip_bus_stop(cur),
+        ITEM_TYPE_TRAFFIC_AREA => skip_traffic_area(cur),
+        ITEM_TYPE_BEZIER_PATCH => skip_bezier_patch(cur),
+        ITEM_TYPE_TRAJECTORY => skip_trajectory(cur),
+        ITEM_TYPE_MAP_AREA => skip_map_area(cur),
+        ITEM_TYPE_FAR_MODEL => skip_far_model(cur),
+        ITEM_TYPE_CURVE => skip_curve(cur),
+        ITEM_TYPE_CUTSCENE => skip_cutscene(cur),
+        ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(cur),
+        ITEM_TYPE_MOVER => skip_mover(cur),
+        ITEM_TYPE_NO_WEATHER => skip_no_weather(cur),
+        ITEM_TYPE_HINGE => skip_hinge(cur),
+        ITEM_TYPE_CAMERA_POINT => skip_camera_point(cur),
+        ITEM_TYPE_CAMERA_PATH => skip_camera_path(cur),
+        ITEM_TYPE_HOOKUP => skip_hookup(cur),
+        ITEM_TYPE_GATE => skip_gate(cur),
+        other => Err(ParseError::Binary(format!(
+            "unsupported compound child item type {other}"
+        ))),
+    }
+}
+
+/// Type 45 — CameraPath. Binary layout (after KdopItem): tags(token list) +
+/// nodeUids(u64 list) + trackPointNodeUids(u64 list) +
+/// curveControlNodeUids(u64 list) + keyFrames(count u32 + count × 40 bytes) +
+/// speed(f32).
+///
+/// Each keyframe is 40 bytes: speedChange(i32) + rotationChange(i32) +
+/// speedCoef(f32) + fov(f32) + backwardTangentPos(vec3=12) +
+/// forwardTangentPos(vec3=12).
+fn skip_camera_path(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token_list(cur)?;
+    let _ = skip_node_ref_list(cur)?; // nodeUids
+    let _ = skip_node_ref_list(cur)?; // trackPointNodeUids
+    let _ = skip_node_ref_list(cur)?; // curveControlNodeUids
+    let keyframe_count = read_u32(cur)?;
+    ensure_count(keyframe_count, "camera path keyframes")?;
+    ensure_capacity(cur, keyframe_count, 40, "camera path keyframes")?;
+    skip(cur, keyframe_count as usize * 40)?;
+    let _ = read_f32(cur)?; // speed
+    Ok(())
+}
+
+/// Type 47 — Hookup. Binary layout (after KdopItem): name(Pascal string) +
+/// nodeUid(u64).
+fn skip_hookup(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_pascal_string(cur)?; // name
+    let _ = read_u64(cur)?;   // nodeUid
+    Ok(())
+}
+
+/// Type 49 — Gate. Binary layout (after KdopItem): model(u64) +
+/// nodeUids(u64 list) + 2 activation point units each (Pascal string +
+/// i32). The activation count is always exactly 2 (fixed per binary spec).
+fn skip_gate(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let _ = read_kdop_item(cur)?;
+    skip_token(cur)?;               // model
+    let _ = skip_node_ref_list(cur)?; // nodeUids
+    for _ in 0..2 {
+        skip_pascal_string(cur)?;   // triggerUnitName
+        let _ = read_i32(cur)?;     // triggerNodeIndex
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
