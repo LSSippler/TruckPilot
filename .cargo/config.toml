@@ -2,3 +2,6 @@
 xtask         = "run --package xtask --release --"
 build-release = "run --package xtask --release -- build-release"
 deploy-ets2   = "run --package xtask --release -- deploy-ets2-telemetry"
+graph-stats   = "run --release -p truckpilot-diag --bin graph-stats -- --graph graph.json --out-dir outputs/2026-05-22/diag"
+route-audit   = "run --release -p truckpilot-diag --bin route-success-audit -- --graph graph.json --out-dir outputs/2026-05-22/diag"
+ets2la-compare = "run --release -p truckpilot-diag --bin compare-with-ets2la -- --out-dir outputs/2026-05-22/diag"

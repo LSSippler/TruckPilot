@@ -107,6 +107,18 @@ path = "src/bin/validate-cities.rs"
 name = "uid-lookup"
 path = "src/bin/uid-lookup.rs"
 
+[[bin]]
+name = "graph-stats"
+path = "src/bin/graph_stats.rs"
+
+[[bin]]
+name = "route-success-audit"
+path = "src/bin/route_success_audit.rs"
+
+[[bin]]
+name = "compare-with-ets2la"
+path = "src/bin/compare_with_ets2la.rs"
+
 [dependencies]
 rustc-hash      = "2"
 truckpilot-telemetry = { path = "../telemetry" }
