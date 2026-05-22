@@ -6,16 +6,22 @@ pub struct RouterGraph {
     pub nodes: Vec<(u64, f64, f64)>,
     pub edges: Vec<(u64, u64, f64)>,
     pub positions: HashMap<u64, (f64, f64)>,
+    nodes_with_edges: HashSet<u64>,
 }
 
 impl RouterGraph {
     pub fn new(nodes: Vec<(u64, f64, f64)>, edges: Vec<(u64, u64, f64)>) -> Self {
         let positions: HashMap<u64, (f64, f64)> =
             nodes.iter().map(|&(uid, x, z)| (uid, (x, z))).collect();
+        let nodes_with_edges: HashSet<u64> = edges
+            .iter()
+            .flat_map(|&(from, to, _)| [from, to])
+            .collect();
         Self {
             nodes,
             edges,
             positions,
+            nodes_with_edges,
         }
     }
 
@@ -23,6 +29,7 @@ impl RouterGraph {
         let max_dist_sq = max_dist_m * max_dist_m;
         self.nodes
             .iter()
+            .filter(|&&(uid, _, _)| self.nodes_with_edges.contains(&uid))
             .filter_map(|&(uid, nx, nz)| {
                 let dx = nx - x;
                 let dz = nz - z;
@@ -50,6 +57,7 @@ impl RouterGraph {
         let candidates: Vec<(u64, f64, f64, f64)> = self
             .nodes
             .iter()
+            .filter(|&&(uid, _, _)| self.nodes_with_edges.contains(&uid))
             .filter_map(|&(uid, nx, nz)| {
                 let dx = nx - x;
                 let dz = nz - z;

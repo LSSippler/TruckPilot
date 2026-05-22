@@ -73,10 +73,11 @@ fn read_cities(path: &PathBuf) -> Result<Vec<City>> {
     Ok(cities)
 }
 
-// Snap to nearest node within radius; returns (node_idx, dist_m)
+// Snap to nearest node with at least one edge, within radius; returns (node_idx, dist_m)
 fn snap_nearest(
     node_x: &[f64],
     node_z: &[f64],
+    nodes_with_edges: &[bool],
     x: f64,
     z: f64,
     max_dist: f64,
@@ -85,6 +86,9 @@ fn snap_nearest(
     let mut best_idx = None;
     let mut best_d2 = max_d2;
     for i in 0..node_x.len() {
+        if !nodes_with_edges[i] {
+            continue;
+        }
         let d2 = (node_x[i] - x).powi(2) + (node_z[i] - z).powi(2);
         if d2 < best_d2 {
             best_d2 = d2;
@@ -234,6 +238,19 @@ fn main() -> Result<()> {
         }
     }
 
+    // Mark nodes that appear in at least one edge (from or to) — isolates won't be snapped to
+    let mut nodes_with_edges: Vec<bool> = vec![false; n];
+    for e in edge_arr.iter() {
+        let from_uid = e["from"].as_u64().unwrap_or(0);
+        let to_uid = e["to"].as_u64().unwrap_or(0);
+        if let Some(&fi) = uid_to_idx.get(&from_uid) {
+            nodes_with_edges[fi] = true;
+        }
+        if let Some(&ti) = uid_to_idx.get(&to_uid) {
+            nodes_with_edges[ti] = true;
+        }
+    }
+
     let build_elapsed = t_build.elapsed().as_secs_f64();
     if build_elapsed > 60.0 {
         bail!(
@@ -257,7 +274,7 @@ fn main() -> Result<()> {
     // Snap all cities once
     let city_snaps: Vec<Option<(usize, f64)>> = cities
         .iter()
-        .map(|c| snap_nearest(&node_x, &node_z, c.x, c.z, args.snap_radius))
+        .map(|c| snap_nearest(&node_x, &node_z, &nodes_with_edges, c.x, c.z, args.snap_radius))
         .collect();
 
     let total_pairs = cities.len() * (cities.len() - 1);

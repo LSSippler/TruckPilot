@@ -494,18 +494,13 @@ impl Plugin for RouterPlugin {
                             .iter()
                             .map(|e| (e.from, e.to, e.distance_m))
                             .collect();
-                        let positions = g.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
                         tracing::info!(
                             "[router] loaded {} nodes / {} edges from {:?}",
                             g.nodes.len(),
                             g.edges.len(),
                             self.graph_path
                         );
-                        Some(Arc::new(RouterGraph {
-                            nodes,
-                            edges,
-                            positions,
-                        }))
+                        Some(Arc::new(RouterGraph::new(nodes, edges)))
                     }
                     Err(e) => {
                         tracing::warn!("[router] cannot parse {:?}: {e}", self.graph_path);
@@ -890,12 +885,7 @@ mod tests {
     /// Build a RouterPlugin with a pre-built graph and a live worker thread.
     /// Used by tests that exercise the async routing path.
     fn plugin_with_worker(nodes: NodeList, edges: EdgeList) -> RouterPlugin {
-        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
-        let graph = Arc::new(RouterGraph {
-            nodes,
-            edges,
-            positions,
-        });
+        let graph = Arc::new(RouterGraph::new(nodes, edges));
         let mut p = RouterPlugin::default();
         p.spawn_worker(graph);
         p
@@ -1109,8 +1099,7 @@ mod tests {
             (10, 11, 100.0), // forward: east (+X)
             (20, 21, 100.0), // backward: west (-X)
         ];
-        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
-        RouterGraph { nodes, edges, positions }
+        RouterGraph::new(nodes, edges)
     }
 
     #[test]
@@ -1141,8 +1130,7 @@ mod tests {
         // Edge at exactly 60° from truck heading: dot = cos(60°) = 0.5 → accepted
         let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 50.0, 86.6)];
         let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
-        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
-        let graph = RouterGraph { nodes, edges, positions };
+        let graph = RouterGraph::new(nodes, edges);
         // heading π/2 (east), edge dir ≈ (0.5, 0.866) normalized, dot with (1,0) ≈ 0.5
         let result = graph.find_nearest_with_heading(0.0, 0.0, std::f64::consts::FRAC_PI_2, 20.0);
         assert!(result.is_some());
@@ -1153,20 +1141,18 @@ mod tests {
 
     #[test]
     fn geometric_snap_returns_none_beyond_distance_limit() {
-        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0)];
-        let edges: Vec<(u64, u64, f64)> = vec![];
-        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
-        let graph = RouterGraph { nodes, edges, positions };
-        // Truck 25m from node 1
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 200.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // Truck 25m from node 1, max_dist=20m → None
         assert!(graph.find_nearest_geometric(25.0, 0.0, 20.0).is_none());
     }
 
     #[test]
     fn geometric_snap_returns_node_within_limit() {
-        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0)];
-        let edges: Vec<(u64, u64, f64)> = vec![];
-        let positions = nodes.iter().map(|&(u, x, z)| (u, (x, z))).collect();
-        let graph = RouterGraph { nodes, edges, positions };
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 200.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
         let result = graph.find_nearest_geometric(10.0, 0.0, 20.0);
         assert!(result.is_some());
         let (uid, dist) = result.unwrap();
