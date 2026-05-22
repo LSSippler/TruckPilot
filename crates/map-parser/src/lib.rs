@@ -13,6 +13,7 @@ pub mod graph;
 pub mod hashfs;
 pub mod mod_loader;
 pub mod road_full;
+pub mod road_look;
 pub mod sector;
 pub mod signs;
 pub mod spatial_match;

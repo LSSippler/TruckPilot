@@ -5,12 +5,15 @@ use std::time::Instant;
 
 use tracing::{debug, info, instrument, warn};
 
+use std::collections::HashMap;
+
 use crate::archive::Archive;
 use crate::cache::{compute_cache_key, load_cache, save_cache};
 use crate::error::ParseError;
 use crate::graph::{GraphBuilder, MapGraph};
 use crate::hashfs::HashFsArchive;
 use crate::drop_tracer::DropTracer;
+use crate::road_look::{load_road_look, RoadLookEntry};
 use crate::sector::{parse_sector, parse_sector_with_tracer};
 use crate::zip_archive::ZipArchive;
 
@@ -207,7 +210,8 @@ pub fn load_and_build(
             return Ok(graph);
         }
 
-        let graph = parse_sectors_from_archives(&mut archives)?;
+        let road_look = load_road_look(&mut archives);
+        let graph = parse_sectors_from_archives(&mut archives, road_look)?;
 
         if let Err(e) = save_cache(cache_dir, &key, &graph) {
             warn!("Failed to save cache: {e}");
@@ -219,7 +223,8 @@ pub fn load_and_build(
         );
         Ok(graph)
     } else {
-        let graph = parse_sectors_from_archives(&mut archives)?;
+        let road_look = load_road_look(&mut archives);
+        let graph = parse_sectors_from_archives(&mut archives, road_look)?;
         info!(
             "Total load time (no cache): {:.1} ms",
             t_total.elapsed().as_secs_f64() * 1000.0
@@ -239,7 +244,9 @@ pub fn parse_sectors_with_drop_tracer(
     archives: &mut [Box<dyn Archive>],
     tracer: &DropTracer,
 ) -> Result<(GraphBuilder, Vec<String>), ParseError> {
+    let road_look = load_road_look(archives);
     let mut builder = GraphBuilder::new();
+    builder.set_road_look(road_look);
     let mut parsed_paths: Vec<String> = Vec::new();
     let mut all_paths = std::collections::HashSet::new();
 
@@ -277,9 +284,13 @@ pub fn parse_sectors_with_drop_tracer(
     Ok((builder, parsed_paths))
 }
 
-fn parse_sectors_from_archives(archives: &mut [Box<dyn Archive>]) -> Result<MapGraph, ParseError> {
+fn parse_sectors_from_archives(
+    archives: &mut [Box<dyn Archive>],
+    road_look: HashMap<u64, RoadLookEntry>,
+) -> Result<MapGraph, ParseError> {
     let t_sectors = Instant::now();
     let mut builder = GraphBuilder::new();
+    builder.set_road_look(road_look);
     let mut sector_count = 0usize;
     let mut total_roads = 0usize;
     let mut next_road_milestone = 500usize;
