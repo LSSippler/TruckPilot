@@ -81,3 +81,7 @@ path = "src/bin/ferry_diag.rs"
 [[bin]]
 name = "truckpilot-singleton-audit"
 path = "src/bin/singleton_audit.rs"
+
+[[bin]]
+name = "truckpilot-node-inspect"
+path = "src/bin/node_inspect.rs"

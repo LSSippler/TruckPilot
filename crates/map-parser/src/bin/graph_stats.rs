@@ -179,6 +179,23 @@ fn print_degree_stats(graph: &MapGraph, degrees: &HashMap<u64, u32>) {
         100.0 * isolated as f64 / graph.nodes.len() as f64
     );
     println!();
+
+    // Show a sample of isolated node UIDs — run `node-inspect --uid <UID>` for details.
+    let mut isolated_uids: Vec<u64> = degrees
+        .iter()
+        .filter(|(_, &d)| d == 0)
+        .map(|(&uid, _)| uid)
+        .collect();
+    isolated_uids.sort_unstable();
+    let sample_n = isolated_uids.len().min(20);
+    if sample_n > 0 {
+        println!("=== ISOLATED NODE SAMPLE (first {sample_n} of {isolated}) ===");
+        println!("  (run `truckpilot-node-inspect --uid <UID> --ets2-dir <DIR>` for details)");
+        for uid in &isolated_uids[..sample_n] {
+            println!("  uid={uid:#018x}  ({uid})");
+        }
+        println!();
+    }
 }
 
 fn print_connectivity(graph: &MapGraph) {

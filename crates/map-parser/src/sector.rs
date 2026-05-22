@@ -40,6 +40,10 @@ pub struct RawNode {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    /// UID of the item attached in the "forward" direction (0 = none / sized-format).
+    pub forward_item_uid: u64,
+    /// UID of the item attached in the "backward" direction (0 = none / sized-format).
+    pub backward_item_uid: u64,
 }
 
 /// A road segment connecting two nodes.
@@ -962,6 +966,8 @@ fn parse_node_f64(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
         x: x as f32,
         y: y as f32,
         z: z as f32,
+        forward_item_uid: 0,
+        backward_item_uid: 0,
     })
 }
 
@@ -1059,15 +1065,18 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
     let y_raw = read_i32(cur)?;
     let z_raw = read_i32(cur)?;
     skip(cur, 16)?; // rotation quaternion (4×f32)
-    skip(cur, 16)?; // backward_uid(u64) + forward_uid(u64)
+    let backward_item_uid = read_u64(cur)?;
+    let forward_item_uid = read_u64(cur)?;
     skip(cur, 4)?; // flags(u32)
-                   // total: 8+4+4+4+16+16+4 = 56 bytes
+                   // total: 8+4+4+4+16+8+8+4 = 56 bytes
 
     Ok(RawNode {
         uid,
         x: x_raw as f32 / 256.0,
         y: y_raw as f32 / 256.0,
         z: z_raw as f32 / 256.0,
+        forward_item_uid,
+        backward_item_uid,
     })
 }
 
