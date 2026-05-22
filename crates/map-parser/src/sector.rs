@@ -58,7 +58,7 @@ pub struct RawRoad {
     pub speed_limit_kmh: u16,
     pub lanes_forward: u8,
     pub lanes_backward: u8,
-    pub look_token: u32,
+    pub look_token: u64,
     /// DLC-guard byte from the fixed header — 0 = no DLC required.
     pub dlc_guard: u8,
     /// `true` when the road is hidden from the in-game UI map.
@@ -1041,11 +1041,11 @@ fn parse_road(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), 
         speed_limit_kmh: 0,
         lanes_forward: 0,
         lanes_backward: 0,
-        look_token: 0,
+        look_token: header.left_look,
         dlc_guard: header.dlc_guard,
         is_hidden: header.is_hidden(),
         gps_avoid: header.gps_avoid(),
-        road_type_token: header.road_type,
+        road_type_token: header.right_look,
     });
     Ok(())
 }

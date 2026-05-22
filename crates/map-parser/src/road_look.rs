@@ -1,10 +1,10 @@
 //! road_look.sii loader — maps road-look token64 values to lane counts.
 //!
-//! In the ETS2 binary sector format, every Road item stores a `roadLook`
-//! token64 (the first 8-byte field after the flags, corresponding to
-//! `header.road_type` in [`crate::road_full::RoadFixedHeader`]).  That token
-//! is a reference into `/def/road_look.sii`, which lists the number of lanes
-//! per side for each road look.
+//! In the ETS2 binary sector format, every Road item stores two road-look
+//! tokens in its fixed header: `right_look` (forward-direction surface) and
+//! `left_look` (backward-direction surface), at offsets 153 and 161 in
+//! [`crate::road_full::RoadFixedHeader`].  These tokens are base-38 hashes
+//! of the road-look entry names in the SII definition files.
 //!
 //! ## Token hash
 //!
@@ -17,21 +17,24 @@
 //! The plain-text SII file contains blocks like:
 //!
 //! ```text
-//! road_look.narrow1.road : .road_look_data {
-//!     name: "Narrow 1-lane"
+//! road_look : road.look0 {          # legacy format
+//!     lanes_left[]:  traffic_lane.road.local
+//!     lanes_right[]: traffic_lane.road.local
+//! }
+//! road_look.narrow1.road : .road_look_data {   # modern format
 //!     lanes_left[]: "narrow_lane"
 //!     lanes_right[]: "narrow_lane"
-//!     lanes_right[]: "narrow_lane"
-//!     ...
 //! }
 //! ```
 //!
-//! The token stored in the binary is `scs_token_hash("road_look.narrow1.road")`.
 //! `lanes_left[]` count → `lanes_backward`, `lanes_right[]` count → `lanes_forward`.
 //!
-//! If the file is absent or in binary SII (BSII) format the loader returns an
-//! empty map and lane counts remain 0 (falling back to `bidirectional_unknown`
-//! edges), matching existing behaviour.
+//! ## Fallback behaviour
+//!
+//! When no matching road_look entry is found (the modern SII files containing
+//! short-code names like `ols_b` or `u4_d` are not yet located), the loader
+//! falls back to treating every look-token-bearing road as bidirectional
+//! (lanes_forward = 1, lanes_backward = 1) to preserve graph connectivity.
 
 use std::collections::HashMap;
 
@@ -225,14 +228,7 @@ pub fn load_road_look(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, RoadLoo
             if !map.is_empty() {
                 return map;
             }
-            // Dump each zero-entry file with a unique name for inspection.
-            let safe_name = path.replace('/', "_").replace('.', "_");
-            let dump_path = format!("outputs/2026-05-22/diag/road_look_dump_{safe_name}.sii");
-            if let Err(e) = std::fs::write(&dump_path, &bytes) {
-                warn!("road_look: failed to write dump to {dump_path}: {e}");
-            } else {
-                warn!("road_look at '{path}' ({} bytes total) yielded 0 entries — dump written to {dump_path}", bytes.len());
-            }
+            warn!("road_look at '{path}' yielded 0 entries — skipping");
         }
     }
 
@@ -364,5 +360,90 @@ mod tests {
     #[test]
     fn non_utf8_returns_empty() {
         assert!(parse_road_look_sii(b"\xFF\xFE\x00\x00").is_empty());
+    }
+
+    // ── legacy format ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_legacy_one_lane() {
+        let sii = "SiiNunit\n{\nroad_look : road.look0 {\n\
+                   lanes_left[]: traffic_lane.road.local\n\
+                   lanes_right[]: traffic_lane.road.local\n\
+                   }\n}\n";
+        let map = parse_road_look_text(sii);
+        let tok = scs_token_hash("road.look0");
+        let e = map.get(&tok).expect("legacy entry must exist");
+        assert_eq!(e.lanes_left, 1);
+        assert_eq!(e.lanes_right, 1);
+    }
+
+    #[test]
+    fn parse_legacy_motorway() {
+        let sii = "SiiNunit\n{\nroad_look : road.look1 {\n\
+                   lanes_left[]: traffic_lane.road.motorway\n\
+                   lanes_left[]: traffic_lane.road.motorway\n\
+                   lanes_right[]: traffic_lane.road.motorway\n\
+                   lanes_right[]: traffic_lane.road.motorway\n\
+                   }\n}\n";
+        let map = parse_road_look_text(sii);
+        let tok = scs_token_hash("road.look1");
+        let e = map.get(&tok).expect("legacy motorway entry must exist");
+        assert_eq!(e.lanes_left, 2);
+        assert_eq!(e.lanes_right, 2);
+    }
+
+    #[test]
+    fn parse_legacy_and_modern_mixed() {
+        let sii = "SiiNunit\n{\n\
+                   road_look : road.look0 {\n\
+                   lanes_left[]: t\n\
+                   lanes_right[]: t\n\
+                   }\n\
+                   road_look.narrow1.road : .road_look_data {\n\
+                   lanes_left[]: t\n\
+                   lanes_left[]: t\n\
+                   lanes_right[]: t\n\
+                   }\n}\n";
+        let map = parse_road_look_text(sii);
+        assert_eq!(map.len(), 2);
+        let legacy = map[&scs_token_hash("road.look0")];
+        assert_eq!((legacy.lanes_left, legacy.lanes_right), (1, 1));
+        let modern = map[&scs_token_hash("road_look.narrow1.road")];
+        assert_eq!((modern.lanes_left, modern.lanes_right), (2, 1));
+    }
+
+    /// Diagnostic: print CityHash64 vs scs_token_hash for road.lookN names.
+    ///
+    /// Run with: cargo test hash_probe -- --nocapture --ignored
+    #[test]
+    #[ignore]
+    fn hash_probe() {
+        use crate::cityhash::cityhash64;
+        // Known binary tokens from live sectors (from apply_road_look diagnostic).
+        let binary_tokens: &[u64] = &[
+            113575,
+            2476698808250199,
+            3238735520439,
+            2805081445975,
+            1671359661933188,
+            353978643968900,
+            197458126983044,
+            1180059150283140,
+            101735984151, // from road_dump (road_type field)
+        ];
+        for i in 0..=31u32 {
+            let name = format!("road.look{i}");
+            let scs = scs_token_hash(&name);
+            let city = cityhash64(name.as_bytes());
+            println!("scs_token={scs:>22}  city={city:>22}  name={name}");
+            for &bt in binary_tokens {
+                if bt == city {
+                    println!("  *** CITY MATCH for binary_token={bt} ***");
+                }
+                if bt == scs {
+                    println!("  *** SCS MATCH for binary_token={bt} ***");
+                }
+            }
+        }
     }
 }

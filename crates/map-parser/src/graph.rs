@@ -150,35 +150,49 @@ impl GraphBuilder {
 
     /// Apply road-look lane counts to legacy roads (those with lanes == 0).
     ///
-    /// For each road where `lanes_forward == 0 && lanes_backward == 0` and
-    /// `road_type_token != 0`, looks up the token in the road-look map and
-    /// fills in the lane counts.  Roads that already carry lane data (sized
-    /// format) are left unchanged.
+    /// Tries an exact lookup of `road_type_token` (= `right_look` token) in
+    /// the road-look map.  On miss, falls back to bidirectional (1 lane each
+    /// way) for any road that has at least one look token set, so that graph
+    /// connectivity is preserved.  Sized-format roads that already carry lane
+    /// data are left unchanged.
     fn apply_road_look(&mut self) {
-        if self.road_look.is_empty() {
-            return;
-        }
         let mut hits = 0usize;
-        let mut misses = 0usize;
+        let mut heuristic = 0usize;
+        let mut unchanged = 0usize;
         for road in &mut self.roads {
-            if road.lanes_forward == 0 && road.lanes_backward == 0 && road.road_type_token != 0 {
+            if road.lanes_forward != 0 || road.lanes_backward != 0 {
+                // Already has lane data (sized-road format) — leave untouched.
+                unchanged += 1;
+                continue;
+            }
+            // Try exact road_look map lookup first.
+            if road.road_type_token != 0 {
                 if let Some(entry) = self.road_look.get(&road.road_type_token) {
                     road.lanes_forward = entry.lanes_right;
                     road.lanes_backward = entry.lanes_left;
                     hits += 1;
-                } else {
-                    misses += 1;
+                    continue;
                 }
+            }
+            // Fallback: road has look tokens but no matching road_look definition.
+            // Treat as bidirectional (1 lane each way) — one-way enforcement requires
+            // verified lane counts from road_look SII files; without them, defaulting
+            // to one-way creates sink/source nodes that break graph connectivity.
+            if road.road_type_token != 0 || road.look_token != 0 {
+                road.lanes_forward = 1;
+                road.lanes_backward = 1;
+                heuristic += 1;
+            } else {
+                unchanged += 1;
             }
         }
         let total = self.roads.len();
-        let unchanged = total - hits - misses;
         info!(
             hits,
-            misses,
+            heuristic,
             unchanged,
             total,
-            "road_look apply: {hits} roads updated, {misses} token misses, {unchanged} unchanged"
+            "road_look apply: {hits} exact, {heuristic} heuristic, {unchanged} unchanged"
         );
     }
 
