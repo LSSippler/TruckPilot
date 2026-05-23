@@ -11,10 +11,12 @@ const ENGAGE_KEYS = [
   "state.engage_precondition_route_planned",
   "state.engage_precondition_truck_on_route",
   "state.engage_precondition_speed_ok",
+  "state.engage_precondition_heading_ok_for_engage",
   "state.engage_detail_snap_dist_m",
   "state.engage_detail_heading_diff_deg",
   "state.engage_detail_speed_kmh",
   "state.engage_detail_telemetry_age_ms",
+  "state.engage_advisory",
 ] as const;
 
 interface ChecklistRow {
@@ -74,6 +76,8 @@ export function EngagementChecklist() {
 
   useEffect(() => subscribeBlackboardKeys(ENGAGE_KEYS), []);
 
+  const advisory = values["state.engage_advisory"];
+
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[10px] font-sans uppercase tracking-wider text-fg-muted mb-0.5">
@@ -117,6 +121,11 @@ export function EngagementChecklist() {
           </div>
         );
       })}
+      {advisory && (
+        <div className="mt-0.5 px-1.5 py-1 rounded-sm bg-danger/10 text-[10px] font-sans text-danger leading-snug">
+          {advisory}
+        </div>
+      )}
     </div>
   );
 }

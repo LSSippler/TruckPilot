@@ -129,11 +129,13 @@ pub struct EngagementPreconditions {
     pub route_planned: bool,
     pub truck_on_route: bool,
     pub speed_ok: bool,
+    /// Hard-block: heading diff > 60° — truck faces wrong way, replan won't help.
+    pub heading_ok_for_engage: bool,
 }
 
 impl EngagementPreconditions {
     pub fn hard_blockers_met(&self) -> bool {
-        self.telemetry_fresh && self.route_planned
+        self.telemetry_fresh && self.route_planned && self.heading_ok_for_engage
     }
 
     pub fn all_met(&self) -> bool {
@@ -143,6 +145,7 @@ impl EngagementPreconditions {
             && self.route_planned
             && self.truck_on_route
             && self.speed_ok
+            && self.heading_ok_for_engage
     }
 
     pub fn blocked_names(&self) -> String {
@@ -164,6 +167,9 @@ impl EngagementPreconditions {
         }
         if !self.speed_ok {
             names.push("speed_ok");
+        }
+        if !self.heading_ok_for_engage {
+            names.push("heading_ok_for_engage");
         }
         names.join(", ")
     }
@@ -564,18 +570,29 @@ impl AutopilotStateMachine {
             }
         };
 
-        if route_snapshot.contains(&snap_uid) {
+        let in_route = route_snapshot.contains(&snap_uid);
+        let heading = self.last_telemetry.as_ref().map(|t| t.heading).unwrap_or(0.0);
+        let ahead = waypoint_ahead_of_truck(bb, pos_x, pos_z, heading);
+
+        if in_route && ahead {
             bb.set("state.engage_synchronous_replan_triggered", "false");
             bb.set("state.engage_synchronous_replan_result", "on_route");
             return;
         }
 
+        if in_route {
+            tracing::info!(
+                "[state] engage-time: snap_uid={} in route but heading reversed — replanning",
+                snap_uid
+            );
+        } else {
+            tracing::info!(
+                "[state] engage-time replan: truck off-route (snap_uid={}, not in {} route nodes)",
+                snap_uid,
+                route_snapshot.len()
+            );
+        }
         bb.set("state.engage_synchronous_replan_triggered", "true");
-        tracing::info!(
-            "[state] engage-time replan: truck off-route (snap_uid={}, not in {} route nodes)",
-            snap_uid,
-            route_snapshot.len()
-        );
         drop(route_snapshot);
 
         match graph.plan(snap_uid, goal_uid) {
@@ -779,6 +796,12 @@ impl AutopilotStateMachine {
             .map(|t| t.speed_ms > 1.4)
             .unwrap_or(false);
 
+        // Hard-block engage if heading deviation exceeds 60°. None (no waypoints) → allow.
+        let heading_ok_for_engage = match &self.last_telemetry {
+            Some(t) => heading_diff_degrees(t, bb).is_none_or(|d| d < 60.0),
+            None => true,
+        };
+
         EngagementPreconditions {
             telemetry_fresh,
             truck_on_road,
@@ -786,6 +809,7 @@ impl AutopilotStateMachine {
             route_planned,
             truck_on_route,
             speed_ok,
+            heading_ok_for_engage,
         }
     }
 
@@ -818,9 +842,24 @@ impl AutopilotStateMachine {
             "state.engage_precondition_speed_ok",
             pre.speed_ok.to_string(),
         );
+        bb.set(
+            "state.engage_precondition_heading_ok_for_engage",
+            pre.heading_ok_for_engage.to_string(),
+        );
         bb.set("state.engage_ready", pre.hard_blockers_met().to_string());
         bb.set("state.engage_all_ok", pre.all_met().to_string());
         bb.set("state.engage_blocked_by", pre.blocked_names());
+
+        // Advisory message — highest-priority reason the truck can't engage
+        let planning_result = bb.get("router.last_planning_result").unwrap_or_default();
+        let advisory = if planning_result == "start_node_unknown" {
+            "Truck-Position nicht im Routing-Graph. Fahre auf eine Hauptstrasse."
+        } else if !pre.heading_ok_for_engage {
+            "Drehe Truck in Stra\u{00df}en-Richtung (Abweichung >60\u{00b0})"
+        } else {
+            ""
+        };
+        bb.set("state.engage_advisory", advisory);
 
         // Detail keys for UI inline display
         if let Some(dist) = bb.get("router.last_snap_dist") {
@@ -922,6 +961,37 @@ pub fn compute_heading_aligned(telemetry: &Telemetry, bb: &SharedBlackboard) -> 
     let fw_z = -telemetry.heading.cos();
     let dot = fw_x * dir_x + fw_z * dir_z;
     dot >= 0.707
+}
+
+/// Returns `true` if the next meaningful waypoint is in the truck's forward hemisphere.
+/// Used at engage time to detect a heading-reversed truck that is geometrically on-route
+/// but facing the wrong way. Falls back to `true` (don't block) when waypoints are absent
+/// or all waypoints are within 5 m of the truck.
+fn waypoint_ahead_of_truck(bb: &SharedBlackboard, pos_x: f64, pos_z: f64, heading: f64) -> bool {
+    let json = match bb.get("router.waypoints") {
+        Some(j) => j,
+        None => return true,
+    };
+    let wps: Vec<[f64; 2]> = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    // Skip waypoints that are too close to give a reliable direction.
+    let target = wps.iter().find(|wp| {
+        let dx = wp[0] - pos_x;
+        let dz = wp[1] - pos_z;
+        dx * dx + dz * dz > 25.0 // > 5 m
+    });
+    let wp = match target {
+        Some(w) => w,
+        None => return true, // all waypoints within 5 m — can't determine direction
+    };
+    let dx = wp[0] - pos_x;
+    let dz = wp[1] - pos_z;
+    let len = (dx * dx + dz * dz).sqrt();
+    let fw_x = heading.sin();
+    let fw_z = -heading.cos();
+    (fw_x * dx + fw_z * dz) / len >= 0.0
 }
 
 pub fn heading_diff_degrees(telemetry: &Telemetry, bb: &SharedBlackboard) -> Option<f64> {
@@ -1470,6 +1540,7 @@ mod tests {
             route_planned: true,
             truck_on_route: true,
             speed_ok: true,
+            heading_ok_for_engage: true,
         };
         assert!(!pre.hard_blockers_met(), "telemetry_fresh=false should fail hard blockers");
 
@@ -1480,6 +1551,7 @@ mod tests {
             route_planned: false,
             truck_on_route: true,
             speed_ok: true,
+            heading_ok_for_engage: true,
         };
         assert!(!pre.hard_blockers_met(), "route_planned=false should fail hard blockers");
 
@@ -1490,8 +1562,20 @@ mod tests {
             route_planned: true,
             truck_on_route: false,
             speed_ok: false,
+            heading_ok_for_engage: true,
         };
-        assert!(pre.hard_blockers_met(), "only telemetry_fresh+route_planned needed");
+        assert!(pre.hard_blockers_met(), "telemetry_fresh+route_planned+heading_ok_for_engage needed");
+
+        let pre = EngagementPreconditions {
+            telemetry_fresh: true,
+            truck_on_road: true,
+            heading_aligned: true,
+            route_planned: true,
+            truck_on_route: true,
+            speed_ok: true,
+            heading_ok_for_engage: false,
+        };
+        assert!(!pre.hard_blockers_met(), "heading_ok_for_engage=false should fail hard blockers");
     }
 
     #[test]
@@ -1584,6 +1668,7 @@ mod tests {
             route_planned: false,
             truck_on_route: true,
             speed_ok: true,
+            heading_ok_for_engage: true,
         };
         let blocked = pre.blocked_names();
         assert!(blocked.contains("telemetry_fresh"));
@@ -1703,6 +1788,7 @@ mod tests {
             route_planned: true,
             truck_on_route: false,
             speed_ok: false,
+            heading_ok_for_engage: true,
         };
         assert!(pre.hard_blockers_met());
         assert!(!pre.all_met());
@@ -1820,6 +1906,7 @@ mod tests {
             route_planned: true,
             truck_on_route: true,
             speed_ok: true,
+            heading_ok_for_engage: true,
         };
         assert_eq!(pre.blocked_names(), "");
     }
@@ -1833,9 +1920,10 @@ mod tests {
             route_planned: false,
             truck_on_route: false,
             speed_ok: false,
+            heading_ok_for_engage: false,
         };
         let names = pre.blocked_names();
-        assert_eq!(names.split(", ").count(), 6);
+        assert_eq!(names.split(", ").count(), 7);
     }
 
     // ---- Phase 6.5s: heading stage Disengaging -> Fault tests ---------------
@@ -1867,5 +1955,188 @@ mod tests {
         assert_eq!(sm.state(), AutopilotState::Fault);
         sm.evaluate(None, &bb);
         assert_eq!(sm.state(), AutopilotState::Fault);
+    }
+
+    // ---- Phase 6.5q.2: Fix 1 — waypoint_ahead_of_truck ----------------------
+
+    #[test]
+    fn waypoint_ahead_of_truck_aligned_heading() {
+        let bb = SharedBlackboard::new();
+        // heading π/2 (east): fw=(1,0). Waypoint east at (100,0) → dot=1 → ahead
+        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
+        assert!(waypoint_ahead_of_truck(&bb, 0.0, 0.0, std::f64::consts::FRAC_PI_2));
+    }
+
+    #[test]
+    fn waypoint_behind_truck_reversed() {
+        let bb = SharedBlackboard::new();
+        // heading π/2 (east): fw=(1,0). Waypoint west at (-100,0) → dot=-1 → behind
+        bb.set("router.waypoints", "[[0.0,0.0],[-100.0,0.0]]");
+        assert!(!waypoint_ahead_of_truck(&bb, 0.0, 0.0, std::f64::consts::FRAC_PI_2));
+    }
+
+    #[test]
+    fn waypoint_ahead_no_waypoints_returns_true() {
+        let bb = SharedBlackboard::new();
+        assert!(waypoint_ahead_of_truck(&bb, 0.0, 0.0, 0.0), "no waypoints → assume ahead");
+    }
+
+    #[test]
+    fn waypoint_ahead_too_close_returns_true() {
+        let bb = SharedBlackboard::new();
+        // Waypoint only 3 m away → skip (< 5 m threshold) → assume ahead
+        bb.set("router.waypoints", "[[0.0,0.0],[3.0,0.0]]");
+        assert!(waypoint_ahead_of_truck(&bb, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn waypoint_ahead_perpendicular_is_ahead() {
+        let bb = SharedBlackboard::new();
+        // heading 0 (north): fw=(0,-1). Waypoint due east at (100,0) → dot=0 → exactly perpendicular
+        // ">= 0.0" → returns true (perpendicular is not behind)
+        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
+        assert!(waypoint_ahead_of_truck(&bb, 0.0, 0.0, 0.0));
+    }
+
+    // ---- Phase 6.5q.2: Fix 2 — heading_ok_for_engage 60° hard block ---------
+
+    #[test]
+    fn heading_ok_for_engage_aligned_passes() {
+        let mut sm = AutopilotStateMachine::new();
+        let mut t = mock_running();
+        t.position = [0.0, 0.0, 0.0];
+        t.heading = 0.0; // north: fw=(0,-1)
+        sm.last_telemetry = Some(t);
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        // Waypoints going north (−Z): diff ≈ 0° < 60° → ok
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert!(ep.heading_ok_for_engage, "0° diff should pass 60° threshold");
+    }
+
+    #[test]
+    fn heading_ok_for_engage_reversed_fails() {
+        let mut sm = AutopilotStateMachine::new();
+        let mut t = mock_running();
+        t.position = [0.0, 0.0, 0.0];
+        t.heading = std::f64::consts::PI; // south: fw=(0,1)
+        sm.last_telemetry = Some(t);
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        // Waypoints going north (−Z): diff = 180° > 60° → fail
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert!(!ep.heading_ok_for_engage, "180° diff should fail 60° threshold");
+        assert!(!ep.hard_blockers_met(), "hard_blockers_met must fail when heading_ok_for_engage=false");
+    }
+
+    #[test]
+    fn heading_ok_for_engage_no_waypoints_allows_engage() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new(); // no waypoints
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert!(ep.heading_ok_for_engage, "no waypoints → cannot measure → allow");
+    }
+
+    #[test]
+    fn heading_hard_block_sets_engage_ready_false() {
+        let mut sm = AutopilotStateMachine::new();
+        let mut t = mock_running();
+        t.position = [0.0, 0.0, 0.0];
+        t.heading = std::f64::consts::PI; // reversed
+        sm.last_telemetry = Some(t);
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        bb.set("router.last_planning_result", "ok");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        assert_eq!(
+            bb.get("state.engage_ready").as_deref(),
+            Some("false"),
+            "engage_ready must be false when heading_ok_for_engage=false"
+        );
+        assert!(
+            bb.get("state.engage_blocked_by")
+                .unwrap_or_default()
+                .contains("heading_ok_for_engage")
+        );
+    }
+
+    // ---- Phase 6.5q.2: Fix 3 — start_node_unknown advisory ------------------
+
+    #[test]
+    fn start_node_unknown_publishes_advisory() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("router.last_planning_result", "start_node_unknown");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        let advisory = bb.get("state.engage_advisory").unwrap_or_default();
+        assert!(
+            advisory.contains("Routing-Graph"),
+            "advisory must mention Routing-Graph: {advisory}"
+        );
+    }
+
+    #[test]
+    fn advisory_cleared_when_planning_ok() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("router.last_planning_result", "ok");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        assert_eq!(
+            bb.get("state.engage_advisory").as_deref(),
+            Some(""),
+            "advisory must be empty when no advisory condition"
+        );
+    }
+
+    #[test]
+    fn heading_hard_block_publishes_advisory() {
+        let mut sm = AutopilotStateMachine::new();
+        let mut t = mock_running();
+        t.heading = std::f64::consts::PI;
+        sm.last_telemetry = Some(t);
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("router.last_planning_result", "ok");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        let advisory = bb.get("state.engage_advisory").unwrap_or_default();
+        assert!(
+            advisory.contains("Richtung") || advisory.contains("60"),
+            "heading advisory must mention direction or threshold: {advisory}"
+        );
+    }
+
+    #[test]
+    fn start_node_unknown_takes_priority_over_heading_advisory() {
+        let mut sm = AutopilotStateMachine::new();
+        let mut t = mock_running();
+        t.heading = std::f64::consts::PI; // reversed — would normally trigger heading advisory
+        sm.last_telemetry = Some(t);
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("router.last_planning_result", "start_node_unknown");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        let advisory = bb.get("state.engage_advisory").unwrap_or_default();
+        assert!(
+            advisory.contains("Routing-Graph"),
+            "start_node_unknown advisory must take priority: {advisory}"
+        );
     }
 }
