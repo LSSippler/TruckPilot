@@ -50,6 +50,8 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-5.28-C-road-look-sii-Loader]] — **CLOSED 2026-05-22**: road_look.sii Loader (32 Legacy-Einträge), right_look/left_look als Token-Felder identifiziert, bidirektionaler Fallback für ungematchte Straßen. forward_edges 0→354 801, backward_edges 0→354 801, bidirectional_unknown 731 998→22 396. Commit `ee99923`.
 - [[01-Phases/Phase-5.28-Bisect]] — **CLOSED 2026-05-23**: Bisect der gemeldeten Regression (29.6%→5%). Ergebnis: KEIN REGRESSION in committed Code. Alle 4 Bisect-Schritte (step0–4) zeigen 29.6% (462/1560). Regression war Messartefakt: graph.json war 10min veraltet beim Commit, Zwischenzustand mit fehlendem bidir-Fallback nie committed. graph.json frisch regeneriert. `outputs/2026-05-23/phase_5_28_bisect_report.md`
 - [[01-Phases/Phase-5.28-B-Compound-Kind-Nodes]] — **CLOSED 2026-05-23**: Compound-Handler (Type 40) implementiert, Kind-Nodes extrahiert. Gate PASS (29.6% routing, no regression). **Null Impact**: Kind-Nodes sind Duplikate des trailing-node-Blocks — bereits vor Handler-Aufruf im Node-Map. isolated_nodes 601 170 unverändert. /goal (-20%) nicht erfüllt. `outputs/2026-05-23/phase_5_28b_status.md`
+- [[01-Phases/Phase-6.5q.2-Engage-Heading-Hotfix]] — **CLOSED 2026-05-23**: Hotfix für 107°-Schräglage-Bug aus Block 2 Live-Test. Fix 1: sync_replan heading-aware (waypoint_ahead_of_truck). Fix 2: heading_ok_for_engage Hard-Block bei >60°. Fix 3: start_node_unknown Advisory-Banner. 13 neue Tests, clippy clean. Commit `e71ddc0b`.
+- [[01-Phases/Phase-5.29-Stage1-Nav-Distance-Time]] — **IN PROGRESS 2026-05-23**: SHM v3 — nav_distance_m + nav_time_s aus SCS-SDK. DLL erweitert (channels truck.navigation.distance/.time), struct 196→204 Bytes, BB-Keys telemetry.nav_distance_m/.nav_time_s. Compile + Tests green. Live-Verifikation pending (ETS2 nicht gestartet). Commit `0545517`.
 - [[01-Phases/Phase-5-Closeout]] - **CLOSED 2026-05-10**: H4a vis_uids REJECTED, H4b Anchor-Junction REJECTED (0/196k), H4c PPD LOW ROI (62.8% N=3 cliques). Big-8-Cluster ~205k Nodes, ~2000km drivable. Phase 5 Feature-Complete.
 - [[01-Phases/Phase-6-Telemetry]] - Real-telemetry pipeline (Sanity + Blackboard + IPC broadcast)
 - Phase 6.2-Prep — Plugin-Architecture-Refactor (commit 661812dd)
@@ -136,6 +138,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-6.5n-Engaging-Timeout-Fix]] — **CLOSED 2026-05-21**: Glitch-Tolerance für Engaging-Preconditions. Hard-Reset bei Glitches verhindert, PRECONDITION_GLITCH_TOLERANCE=10. 7 Diagnose-BB-Keys. 63/63 Tests grün.
 - [[01-Phases/Phase-6.5p-Steering-Safeguards]] — **CLOSED 2026-05-21**: Heading-Mismatch-Detection (1.4 rad Threshold) + Steering-Rate-Limiter (±0.1/Tick). Vollanschlag bei falschem Engage-Heading verhindert. 26/26 Tests grün.
 - [[01-Phases/Phase-6.5q-Heading-Filter-Auto-Replan]] — **CLOSED 2026-05-21**: Heading-Filter beim Router-Snap (dot>=0.5) + Auto-Replan wenn Truck off-route. OFF_ROUTE_DETECT_RADIUS=50m. 5 Diagnose-Keys. 18/18 Tests grün.
+- [[01-Phases/Phase-5.29-A-Lane-Data-Collector]] — **CLOSED 2026-05-23**: PhaseB-Plugin für Frame+Telemetry-Capture (JPEG+Sidecar-JSON). 13 Plugins. Stop-Bedingung: vision-frame-source nicht aktiv → Mock-Tests grün. `a2f5274`.
 
 ## Block 2 — Engagement-Stabilisierung (6.5o.1–6.5t)
 
