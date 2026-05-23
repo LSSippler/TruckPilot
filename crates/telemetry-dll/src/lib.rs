@@ -836,26 +836,40 @@ struct ScsInputDeviceInput {
     _pad:         scs_u32_t,
 }
 
+// scs_input_event_callback_t(event_info, flags, context) — flags must be present even if ignored.
 type ScsInputEventCb = unsafe extern "system" fn(
     *mut ScsInputEvent,
+    scs_u32_t,       // flags (SCS_INPUT_EVENT_CALLBACK_FLAG_*)
     scs_context_t,
 ) -> scs_result_t;
+
+// scs_input_active_callback_t — optional, called when device becomes active/inactive.
+type ScsInputActiveCb = unsafe extern "system" fn(u8, scs_context_t);
 
 type ScsRegisterDeviceFn = unsafe extern "system" fn(
     *const ScsInputDevice,
 ) -> scs_result_t;
 
 /// Device descriptor passed to register_device.
+/// Layout must match scs_input_device_t exactly (56 bytes on x64).
+/// Field order: name, display_name, type, input_count, inputs,
+///              callback_context, input_active_callback (optional), input_event_callback.
 #[repr(C)]
 struct ScsInputDevice {
-    name:         scs_string_t,
-    display_name: scs_string_t,
-    device_type:  scs_u32_t,
-    input_count:  scs_u32_t,
-    inputs:       *const ScsInputDeviceInput,
-    input_event:  ScsInputEventCb,
-    context:      scs_context_t,
+    name:                  scs_string_t,
+    display_name:          scs_string_t,
+    device_type:           scs_u32_t,
+    input_count:           scs_u32_t,
+    inputs:                *const ScsInputDeviceInput,
+    callback_context:      scs_context_t,
+    input_active_callback: Option<ScsInputActiveCb>,
+    input_event_callback:  ScsInputEventCb,
 }
+
+const _INPUT_DEVICE_SIZE: () = {
+    // scs_check_size(scs_input_device_t, 32, 56) — must be 56 on x64
+    assert!(mem::size_of::<ScsInputDevice>() == 56);
+};
 
 /// Input init params. `register_device` immediately follows `common`
 /// (mirrors telemetry init params structure).
@@ -864,6 +878,11 @@ struct ScsInputInitParamsV100 {
     common:          ScsSdkInitParamsV100,
     register_device: ScsRegisterDeviceFn,
 }
+
+const _INPUT_INIT_PARAMS_SIZE: () = {
+    // scs_check_size(scs_input_init_params_v100_t, 20, 40) — must be 40 on x64
+    assert!(mem::size_of::<ScsInputInitParamsV100>() == 40);
+};
 
 // ---------------------------------------------------------------------------
 // Controller SHM globals
@@ -957,13 +976,14 @@ pub unsafe extern "system" fn scs_input_init(
     ];
 
     let device = ScsInputDevice {
-        name:         c"truckpilot".as_ptr(),
-        display_name: c"TruckPilot Autopilot".as_ptr(),
-        device_type:  SCS_INPUT_DEVICE_TYPE_SEMANTICAL,
-        input_count:  4,
-        inputs:       inputs.as_ptr(),
-        input_event:  input_event_cb,
-        context:      ptr::null_mut(),
+        name:                  c"truckpilot".as_ptr(),
+        display_name:          c"TruckPilot Autopilot".as_ptr(),
+        device_type:           SCS_INPUT_DEVICE_TYPE_SEMANTICAL,
+        input_count:           4,
+        inputs:                inputs.as_ptr(),
+        callback_context:      ptr::null_mut(),
+        input_active_callback: None,
+        input_event_callback:  input_event_cb,
     };
 
     let _ = ((*params).register_device)(&device);
@@ -999,6 +1019,7 @@ pub unsafe extern "system" fn scs_input_shutdown() {
 /// input, steering wheel or keyboard is unaffected.
 unsafe extern "system" fn input_event_cb(
     event: *mut ScsInputEvent,
+    _flags: scs_u32_t,
     _ctx: scs_context_t,
 ) -> scs_result_t {
     if event.is_null() || CTRL_SHM_PTR.is_null() {
