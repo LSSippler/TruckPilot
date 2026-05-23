@@ -14,15 +14,47 @@ import {
 import { sendCommand, subscribeBlackboardKeys } from "@/lib/ipc";
 import { useBlackboardStore } from "@/stores/blackboard";
 
-// Hardcoded convenience targets — sample of well-known snap-nodes from
-// `cities.toml`. Cities not in this list can still be reached by pasting the
-// UID directly.
+// Convenience targets from validate-cities output 2026-05-23.
+// Cities marked ⚠ have snap_dist > 5 km — reachable but routing may be slow.
 const CITY_PRESETS: Array<{ label: string; uid: string }> = [
-  { label: "Berlin", uid: "282353445640339601" },
-  { label: "Hamburg", uid: "6526933291294064640" },
-  { label: "München", uid: "12090290263537061888" },
-  { label: "Köln", uid: "4789015231856640000" },
-  { label: "Frankfurt", uid: "7891234567890123456" },
+  { label: "Berlin",      uid: "6919855103841468416" },
+  { label: "Hamburg",     uid: "6526933291294064640" },
+  { label: "München",     uid: "6972029165941424128" },
+  { label: "Wien",        uid: "7164828206179905841" },
+  { label: "Prag",        uid: "6054870934110617351" },
+  { label: "Warschau",    uid: "6219844824041607977" },
+  { label: "Amsterdam",   uid: "511341911874732032" },
+  { label: "Brüssel",     uid: "437485961594863618" },
+  { label: "Paris",       uid: "358087285684699136" },
+  { label: "Mailand",     uid: "11599704834989049" },
+  { label: "Madrid ⚠",   uid: "5616765011398492172" },
+  { label: "Barcelona",   uid: "340240176744890368" },
+  { label: "Sevilla",     uid: "3474532028983869440" },
+  { label: "Valencia ⚠", uid: "367699086200471552" },
+  { label: "Lissabon ⚠", uid: "3869659156576534528" },
+  { label: "Rom",         uid: "5638809273708251869" },
+  { label: "Venedig",     uid: "7122087662525098421" },
+  { label: "Neapel",      uid: "5638809254120877035" },
+  { label: "Genua",       uid: "367702008359157762" },
+  { label: "Marseille",   uid: "3384404907402272269" },
+  { label: "Lyon",        uid: "425473086242226176" },
+  { label: "Stockholm",   uid: "137837484578245493" },
+  { label: "Oslo ⚠",     uid: "6445172487082147841" },
+  { label: "Göteborg ⚠", uid: "6393693561438601218" },
+  { label: "Helsinki",    uid: "236442477454688258" },
+  { label: "Bukarest",    uid: "4809609004064950816" },
+  { label: "Sofia",       uid: "4809609004245254663" },
+  { label: "Istanbul",    uid: "307179060578484224" },
+  { label: "Konstanza",   uid: "11599705663390297" },
+  { label: "Zagreb",      uid: "4096968979838010780" },
+  { label: "Belgrad",     uid: "4328500494390527701" },
+  { label: "Ljubljana",   uid: "4229118664441988414" },
+  { label: "Riga",        uid: "5657244115898544942" },
+  { label: "Vilnius",     uid: "6302930001291771904" },
+  { label: "Tallinn",     uid: "6804060420532011009" },
+  { label: "Krakau",      uid: "3523795922494426004" },
+  { label: "Bratislava",  uid: "5463961135592842905" },
+  { label: "Budapest",    uid: "7101282311152336898" },
 ];
 
 const ROUTE_KEYS = [
