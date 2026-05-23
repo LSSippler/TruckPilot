@@ -59,6 +59,12 @@ kd = 0.2
 # Not currently consumed by src/config.rs.
 verbose = false
 
+[plugins.scs-sdk-output]
+# Native SCS SDK controller output via SHM back-channel (no vJoy driver required).
+# Requires truckpilot_telemetry.dll with scs_input_init export to be loaded by ETS2.
+# Set to true and disable vjoy-output to switch to SCS SDK mode.
+enabled = false
+
 [plugins.ets2-nav-bridge]
 # Publish nav.* blackboard keys derived from GPS telemetry (1 Hz).
 enabled = true

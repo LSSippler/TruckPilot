@@ -777,6 +777,259 @@ float_cb!(cb_nav_distance, G_NAV_DISTANCE);
 float_cb!(cb_nav_time, G_NAV_TIME);
 
 // ---------------------------------------------------------------------------
+// SCS Input Plugin API — control SHM back-channel
+// ---------------------------------------------------------------------------
+
+/// Magic for the control SHM. Must match `CTRL_SHM_MAGIC` in scs-sdk-output.
+pub const CTRL_SHM_MAGIC: u32 = 0x54504354; // "TPCT"
+/// Layout version for the control SHM.
+pub const CTRL_SHM_VERSION: u32 = 1;
+const CTRL_SHM_NAME: &str = "Local\\TruckPilotControls";
+
+const SCS_RESULT_NOT_FOUND: scs_result_t = -4;
+const SCS_INPUT_VERSION_1_00: scs_u32_t = 0x0001_0000;
+const SCS_INPUT_DEVICE_TYPE_SEMANTICAL: scs_u32_t = 2;
+
+/// Control SHM layout — daemon plugin writes, DLL reads each frame.
+/// Must stay byte-for-byte identical to `ShmControlLayout` in
+/// `crates/plugins/scs-sdk-output/src/lib.rs`.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ShmControlLayout {
+    pub magic:    u32,
+    pub version:  u32,
+    pub sequence: u32,
+    pub active:   u32,   // 1 = valid control output, 0 = passthrough/idle
+    pub steering: f32,   // [-1.0, +1.0]
+    pub throttle: f32,   // [0.0, 1.0]
+    pub brake:    f32,   // [0.0, 1.0]
+    pub clutch:   f32,   // [0.0, 1.0]
+}
+
+const _CTRL_LAYOUT_GUARDS: () = {
+    assert!(mem::offset_of!(ShmControlLayout, magic)    ==  0);
+    assert!(mem::offset_of!(ShmControlLayout, version)  ==  4);
+    assert!(mem::offset_of!(ShmControlLayout, sequence) ==  8);
+    assert!(mem::offset_of!(ShmControlLayout, active)   == 12);
+    assert!(mem::offset_of!(ShmControlLayout, steering) == 16);
+    assert!(mem::offset_of!(ShmControlLayout, throttle) == 20);
+    assert!(mem::offset_of!(ShmControlLayout, brake)    == 24);
+    assert!(mem::offset_of!(ShmControlLayout, clutch)   == 28);
+    assert!(mem::size_of::<ShmControlLayout>()          == 32);
+};
+
+/// Per-frame event yielded to the game. Game allocates; we write input_index
+/// and value_float then return SCS_RESULT_OK while events remain.
+/// Sized at 8 bytes (u32 + f32, naturally packed, no padding on x86-64).
+#[repr(C)]
+struct ScsInputEvent {
+    input_index: scs_u32_t,
+    value_float: f32,
+}
+
+/// One logical axis on our semantical device.
+#[repr(C)]
+struct ScsInputDeviceInput {
+    name:         scs_string_t,
+    display_name: scs_string_t,
+    value_type:   scs_u32_t,
+    _pad:         scs_u32_t,
+}
+
+type ScsInputEventCb = unsafe extern "system" fn(
+    *mut ScsInputEvent,
+    scs_context_t,
+) -> scs_result_t;
+
+type ScsRegisterDeviceFn = unsafe extern "system" fn(
+    *const ScsInputDevice,
+) -> scs_result_t;
+
+/// Device descriptor passed to register_device.
+#[repr(C)]
+struct ScsInputDevice {
+    name:         scs_string_t,
+    display_name: scs_string_t,
+    device_type:  scs_u32_t,
+    input_count:  scs_u32_t,
+    inputs:       *const ScsInputDeviceInput,
+    input_event:  ScsInputEventCb,
+    context:      scs_context_t,
+}
+
+/// Input init params. `register_device` immediately follows `common`
+/// (mirrors telemetry init params structure).
+#[repr(C)]
+struct ScsInputInitParamsV100 {
+    common:          ScsSdkInitParamsV100,
+    register_device: ScsRegisterDeviceFn,
+}
+
+// ---------------------------------------------------------------------------
+// Controller SHM globals
+// ---------------------------------------------------------------------------
+
+static mut CTRL_SHM_HANDLE: HANDLE = NULL;
+static mut CTRL_SHM_PTR: *mut ShmControlLayout = ptr::null_mut();
+/// Which event to emit on the next input_event_cb invocation (0–3, wrapping).
+static mut CTRL_EVENT_IDX: u32 = 0;
+
+// ---------------------------------------------------------------------------
+// scs_input_init / scs_input_shutdown — exported alongside scs_telemetry_init
+// ---------------------------------------------------------------------------
+
+/// Called by ETS2 when the DLL is loaded as an input plugin. Creates the
+/// control SHM region and registers a semantical controller device.
+///
+/// # Safety
+/// Called by ETS2 with a valid `ScsInputInitParamsV100` pointer.
+#[allow(private_interfaces)]
+#[no_mangle]
+pub unsafe extern "system" fn scs_input_init(
+    version: scs_u32_t,
+    params: *const ScsInputInitParamsV100,
+) -> scs_result_t {
+    if params.is_null() {
+        return -2;
+    }
+    if version < SCS_INPUT_VERSION_1_00 {
+        debug_log("scs_input_init: unsupported SDK version");
+        return -1;
+    }
+
+    let name = wide_str(CTRL_SHM_NAME);
+    let shm_size = mem::size_of::<ShmControlLayout>();
+    CTRL_SHM_HANDLE = CreateFileMappingW(
+        INVALID_HANDLE_VALUE,
+        ptr::null(),
+        PAGE_READWRITE,
+        0,
+        shm_size as DWORD,
+        name.as_ptr(),
+    );
+    if CTRL_SHM_HANDLE == NULL {
+        debug_log("scs_input_init: CreateFileMappingW failed");
+        return -7;
+    }
+    CTRL_SHM_PTR = MapViewOfFile(CTRL_SHM_HANDLE, FILE_MAP_WRITE, 0, 0, shm_size)
+        as *mut ShmControlLayout;
+    if CTRL_SHM_PTR.is_null() {
+        debug_log("scs_input_init: MapViewOfFile failed");
+        CloseHandle(CTRL_SHM_HANDLE);
+        CTRL_SHM_HANDLE = NULL;
+        return -7;
+    }
+
+    (*CTRL_SHM_PTR).magic    = CTRL_SHM_MAGIC;
+    (*CTRL_SHM_PTR).version  = CTRL_SHM_VERSION;
+    (*CTRL_SHM_PTR).sequence = 0;
+    (*CTRL_SHM_PTR).active   = 0;
+    (*CTRL_SHM_PTR).steering = 0.0;
+    (*CTRL_SHM_PTR).throttle = 0.0;
+    (*CTRL_SHM_PTR).brake    = 0.0;
+    (*CTRL_SHM_PTR).clutch   = 0.0;
+
+    let inputs: [ScsInputDeviceInput; 4] = [
+        ScsInputDeviceInput {
+            name:         c"steering".as_ptr(),
+            display_name: c"Steering".as_ptr(),
+            value_type:   SCS_VALUE_TYPE_float,
+            _pad:         0,
+        },
+        ScsInputDeviceInput {
+            name:         c"aforward".as_ptr(),
+            display_name: c"Throttle".as_ptr(),
+            value_type:   SCS_VALUE_TYPE_float,
+            _pad:         0,
+        },
+        ScsInputDeviceInput {
+            name:         c"abackward".as_ptr(),
+            display_name: c"Brake".as_ptr(),
+            value_type:   SCS_VALUE_TYPE_float,
+            _pad:         0,
+        },
+        ScsInputDeviceInput {
+            name:         c"clutch".as_ptr(),
+            display_name: c"Clutch".as_ptr(),
+            value_type:   SCS_VALUE_TYPE_float,
+            _pad:         0,
+        },
+    ];
+
+    let device = ScsInputDevice {
+        name:         c"truckpilot".as_ptr(),
+        display_name: c"TruckPilot Autopilot".as_ptr(),
+        device_type:  SCS_INPUT_DEVICE_TYPE_SEMANTICAL,
+        input_count:  4,
+        inputs:       inputs.as_ptr(),
+        input_event:  input_event_cb,
+        context:      ptr::null_mut(),
+    };
+
+    let _ = ((*params).register_device)(&device);
+
+    debug_log("scs_input_init done — TruckPilot semantical controller registered");
+    SCS_RESULT_OK
+}
+
+/// Called by ETS2 on unload.
+///
+/// # Safety
+/// Called by ETS2 during shutdown.
+#[no_mangle]
+pub unsafe extern "system" fn scs_input_shutdown() {
+    debug_log("scs_input_shutdown");
+    if !CTRL_SHM_PTR.is_null() {
+        UnmapViewOfFile(CTRL_SHM_PTR as LPVOID);
+        CTRL_SHM_PTR = ptr::null_mut();
+    }
+    if CTRL_SHM_HANDLE != NULL {
+        CloseHandle(CTRL_SHM_HANDLE);
+        CTRL_SHM_HANDLE = NULL;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame input callback — polled by ETS2 every frame
+// ---------------------------------------------------------------------------
+
+/// ETS2 calls this repeatedly each frame. We emit one event per call (steering,
+/// throttle, brake, clutch in order) while `active == 1`, then signal done.
+/// When `active == 0` (autopilot off) we return immediately — game uses its own
+/// input, steering wheel or keyboard is unaffected.
+unsafe extern "system" fn input_event_cb(
+    event: *mut ScsInputEvent,
+    _ctx: scs_context_t,
+) -> scs_result_t {
+    if event.is_null() || CTRL_SHM_PTR.is_null() {
+        CTRL_EVENT_IDX = 0;
+        return SCS_RESULT_NOT_FOUND;
+    }
+    if (*CTRL_SHM_PTR).active == 0 {
+        CTRL_EVENT_IDX = 0;
+        return SCS_RESULT_NOT_FOUND;
+    }
+
+    let s = (*CTRL_SHM_PTR).steering;
+    let t = (*CTRL_SHM_PTR).throttle;
+    let b = (*CTRL_SHM_PTR).brake;
+    let c = (*CTRL_SHM_PTR).clutch;
+
+    match CTRL_EVENT_IDX {
+        0 => { (*event).input_index = 0; (*event).value_float = s; }
+        1 => { (*event).input_index = 1; (*event).value_float = t; }
+        2 => { (*event).input_index = 2; (*event).value_float = b; }
+        3 => { (*event).input_index = 3; (*event).value_float = c; }
+        _ => {
+            CTRL_EVENT_IDX = 0;
+            return SCS_RESULT_NOT_FOUND;
+        }
+    }
+    CTRL_EVENT_IDX += 1;
+    SCS_RESULT_OK
+}
+
+// ---------------------------------------------------------------------------
 // Tests (run on Linux too — no Win32 calls)
 // ---------------------------------------------------------------------------
 
@@ -824,5 +1077,38 @@ mod tests {
     fn layout_x_at_offset_16() {
         // After magic(4) + version(4) + sequence(4) + _pad(4) = 16
         assert_eq!(mem::offset_of!(ShmLayout, x), 16);
+    }
+
+    // --- Control SHM layout ---
+
+    #[test]
+    fn ctrl_shm_magic_is_tpct() {
+        // "TPCT" — must match CTRL_SHM_MAGIC in scs-sdk-output plugin.
+        assert_eq!(CTRL_SHM_MAGIC, 0x54504354);
+    }
+
+    #[test]
+    fn ctrl_shm_version_is_1() {
+        assert_eq!(CTRL_SHM_VERSION, 1);
+    }
+
+    #[test]
+    fn ctrl_layout_size_is_32() {
+        assert_eq!(mem::size_of::<ShmControlLayout>(), 32);
+    }
+
+    #[test]
+    fn ctrl_layout_active_at_offset_12() {
+        assert_eq!(mem::offset_of!(ShmControlLayout, active), 12);
+    }
+
+    #[test]
+    fn ctrl_layout_steering_at_offset_16() {
+        assert_eq!(mem::offset_of!(ShmControlLayout, steering), 16);
+    }
+
+    #[test]
+    fn ctrl_layout_clutch_at_offset_28() {
+        assert_eq!(mem::offset_of!(ShmControlLayout, clutch), 28);
     }
 }

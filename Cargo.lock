@@ -5046,6 +5046,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "truckpilot-plugin-scs-sdk-output"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "truckpilot-plugin-api",
+]
+
+[[package]]
 name = "truckpilot-plugin-sign-reader"
 version = "0.1.0"
 dependencies = [
