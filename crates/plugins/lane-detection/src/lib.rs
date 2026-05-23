@@ -18,10 +18,10 @@
 //!
 //! ## Default state
 //!
-//! `enabled = false` in the plugin config.  The plugin loads and validates
-//! the ONNX model at startup, but `tick()` is a no-op until the operator
-//! sets `lane_detection.enabled = true` on the blackboard.  This avoids
-//! unintentional CPU load before live testing is ready.
+//! `enabled` is read from `[plugins.lane-detection]` in `truckpilot.toml`
+//! (default `false` when the key is absent).  The blackboard key
+//! `lane_detection.enabled` overrides the TOML value at runtime.
+//! Set `enabled = true` in TOML to activate inference on daemon start.
 //!
 //! ## Build features
 //!
@@ -760,6 +760,24 @@ mod tests {
             Some("false")
         );
         assert!(!p.enabled);
+    }
+
+    #[test]
+    fn on_load_toml_enabled_sets_diag_enabled() {
+        let mut p = LaneDetectionPlugin::default();
+        let ctx = ctx_no_store();
+        ctx.blackboard.set("lane_detection.enabled", "true");
+        p.on_load(&ctx);
+        assert_eq!(ctx.blackboard.get("lane.diag.enabled").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn on_load_blackboard_false_overrides_true() {
+        let mut p = LaneDetectionPlugin::default();
+        let ctx = ctx_no_store();
+        ctx.blackboard.set("lane_detection.enabled", "false");
+        p.on_load(&ctx);
+        assert_eq!(ctx.blackboard.get("lane.diag.enabled").as_deref(), Some("false"));
     }
 
     // ---- tick no-ops when disabled or load_ok=false ----------------------

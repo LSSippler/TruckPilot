@@ -21,6 +21,15 @@ use truckpilot_plugin_api::{
     SharedBlackboard, SharedFrameStore, Telemetry, TickPhase,
 };
 
+/// Per-plugin configuration loaded from `truckpilot.toml`.
+pub struct PluginTomlConfig {
+    /// Whether to call `on_load` and tick this plugin.
+    pub enabled: bool,
+    /// Extra TOML fields pre-serialized as `(blackboard_key, value)` pairs.
+    /// Keys are already namespaced: `{plugin_name_underscored}.{field}`.
+    pub extra: Vec<(String, String)>,
+}
+
 /// Build a log-sink that routes plugin log calls into the host's tracing
 /// subscriber. The plugin's `target` (e.g. `truckpilot_plugin_sign_vision`)
 /// is embedded as a prefix in the message because `tracing` macro targets
@@ -138,13 +147,13 @@ pub struct PluginManager {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
     /// this each tick; the state machine reads it for engage-time checks.
     pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
-    /// Per-plugin enabled flags loaded from `truckpilot.toml`.
-    /// Key = plugin name, Value = enabled. Missing key → default true.
-    plugin_configs: HashMap<String, bool>,
+    /// Per-plugin configuration loaded from `truckpilot.toml`.
+    /// Key = plugin name. Missing key → default enabled=true, no extra keys.
+    plugin_configs: HashMap<String, PluginTomlConfig>,
 }
 
 impl PluginManager {
-    pub fn new(plugin_dir: PathBuf, plugin_configs: HashMap<String, bool>) -> Self {
+    pub fn new(plugin_dir: PathBuf, plugin_configs: HashMap<String, PluginTomlConfig>) -> Self {
         let reload_queue = Arc::new(Mutex::new(Vec::new()));
         let queue_clone = reload_queue.clone();
 
@@ -215,10 +224,16 @@ impl PluginManager {
         match unsafe { load_plugin_from_path(path) } {
             Ok(mut loaded) => {
                 // Apply enabled flag from config; default to true for backwards compat.
-                if let Some(&enabled) = self.plugin_configs.get(&loaded.name) {
-                    loaded.enabled = enabled;
+                if let Some(cfg) = self.plugin_configs.get(&loaded.name) {
+                    loaded.enabled = cfg.enabled;
                 }
                 if loaded.enabled {
+                    // Seed TOML config values to blackboard BEFORE on_load reads them.
+                    if let Some(cfg) = self.plugin_configs.get(&loaded.name) {
+                        for (key, value) in &cfg.extra {
+                            self.blackboard.set(key.clone(), value.clone());
+                        }
+                    }
                     self.run_plugin_on_load(&mut loaded);
                     info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 } else {
@@ -485,6 +500,11 @@ impl PluginManager {
         let needs_on_load = enabled && !was_enabled && !self.plugins[idx].initialized;
         self.plugins[idx].enabled = enabled;
         if needs_on_load {
+            if let Some(cfg) = self.plugin_configs.get(name) {
+                for (key, value) in &cfg.extra {
+                    self.blackboard.set(key.clone(), value.clone());
+                }
+            }
             let blackboard = self.blackboard.clone();
             let frame_store = Arc::clone(&self.frame_store);
             let graph = self.graph.clone();

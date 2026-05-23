@@ -36,10 +36,22 @@ struct AppConfig {
 struct PluginConfig {
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, toml::Value>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn toml_value_to_string(v: &toml::Value) -> Option<String> {
+    match v {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Integer(i) => Some(i.to_string()),
+        toml::Value::Float(f) => Some(f.to_string()),
+        _ => None,
+    }
 }
 
 /// Load `truckpilot.toml` from the current working directory.
@@ -577,11 +589,14 @@ async fn run_daemon() {
     // can warn about unknown plugin keys after load_all() completes.
     let config_plugin_names: std::collections::HashSet<String> =
         app_config.plugins.keys().cloned().collect();
-    let plugin_configs: std::collections::HashMap<String, bool> = app_config
-        .plugins
-        .into_iter()
-        .map(|(k, v)| (k, v.enabled))
-        .collect();
+    let plugin_configs: std::collections::HashMap<String, plugin_manager::PluginTomlConfig> =
+        app_config.plugins.into_iter().map(|(plugin_name, cfg)| {
+            let slug = plugin_name.replace('-', "_");
+            let extra: Vec<(String, String)> = cfg.extra.into_iter()
+                .filter_map(|(k, v)| toml_value_to_string(&v).map(|s| (format!("{slug}.{k}"), s)))
+                .collect();
+            (plugin_name, plugin_manager::PluginTomlConfig { enabled: cfg.enabled, extra })
+        }).collect();
 
     let plugin_dir = PathBuf::from("./plugins");
     if !plugin_dir.exists() {
