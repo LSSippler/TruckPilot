@@ -593,6 +593,7 @@ async fn run_daemon() {
         app_config.plugins.into_iter().map(|(plugin_name, cfg)| {
             let slug = plugin_name.replace('-', "_");
             let extra: Vec<(String, String)> = cfg.extra.into_iter()
+                .filter(|(k, _)| k != "enabled")
                 .filter_map(|(k, v)| toml_value_to_string(&v).map(|s| (format!("{slug}.{k}"), s)))
                 .collect();
             (plugin_name, plugin_manager::PluginTomlConfig { enabled: cfg.enabled, extra })
