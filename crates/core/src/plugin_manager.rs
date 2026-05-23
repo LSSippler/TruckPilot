@@ -78,6 +78,9 @@ pub struct LoadedPlugin {
     pub version: String,
     pub path: PathBuf,
     pub enabled: bool,
+    /// `true` after a successful [`Plugin::on_load`]. Used to skip `on_load` for
+    /// config-disabled plugins and to call `on_load` when enabled at runtime.
+    pub initialized: bool,
     /// The plugin instance.
     ///
     /// Wrapped in `ManuallyDrop` because the allocation came from the
@@ -209,23 +212,20 @@ impl PluginManager {
     }
 
     fn load_plugin(&mut self, path: &Path) {
-        match unsafe {
-            load_plugin_from_path(
-                path,
-                &self.blackboard,
-                &self.frame_store,
-                &self.graph,
-                &self.route_node_ids,
-            )
-        } {
+        match unsafe { load_plugin_from_path(path) } {
             Ok(mut loaded) => {
                 // Apply enabled flag from config; default to true for backwards compat.
                 if let Some(&enabled) = self.plugin_configs.get(&loaded.name) {
                     loaded.enabled = enabled;
                 }
                 if loaded.enabled {
+                    self.run_plugin_on_load(&mut loaded);
                     info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 } else {
+                    info!(
+                        "plugin '{}' disabled by config, skipping on_load",
+                        loaded.name
+                    );
                     info!(
                         "Loaded plugin: {} v{} (disabled by config)",
                         loaded.name, loaded.version
@@ -290,7 +290,9 @@ impl PluginManager {
         if let Some(idx) = existing_idx {
             let mut old = self.plugins.remove(idx);
             info!("Reloading plugin: {}", old.name);
-            old.plugin.on_unload();
+            if old.initialized {
+                old.plugin.on_unload();
+            }
             drop(old);
             // Give Windows time to release the DLL handle before loading the new version
             std::thread::sleep(Duration::from_millis(200));
@@ -476,27 +478,68 @@ impl PluginManager {
     }
 
     pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
-        let found = if let Some(p) = self.plugins.iter_mut().find(|p| p.name == name) {
-            p.enabled = enabled;
-            info!(
-                "Plugin {} {}",
-                name,
-                if enabled { "enabled" } else { "disabled" }
-            );
-            true
-        } else {
-            false
+        let Some(idx) = self.plugins.iter().position(|p| p.name == name) else {
+            return false;
         };
-        if found {
-            self.publish_loaded_names();
+        let was_enabled = self.plugins[idx].enabled;
+        let needs_on_load = enabled && !was_enabled && !self.plugins[idx].initialized;
+        self.plugins[idx].enabled = enabled;
+        if needs_on_load {
+            let blackboard = self.blackboard.clone();
+            let frame_store = Arc::clone(&self.frame_store);
+            let graph = self.graph.clone();
+            let route_node_ids = Arc::clone(&self.route_node_ids);
+            Self::run_on_load_for(
+                &mut self.plugins[idx],
+                &blackboard,
+                &frame_store,
+                &graph,
+                &route_node_ids,
+            );
         }
-        found
+        info!(
+            "Plugin {} {}",
+            name,
+            if enabled { "enabled" } else { "disabled" }
+        );
+        self.publish_loaded_names();
+        true
+    }
+
+    /// Run [`Plugin::on_load`] for `loaded` using the manager's shared context.
+    fn run_plugin_on_load(&self, loaded: &mut LoadedPlugin) {
+        Self::run_on_load_for(
+            loaded,
+            &self.blackboard,
+            &self.frame_store,
+            &self.graph,
+            &self.route_node_ids,
+        );
+    }
+
+    fn run_on_load_for(
+        loaded: &mut LoadedPlugin,
+        blackboard: &SharedBlackboard,
+        frame_store: &Arc<SharedFrameStore>,
+        graph: &Option<Arc<RouterGraph>>,
+        route_node_ids: &Arc<RwLock<HashSet<u64>>>,
+    ) {
+        debug_assert!(!loaded.initialized, "on_load must not run twice");
+        let mut ctx = PluginContext::new(loaded.name.clone(), blackboard.clone())
+            .with_frame_store(Arc::clone(frame_store))
+            .with_log_sink(make_log_sink());
+        ctx.graph = graph.clone();
+        ctx.route_node_ids = Some(Arc::clone(route_node_ids));
+        loaded.plugin.on_load(&ctx);
+        loaded.initialized = true;
     }
 
     #[allow(dead_code)]
     pub fn unload_all(&mut self) {
         for p in self.plugins.iter_mut() {
-            p.plugin.on_unload();
+            if p.initialized {
+                p.plugin.on_unload();
+            }
         }
         self.plugins.clear();
     }
@@ -588,13 +631,7 @@ fn is_plugin_file(path: &Path) -> bool {
     )
 }
 
-unsafe fn load_plugin_from_path(
-    path: &Path,
-    blackboard: &SharedBlackboard,
-    frame_store: &Arc<SharedFrameStore>,
-    graph: &Option<Arc<RouterGraph>>,
-    route_node_ids: &Arc<RwLock<HashSet<u64>>>,
-) -> Result<LoadedPlugin, String> {
+unsafe fn load_plugin_from_path(path: &Path) -> Result<LoadedPlugin, String> {
     let lib = Library::new(path).map_err(|e| format!("library load: {e}"))?;
 
     let create: Symbol<CreateFn> = lib
@@ -614,23 +651,17 @@ unsafe fn load_plugin_from_path(
         return Err("create_plugin returned null".into());
     }
 
-    let mut plugin = Box::from_raw(plugin_ptr);
+    let plugin = Box::from_raw(plugin_ptr);
 
     let name = plugin.name().to_string();
     let version = plugin.version().to_string();
-
-    let mut ctx = PluginContext::new(name.clone(), blackboard.clone())
-        .with_frame_store(Arc::clone(frame_store))
-        .with_log_sink(make_log_sink());
-    ctx.graph = graph.clone();
-    ctx.route_node_ids = Some(Arc::clone(route_node_ids));
-    plugin.on_load(&ctx);
 
     Ok(LoadedPlugin {
         name,
         version,
         path: path.to_path_buf(),
         enabled: true,
+        initialized: false,
         plugin: ManuallyDrop::new(plugin),
         destroy_fn,
         _lib: lib,
@@ -932,6 +963,29 @@ mod frame_store_tests {
             version,
             path: PathBuf::new(),
             enabled: true,
+            initialized: true,
+            plugin: ManuallyDrop::new(plugin),
+            destroy_fn: noop_destroy,
+            _lib: lib,
+        });
+    }
+
+    pub(super) fn inject_disabled(mgr: &mut PluginManager, plugin: Box<dyn Plugin>) {
+        let name = plugin.name().to_string();
+        let version = plugin.version().to_string();
+
+        #[allow(improper_ctypes_definitions)]
+        unsafe extern "C" fn noop_destroy(_p: *mut dyn Plugin) {}
+
+        let lib = unsafe { Library::new(std::env::current_exe().unwrap()) }
+            .expect("self-load for dummy Library handle");
+
+        mgr.plugins.push(LoadedPlugin {
+            name,
+            version,
+            path: PathBuf::new(),
+            enabled: false,
+            initialized: false,
             plugin: ManuallyDrop::new(plugin),
             destroy_fn: noop_destroy,
             _lib: lib,
@@ -1021,5 +1075,91 @@ mod frame_store_tests {
         mgr.tick_all(None, &mut out, 0.02);
 
         assert_eq!(*last_seen.lock().unwrap(), Some(99));
+    }
+}
+
+#[cfg(test)]
+mod on_load_skip_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct OnLoadCounterPlugin {
+        name: String,
+        on_load_count: Arc<AtomicUsize>,
+    }
+
+    impl OnLoadCounterPlugin {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.into(),
+                on_load_count: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl Plugin for OnLoadCounterPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn settings_schema(&self) -> &str {
+            "{}"
+        }
+        fn on_load(&mut self, _ctx: &PluginContext) {
+            self.on_load_count.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_unload(&mut self) {}
+        fn tick(
+            &mut self,
+            _telemetry: Option<&Telemetry>,
+            _output: &mut ControlOutput,
+            _ctx: &PluginContext,
+        ) {
+        }
+        fn tick_request(
+            &mut self,
+            _t: Option<&Telemetry>,
+            _ctx: &PluginContext,
+        ) -> Option<ControlRequest> {
+            None
+        }
+        fn default_phase(&self) -> TickPhase {
+            TickPhase::PhaseC
+        }
+    }
+
+    #[test]
+    fn disabled_plugin_skips_on_load_at_inject() {
+        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let plugin = OnLoadCounterPlugin::new("probe-disabled");
+        let count = Arc::clone(&plugin.on_load_count);
+        super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(!mgr.plugins[0].initialized);
+    }
+
+    #[test]
+    fn disabled_plugin_does_not_tick() {
+        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let plugin = OnLoadCounterPlugin::new("probe-disabled");
+        let count = Arc::clone(&plugin.on_load_count);
+        super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn set_enabled_triggers_on_load() {
+        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let plugin = OnLoadCounterPlugin::new("probe-toggle");
+        let count = Arc::clone(&plugin.on_load_count);
+        super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));
+        assert!(mgr.set_enabled("probe-toggle", true));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(mgr.plugins[0].initialized);
+        assert!(mgr.is_plugin_enabled("probe-toggle"));
     }
 }
