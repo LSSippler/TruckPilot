@@ -132,21 +132,54 @@ pub struct EngagementPreconditions {
     pub speed_ok: bool,
     /// Hard-block: heading diff > 60° — truck faces wrong way, replan won't help.
     pub heading_ok_for_engage: bool,
+    /// Vision mode: lane_keeper plugin reports no active fallback (engage_allowed=true).
+    pub lane_keeper_engage_allowed: bool,
+    /// "vision" | "route_following" (default). Drives which preconditions apply.
+    pub mode: String,
+}
+
+impl Default for EngagementPreconditions {
+    fn default() -> Self {
+        Self {
+            telemetry_fresh: false,
+            truck_on_road: false,
+            heading_aligned: false,
+            route_planned: false,
+            truck_on_route: false,
+            speed_ok: false,
+            heading_ok_for_engage: false,
+            lane_keeper_engage_allowed: false,
+            mode: "route_following".into(),
+        }
+    }
 }
 
 impl EngagementPreconditions {
     pub fn hard_blockers_met(&self) -> bool {
-        self.telemetry_fresh && self.route_planned && self.heading_ok_for_engage
+        if self.mode == "vision" {
+            // Route-related hard blocks are irrelevant; absolute heading guard stays.
+            self.telemetry_fresh && self.heading_ok_for_engage
+        } else {
+            self.telemetry_fresh && self.route_planned && self.heading_ok_for_engage
+        }
     }
 
     pub fn all_met(&self) -> bool {
-        self.telemetry_fresh
-            && self.truck_on_road
-            && self.heading_aligned
-            && self.route_planned
-            && self.truck_on_route
-            && self.speed_ok
-            && self.heading_ok_for_engage
+        if self.mode == "vision" {
+            self.telemetry_fresh
+                && self.truck_on_road
+                && self.heading_ok_for_engage
+                && self.speed_ok
+                && self.lane_keeper_engage_allowed
+        } else {
+            self.telemetry_fresh
+                && self.truck_on_road
+                && self.heading_aligned
+                && self.route_planned
+                && self.truck_on_route
+                && self.speed_ok
+                && self.heading_ok_for_engage
+        }
     }
 
     pub fn blocked_names(&self) -> String {
@@ -157,20 +190,25 @@ impl EngagementPreconditions {
         if !self.truck_on_road {
             names.push("truck_on_road");
         }
-        if !self.heading_aligned {
-            names.push("heading_aligned");
-        }
-        if !self.route_planned {
-            names.push("route_planned");
-        }
-        if !self.truck_on_route {
-            names.push("truck_on_route");
+        if self.mode != "vision" {
+            if !self.heading_aligned {
+                names.push("heading_aligned");
+            }
+            if !self.route_planned {
+                names.push("route_planned");
+            }
+            if !self.truck_on_route {
+                names.push("truck_on_route");
+            }
         }
         if !self.speed_ok {
             names.push("speed_ok");
         }
         if !self.heading_ok_for_engage {
             names.push("heading_ok_for_engage");
+        }
+        if self.mode == "vision" && !self.lane_keeper_engage_allowed {
+            names.push("lane_keeper_engage_allowed");
         }
         names.join(", ")
     }
@@ -216,6 +254,9 @@ pub struct AutopilotStateMachine {
     /// Shared route node IDs (Phase 6.5q.1). Read at engage time to check
     /// if the truck's current position is on the active route.
     route_node_ids: Option<Arc<RwLock<HashSet<u64>>>>,
+    /// Lane-keeper mode captured at engage time ("vision" | "route_following").
+    /// Clean Off disengage fires if mode changes while Active.
+    mode_at_engage: String,
 }
 
 impl Default for AutopilotStateMachine {
@@ -245,6 +286,7 @@ impl AutopilotStateMachine {
             last_telemetry_time: None,
             graph: None,
             route_node_ids: None,
+            mode_at_engage: String::new(),
         }
     }
 
@@ -399,6 +441,25 @@ impl AutopilotStateMachine {
                         return self.state;
                     }
 
+                    // Mode-change while Active → clean Off disengage.
+                    if !self.mode_at_engage.is_empty() {
+                        let current_mode = bb
+                            .get("plugin.lane_keeper.mode")
+                            .unwrap_or_else(|| "route_following".to_string());
+                        if current_mode != self.mode_at_engage {
+                            tracing::info!(
+                                "[state] Active -> Off (mode changed: {} -> {})",
+                                self.mode_at_engage,
+                                current_mode,
+                            );
+                            self.state = AutopilotState::Off;
+                            self.cruise_off_ticks = 0;
+                            self.engine_off_ticks = 0;
+                            self.publish(bb);
+                            return self.state;
+                        }
+                    }
+
                     if t.speed_ms.abs() < ZERO_SPEED_MS {
                         self.stopped_ticks += 1;
                     } else {
@@ -490,6 +551,9 @@ impl AutopilotStateMachine {
                     return Err(format!("Engage blocked: {}", blocked));
                 }
                 tracing::info!("[state] Off -> Engaging (user engage)");
+                self.mode_at_engage = bb
+                    .get("plugin.lane_keeper.mode")
+                    .unwrap_or_else(|| "route_following".to_string());
                 self.state = AutopilotState::Engaging;
                 self.engaging_ticks = 0;
                 self.precondition_stable_ticks = 0;
@@ -827,6 +891,14 @@ impl AutopilotStateMachine {
             None => true,
         };
 
+        let mode = bb
+            .get("plugin.lane_keeper.mode")
+            .unwrap_or_else(|| "route_following".to_string());
+        let lane_keeper_engage_allowed = bb
+            .get("lane_keeper.engage_allowed")
+            .map(|s| s == "true")
+            .unwrap_or(false);
+
         EngagementPreconditions {
             telemetry_fresh,
             truck_on_road,
@@ -835,6 +907,8 @@ impl AutopilotStateMachine {
             truck_on_route,
             speed_ok,
             heading_ok_for_engage,
+            lane_keeper_engage_allowed,
+            mode,
         }
     }
 
@@ -871,16 +945,31 @@ impl AutopilotStateMachine {
             "state.engage_precondition_heading_ok_for_engage",
             pre.heading_ok_for_engage.to_string(),
         );
+        bb.set(
+            "state.engage_precondition_lane_keeper_engage_allowed",
+            pre.lane_keeper_engage_allowed.to_string(),
+        );
+        // In vision mode the route/heading_aligned conditions don't apply — publish
+        // as "true" so UI rows that aren't hidden yet don't show as blockers.
+        if pre.mode == "vision" {
+            bb.set("state.engage_precondition_route_planned", "true");
+            bb.set("state.engage_precondition_truck_on_route", "true");
+            bb.set("state.engage_precondition_heading_aligned", "true");
+        }
         bb.set("state.engage_ready", pre.hard_blockers_met().to_string());
         bb.set("state.engage_all_ok", pre.all_met().to_string());
         bb.set("state.engage_blocked_by", pre.blocked_names());
 
-        // Advisory message — highest-priority reason the truck can't engage
-        let planning_result = bb.get("router.last_planning_result").unwrap_or_default();
-        let advisory = if planning_result == "start_node_unknown" {
+        // Advisory message — highest-priority reason the truck can't engage.
+        // Route-related advisories are suppressed in vision mode.
+        let advisory = if pre.mode != "vision"
+            && bb.get("router.last_planning_result").as_deref() == Some("start_node_unknown")
+        {
             "Truck-Position nicht im Routing-Graph. Fahre auf eine Hauptstrasse."
         } else if !pre.heading_ok_for_engage {
             "Drehe Truck in Stra\u{00df}en-Richtung (Abweichung >60\u{00b0})"
+        } else if pre.mode == "vision" && !pre.lane_keeper_engage_allowed {
+            "Lane-Keeper nicht bereit (engage_allowed=false). Pr\u{00fc}fe Kamera-Signal."
         } else {
             ""
         };
@@ -910,6 +999,20 @@ impl AutopilotStateMachine {
 // ---- Helpers ---------------------------------------------------------------
 
 fn check_preconditions(telemetry: Option<&Telemetry>, bb: &SharedBlackboard) -> Preconditions {
+    let mode = bb
+        .get("plugin.lane_keeper.mode")
+        .unwrap_or_else(|| "route_following".to_string());
+    // In vision mode router.active is irrelevant; repurpose the field to gate
+    // on lane_keeper.engage_allowed so Engaging→Active can complete.
+    let router_active = if mode == "vision" {
+        bb.get("lane_keeper.engage_allowed")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+    } else {
+        bb.get("router.active")
+            .map(|s| s == "true")
+            .unwrap_or(false)
+    };
     Preconditions {
         telemetry_ok: telemetry.is_some(),
         engine_running: telemetry.map(|t| t.engine_rpm > 100.0).unwrap_or(false),
@@ -917,10 +1020,7 @@ fn check_preconditions(telemetry: Option<&Telemetry>, bb: &SharedBlackboard) -> 
             .map(|t| t.cruise_control_kmh > 0.0)
             .unwrap_or(false),
         critical_plugins_loaded: check_critical_plugins(bb),
-        router_active: bb
-            .get("router.active")
-            .map(|s| s == "true")
-            .unwrap_or(false),
+        router_active,
     }
 }
 
@@ -1574,6 +1674,7 @@ mod tests {
             truck_on_route: true,
             speed_ok: true,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         assert!(!pre.hard_blockers_met(), "telemetry_fresh=false should fail hard blockers");
 
@@ -1585,6 +1686,7 @@ mod tests {
             truck_on_route: true,
             speed_ok: true,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         assert!(!pre.hard_blockers_met(), "route_planned=false should fail hard blockers");
 
@@ -1596,6 +1698,7 @@ mod tests {
             truck_on_route: false,
             speed_ok: false,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         assert!(pre.hard_blockers_met(), "telemetry_fresh+route_planned+heading_ok_for_engage needed");
 
@@ -1607,6 +1710,7 @@ mod tests {
             truck_on_route: true,
             speed_ok: true,
             heading_ok_for_engage: false,
+            ..Default::default()
         };
         assert!(!pre.hard_blockers_met(), "heading_ok_for_engage=false should fail hard blockers");
     }
@@ -1702,6 +1806,7 @@ mod tests {
             truck_on_route: true,
             speed_ok: true,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         let blocked = pre.blocked_names();
         assert!(blocked.contains("telemetry_fresh"));
@@ -1822,6 +1927,7 @@ mod tests {
             truck_on_route: false,
             speed_ok: false,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         assert!(pre.hard_blockers_met());
         assert!(!pre.all_met());
@@ -1940,6 +2046,7 @@ mod tests {
             truck_on_route: true,
             speed_ok: true,
             heading_ok_for_engage: true,
+            ..Default::default()
         };
         assert_eq!(pre.blocked_names(), "");
     }
@@ -1954,6 +2061,7 @@ mod tests {
             truck_on_route: false,
             speed_ok: false,
             heading_ok_for_engage: false,
+            ..Default::default() // mode="route_following", lane_keeper_engage_allowed=false (irrelevant in route mode)
         };
         let names = pre.blocked_names();
         assert_eq!(names.split(", ").count(), 7);
@@ -2171,5 +2279,119 @@ mod tests {
             advisory.contains("Routing-Graph"),
             "start_node_unknown advisory must take priority: {advisory}"
         );
+    }
+
+    // ---- CC: Vision-mode engage preconditions --------------------------------
+
+    #[test]
+    fn vision_mode_all_ok_no_route_all_met_true() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("plugin.lane_keeper.mode", "vision");
+        bb.set("lane_keeper.engage_allowed", "true");
+        bb.set("router.last_snap_dist", "5.0");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        // No route_planned, no truck_on_route — must not matter in vision mode.
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert_eq!(ep.mode, "vision");
+        assert!(ep.lane_keeper_engage_allowed);
+        assert!(ep.telemetry_fresh);
+        assert!(ep.truck_on_road);
+        assert!(ep.all_met(), "vision mode: all_met must be true when lane_keeper allows");
+        assert!(ep.hard_blockers_met(), "vision mode: hard_blockers_met without route");
+    }
+
+    #[test]
+    fn vision_mode_engage_allowed_false_all_met_false() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("plugin.lane_keeper.mode", "vision");
+        bb.set("lane_keeper.engage_allowed", "false");
+        bb.set("router.last_snap_dist", "5.0");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert!(!ep.lane_keeper_engage_allowed);
+        assert!(!ep.all_met(), "vision mode: all_met must be false when lane_keeper blocked");
+        assert!(ep.blocked_names().contains("lane_keeper_engage_allowed"));
+    }
+
+    #[test]
+    fn vision_mode_blocked_names_no_route_keys() {
+        let pre = EngagementPreconditions {
+            mode: "vision".into(),
+            lane_keeper_engage_allowed: false,
+            telemetry_fresh: true,
+            truck_on_road: true,
+            heading_ok_for_engage: true,
+            speed_ok: true,
+            ..Default::default()
+        };
+        let names = pre.blocked_names();
+        assert!(names.contains("lane_keeper_engage_allowed"));
+        assert!(!names.contains("route_planned"), "route_planned must not appear in vision mode");
+        assert!(!names.contains("truck_on_route"), "truck_on_route must not appear in vision mode");
+    }
+
+    #[test]
+    fn route_mode_unchanged_requires_route() {
+        let pre = EngagementPreconditions {
+            mode: "route_following".into(),
+            telemetry_fresh: true,
+            truck_on_road: true,
+            heading_aligned: true,
+            route_planned: false,
+            truck_on_route: true,
+            speed_ok: true,
+            heading_ok_for_engage: true,
+            lane_keeper_engage_allowed: false, // irrelevant in route mode
+        };
+        assert!(!pre.all_met(), "route mode: route_planned=false must fail all_met");
+        assert!(!pre.hard_blockers_met(), "route mode: route_planned=false must fail hard_blockers");
+    }
+
+    #[test]
+    fn vision_mode_engage_ready_published_without_route() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
+        let bb = SharedBlackboard::new();
+        bb.set("plugin.lane_keeper.mode", "vision");
+        bb.set("lane_keeper.engage_allowed", "true");
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        // Simulate publish pipeline.
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        assert_eq!(
+            bb.get("state.engage_ready").as_deref(),
+            Some("true"),
+            "engage_ready must be true in vision mode when telemetry+heading ok"
+        );
+        assert_eq!(
+            bb.get("state.engage_precondition_route_planned").as_deref(),
+            Some("true"),
+            "route_planned key must be published as true in vision mode"
+        );
+    }
+
+    #[test]
+    fn mode_switch_mid_active_disengages() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_with_preconditions();
+        bb.set("plugin.lane_keeper.mode", "route_following");
+        let t = mock_running();
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&t), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+        assert_eq!(sm.mode_at_engage, "route_following");
+
+        // Simulate operator switching mode while Active.
+        bb.set("plugin.lane_keeper.mode", "vision");
+        sm.evaluate(Some(&t), &bb);
+        assert_eq!(sm.state(), AutopilotState::Off, "mode change must trigger clean Off");
     }
 }
