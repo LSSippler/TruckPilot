@@ -83,3 +83,13 @@ capture_interval_ticks = 50
 max_frames = 500
 # Output root; session subdir YYYY-MM-DD_HHMMSS is created automatically.
 output_dir = "data/captures"
+
+[plugins.lane-detection]
+# UFLD v2 lane detection — TuSimple 320×800 model by default (~20ms avg, 100% detection rate).
+# enabled=false: plugin validates model at startup but tick() is a no-op until set to true.
+enabled = false
+# Path to UFLD v2 ONNX model. Switch to CULane path for comparison/fallback.
+model_path = "tools/ufld-test/models/ufldv2_tusimple_res18_320x800.onnx"
+# model_path = "tools/ufld-test/models/ufldv2_culane_res18_320x1600.onnx"
+# Lane existence probability threshold (0.1–1.0).
+exist_thresh = 0.5

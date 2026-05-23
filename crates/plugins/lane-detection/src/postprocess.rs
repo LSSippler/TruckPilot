@@ -1,12 +1,12 @@
 //! UFLD v2 row-anchor decoder.
 //!
-//! The CULane model produces four outputs; we use two:
+//! Uses two of the four model outputs:
 //!  - `loc_row`   shape [1, C, R, L]: column probability logits
 //!  - `exist_row` shape [1, 2, R, L]: 2-class existence logits
 //!
 //! Decoding mirrors the Python reference (`test_ufld.py::decode_v2`).
 
-use crate::preprocess::{LetterboxMeta, INPUT_H, INPUT_W};
+use crate::preprocess::LetterboxMeta;
 
 /// One valid lane point in original-image coordinates.
 #[derive(Debug, Clone)]
@@ -69,8 +69,8 @@ pub fn decode_ufld_v2(
                 .unwrap_or((0, 0.0));
 
             // Map (col_idx, r) → model-space pixel, then unletterbox.
-            let x_model = col_idx as f32 / col_grids as f32 * INPUT_W as f32;
-            let y_model = r as f32 / row_anchors as f32 * INPUT_H as f32;
+            let x_model = col_idx as f32 / col_grids as f32 * meta.canvas_w as f32;
+            let y_model = r as f32 / row_anchors as f32 * meta.canvas_h as f32;
 
             let x_orig = (x_model - meta.pad_x) / meta.scale;
             let y_orig = (y_model - meta.pad_y) / meta.scale;
@@ -96,7 +96,7 @@ mod tests {
     use crate::preprocess::LetterboxMeta;
 
     fn identity_meta() -> LetterboxMeta {
-        LetterboxMeta { scale: 1.0, pad_x: 0.0, pad_y: 0.0, orig_w: INPUT_W as u32, orig_h: INPUT_H as u32 }
+        LetterboxMeta { scale: 1.0, pad_x: 0.0, pad_y: 0.0, orig_w: 1600, orig_h: 320, canvas_w: 1600, canvas_h: 320 }
     }
 
     #[test]
@@ -139,5 +139,35 @@ mod tests {
         let meta = identity_meta();
         let lanes = decode_ufld_v2(&[], &[], 200, 72, 4, &meta, 0.5);
         assert!(lanes.is_empty());
+    }
+
+    #[test]
+    fn tusimple_shape_decodes_correctly() {
+        // col_grids=100, row_anchors=56, num_lanes=4 — TuSimple output shape
+        let col_grids = 100;
+        let row_anchors = 56;
+        let num_lanes = 4;
+        let mut loc = vec![0.0f32; col_grids * row_anchors * num_lanes];
+        // argmax at col 50 for lane 0, row 0
+        loc[50 * row_anchors * num_lanes + 0 * num_lanes + 0] = 10.0;
+        let mut exist = vec![0.0f32; 2 * row_anchors * num_lanes];
+        // class-1 >> class-0 for lane 0, row 0 → detected
+        exist[row_anchors * num_lanes + 0 * num_lanes + 0] = 10.0;
+        // class-0 high for all other (r, l) → no-lane
+        for r in 0..row_anchors {
+            for l in 0..num_lanes {
+                if r == 0 && l == 0 { continue; }
+                exist[r * num_lanes + l] = 10.0;
+            }
+        }
+        let meta = LetterboxMeta {
+            scale: 1.0, pad_x: 0.0, pad_y: 0.0,
+            orig_w: 800, orig_h: 320,
+            canvas_w: 800, canvas_h: 320,
+        };
+        let lanes = decode_ufld_v2(&loc, &exist, col_grids, row_anchors, num_lanes, &meta, 0.5);
+        // Lane 0 should have one point at col 50/100 * 800 = 400
+        assert_eq!(lanes[0].points.len(), 1);
+        assert!((lanes[0].points[0].x - 400.0).abs() < 1.0, "x={}", lanes[0].points[0].x);
     }
 }

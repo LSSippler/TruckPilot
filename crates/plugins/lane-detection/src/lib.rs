@@ -1,7 +1,7 @@
 //! Lane-Detection plugin — Phase 5.29-C.
 //!
 //! Reads JPEG frames from `SharedFrameStore` ("camera.front"), runs
-//! UFLD v2 CULane row-anchor inference on a dedicated thread, and
+//! UFLD v2 TuSimple/CULane row-anchor inference on a dedicated thread, and
 //! publishes lane data to the Blackboard.
 //!
 //! ## Blackboard outputs (SCHEMA-LOCK)
@@ -25,7 +25,7 @@
 //!
 //! | Feature         | Default | Effect                             |
 //! |-----------------|---------|-----------------------------------|
-//! | `onnx-cpu`      | yes     | CPU EP (37 ms — within 50 ms target) |
+//! | `onnx-cpu`      | yes     | CPU EP (~20 ms TuSimple / 37 ms CULane) |
 //! | `onnx-directml` | no      | GPU via DirectML (86 ms, too slow) |
 //! | (neither)       | —       | Stub mode — inference returns nothing |
 
@@ -48,7 +48,7 @@ use truckpilot_plugin_api::{
 // ---------------------------------------------------------------------------
 
 const LOG_TARGET: &str = "truckpilot_plugin_lane_detection";
-const DEFAULT_MODEL_PATH: &str = "tools/ufld-test/models/ufldv2_culane_res18_320x1600.onnx";
+const DEFAULT_MODEL_PATH: &str = "tools/ufld-test/models/ufldv2_tusimple_res18_320x800.onnx";
 const FRAME_KEY: &str = "camera.front";
 const WORKER_STALE_FRAME_US: u64 = 200_000;
 const DEFAULT_EXIST_THRESH: f32 = 0.5;
@@ -87,6 +87,8 @@ struct ModelConfig {
     col_grids: usize,
     row_anchors: usize,
     num_lanes: usize,
+    input_w: usize,
+    input_h: usize,
     input_name: String,
     loc_row_name: String,
     exist_row_name: String,
@@ -142,7 +144,7 @@ fn worker_loop(
 
         let t0 = Instant::now();
 
-        let lb = match preprocess::letterbox_and_normalize(&job.rgb, job.orig_w, job.orig_h) {
+        let lb = match preprocess::letterbox_and_normalize(&job.rgb, job.orig_w, job.orig_h, cfg.input_w, cfg.input_h) {
             Ok(r) => r,
             Err(e) => {
                 let _ = result_tx.send(InferenceResult {
@@ -154,6 +156,8 @@ fn worker_loop(
                     letterbox_meta: preprocess::LetterboxMeta {
                         scale: 1.0, pad_x: 0.0, pad_y: 0.0,
                         orig_w: job.orig_w, orig_h: job.orig_h,
+                        canvas_w: cfg.input_w as u32,
+                        canvas_h: cfg.input_h as u32,
                     },
                     latency_us: 0,
                     error: Some(format!("preprocess: {e}")),
@@ -163,7 +167,7 @@ fn worker_loop(
         };
 
         let tensor = match ort::value::Tensor::<f32>::from_array((
-            [1usize, 3, preprocess::INPUT_H, preprocess::INPUT_W],
+            [1usize, 3, cfg.input_h, cfg.input_w],
             lb.nchw.clone(),
         )) {
             Ok(t) => t,
@@ -281,6 +285,9 @@ fn load_onnx_session(
 }
 
 /// Run a probe inference to determine output tensor shapes and names.
+///
+/// Tries known input shapes in order: TuSimple (320×800) first, then CULane (320×1600).
+/// The first shape that the model accepts defines the ModelConfig.
 #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
 fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig, String> {
     use ort::value::Tensor;
@@ -292,66 +299,70 @@ fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig,
         ));
     }
 
-    let input_name = session
-        .inputs()
-        .first()
-        .ok_or("no model inputs")?
-        .name()
-        .to_string();
-    let loc_row_name = session.outputs()[0].name().to_string();
+    let input_name     = session.inputs().first().ok_or("no model inputs")?.name().to_string();
+    let loc_row_name   = session.outputs()[0].name().to_string();
     let exist_row_name = session.outputs()[2].name().to_string();
 
-    // Zero-tensor probe
-    let n = 3 * preprocess::INPUT_H * preprocess::INPUT_W;
-    let probe_tensor = Tensor::<f32>::from_array((
-        [1usize, 3, preprocess::INPUT_H, preprocess::INPUT_W],
-        vec![0.0f32; n],
-    ))
-    .map_err(|e| format!("probe tensor: {e}"))?;
+    for (input_h, input_w) in [(320usize, 800usize), (320usize, 1600usize)] {
+        let n = 3 * input_h * input_w;
+        let probe_tensor = match Tensor::<f32>::from_array((
+            [1usize, 3, input_h, input_w],
+            vec![0.0f32; n],
+        )) {
+            Ok(t) => t,
+            Err(e) => return Err(format!("probe tensor: {e}")),
+        };
 
-    let outputs = session
-        .run(ort::inputs![input_name.as_str() => probe_tensor])
-        .map_err(|e| format!("probe inference: {e}"))?;
+        let outputs = match session.run(ort::inputs![input_name.as_str() => probe_tensor]) {
+            Ok(o) => o,
+            Err(_) => continue, // wrong shape for this model, try next
+        };
 
-    // loc_row shape: [1, C, R, L]
-    let (loc_shape, _) = outputs[loc_row_name.as_str()]
-        .try_extract_tensor::<f32>()
-        .map_err(|e| format!("loc_row extract: {e}"))?;
+        // loc_row shape: [1, C, R, L]
+        let (loc_shape, _) = outputs[loc_row_name.as_str()]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("loc_row extract: {e}"))?;
 
-    if loc_shape.len() != 4 {
-        return Err(format!(
-            "UFLD v2: loc_row expected 4D, got {}D: {:?}",
-            loc_shape.len(),
-            loc_shape
-        ));
+        if loc_shape.len() != 4 {
+            return Err(format!(
+                "UFLD v2: loc_row expected 4D, got {}D: {:?}",
+                loc_shape.len(), loc_shape
+            ));
+        }
+
+        let col_grids   = loc_shape[1] as usize;
+        let row_anchors = loc_shape[2] as usize;
+        let num_lanes   = loc_shape[3] as usize;
+
+        if col_grids == 0 || row_anchors == 0 || num_lanes == 0 {
+            return Err(format!(
+                "UFLD v2: invalid loc_row shape: C={col_grids} R={row_anchors} L={num_lanes}"
+            ));
+        }
+
+        // exist_row shape: [1, 2, R, L] — validate R and L match
+        let (exist_shape, _) = outputs[exist_row_name.as_str()]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("exist_row extract: {e}"))?;
+
+        if exist_shape.len() < 4
+            || (exist_shape[2] as usize) != row_anchors
+            || (exist_shape[3] as usize) != num_lanes
+        {
+            return Err(format!(
+                "UFLD v2: exist_row shape mismatch (expected [1,2,{row_anchors},{num_lanes}], got {:?})",
+                exist_shape
+            ));
+        }
+
+        return Ok(ModelConfig {
+            col_grids, row_anchors, num_lanes,
+            input_h, input_w,
+            input_name, loc_row_name, exist_row_name,
+        });
     }
 
-    let col_grids   = loc_shape[1] as usize;
-    let row_anchors = loc_shape[2] as usize;
-    let num_lanes   = loc_shape[3] as usize;
-
-    if col_grids == 0 || row_anchors == 0 || num_lanes == 0 {
-        return Err(format!(
-            "UFLD v2: invalid loc_row shape: C={col_grids} R={row_anchors} L={num_lanes}"
-        ));
-    }
-
-    // exist_row shape: [1, 2, R, L] — validate R and L match
-    let (exist_shape, _) = outputs[exist_row_name.as_str()]
-        .try_extract_tensor::<f32>()
-        .map_err(|e| format!("exist_row extract: {e}"))?;
-
-    if exist_shape.len() < 4
-        || (exist_shape[2] as usize) != row_anchors
-        || (exist_shape[3] as usize) != num_lanes
-    {
-        return Err(format!(
-            "UFLD v2: exist_row shape mismatch (expected [1,2,{row_anchors},{num_lanes}], got {:?})",
-            exist_shape
-        ));
-    }
-
-    Ok(ModelConfig { col_grids, row_anchors, num_lanes, input_name, loc_row_name, exist_row_name })
+    Err("UFLD v2: unsupported input shape (tried 320×800 and 320×1600)".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -430,8 +441,8 @@ impl LaneDetectionPlugin {
         ctx_info!(
             ctx,
             target: LOG_TARGET,
-            "ONNX EP={ep_label} col_grids={} row_anchors={} num_lanes={}",
-            cfg.col_grids, cfg.row_anchors, cfg.num_lanes
+            "ONNX EP={ep_label} input={}×{} col_grids={} row_anchors={} num_lanes={}",
+            cfg.input_w, cfg.input_h, cfg.col_grids, cfg.row_anchors, cfg.num_lanes
         );
         ctx.blackboard.set("lane.onnx.provider", ep_label);
 
