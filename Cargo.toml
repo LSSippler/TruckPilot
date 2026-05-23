@@ -22,6 +22,7 @@ members = [
     "crates/plugins/break-planner",
     "crates/plugins/stats-logger",
     "crates/plugins/vision-frame-source",
+    "crates/plugins/lane-data-collector",
 ]
 resolver = "2"
 

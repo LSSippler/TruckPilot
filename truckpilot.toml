@@ -58,3 +58,13 @@ kd = 0.2
 # Reserved section for future logging options.
 # Not currently consumed by src/config.rs.
 verbose = false
+
+[plugins.lane-data-collector]
+# Set to true to activate frame+telemetry capture for vision-model training.
+enabled = false
+# Save one frame every N plugin ticks (PhaseB = 10 Hz → 50 ticks = 5 s).
+capture_interval_ticks = 50
+# Stop automatically after this many frames (~42 min at 5 s intervals).
+max_frames = 500
+# Output root; session subdir YYYY-MM-DD_HHMMSS is created automatically.
+output_dir = "data/captures"
