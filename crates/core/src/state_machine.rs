@@ -902,8 +902,14 @@ fn check_preconditions(telemetry: Option<&Telemetry>, bb: &SharedBlackboard) -> 
 fn check_critical_plugins(bb: &SharedBlackboard) -> bool {
     let loaded = bb.get("plugins.loaded").unwrap_or_default();
     let names: Vec<&str> = loaded.split(',').map(str::trim).collect();
-    let critical = ["lane-keeper", "speed-controller", "vjoy-output"];
-    critical.iter().all(|n| names.contains(n))
+    // Base plugins always required.
+    let base = ["lane-keeper", "speed-controller"];
+    if !base.iter().all(|n| names.contains(n)) {
+        return false;
+    }
+    // At least one output plugin must be active.
+    let output_plugins = ["vjoy-output", "scs-sdk-output"];
+    output_plugins.iter().any(|n| names.contains(n))
 }
 
 fn is_speed_zero(telemetry: Option<&Telemetry>) -> bool {

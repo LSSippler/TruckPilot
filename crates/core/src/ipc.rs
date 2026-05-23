@@ -409,7 +409,7 @@ mod ipc_command_tests {
     fn manager_for_test() -> SharedManager {
         let dir = std::env::temp_dir().join("truckpilot-ipc-test-plugins");
         let _ = std::fs::create_dir_all(&dir);
-        Arc::new(Mutex::new(PluginManager::new(dir)))
+        Arc::new(Mutex::new(PluginManager::new(dir, std::collections::HashMap::new())))
     }
 
     #[tokio::test]

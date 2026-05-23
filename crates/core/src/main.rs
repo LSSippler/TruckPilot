@@ -23,6 +23,46 @@ mod watchdog;
 use plugin_manager::PluginManager;
 
 // ---------------------------------------------------------------------------
+// App config (truckpilot.toml)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, Default)]
+struct AppConfig {
+    #[serde(default)]
+    plugins: std::collections::HashMap<String, PluginConfig>,
+}
+
+#[derive(Debug, serde::Deserialize, Clone)]
+struct PluginConfig {
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Load `truckpilot.toml` from the current working directory.
+/// On missing file or parse error: log a warning and return `AppConfig::default()`.
+fn load_config() -> AppConfig {
+    let path = std::path::Path::new("truckpilot.toml");
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("truckpilot.toml not found or unreadable ({e}), using defaults");
+            return AppConfig::default();
+        }
+    };
+    match toml::from_str::<AppConfig>(&content) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!("Failed to parse truckpilot.toml: {e} — using defaults");
+            AppConfig::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -531,6 +571,18 @@ async fn main() {
 async fn run_daemon() {
     info!("TruckPilot Core — daemon mode");
 
+    // Load config before anything else so plugin enable-flags are available.
+    let app_config = load_config();
+    // Keep the set of configured plugin names before consuming the map so we
+    // can warn about unknown plugin keys after load_all() completes.
+    let config_plugin_names: std::collections::HashSet<String> =
+        app_config.plugins.keys().cloned().collect();
+    let plugin_configs: std::collections::HashMap<String, bool> = app_config
+        .plugins
+        .into_iter()
+        .map(|(k, v)| (k, v.enabled))
+        .collect();
+
     let plugin_dir = PathBuf::from("./plugins");
     if !plugin_dir.exists() {
         std::fs::create_dir_all(&plugin_dir).expect("create plugins dir");
@@ -540,11 +592,30 @@ async fn run_daemon() {
     let graph = load_router_graph_or_exit();
     let graph = Arc::new(graph);
 
-    let mut manager = PluginManager::new(plugin_dir);
+    let mut manager = PluginManager::new(plugin_dir, plugin_configs);
     manager.graph = Some(Arc::clone(&graph));
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());
+
+    // Warn for every config key that does not match any loaded plugin name.
+    {
+        let loaded_names: std::collections::HashSet<String> =
+            manager.list().into_iter().map(|p| p.name).collect();
+        for name in &config_plugin_names {
+            if !loaded_names.contains(name) {
+                warn!("unknown plugin in config: '{name}', ignored");
+            }
+        }
+    }
+
+    // Warn once if no output plugin is active (daemon runs in compute-only mode).
+    if !manager.is_plugin_enabled("vjoy-output") && !manager.is_plugin_enabled("scs-sdk-output") {
+        warn!(
+            "no output plugin active (vjoy-output and scs-sdk-output both disabled or absent), \
+             daemon runs in compute-only mode"
+        );
+    }
 
     // Pull a clone of the shared blackboard *before* the manager moves
     // into the Arc<Mutex>. `SharedBlackboard` wraps an `Arc<Mutex<…>>`,

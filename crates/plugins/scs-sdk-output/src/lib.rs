@@ -68,14 +68,20 @@ const _: () = {
 // Windows SHM writer (platform-specific)
 // ---------------------------------------------------------------------------
 
+// Windows API type aliases intentionally use the conventional all-caps names.
+#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 type HANDLE = isize;
+#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 type LPVOID = *mut c_void;
+#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 type LPCWSTR = *const u16;
+#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 type DWORD = u32;
+#[allow(clippy::upper_case_acronyms)]
 #[cfg(windows)]
 type BOOL = i32;
 

@@ -109,6 +109,17 @@ pub fn check_telemetry_stale(
 // Failsafe output (Phase 6.2b A1: wired via safety.emergency_brake BB-key)
 // ---------------------------------------------------------------------------
 
+/// Returns `true` when at least one output plugin (vjoy-output or scs-sdk-output)
+/// is present in `plugins.loaded`. Used by the watchdog to decide whether
+/// activating the vJoy failsafe has any effect.
+///
+/// TODO: vjoy_failsafe should also guard scs-sdk-output
+fn is_output_plugin_active(bb: &SharedBlackboard) -> bool {
+    let loaded = bb.get("plugins.loaded").unwrap_or_default();
+    let names: Vec<&str> = loaded.split(',').map(str::trim).collect();
+    names.contains(&"vjoy-output") || names.contains(&"scs-sdk-output")
+}
+
 /// Activate failsafe by raising the `safety.emergency_brake` blackboard flag.
 /// vjoy-output's `tick()` reads this key first and, when `true`, drives the
 /// virtual stick to (steer=0, throttle=0, brake=1.0) regardless of the
@@ -172,11 +183,19 @@ pub async fn watchdog_loop(
 
         // --- Heartbeat check (failsafe on/off, no Fault) ---
         let heartbeat_stale = check_heartbeat_stall(&heartbeat, daemon_start, &config);
+        let output_active = is_output_plugin_active(&bb);
 
         if heartbeat_stale && ap_active && !heartbeat_failsafe {
-            tracing::warn!("[watchdog] heartbeat stall — autopilot active, activating failsafe");
-            apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
-            heartbeat_failsafe = true;
+            if output_active {
+                tracing::warn!("[watchdog] heartbeat stall — autopilot active, activating failsafe");
+                heartbeat_failsafe = true;
+                apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
+            } else {
+                tracing::warn!(
+                    "[watchdog] heartbeat stall — autopilot active but no output plugin loaded, \
+                     skipping failsafe"
+                );
+            }
         } else if heartbeat_stale && !ap_active && heartbeat_failsafe {
             // Autopilot disengaged while stall was active — release brake.
             tracing::info!("[watchdog] heartbeat stall but autopilot Off — clearing failsafe, writing neutral");
@@ -196,9 +215,16 @@ pub async fn watchdog_loop(
                     sm.report_fault(reason, &bb);
                 }
                 if ap_active && !telem_failsafe {
-                    tracing::warn!("[watchdog] telemetry stale — autopilot active, activating failsafe");
-                    apply_vjoy_failsafe(&bb, &config, "telemetry_stale");
-                    telem_failsafe = true;
+                    if output_active {
+                        tracing::warn!("[watchdog] telemetry stale — autopilot active, activating failsafe");
+                        telem_failsafe = true;
+                        apply_vjoy_failsafe(&bb, &config, "telemetry_stale");
+                    } else {
+                        tracing::warn!(
+                            "[watchdog] telemetry stale — autopilot active but no output plugin \
+                             loaded, skipping failsafe"
+                        );
+                    }
                 } else if !ap_active && telem_failsafe {
                     tracing::info!("[watchdog] telemetry stale but autopilot Off — clearing failsafe");
                     clear_vjoy_failsafe(&bb);

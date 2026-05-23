@@ -4901,6 +4901,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
  "truckpilot-ipc-protocol",
@@ -5019,6 +5020,19 @@ dependencies = [
 name = "truckpilot-plugin-lane-data-collector"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "truckpilot-plugin-api",
+]
+
+[[package]]
+name = "truckpilot-plugin-lane-detection"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "image",
+ "ort",
  "serde",
  "serde_json",
  "tracing",

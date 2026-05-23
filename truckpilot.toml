@@ -63,6 +63,11 @@ verbose = false
 # Native SCS SDK controller output via SHM back-channel (no vJoy driver required).
 # Requires truckpilot_telemetry.dll with scs_input_init export to be loaded by ETS2.
 # Set to true and disable vjoy-output to switch to SCS SDK mode.
+enabled = true
+
+[plugins.vjoy-output]
+# Legacy vJoy virtual joystick output (requires vJoy driver installed).
+# Disable when using scs-sdk-output.
 enabled = false
 
 [plugins.ets2-nav-bridge]

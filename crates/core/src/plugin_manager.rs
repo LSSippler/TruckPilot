@@ -5,7 +5,7 @@
 //!
 //! Race-condition-safe: reloads are queued and applied between tick() calls.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::mem::ManuallyDrop;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -135,10 +135,13 @@ pub struct PluginManager {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
     /// this each tick; the state machine reads it for engage-time checks.
     pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
+    /// Per-plugin enabled flags loaded from `truckpilot.toml`.
+    /// Key = plugin name, Value = enabled. Missing key → default true.
+    plugin_configs: HashMap<String, bool>,
 }
 
 impl PluginManager {
-    pub fn new(plugin_dir: PathBuf) -> Self {
+    pub fn new(plugin_dir: PathBuf, plugin_configs: HashMap<String, bool>) -> Self {
         let reload_queue = Arc::new(Mutex::new(Vec::new()));
         let queue_clone = reload_queue.clone();
 
@@ -183,6 +186,7 @@ impl PluginManager {
             _watcher: watcher,
             graph: None,
             route_node_ids: Arc::new(RwLock::new(HashSet::new())),
+            plugin_configs,
         }
     }
 
@@ -214,8 +218,19 @@ impl PluginManager {
                 &self.route_node_ids,
             )
         } {
-            Ok(loaded) => {
-                info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
+            Ok(mut loaded) => {
+                // Apply enabled flag from config; default to true for backwards compat.
+                if let Some(&enabled) = self.plugin_configs.get(&loaded.name) {
+                    loaded.enabled = enabled;
+                }
+                if loaded.enabled {
+                    info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
+                } else {
+                    info!(
+                        "Loaded plugin: {} v{} (disabled by config)",
+                        loaded.name, loaded.version
+                    );
+                }
                 self.plugins.push(loaded);
                 self.publish_loaded_names();
             }
@@ -223,6 +238,14 @@ impl PluginManager {
                 error!("Failed to load plugin {:?}: {}", path, e);
             }
         }
+    }
+
+    /// Returns whether the named plugin is currently enabled.
+    /// Returns `false` if the plugin is not loaded.
+    pub fn is_plugin_enabled(&self, name: &str) -> bool {
+        self.plugins
+            .iter()
+            .any(|p| p.name == name && p.enabled)
     }
 
     /// Publish the comma-joined list of currently enabled plugin names to
@@ -237,17 +260,6 @@ impl PluginManager {
             .collect::<Vec<_>>()
             .join(",");
         self.blackboard.set("plugins.loaded", joined);
-    }
-
-    /// Whether all critical plugins for autopilot are loaded and enabled.
-    /// Convenience wrapper for the state machine (used after Phase 6.2g
-    /// when the watchdog wires it up directly).
-    #[allow(dead_code)]
-    pub fn are_critical_plugins_loaded(&self) -> bool {
-        let critical = ["lane-keeper", "speed-controller", "vjoy-output"];
-        critical
-            .iter()
-            .all(|name| self.plugins.iter().any(|p| p.name == *name && p.enabled))
     }
 
     /// Process pending reload events. Call between tick() invocations only.
@@ -323,6 +335,10 @@ impl PluginManager {
             .iter()
             .position(|p| p.enabled && p.name == "vjoy-output");
 
+        // Set to true whenever a plugin is disabled due to a panic so we
+        // refresh `plugins.loaded` in the blackboard after the loop.
+        let mut any_disabled = false;
+
         for (i, p) in self
             .plugins
             .iter_mut()
@@ -357,6 +373,7 @@ impl PluginManager {
             if let Err(panic) = tick_result {
                 log_plugin_panic(&p.name, "tick", panic);
                 p.enabled = false;
+                any_disabled = true;
                 continue;
             }
 
@@ -369,6 +386,7 @@ impl PluginManager {
                 Err(panic) => {
                     log_plugin_panic(&p.name, "tick_request", panic);
                     p.enabled = false;
+                    any_disabled = true;
                 }
             }
             let plugin_elapsed = plugin_start.elapsed();
@@ -382,37 +400,58 @@ impl PluginManager {
             }
         }
 
+        // Refresh the blackboard list if any plugin was panic-disabled above.
+        if any_disabled {
+            self.publish_loaded_names();
+        }
+
         *output = arbitrate(legacy, &requests);
 
         if let Some(idx) = vjoy_idx {
-            let p = &mut self.plugins[idx];
-            if p.enabled {
-                let plugin_start = Instant::now();
-                let phase = p.plugin.default_phase();
-                let mut ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
-                    .with_dt(dt_s)
-                    .with_phase(phase)
-                    .with_tick_count(tick_count)
-                    .with_frame_store(Arc::clone(&self.frame_store))
-                    .with_log_sink(make_log_sink());
-                ctx.graph = self.graph.clone();
-                ctx.route_node_ids = Some(Arc::clone(&self.route_node_ids));
-                let tick_result = catch_unwind(AssertUnwindSafe(|| {
-                    p.plugin.tick(telemetry, output, &ctx);
-                }));
-                if let Err(panic) = tick_result {
-                    log_plugin_panic(&p.name, "tick", panic);
-                    p.enabled = false;
+            // Use a block so the mutable borrow of `p` is fully released
+            // before we call `publish_loaded_names` on self below.
+            let vjoy_panicked = {
+                let p = &mut self.plugins[idx];
+                if p.enabled {
+                    let plugin_start = Instant::now();
+                    let phase = p.plugin.default_phase();
+                    let mut ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
+                        .with_dt(dt_s)
+                        .with_phase(phase)
+                        .with_tick_count(tick_count)
+                        .with_frame_store(Arc::clone(&self.frame_store))
+                        .with_log_sink(make_log_sink());
+                    ctx.graph = self.graph.clone();
+                    ctx.route_node_ids = Some(Arc::clone(&self.route_node_ids));
+                    let tick_result = catch_unwind(AssertUnwindSafe(|| {
+                        p.plugin.tick(telemetry, output, &ctx);
+                    }));
+                    let panicked = if let Err(panic) = tick_result {
+                        log_plugin_panic(&p.name, "tick", panic);
+                        p.enabled = false;
+                        true
+                    } else {
+                        false
+                    };
+                    let plugin_elapsed = plugin_start.elapsed();
+                    if plugin_elapsed.as_millis() > 30 {
+                        warn!(
+                            "[tick-profile] plugin '{}' took {} ms (tick={})",
+                            p.name,
+                            plugin_elapsed.as_millis(),
+                            tick_count
+                        );
+                    }
+                    panicked
+                } else {
+                    false
                 }
-                let plugin_elapsed = plugin_start.elapsed();
-                if plugin_elapsed.as_millis() > 30 {
-                    warn!(
-                        "[tick-profile] plugin '{}' took {} ms (tick={})",
-                        p.name,
-                        plugin_elapsed.as_millis(),
-                        tick_count
-                    );
-                }
+            }; // mutable borrow of `p` ends here
+
+            // vjoy-output panicked — update the blackboard immediately
+            // so the watchdog sees the change and can react.
+            if vjoy_panicked {
+                self.publish_loaded_names();
             }
         }
     }
@@ -901,7 +940,7 @@ mod frame_store_tests {
 
     fn new_test_manager() -> PluginManager {
         // Plugin dir doesn't have to exist; we never call load_all.
-        PluginManager::new(PathBuf::from("./does-not-exist-test-dir"))
+        PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new())
     }
 
     #[test]
