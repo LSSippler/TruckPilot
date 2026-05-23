@@ -326,6 +326,8 @@ impl SimState {
             paused: 0,
             _reserved0: [0; 3],
             timestamp_us: (self.t * 1_000_000.0) as u64,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         }
     }
 

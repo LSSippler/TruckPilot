@@ -12,7 +12,7 @@ use truckpilot_plugin_api::Telemetry;
 pub const SHM_MAGIC: u32 = 0x54504C54; // "TPLT"
 /// Layout version supported by this reader.
 /// Must match the version written by `truckpilot-telemetry-dll`.
-pub const SHM_VERSION: u32 = 2;
+pub const SHM_VERSION: u32 = 3;
 
 #[cfg(windows)]
 const SHM_NAME: &str = "Local\\TruckPilotTelemetry";
@@ -102,6 +102,12 @@ pub struct ShmTelemetryLayout {
     pub _reserved0: [u8; 3],
     /// Microsecond timestamp from the game clock.
     pub timestamp_us: u64,
+
+    // v3 fields
+    /// Navigation remaining distance (m). Negative = not available.
+    pub nav_distance_m: f32,
+    /// Navigation remaining time (s). Negative = not available.
+    pub nav_time_s: f32,
 }
 
 // Compile-time offset guards. If the DLL writer struct ever drifts from
@@ -132,7 +138,9 @@ const _: () = {
     assert!(mem::offset_of!(ShmTelemetryLayout, distance_to_lead_m) == 144);
     assert!(mem::offset_of!(ShmTelemetryLayout, effective_brake) == 148);
     assert!(mem::offset_of!(ShmTelemetryLayout, timestamp_us) == 188);
-    assert!(mem::size_of::<ShmTelemetryLayout>() == 196);
+    assert!(mem::offset_of!(ShmTelemetryLayout, nav_distance_m) == 196);
+    assert!(mem::offset_of!(ShmTelemetryLayout, nav_time_s) == 200);
+    assert!(mem::size_of::<ShmTelemetryLayout>() == 204);
 
     // Per-field size asserts. offset_of! catches drift in field
     // *position*; this catches drift in field *type* (e.g. f32 vs f64)
@@ -270,6 +278,8 @@ fn layout_to_telemetry(l: ShmTelemetryLayout) -> Telemetry {
         // always present in the layout. Plain copy.
         fuel_liters: l.fuel_liters,
         odometer_km: l.odometer_km,
+        nav_distance_m: if l.nav_distance_m >= 0.0 { l.nav_distance_m } else { -1.0 },
+        nav_time_s: if l.nav_time_s >= 0.0 { l.nav_time_s } else { -1.0 },
     }
 }
 
@@ -461,6 +471,8 @@ mod tests {
             paused: 0,
             _reserved0: [0; 3],
             timestamp_us: 0,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         }
     }
 

@@ -5008,6 +5008,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "truckpilot-plugin-lane-data-collector"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "truckpilot-plugin-api",
+]
+
+[[package]]
 name = "truckpilot-plugin-lane-keeper"
 version = "0.1.0"
 dependencies = [

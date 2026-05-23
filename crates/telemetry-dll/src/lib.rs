@@ -10,7 +10,7 @@
 //! - Linux path:   `/dev/shm/truckpilot_telemetry` (for testing only)
 //! - Layout:       `ShmLayout` (must stay in sync with `crates/telemetry/src/shm.rs`)
 //! - Magic:        `0x54504C54` ("TPLT")
-//! - Version:      `2`
+//! - Version:      `3`
 //!
 //! ## Installation
 //! 1. Cross-compile for Windows: `cargo build --release --target x86_64-pc-windows-gnu`
@@ -111,7 +111,7 @@ const SCS_TELEMETRY_EVENT_frame_end: scs_u32_t = 2;
 /// Magic written at offset 0. Reader checks this before trusting any data.
 pub const SHM_MAGIC: u32 = 0x54504C54; // "TPLT"
 /// Layout version. Increment when the struct changes.
-pub const SHM_VERSION: u32 = 2;
+pub const SHM_VERSION: u32 = 3;
 /// Shared memory name (Windows).
 const SHM_NAME: &str = "Local\\TruckPilotTelemetry";
 /// Ready-event name (Windows) — signalled after every frame write.
@@ -162,6 +162,10 @@ pub struct ShmLayout {
     pub paused: u8,
     pub _reserved0: [u8; 3],
     pub timestamp_us: u64,
+
+    // v3 fields
+    pub nav_distance_m: f32,
+    pub nav_time_s: f32,
 }
 
 // Compile-time offset guards. Must mirror those in
@@ -191,7 +195,9 @@ const _: () = {
     assert!(mem::offset_of!(ShmLayout, distance_to_lead_m) == 144);
     assert!(mem::offset_of!(ShmLayout, effective_brake) == 148);
     assert!(mem::offset_of!(ShmLayout, timestamp_us) == 188);
-    assert!(mem::size_of::<ShmLayout>() == 196);
+    assert!(mem::offset_of!(ShmLayout, nav_distance_m) == 196);
+    assert!(mem::offset_of!(ShmLayout, nav_time_s) == 200);
+    assert!(mem::size_of::<ShmLayout>() == 204);
 
     // Per-field size asserts — catches type drift (f32 vs f64) that
     // offset_of cannot detect alone. The deltas below assume f64 fields
@@ -328,6 +334,8 @@ static mut G_BLINKER_R: u8 = 0;
 static mut G_PARKING_BRAKE: u8 = 0;
 static mut G_PAUSED: u8 = 0;
 static mut G_TIMESTAMP_US: u64 = 0;
+static mut G_NAV_DISTANCE: f32 = 0.0;
+static mut G_NAV_TIME: f32 = 0.0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -382,7 +390,7 @@ pub unsafe extern "system" fn scs_telemetry_init(
     }
 
     let p = &*params;
-    debug_log("scs_telemetry_init v2 starting");
+    debug_log("scs_telemetry_init v3 starting");
 
     // Create the shared memory region.
     let name = wide_str(SHM_NAME);
@@ -519,6 +527,10 @@ pub unsafe extern "system" fn scs_telemetry_init(
         cb_parking_brake,
     );
 
+    // --- Navigation ETA ---
+    reg_channel(p, "truck.navigation.distance", SCS_VALUE_TYPE_float, cb_nav_distance);
+    reg_channel(p, "truck.navigation.time", SCS_VALUE_TYPE_float, cb_nav_time);
+
     debug_log("scs_telemetry_init done — all channels registered");
     SCS_RESULT_OK
 }
@@ -597,6 +609,8 @@ unsafe extern "system" fn frame_end_cb(
         paused: G_PAUSED,
         _reserved0: [0; 3],
         timestamp_us: G_TIMESTAMP_US,
+        nav_distance_m: G_NAV_DISTANCE,
+        nav_time_s: G_NAV_TIME,
     };
 
     // Single atomic write — readers use sequence number to detect torn reads.
@@ -759,6 +773,9 @@ bool_cb!(cb_blinker_r, G_BLINKER_R);
 bool_cb!(cb_hazard, G_HAZARD);
 bool_cb!(cb_parking_brake, G_PARKING_BRAKE);
 
+float_cb!(cb_nav_distance, G_NAV_DISTANCE);
+float_cb!(cb_nav_time, G_NAV_TIME);
+
 // ---------------------------------------------------------------------------
 // Tests (run on Linux too — no Win32 calls)
 // ---------------------------------------------------------------------------
@@ -774,8 +791,8 @@ mod tests {
     }
 
     #[test]
-    fn shm_version_is_2() {
-        assert_eq!(SHM_VERSION, 2);
+    fn shm_version_is_3() {
+        assert_eq!(SHM_VERSION, 3);
     }
 
     #[test]

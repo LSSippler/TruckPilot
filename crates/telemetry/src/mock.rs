@@ -50,6 +50,8 @@ pub fn fixture_telemetry() -> Telemetry {
         accel_longitudinal: -1.0,
         fuel_liters: 320.0,
         odometer_km: 12_345.0,
+        nav_distance_m: -1.0,
+        nav_time_s: -1.0,
     }
 }
 

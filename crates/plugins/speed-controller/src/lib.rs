@@ -255,6 +255,8 @@ mod tests {
             accel_longitudinal: -1.0,
             fuel_liters: -1.0,
             odometer_km: -1.0,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         }
     }
 
@@ -325,6 +327,8 @@ mod tests {
             accel_longitudinal: -1.0,
             fuel_liters: -1.0,
             odometer_km: -1.0,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         };
         let ctx = active_ctx(SharedBlackboard::new());
         assert!((compute_target_speed(&t, &ctx) - FALLBACK_SPEED_KMH).abs() < 0.01);

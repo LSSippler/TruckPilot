@@ -773,6 +773,8 @@ const TELEMETRY_BLACKBOARD_KEYS: &[&str] = &[
     "telemetry.accel_longitudinal",
     "telemetry.fuel_liters",
     "telemetry.odometer_km",
+    "telemetry.nav_distance_m",
+    "telemetry.nav_time_s",
 ];
 
 /// Mirror the current telemetry frame onto the shared blackboard so
@@ -826,6 +828,8 @@ fn publish_telemetry_to_blackboard(t: Option<&Telemetry>, bb: &SharedBlackboard)
     );
     set_or_remove(bb, "telemetry.fuel_liters", t.fuel_liters);
     set_or_remove(bb, "telemetry.odometer_km", t.odometer_km);
+    set_or_remove(bb, "telemetry.nav_distance_m", f64::from(t.nav_distance_m));
+    set_or_remove(bb, "telemetry.nav_time_s", f64::from(t.nav_time_s));
 }
 
 /// Write `value` as an `f64` string to `bb[key]`, or remove the key
@@ -880,6 +884,8 @@ mod telemetry_blackboard_tests {
             accel_longitudinal: -1.0,
             fuel_liters: 320.0,
             odometer_km: 12_345.0,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         }
     }
 

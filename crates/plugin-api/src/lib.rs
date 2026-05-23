@@ -91,6 +91,10 @@ pub struct Telemetry {
     /// Total odometer reading in km. `-1.0` = not available
     /// (e.g. HTTP fallback source).
     pub odometer_km: f64,
+    /// Navigation remaining distance in meters. `-1.0` = not available.
+    pub nav_distance_m: f32,
+    /// Navigation remaining time in seconds. `-1.0` = not available.
+    pub nav_time_s: f32,
 }
 
 // ---------------------------------------------------------------------------

@@ -478,6 +478,8 @@ mod tests {
             accel_longitudinal: -1.0,
             fuel_liters: -1.0,
             odometer_km: -1.0,
+            nav_distance_m: -1.0,
+            nav_time_s: -1.0,
         }
     }
 
