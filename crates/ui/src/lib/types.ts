@@ -121,7 +121,8 @@ export type UiCommand =
   | { type: "set_router_start"; uid: string | null }
   | { type: "set_cruise_target"; kmh: number }
   | { type: "blackboard_get"; keys: string[] }
-  | { type: "blackboard_list"; prefix: string | null };
+  | { type: "blackboard_list"; prefix: string | null }
+  | { type: "set_blackboard_key"; key: string; value: string };
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 

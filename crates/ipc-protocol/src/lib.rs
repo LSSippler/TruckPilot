@@ -253,6 +253,10 @@ pub enum UiCommand {
     BlackboardList {
         prefix: Option<String>,
     },
+    SetBlackboardKey {
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -519,6 +523,26 @@ mod tests {
         let back: UiCommand = serde_json::from_str(&s).unwrap();
         match back {
             UiCommand::SetCruiseTarget { kmh } => assert!((kmh - 85.0).abs() < 1e-3),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn ui_command_set_blackboard_key_round_trip() {
+        let cmd = UiCommand::SetBlackboardKey {
+            key: "lane_keeper.mode".into(),
+            value: "vision".into(),
+        };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(s.contains(r#""type":"set_blackboard_key""#), "wire form: {s}");
+        assert!(s.contains(r#""key":"lane_keeper.mode""#), "wire form: {s}");
+        assert!(s.contains(r#""value":"vision""#), "wire form: {s}");
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        match back {
+            UiCommand::SetBlackboardKey { key, value } => {
+                assert_eq!(key, "lane_keeper.mode");
+                assert_eq!(value, "vision");
+            }
             _ => panic!("wrong variant"),
         }
     }

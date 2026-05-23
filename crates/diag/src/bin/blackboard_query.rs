@@ -29,6 +29,7 @@ struct Config {
 enum Mode {
     List { prefix: Option<String> },
     Get { keys: Vec<String> },
+    Set { key: String, value: String },
 }
 
 impl Config {
@@ -38,6 +39,7 @@ impl Config {
         let mut prefix: Option<String> = None;
         let mut keys: Option<Vec<String>> = None;
 
+        let mut set_kv: Option<(String, String)> = None;
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
@@ -53,6 +55,19 @@ impl Config {
                     keys = Some(args[i + 1].split(',').map(str::to_string).collect());
                     i += 2;
                 }
+                "--set" if i + 1 < args.len() => {
+                    let pair = &args[i + 1];
+                    match pair.find('=') {
+                        Some(pos) => {
+                            set_kv = Some((pair[..pos].to_string(), pair[pos + 1..].to_string()));
+                        }
+                        None => {
+                            eprintln!("Error: --set requires <key>=<value> format");
+                            std::process::exit(2);
+                        }
+                    }
+                    i += 2;
+                }
                 "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
@@ -64,9 +79,13 @@ impl Config {
             }
         }
 
-        let mode = match keys {
-            Some(k) => Mode::Get { keys: k },
-            None => Mode::List { prefix },
+        let mode = if let Some((key, value)) = set_kv {
+            Mode::Set { key, value }
+        } else {
+            match keys {
+                Some(k) => Mode::Get { keys: k },
+                None => Mode::List { prefix },
+            }
         };
 
         Self { url, mode }
@@ -82,12 +101,14 @@ fn print_help() {
     println!("  --url <ws-url>       Daemon URL (default: ws://127.0.0.1:8765)");
     println!("  --prefix <prefix>    List keys with given prefix (default: all)");
     println!("  --keys <k1,k2,...>   Fetch specific keys and their values");
+    println!("  --set <key>=<value>  Set a blackboard key in the running daemon");
     println!("  --help               Show this help");
     println!();
     println!("Examples:");
-    println!("  blackboard-query                      # list all keys");
-    println!("  blackboard-query --prefix vjoy        # list vjoy.* keys");
+    println!("  blackboard-query                              # list all keys");
+    println!("  blackboard-query --prefix vjoy               # list vjoy.* keys");
     println!("  blackboard-query --keys vjoy.connected,autopilot.state");
+    println!("  blackboard-query --set lane_keeper.mode=vision");
 }
 
 // ---------------------------------------------------------------------------
@@ -138,11 +159,26 @@ fn main() {
         }
     };
 
+    if let Mode::Set { key, value } = &cfg.mode {
+        let cmd = UiCommand::SetBlackboardKey {
+            key: key.clone(),
+            value: value.clone(),
+        };
+        if let Err(e) = send_cmd(&mut ws, &cmd) {
+            eprintln!("Error sending command: {e}");
+            std::process::exit(1);
+        }
+        println!("Set {key} = {value}");
+        let _ = ws.close(None);
+        return;
+    }
+
     let cmd = match &cfg.mode {
         Mode::List { prefix } => UiCommand::BlackboardList {
             prefix: prefix.clone(),
         },
         Mode::Get { keys } => UiCommand::BlackboardGet { keys: keys.clone() },
+        Mode::Set { .. } => unreachable!(),
     };
 
     if let Err(e) = send_cmd(&mut ws, &cmd) {

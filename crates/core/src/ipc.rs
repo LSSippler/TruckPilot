@@ -366,6 +366,11 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             keys.sort();
             vec![truckpilot_ipc_protocol::CoreMessage::BlackboardKeys { v: V, keys }]
         }
+        UiCommand::SetBlackboardKey { key, value } => {
+            info!("blackboard set via IPC: {key}={value}");
+            manager.lock().await.blackboard.set(key, value);
+            Vec::new()
+        }
     }
 }
 
@@ -410,6 +415,22 @@ mod ipc_command_tests {
         let dir = std::env::temp_dir().join("truckpilot-ipc-test-plugins");
         let _ = std::fs::create_dir_all(&dir);
         Arc::new(Mutex::new(PluginManager::new(dir, std::collections::HashMap::new())))
+    }
+
+    #[tokio::test]
+    async fn set_blackboard_key_writes_to_blackboard() {
+        let mgr = manager_for_test();
+        let response = build_response(
+            UiCommand::SetBlackboardKey {
+                key: "foo.bar".into(),
+                value: "hello".into(),
+            },
+            &mgr,
+        )
+        .await;
+        assert!(response.is_empty(), "set_blackboard_key produces no immediate reply");
+        let value = mgr.lock().await.blackboard.get("foo.bar");
+        assert_eq!(value.as_deref(), Some("hello"));
     }
 
     #[tokio::test]
