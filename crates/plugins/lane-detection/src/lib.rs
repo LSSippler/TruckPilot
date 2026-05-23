@@ -18,10 +18,12 @@
 //!
 //! ## Default state
 //!
-//! `enabled` is read from `[plugins.lane-detection]` in `truckpilot.toml`
-//! (default `false` when the key is absent).  The blackboard key
-//! `lane_detection.enabled` overrides the TOML value at runtime.
-//! Set `enabled = true` in TOML to activate inference on daemon start.
+//! The plugin is enabled or disabled via `[plugins.lane-detection]` in
+//! `truckpilot.toml`, managed by the PluginManager.  The plugin itself has no
+//! internal `enabled` flag — it always attempts to load the model in `on_load`
+//! and publishes `lane.diag.load_ok` to indicate success or failure.
+//! `lane.diag.enabled` is an alias of `lane.diag.load_ok` for backwards
+//! compatibility.
 //!
 //! ## Build features
 //!
@@ -373,7 +375,6 @@ fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig,
 
 pub struct LaneDetectionPlugin {
     model_path: PathBuf,
-    enabled: bool,
     exist_thresh: f32,
 
     /// Set in on_load; false if model validation failed.
@@ -401,7 +402,6 @@ impl Default for LaneDetectionPlugin {
     fn default() -> Self {
         Self {
             model_path: PathBuf::from(DEFAULT_MODEL_PATH),
-            enabled: false,
             exist_thresh: DEFAULT_EXIST_THRESH,
             load_ok: false,
             last_processed_frame_id: None,
@@ -542,8 +542,8 @@ impl LaneDetectionPlugin {
         bb.set("lane.diag.inference_errors",     self.diag_inference_errors.to_string());
         bb.set("lane.diag.last_latency_ms",      format!("{:.1}", self.diag_last_latency_ms));
         bb.set("lane.diag.frames_dropped_full",  self.diag_frames_dropped_full.to_string());
-        bb.set("lane.diag.enabled",              self.enabled.to_string());
         bb.set("lane.diag.load_ok",              self.load_ok.to_string());
+        bb.set("lane.diag.enabled",              self.load_ok.to_string()); // backwards-compat alias
     }
 }
 
@@ -559,10 +559,6 @@ impl Plugin for LaneDetectionPlugin {
         r#"{
   "type": "object",
   "properties": {
-    "enabled": {
-      "type": "boolean",
-      "description": "Enable lane inference. Default false — activate manually for live test."
-    },
     "model_path": {
       "type": "string",
       "description": "Path to UFLD v2 ONNX model."
@@ -578,23 +574,12 @@ impl Plugin for LaneDetectionPlugin {
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        // Read config overrides from blackboard (set by operator or TOML loader).
-        if let Some(v) = ctx.blackboard.get("lane_detection.enabled") {
-            self.enabled = v.eq_ignore_ascii_case("true");
-        }
+        // Read optional config overrides from blackboard (set by TOML loader).
         if let Some(p) = ctx.blackboard.get("lane_detection.model_path") {
             self.model_path = PathBuf::from(p);
         }
         if let Some(t) = ctx.blackboard.get_f64("lane_detection.exist_thresh") {
             self.exist_thresh = (t as f32).clamp(0.1, 1.0);
-        }
-
-        if !self.enabled {
-            ctx_info!(ctx, target: LOG_TARGET,
-                "lane-detection disabled (enabled=false) — set lane_detection.enabled=true to activate");
-            ctx.blackboard.set("lane.diag.load_ok", "false");
-            ctx.blackboard.set("lane.diag.enabled", "false");
-            return;
         }
 
         #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
@@ -620,7 +605,7 @@ impl Plugin for LaneDetectionPlugin {
         }
 
         ctx.blackboard.set("lane.diag.load_ok", self.load_ok.to_string());
-        ctx.blackboard.set("lane.diag.enabled", self.enabled.to_string());
+        ctx.blackboard.set("lane.diag.enabled", self.load_ok.to_string()); // backwards-compat alias
     }
 
     fn on_unload(&mut self) {
@@ -647,7 +632,7 @@ impl Plugin for LaneDetectionPlugin {
         #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
         self.publish_latest_result(ctx);
 
-        if !self.enabled || !self.load_ok {
+        if !self.load_ok {
             self.publish_diag(ctx);
             return;
         }
@@ -742,51 +727,32 @@ mod tests {
     // ---- default state ---------------------------------------------------
 
     #[test]
-    fn default_disabled() {
+    fn default_load_ok_false() {
         let p = LaneDetectionPlugin::default();
-        assert!(!p.enabled);
         assert!(!p.load_ok);
     }
 
-    // ---- on_load with enabled=false (default) ----------------------------
+    // ---- on_load without model sets diag keys to false -------------------
 
     #[test]
-    fn on_load_disabled_sets_diag() {
+    fn on_load_no_model_sets_diag_false() {
         let mut p = LaneDetectionPlugin::default();
         let ctx = ctx_no_store();
         p.on_load(&ctx);
-        assert_eq!(
-            ctx.blackboard.get("lane.diag.enabled").as_deref(),
-            Some("false")
-        );
-        assert!(!p.enabled);
-    }
-
-    #[test]
-    fn on_load_toml_enabled_sets_diag_enabled() {
-        let mut p = LaneDetectionPlugin::default();
-        let ctx = ctx_no_store();
-        ctx.blackboard.set("lane_detection.enabled", "true");
-        p.on_load(&ctx);
-        assert_eq!(ctx.blackboard.get("lane.diag.enabled").as_deref(), Some("true"));
-    }
-
-    #[test]
-    fn on_load_blackboard_false_overrides_true() {
-        let mut p = LaneDetectionPlugin::default();
-        let ctx = ctx_no_store();
-        ctx.blackboard.set("lane_detection.enabled", "false");
-        p.on_load(&ctx);
+        // Without a valid model file load_ok stays false; diag reflects that.
+        assert_eq!(ctx.blackboard.get("lane.diag.load_ok").as_deref(), Some("false"));
+        // backwards-compat alias matches load_ok
         assert_eq!(ctx.blackboard.get("lane.diag.enabled").as_deref(), Some("false"));
+        assert!(!p.load_ok);
     }
 
-    // ---- tick no-ops when disabled or load_ok=false ----------------------
+    // ---- tick no-ops when load_ok=false ----------------------------------
 
     #[test]
-    fn tick_noop_when_disabled() {
+    fn tick_noop_when_load_failed() {
         let mut p = LaneDetectionPlugin::default();
         let ctx = ctx_no_store();
-        p.on_load(&ctx);
+        p.on_load(&ctx); // load_ok stays false — no model present
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
         assert_eq!(p.last_processed_frame_id, None);
@@ -796,8 +762,7 @@ mod tests {
     fn tick_noop_when_no_frame_store() {
         let mut p = LaneDetectionPlugin::default();
         let ctx = ctx_no_store();
-        // Force load_ok=true and enabled=true to bypass early returns
-        p.enabled = true;
+        // Force load_ok=true to bypass the load gate
         p.load_ok = true;
         let mut out = ControlOutput::default();
         p.tick(None, &mut out, &ctx);
@@ -808,7 +773,6 @@ mod tests {
     fn tick_marks_frame_processed() {
         let mut p = LaneDetectionPlugin::default();
         let (ctx, store) = ctx_with_store();
-        p.enabled = true;
         p.load_ok = true;
         store.set(FRAME_KEY, make_frame(42, one_px_jpeg()));
         let mut out = ControlOutput::default();
@@ -820,7 +784,6 @@ mod tests {
     fn tick_skips_duplicate_frame_id() {
         let mut p = LaneDetectionPlugin::default();
         let (ctx, store) = ctx_with_store();
-        p.enabled = true;
         p.load_ok = true;
 
         let frame = make_frame(7, one_px_jpeg());
@@ -838,7 +801,6 @@ mod tests {
     fn tick_handles_corrupt_jpeg_gracefully() {
         let mut p = LaneDetectionPlugin::default();
         let (ctx, store) = ctx_with_store();
-        p.enabled = true;
         p.load_ok = true;
         store.set(FRAME_KEY, make_frame(99, vec![0u8; 16]));
         let mut out = ControlOutput::default();
