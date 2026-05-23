@@ -76,6 +76,7 @@ pub enum FailureReason {
     HeadingUnrecoverable,
     CriticalPluginMissing(String),
     UserRequested,
+    VisionLostLongBlackout,
 }
 
 impl FailureReason {
@@ -389,6 +390,15 @@ impl AutopilotStateMachine {
                     } else {
                         self.cruise_off_ticks = 0;
                     }
+                    // Vision mode Level-4 disengage signal from lane-keeper plugin.
+                    if bb.get("lane_keeper.fallback_level").as_deref() == Some("4")
+                        && bb.get("lane_keeper.active").as_deref() == Some("false")
+                    {
+                        self.transition_to_fault(FailureReason::VisionLostLongBlackout);
+                        self.publish(bb);
+                        return self.state;
+                    }
+
                     if t.speed_ms.abs() < ZERO_SPEED_MS {
                         self.stopped_ticks += 1;
                     } else {
@@ -456,6 +466,21 @@ impl AutopilotStateMachine {
             (AutopilotState::Off, AutopilotEvent::UserEngage) => {
                 // ── Phase 6.5q.1: synchronous off-route check ────────────
                 self.check_and_replan_if_offroute(bb);
+
+                // Vision mode: block engage when lane_keeper reports fallback level >= 2.
+                if bb.get("plugin.lane_keeper.mode").as_deref() == Some("vision")
+                    && bb.get("lane_keeper.engage_allowed").as_deref() != Some("true")
+                {
+                    let level = bb.get("lane_keeper.fallback_level").unwrap_or_default();
+                    tracing::warn!(
+                        "[state] Engage blocked: vision fallback_level={} (engage_allowed != true)",
+                        level,
+                    );
+                    return Err(format!(
+                        "Engage blocked: lane_keeper.engage_allowed=false (vision level {})",
+                        level
+                    ));
+                }
 
                 let engage_ready = bb.get("state.engage_ready").unwrap_or_default();
                 if engage_ready == "false" {

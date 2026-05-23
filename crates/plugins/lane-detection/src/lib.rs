@@ -6,13 +6,15 @@
 //!
 //! ## Blackboard outputs (SCHEMA-LOCK)
 //!
-//! | Key                    | Type  | Range      | Notes                          |
-//! |------------------------|-------|------------|--------------------------------|
-//! | `lane.center_offset`   | f64   | [-1, +1]   | +1 = truck far right           |
-//! | `lane.confidence`      | f64   | [0, 1]     | <0.3 unreliable                |
-//! | `lane.detection_count` | u32   | 0–4        |                                |
-//! | `lane.left_visible`    | bool  |            |                                |
-//! | `lane.right_visible`   | bool  |            |                                |
+//! | Key                    | Type  | Range      | Notes                                      |
+//! |------------------------|-------|------------|--------------------------------------------|
+//! | `lane.center_offset`   | f64   | [-1, +1]   | +1 = truck far right                       |
+//! | `lane.confidence`      | f64   | [0, 1]     | <0.3 unreliable                            |
+//! | `lane.detection_count` | u32   | 0–4        |                                            |
+//! | `lane.left_visible`    | bool  |            |                                            |
+//! | `lane.right_visible`   | bool  |            |                                            |
+//! | `lane.left_x`          | f64   | [-1, +1]   | Ego-left lane x in frame coords; NaN=absent |
+//! | `lane.right_x`         | f64   | [-1, +1]   | Ego-right lane x in frame coords; NaN=absent|
 //!
 //! ## Default state
 //!
@@ -519,6 +521,8 @@ impl LaneDetectionPlugin {
         bb.set("lane.detection_count",  lane_result.detection_count.to_string());
         bb.set("lane.left_visible",     lane_result.left_visible.to_string());
         bb.set("lane.right_visible",    lane_result.right_visible.to_string());
+        bb.set("lane.left_x",           format!("{:.6}", lane_result.left_x_norm));
+        bb.set("lane.right_x",          format!("{:.6}", lane_result.right_x_norm));
 
         ctx_debug!(
             ctx, target: LOG_TARGET,

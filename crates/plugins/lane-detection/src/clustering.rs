@@ -23,6 +23,12 @@ pub struct LaneResult {
     pub detection_count: u32,
     pub left_visible: bool,
     pub right_visible: bool,
+    /// Ego-left lane x in frame coordinates [-1, +1]; 0 = frame centre.
+    /// NaN when no left lane is detected.
+    pub left_x_norm: f64,
+    /// Ego-right lane x in frame coordinates [-1, +1]; 0 = frame centre.
+    /// NaN when no right lane is detected.
+    pub right_x_norm: f64,
 }
 
 /// Compute a LaneResult from decoded lanes.
@@ -41,6 +47,8 @@ pub fn compute_lane_result(lanes: &[DecodedLane], orig_w: u32) -> LaneResult {
             detection_count: 0,
             left_visible: false,
             right_visible: false,
+            left_x_norm: f64::NAN,
+            right_x_norm: f64::NAN,
         };
     }
 
@@ -112,12 +120,19 @@ pub fn compute_lane_result(lanes: &[DecodedLane], orig_w: u32) -> LaneResult {
         0.0
     };
 
+    let half_frame_f64 = half_frame;
     LaneResult {
         center_offset_norm,
         confidence,
         detection_count,
         left_visible: ego_left_x.is_some(),
         right_visible: ego_right_x.is_some(),
+        left_x_norm: ego_left_x
+            .map(|x| ((x as f64 - half_frame_f64) / half_frame_f64).clamp(-1.0, 1.0))
+            .unwrap_or(f64::NAN),
+        right_x_norm: ego_right_x
+            .map(|x| ((x as f64 - half_frame_f64) / half_frame_f64).clamp(-1.0, 1.0))
+            .unwrap_or(f64::NAN),
     }
 }
 

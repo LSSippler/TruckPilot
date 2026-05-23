@@ -1,50 +1,88 @@
-//! Lane-Keeper plugin — PID steering with speed-adaptive look-ahead.
+//! Lane-Keeper plugin — dual-mode: route-following (Catmull-Rom) or vision-based.
 //!
-//! Reads waypoints from `router.waypoints` on the blackboard.
-//! Writes only `output.steering`, leaves throttle/brake untouched.
+//! ## Mode selection
+//! Set `plugin.lane_keeper.mode` on the Blackboard to `"vision"` or `"route_following"`.
+//! Default (if key absent): `RouteFollowing` — preserves all existing behaviour.
 //!
-//! PID gains are tunable at runtime via `plugin.lane_keeper.{kp,ki,kd}`.
-//! Confirmed active gains are echoed to `pid_tuning.lane_keeper.{kp,ki,kd}`.
+//! ## Vision mode — 5-Level Fallback Cascade (DS1 spec)
+//! Level 0: Normal vision PID.  Level 1: Single-lane extrapolation.
+//! Level 2: Confidence-drop (EMA).  Level 3: Heading-hold.  Level 4: Disengage.
 //!
-//! ## Speed-adaptive look-ahead
-//!
+//! ## Route-following mode
+//! Reads waypoints from `router.waypoints`.  Speed-adaptive look-ahead.
 //! `look_ahead_m = BASE_LOOK_AHEAD + speed_kmh * SPEED_FACTOR`
-//!
-//! This prevents oscillation at high speed and tight cornering at low speed.
 
+mod fallback;
+mod extrapolation;
+mod heading_hold;
+
+use extrapolation::{extrapolate_center, LaneWidthState};
+use fallback::FallbackState;
+use heading_hold::{wrap_angle, HeadingHoldState};
 use truckpilot_plugin_api::{
     pid::Pid, ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry,
 };
 
-/// Arbitration priority for the lane-keeper. Ordinary autopilot.
+// ── Priorities ────────────────────────────────────────────────────────────────
 const PRIORITY_NORMAL: i32 = 50;
+const PRIORITY_LEVEL4: i32 = 200;
 
-const BASE_LOOK_AHEAD: f64 = 5.0; // meters at standstill
-const SPEED_FACTOR: f64 = 0.5; // extra meters per km/h
-const WAYPOINT_REACH_M: f64 = 5.0; // advance waypoint within this radius
+// ── Route-following constants ─────────────────────────────────────────────────
+const BASE_LOOK_AHEAD: f64 = 5.0;
+const SPEED_FACTOR: f64 = 0.5;
+const WAYPOINT_REACH_M: f64 = 5.0;
 
+// ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
 const DEFAULT_KI: f64 = 0.1;
 const DEFAULT_KD: f64 = 0.3;
 
-/// Max heading error before lane-keeper suspends steering and waits for user correction.
-/// ~80°: covers normal curves/lane-changes (≤45°) but blocks clear engage-mismatch cases.
+/// Block-2: max heading error (radians) before lane-keeper suspends steering.
+/// ~80°: covers normal curves/lane-changes (≤45°) but blocks clear mismatch cases.
 pub(crate) const HEADING_MISMATCH_THRESHOLD_RAD: f64 = 1.4;
 
-/// Max steering change per tick (~10% of full lock). At 3 Hz: 30%/s.
+/// Block-2: max steering change per tick.
 const STEERING_MAX_DELTA_PER_TICK: f64 = 0.1;
+
+/// Ticks before Level-4 brake is lifted.
+const L4_BRAKE_TICKS: u64 = 50;
+
+// ── Mode enum ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LaneKeeperMode {
+    #[default]
+    RouteFollowing,
+    Vision,
+    Off,
+}
+
+// ── Plugin struct ─────────────────────────────────────────────────────────────
 
 pub struct LaneKeeperPlugin {
     pid: Pid,
-    waypoints: Vec<[f64; 2]>, // (x, z) pairs
+
+    // ── Route-following fields ──────────────────────────────────────────────
+    waypoints: Vec<[f64; 2]>,
     progress_idx: usize,
-    /// Catmull-Rom subdivisions (configurable).
     subdivisions: usize,
     last_gains: (f64, f64, f64),
     last_waypoints_hash: u64,
     previous_steering_out: f64,
     heading_stage: Option<String>,
     previous_heading_stage: Option<String>,
+
+    // ── Vision-mode fields ─────────────────────────────────────────────────
+    mode: LaneKeeperMode,
+    fallback: FallbackState,
+    extrapolator: LaneWidthState,
+    heading_hold: HeadingHoldState,
+    /// Heading captured at Active-session start (for Block-2 guard in vision mode).
+    engagement_heading: Option<f64>,
+    /// Tick at which Level-4 was entered (None = not in L4).
+    level_4_entered_at_tick: Option<u64>,
+    /// Monotonic counter across all tick_request calls.
+    tick_count: u64,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -59,24 +97,24 @@ impl Default for LaneKeeperPlugin {
             previous_steering_out: 0.0,
             heading_stage: None,
             previous_heading_stage: None,
+            mode: LaneKeeperMode::default(),
+            fallback: FallbackState::new(),
+            extrapolator: LaneWidthState::new(),
+            heading_hold: HeadingHoldState::new(),
+            engagement_heading: None,
+            level_4_entered_at_tick: None,
+            tick_count: 0,
         }
     }
 }
 
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
 impl LaneKeeperPlugin {
     fn apply_gain_overrides(&mut self, ctx: &PluginContext) {
-        let kp = ctx
-            .blackboard
-            .get_f64("plugin.lane_keeper.kp")
-            .unwrap_or(DEFAULT_KP);
-        let ki = ctx
-            .blackboard
-            .get_f64("plugin.lane_keeper.ki")
-            .unwrap_or(DEFAULT_KI);
-        let kd = ctx
-            .blackboard
-            .get_f64("plugin.lane_keeper.kd")
-            .unwrap_or(DEFAULT_KD);
+        let kp = ctx.blackboard.get_f64("plugin.lane_keeper.kp").unwrap_or(DEFAULT_KP);
+        let ki = ctx.blackboard.get_f64("plugin.lane_keeper.ki").unwrap_or(DEFAULT_KI);
+        let kd = ctx.blackboard.get_f64("plugin.lane_keeper.kd").unwrap_or(DEFAULT_KD);
         let next = (kp, ki, kd);
         if next != self.last_gains {
             self.pid.set_kp(kp);
@@ -84,15 +122,50 @@ impl LaneKeeperPlugin {
             self.pid.set_kd(kd);
             self.last_gains = next;
             tracing::info!("[lane-keeper] gains updated kp={kp} ki={ki} kd={kd}");
-            ctx.blackboard
-                .set("pid_tuning.lane_keeper.kp", kp.to_string());
-            ctx.blackboard
-                .set("pid_tuning.lane_keeper.ki", ki.to_string());
-            ctx.blackboard
-                .set("pid_tuning.lane_keeper.kd", kd.to_string());
+            ctx.blackboard.set("pid_tuning.lane_keeper.kp", kp.to_string());
+            ctx.blackboard.set("pid_tuning.lane_keeper.ki", ki.to_string());
+            ctx.blackboard.set("pid_tuning.lane_keeper.kd", kd.to_string());
         }
     }
 
+    fn update_mode_from_blackboard(&mut self, ctx: &PluginContext) {
+        let raw = ctx.blackboard.get("plugin.lane_keeper.mode");
+        let next = match raw.as_deref() {
+            Some("vision") => LaneKeeperMode::Vision,
+            Some("off") => LaneKeeperMode::Off,
+            _ => LaneKeeperMode::RouteFollowing,
+        };
+        if next != self.mode {
+            tracing::info!("[lane-keeper] mode switch {:?} → {:?}", self.mode, next);
+            self.mode = next;
+            self.pid.reset();
+            self.fallback.reset();
+            self.heading_hold.exit();
+            self.engagement_heading = None;
+            self.level_4_entered_at_tick = None;
+            self.previous_steering_out = 0.0;
+        }
+    }
+
+    /// Apply the rate-limiter and return the clamped steering value.
+    fn rate_limit(&mut self, target: f64, ctx: &PluginContext) -> f64 {
+        let delta = target - self.previous_steering_out;
+        let clamped = delta.clamp(-STEERING_MAX_DELTA_PER_TICK, STEERING_MAX_DELTA_PER_TICK);
+        let output = self.previous_steering_out + clamped;
+        let was_limited = (clamped - delta).abs() > 1e-9;
+        ctx.blackboard.set("lane_keeper.steering_rate_limited", was_limited.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.steering_delta_clamped",
+            format!("{:.4}", delta - clamped),
+        );
+        self.previous_steering_out = output;
+        output
+    }
+}
+
+// ── Route-following implementation ────────────────────────────────────────────
+
+impl LaneKeeperPlugin {
     fn load_waypoints_from_blackboard(&mut self, ctx: &PluginContext) {
         if let Some(json) = ctx.blackboard.get("router.waypoints") {
             if let Ok(pts) = serde_json::from_str::<Vec<[f64; 2]>>(&json) {
@@ -133,7 +206,6 @@ impl LaneKeeperPlugin {
             return 0.0;
         }
 
-        // Advance progress index
         while self.progress_idx + 1 < self.waypoints.len() {
             let [wx, wz] = self.waypoints[self.progress_idx + 1];
             let dist = ((tx - wx).powi(2) + (tz - wz).powi(2)).sqrt();
@@ -144,7 +216,6 @@ impl LaneKeeperPlugin {
             }
         }
 
-        // Route-End-Guard: at last waypoint, no look-ahead possible
         if self.progress_idx + 1 >= self.waypoints.len() {
             ctx.blackboard.set("lane_keeper.skip_reason", "route_end");
             ctx.blackboard.set("lane_keeper.error_rad", "0.0");
@@ -156,15 +227,11 @@ impl LaneKeeperPlugin {
             return 0.0;
         }
 
-        // Distanz Truck → nächster WP (nach Guard garantiert in-bounds)
         let [nx, nz] = self.waypoints[self.progress_idx + 1];
         let advance_check_dist = ((tx - nx).powi(2) + (tz - nz).powi(2)).sqrt();
 
-        // Speed-adaptive look-ahead
         let look_ahead = BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR;
 
-        // Walk forward along waypoints to find look-ahead point.
-        // Start from truck position so accumulated distance matches actual look-ahead.
         let mut look_x = tx;
         let mut look_z = tz;
         let mut accumulated = 0.0;
@@ -181,25 +248,15 @@ impl LaneKeeperPlugin {
             }
         }
 
-        // Phase 6.5g: write lookahead diagnostics before atan2
-        ctx.blackboard
-            .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.look_x", format!("{look_x:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.look_z", format!("{look_z:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.dx", format!("{:.2}", look_x - tx));
-        ctx.blackboard
-            .set("lane_keeper.dz", format!("{:.2}", look_z - tz));
-        ctx.blackboard
-            .set("lane_keeper.walk_iterations", walk_iterations.to_string());
-        ctx.blackboard
-            .set("lane_keeper.walk_accumulated_m", format!("{accumulated:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.advance_check_dist", format!("{advance_check_dist:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.progress_idx_after_advance", self.progress_idx.to_string());
+        ctx.blackboard.set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
+        ctx.blackboard.set("lane_keeper.look_x", format!("{look_x:.2}"));
+        ctx.blackboard.set("lane_keeper.look_z", format!("{look_z:.2}"));
+        ctx.blackboard.set("lane_keeper.dx", format!("{:.2}", look_x - tx));
+        ctx.blackboard.set("lane_keeper.dz", format!("{:.2}", look_z - tz));
+        ctx.blackboard.set("lane_keeper.walk_iterations", walk_iterations.to_string());
+        ctx.blackboard.set("lane_keeper.walk_accumulated_m", format!("{accumulated:.2}"));
+        ctx.blackboard.set("lane_keeper.advance_check_dist", format!("{advance_check_dist:.2}"));
+        ctx.blackboard.set("lane_keeper.progress_idx_after_advance", self.progress_idx.to_string());
         ctx.blackboard.set(
             "lane_keeper.waypoints_remaining",
             self.waypoints.len().saturating_sub(self.progress_idx + 1).to_string(),
@@ -211,73 +268,24 @@ impl LaneKeeperPlugin {
             return 0.0;
         }
 
-        // ETS2-Konvention: heading=0 zeigt Richtung -Z (Nord).
-        // Damit target_heading konsistent mit telemetry.heading ist, muss dz negiert werden.
         let target = dx.atan2(-dz);
         let mut err = target - heading;
-        while err > std::f64::consts::PI {
-            err -= 2.0 * std::f64::consts::PI;
-        }
-        while err < -std::f64::consts::PI {
-            err += 2.0 * std::f64::consts::PI;
-        }
+        while err > std::f64::consts::PI { err -= 2.0 * std::f64::consts::PI; }
+        while err < -std::f64::consts::PI { err += 2.0 * std::f64::consts::PI; }
 
-        ctx.blackboard
-            .set("lane_keeper.target_heading", format!("{target:.6}"));
-
+        ctx.blackboard.set("lane_keeper.target_heading", format!("{target:.6}"));
         err
     }
-}
 
-impl Plugin for LaneKeeperPlugin {
-    fn name(&self) -> &str {
-        "lane-keeper"
-    }
-    fn version(&self) -> &str {
-        "0.1.0"
-    }
-    fn settings_schema(&self) -> &str {
-        r#"{"type":"object","properties":{"kp":{"type":"number"},"ki":{"type":"number"},"kd":{"type":"number"},"subdivisions":{"type":"integer","minimum":1,"maximum":20}}}"#
-    }
-
-    fn on_load(&mut self, ctx: &PluginContext) {
-        self.load_waypoints_from_blackboard(ctx);
-        tracing::info!("[lane-keeper] loaded");
-    }
-
-    fn on_unload(&mut self) {
-        tracing::info!("[lane-keeper] unloaded");
-    }
-
-    fn tick(
-        &mut self,
-        _telemetry: Option<&Telemetry>,
-        _output: &mut ControlOutput,
-        ctx: &PluginContext,
-    ) {
-        self.heading_stage = ctx.blackboard.get("state.heading_stage");
-
-        // Side-effect-only path: keep waypoint cache fresh.
-        // Steering itself is contributed via `tick_request` (Fix 4).
-        if ctx.blackboard.get("router.active").as_deref() == Some("true") {
-            let current_hash = ctx
-                .blackboard
-                .get("router.waypoints")
-                .map(|j| hash_str(&j))
-                .unwrap_or(0);
-            if self.waypoints.is_empty() || current_hash != self.last_waypoints_hash {
-                self.load_waypoints_from_blackboard(ctx);
-            }
-        }
-    }
-
-    fn tick_request(
+    fn tick_request_route_following(
         &mut self,
         telemetry: Option<&Telemetry>,
         ctx: &PluginContext,
     ) -> Option<ControlRequest> {
-        // State-gate: refuse to steer outside Active. Reset integrator
-        // so the next engage starts from a clean PID state.
+        // heading_stage is set by tick() before tick_request(). In tests that call
+        // tick_request() directly, the field is pre-set via struct literal.
+        // Do NOT re-read from blackboard here — that would overwrite the pre-set value.
+
         if !ctx.is_active() {
             self.pid.reset();
             self.previous_steering_out = 0.0;
@@ -287,41 +295,27 @@ impl Plugin for LaneKeeperPlugin {
                 self.progress_idx = 0;
                 tracing::info!("[lane-keeper] state=Off, cleared waypoint cache");
             }
-            // Phase 6.5g: mark inactive
             ctx.blackboard.set("lane_keeper.active", "false");
-            ctx.blackboard
-                .set("lane_keeper.skip_reason", "state_not_active");
+            ctx.blackboard.set("lane_keeper.skip_reason", "state_not_active");
             return None;
         }
 
-        // Apply runtime gain overrides from blackboard (PID hotswap).
         self.apply_gain_overrides(ctx);
 
         let t = telemetry?;
 
-        // Belt-and-braces: still require engine running. (The state
-        // machine's precondition check covers this too, but the gate
-        // protects us if the state lags by a tick.)
         if t.engine_rpm < 100.0 {
             self.pid.reset();
             self.previous_steering_out = 0.0;
-            // Phase 6.5g: mark inactive
             ctx.blackboard.set("lane_keeper.active", "false");
-            ctx.blackboard
-                .set("lane_keeper.skip_reason", "engine_off");
+            ctx.blackboard.set("lane_keeper.skip_reason", "engine_off");
             return None;
         }
 
-        // Clamp dt to avoid PID explosion when the daemon loop stalls
-        // (debug pause, slow disk, etc.).
         let dt = ctx.dt_s.min(0.1);
 
         let err = self.compute_heading_error(
-            t.position[0],
-            t.position[2],
-            t.heading,
-            t.speed_ms,
-            ctx,
+            t.position[0], t.position[2], t.heading, t.speed_ms, ctx,
         );
 
         if err.abs() > HEADING_MISMATCH_THRESHOLD_RAD {
@@ -338,7 +332,6 @@ impl Plugin for LaneKeeperPlugin {
         }
         ctx.blackboard.set("lane_keeper.heading_mismatch", "false");
 
-        // Phase 6.5s: heading stage behavior
         let stage = self.heading_stage.as_deref().unwrap_or("Normal");
 
         if matches!(stage, "AutoReplan" | "Disengaging") {
@@ -383,37 +376,324 @@ impl Plugin for LaneKeeperPlugin {
             format!("{:.4}", delta_raw - delta_clamped),
         );
 
-        // Phase 6.5g: Diagnose-Blackboard-Writes fuer Bug-Hunting
         ctx.blackboard.set("lane_keeper.active", "true");
-        ctx.blackboard
-            .set("lane_keeper.error_rad", format!("{err:.6}"));
-        ctx.blackboard
-            .set("lane_keeper.steering_out", format!("{steering:.6}"));
-        ctx.blackboard.set(
-            "lane_keeper.waypoints_loaded",
-            self.waypoints.len().to_string(),
-        );
-        ctx.blackboard
-            .set("lane_keeper.progress_idx", self.progress_idx.to_string());
+        ctx.blackboard.set("lane_keeper.error_rad", format!("{err:.6}"));
+        ctx.blackboard.set("lane_keeper.steering_out", format!("{steering:.6}"));
+        ctx.blackboard.set("lane_keeper.waypoints_loaded", self.waypoints.len().to_string());
+        ctx.blackboard.set("lane_keeper.progress_idx", self.progress_idx.to_string());
         ctx.blackboard.set("lane_keeper.dt_s", format!("{dt:.6}"));
-        ctx.blackboard
-            .set("lane_keeper.truck_x", format!("{:.2}", t.position[0]));
-        ctx.blackboard
-            .set("lane_keeper.truck_z", format!("{:.2}", t.position[2]));
-        ctx.blackboard
-            .set("lane_keeper.truck_heading", format!("{:.6}", t.heading));
-        ctx.blackboard
-            .set("lane_keeper.truck_speed_ms", format!("{:.2}", t.speed_ms));
+        ctx.blackboard.set("lane_keeper.truck_x", format!("{:.2}", t.position[0]));
+        ctx.blackboard.set("lane_keeper.truck_z", format!("{:.2}", t.position[2]));
+        ctx.blackboard.set("lane_keeper.truck_heading", format!("{:.6}", t.heading));
+        ctx.blackboard.set("lane_keeper.truck_speed_ms", format!("{:.2}", t.speed_ms));
+
+        Some(ControlRequest { steering: Some(steering), priority: PRIORITY_NORMAL, ..Default::default() })
+    }
+}
+
+// ── Vision-mode implementation ────────────────────────────────────────────────
+
+impl LaneKeeperPlugin {
+    fn tick_request_vision(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+    ) -> Option<ControlRequest> {
+        // 1. State gate
+        if !ctx.is_active() {
+            self.pid.reset();
+            self.previous_steering_out = 0.0;
+            self.fallback.reset();
+            self.heading_hold.exit();
+            self.engagement_heading = None;
+            self.level_4_entered_at_tick = None;
+            ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard.set("lane_keeper.engage_allowed", "false");
+            ctx.blackboard.set("lane_keeper.skip_reason", "state_not_active");
+            return None;
+        }
+
+        self.apply_gain_overrides(ctx);
+
+        // 2. Engine gate
+        let t = telemetry?;
+        if t.engine_rpm < 100.0 {
+            self.pid.reset();
+            self.previous_steering_out = 0.0;
+            ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard.set("lane_keeper.skip_reason", "engine_off");
+            return None;
+        }
+
+        let dt = ctx.dt_s.min(0.1);
+
+        // 3. Capture engagement heading on first tick of each Active session
+        if self.engagement_heading.is_none() {
+            self.engagement_heading = Some(t.heading);
+            tracing::info!("[lane-keeper] vision engage heading={:.4}", t.heading);
+        }
+
+        // 4. Block-2 guard: heading drift from engagement
+        let eng_heading = self.engagement_heading.unwrap_or(t.heading);
+        let heading_drift = wrap_angle(t.heading - eng_heading).abs();
+        if heading_drift > HEADING_MISMATCH_THRESHOLD_RAD {
+            ctx.blackboard.set("lane_keeper.skip_reason", "heading_mismatch");
+            ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
+            ctx.blackboard.set("lane_keeper.active", "true");
+            self.previous_steering_out = 0.0;
+            self.pid.reset();
+            return None;
+        }
+        ctx.blackboard.set("lane_keeper.heading_mismatch", "false");
+
+        // 5. Heading stage gate
+        self.heading_stage = ctx.blackboard.get("state.heading_stage");
+        let stage = self.heading_stage.as_deref().unwrap_or("Normal");
+        if matches!(stage, "AutoReplan" | "Disengaging") {
+            ctx.blackboard.set("lane_keeper.skip_reason", "heading_stage");
+            ctx.blackboard.set("lane_keeper.active", "true");
+            self.previous_steering_out = 0.0;
+            self.pid.reset();
+            return None;
+        }
+
+        // 6. Read lane perception
+        let center_offset = ctx.blackboard.get_f64("lane.center_offset").unwrap_or(0.0);
+        let confidence = ctx.blackboard.get_f64("lane.confidence").unwrap_or(0.0);
+        let left_vis = ctx.blackboard.get("lane.left_visible").as_deref() == Some("true");
+        let right_vis = ctx.blackboard.get("lane.right_visible").as_deref() == Some("true");
+        // NaN → None (absent lane)
+        let left_x = ctx.blackboard.get_f64("lane.left_x").filter(|x| x.is_finite());
+        let right_x = ctx.blackboard.get_f64("lane.right_x").filter(|x| x.is_finite());
+
+        // 7. Update fallback cascade
+        self.fallback.push_confidence(confidence);
+        self.fallback.push_offset(center_offset);
+        self.extrapolator.advance_tick();
+        let avg_conf = self.fallback.rolling_avg_confidence();
+        let level = self.fallback.update(avg_conf, left_vis, right_vis);
+
+        // 8. Publish engage_allowed (false at levels ≥ 2)
+        let engage_allowed = level <= 1;
+        ctx.blackboard.set("lane_keeper.engage_allowed", if engage_allowed { "true" } else { "false" });
+
+        // 9. Heading-hold transitions
+        if level == 3 && !self.heading_hold.active {
+            self.heading_hold.enter(t.heading, self.tick_count, self.previous_steering_out);
+            ctx.blackboard.set("lane_keeper.level_3_entered_at_tick", self.fallback.level_entered_at_tick.to_string());
+            tracing::warn!("[lane-keeper] entering L3 heading-hold h={:.4}", t.heading);
+        } else if level != 3 && self.heading_hold.active {
+            self.heading_hold.exit();
+        }
+
+        // 10. Level-4 disengage
+        if level == 4 {
+            let l4_start = *self.level_4_entered_at_tick.get_or_insert(self.tick_count);
+            let ticks_since = self.tick_count.saturating_sub(l4_start);
+
+            if ticks_since == 0 {
+                let event = format!(
+                    r#"{{"tick":{},"reason":"{}","confidence":{:.4},"blind_ticks":{}}}"#,
+                    self.tick_count,
+                    self.fallback.fallback_reason,
+                    confidence,
+                    self.fallback.blind_tick_count,
+                );
+                ctx.blackboard.set("lane_keeper.level_4_event_json", event);
+                tracing::error!("[lane-keeper] LEVEL-4 DISENGAGE tick={}", self.tick_count);
+            }
+
+            let brake = if ticks_since < L4_BRAKE_TICKS { Some(0.30) } else { None };
+            ctx.blackboard.set("lane_keeper.fallback_level", "4");
+            ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard.set("lane_keeper.steering_source", "none_l4");
+            self.publish_vision_diagnostics(ctx, level, avg_conf, 0.0);
+
+            return Some(ControlRequest {
+                steering: None,
+                brake,
+                priority: PRIORITY_LEVEL4,
+                ..Default::default()
+            });
+        }
+        self.level_4_entered_at_tick = None;
+
+        // 11. Speed-adaptive gain
+        let speed_kmh = t.speed_ms * 3.6;
+        let speed_gain = if speed_kmh < 60.0 { 1.2 } else if speed_kmh <= 100.0 { 1.0 } else { 0.8 };
+
+        // 12. Per-level steering computation
+        let (vision_error, gain_factor, steering_source) = match level {
+            0 => {
+                // Normal vision: error = -center_offset
+                (-center_offset, 1.0 * speed_gain, "vision_l0")
+            }
+            1 => {
+                // Single-lane extrapolation
+                let (err, _) = extrapolate_center(left_x, right_x, avg_conf, &mut self.extrapolator);
+                (err, 0.6 * speed_gain, "extrapolation_l1")
+            }
+            2 => {
+                // Confidence-drop: EMA-weighted, same error source as L0
+                (-center_offset, 0.35 * speed_gain, "vision_l2")
+            }
+            3 => {
+                // Heading-hold: separate PID path, return early
+                let pid_ref = &mut self.pid;
+                let steering_l3 = self.heading_hold.compute_steering(
+                    t.heading,
+                    self.tick_count,
+                    &mut |err, dt_val| pid_ref.update(err, dt_val),
+                    dt,
+                );
+
+                // SoftLaneKeep scaling
+                let scaled = if self.heading_stage.as_deref() == Some("SoftLaneKeep") {
+                    steering_l3 * 0.3
+                } else {
+                    steering_l3
+                };
+
+                let output = self.rate_limit(scaled, ctx);
+                ctx.blackboard.set("lane_keeper.active", "true");
+                ctx.blackboard.set("lane_keeper.fallback_level", "3");
+                ctx.blackboard.set("lane_keeper.heading_hold_active", "true");
+                ctx.blackboard.set("lane_keeper.hold_heading_rad", format!("{:.6}", self.heading_hold.hold_heading));
+                ctx.blackboard.set("lane_keeper.heading_drift_rad", format!("{:.6}", self.heading_hold.heading_drift(t.heading)));
+                ctx.blackboard.set("lane_keeper.heading_hold_ticks", self.heading_hold.ticks_active(self.tick_count).to_string());
+                ctx.blackboard.set("lane_keeper.steering_source", "heading_hold_l3");
+                self.publish_vision_diagnostics(ctx, level, avg_conf, output);
+
+                return Some(ControlRequest {
+                    steering: Some(output),
+                    priority: PRIORITY_NORMAL,
+                    ..Default::default()
+                });
+            }
+            _ => (-center_offset, 0.0, "unknown"),
+        };
+
+        // 13. PID update (levels 0, 1, 2)
+        let raw_pid = self.pid.update(vision_error, dt).clamp(-1.0, 1.0);
+        let scaled = (raw_pid * gain_factor).clamp(-1.0, 1.0);
+
+        // 14. SoftLaneKeep
+        let effective = if self.heading_stage.as_deref() == Some("SoftLaneKeep") {
+            scaled * 0.3
+        } else {
+            scaled
+        };
+
+        // 15. Rate limiter (Block-2)
+        let output = self.rate_limit(effective, ctx);
+
+        ctx.blackboard.set("lane_keeper.active", "true");
+        ctx.blackboard.set("lane_keeper.fallback_level", level.to_string());
+        ctx.blackboard.set("lane_keeper.heading_hold_active", "false");
+        ctx.blackboard.set("lane_keeper.steering_source", steering_source);
+        self.publish_vision_diagnostics(ctx, level, avg_conf, output);
 
         Some(ControlRequest {
-            steering: Some(steering),
+            steering: Some(output),
             priority: PRIORITY_NORMAL,
             ..Default::default()
         })
     }
+
+    fn publish_vision_diagnostics(&self, ctx: &PluginContext, level: u8, avg_conf: f64, steering: f64) {
+        ctx.blackboard.set("lane_keeper.fallback_reason", self.fallback.fallback_reason.clone());
+        ctx.blackboard.set("lane_keeper.confidence_trend", format!("{:.4}", self.fallback.compute_confidence_trend()));
+        ctx.blackboard.set("lane_keeper.detection_stability", format!("{:.4}", self.fallback.compute_detection_stability()));
+        ctx.blackboard.set("lane_keeper.blind_ticks", self.fallback.blind_tick_count.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.blind_duration_ms",
+            format!("{:.0}", self.fallback.blind_tick_count as f64 * 20.0),
+        );
+        ctx.blackboard.set("lane_keeper.single_lane_side", {
+            let lv = ctx.blackboard.get("lane.left_visible").as_deref() == Some("true");
+            let rv = ctx.blackboard.get("lane.right_visible").as_deref() == Some("true");
+            match (lv, rv) {
+                (true, false) => "left_only",
+                (false, true) => "right_only",
+                (true, true) => "both",
+                (false, false) => "none",
+            }
+        });
+        ctx.blackboard.set(
+            "lane_keeper.lane_width_estimate_px",
+            self.extrapolator.lane_width_estimate()
+                .map(|w| format!("{w:.4}"))
+                .unwrap_or_else(|| "NaN".to_string()),
+        );
+        ctx.blackboard.set("lane_keeper.steering_out", format!("{steering:.6}"));
+        let _ = (level, avg_conf); // included in other keys already
+    }
 }
 
-/// Catmull-Rom spline interpolation.
+// ── Plugin trait impl ─────────────────────────────────────────────────────────
+
+impl Plugin for LaneKeeperPlugin {
+    fn name(&self) -> &str { "lane-keeper" }
+    fn version(&self) -> &str { "0.1.0" }
+    fn settings_schema(&self) -> &str {
+        r#"{"type":"object","properties":{"kp":{"type":"number"},"ki":{"type":"number"},"kd":{"type":"number"},"subdivisions":{"type":"integer","minimum":1,"maximum":20}}}"#
+    }
+
+    fn on_load(&mut self, ctx: &PluginContext) {
+        self.load_waypoints_from_blackboard(ctx);
+        // Pre-populate engage_allowed=false so the state machine never sees an absent key.
+        ctx.blackboard.set("lane_keeper.engage_allowed", "false");
+        tracing::info!("[lane-keeper] loaded, engage_allowed=false (pre-populated)");
+    }
+
+    fn on_unload(&mut self) {
+        tracing::info!("[lane-keeper] unloaded");
+    }
+
+    fn tick(
+        &mut self,
+        _telemetry: Option<&Telemetry>,
+        _output: &mut ControlOutput,
+        ctx: &PluginContext,
+    ) {
+        self.heading_stage = ctx.blackboard.get("state.heading_stage");
+
+        if self.mode == LaneKeeperMode::RouteFollowing
+            && ctx.blackboard.get("router.active").as_deref() == Some("true")
+        {
+            let current_hash = ctx
+                .blackboard
+                .get("router.waypoints")
+                .map(|j| hash_str(&j))
+                .unwrap_or(0);
+            if self.waypoints.is_empty() || current_hash != self.last_waypoints_hash {
+                self.load_waypoints_from_blackboard(ctx);
+            }
+        }
+    }
+
+    fn tick_request(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+    ) -> Option<ControlRequest> {
+        self.tick_count += 1;
+
+        // Re-check mode every 50 ticks (and on first tick).
+        if self.tick_count == 1 || self.tick_count.is_multiple_of(50) {
+            self.update_mode_from_blackboard(ctx);
+        }
+
+        match self.mode {
+            LaneKeeperMode::RouteFollowing => self.tick_request_route_following(telemetry, ctx),
+            LaneKeeperMode::Vision => self.tick_request_vision(telemetry, ctx),
+            LaneKeeperMode::Off => None,
+        }
+    }
+}
+
+// ── Route-following utilities ─────────────────────────────────────────────────
+
 fn smooth_catmull_rom(pts: &[[f64; 2]], subdivisions: usize) -> Vec<[f64; 2]> {
     if pts.len() < 2 {
         return pts.to_vec();
@@ -428,22 +708,18 @@ fn smooth_catmull_rom(pts: &[[f64; 2]], subdivisions: usize) -> Vec<[f64; 2]> {
         let p3 = if i + 1 < n { pts[i + 1] } else { pts[n - 1] };
 
         for j in 0..=subdivisions {
-            if j == 0 && i > 1 {
-                continue;
-            }
+            if j == 0 && i > 1 { continue; }
             let t = j as f64 / subdivisions as f64;
             let t2 = t * t;
             let t3 = t2 * t;
-            let x = 0.5
-                * ((2.0 * p1[0])
-                    + (-p0[0] + p2[0]) * t
-                    + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
-                    + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3);
-            let z = 0.5
-                * ((2.0 * p1[1])
-                    + (-p0[1] + p2[1]) * t
-                    + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
-                    + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3);
+            let x = 0.5 * ((2.0 * p1[0])
+                + (-p0[0] + p2[0]) * t
+                + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
+                + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3);
+            let z = 0.5 * ((2.0 * p1[1])
+                + (-p0[1] + p2[1]) * t
+                + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
+                + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3);
             result.push([x, z]);
         }
     }
@@ -458,6 +734,8 @@ fn hash_str(s: &str) -> u64 {
 }
 
 truckpilot_plugin_api::export_plugin!(LaneKeeperPlugin);
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -495,14 +773,32 @@ mod tests {
     }
 
     fn active_plugin_with_straight_path() -> LaneKeeperPlugin {
-        // ETS2: North = -Z. Waypoints in -Z direction, heading=0 → near-zero error.
         LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]],
             ..Default::default()
         }
     }
 
-    // ---- Pre-existing geometry tests (kept) --------------------------------
+    // ── Vision-mode helpers ───────────────────────────────────────────────────
+
+    fn vision_bb(state: &str, center_offset: f64, confidence: f64, left: bool, right: bool) -> PluginContext {
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", state);
+        bb.set("plugin.lane_keeper.mode", "vision");
+        bb.set("lane.center_offset", center_offset.to_string());
+        bb.set("lane.confidence", confidence.to_string());
+        bb.set("lane.left_visible", left.to_string());
+        bb.set("lane.right_visible", right.to_string());
+        bb.set("lane.left_x", "NaN");
+        bb.set("lane.right_x", "NaN");
+        PluginContext::new("lane-keeper", bb)
+    }
+
+    fn make_vision_plugin() -> LaneKeeperPlugin {
+        LaneKeeperPlugin { mode: LaneKeeperMode::Vision, ..Default::default() }
+    }
+
+    // ── Pre-existing route-following geometry tests ───────────────────────────
 
     #[test]
     fn look_ahead_increases_with_speed() {
@@ -539,8 +835,6 @@ mod tests {
         assert!(smoothed.len() > pts.len());
     }
 
-    // ---- Phase 6.2d state-gate + control-output tests ----------------------
-
     #[test]
     fn test_state_gate_returns_none_when_off() {
         let mut lk = active_plugin_with_straight_path();
@@ -560,14 +854,12 @@ mod tests {
     #[test]
     fn test_active_steering_with_waypoints() {
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [20.0, -100.0]], // leicht rechts von Nord: err ≈ 0.2 rad
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
         };
-        let t = make_telemetry(20.0, 0.0); // heading north → must turn right
+        let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        let req = lk
-            .tick_request(Some(&t), &ctx)
-            .expect("active must request");
+        let req = lk.tick_request(Some(&t), &ctx).expect("active must request");
         let s = req.steering.expect("active must request steering");
         assert!(s > 0.0, "expected positive steering, got {s}");
         assert_eq!(req.priority, PRIORITY_NORMAL);
@@ -583,11 +875,8 @@ mod tests {
         assert!(s.abs() < 0.1, "expected near-zero on straight, got {s}");
     }
 
-    // ---- Phase 6.5l Heading-Konvention-Tests (ETS2: heading=0 → -Z / Nord) ----
-
     #[test]
     fn heading_convention_north_is_zero() {
-        // Look-Ahead direkt vor Truck (Nord = -Z). Truck-heading = 0. error ~ 0.
         let mut plugin = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [0.0, -100.0]],
             ..Default::default()
@@ -599,26 +888,17 @@ mod tests {
 
     #[test]
     fn heading_convention_east_is_half_pi() {
-        // Look-Ahead direkt rechts (Osten = +X). Truck-heading = π/2. error ~ 0.
         let mut plugin = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [100.0, 0.0]],
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        let err = plugin.compute_heading_error(
-            0.0,
-            0.0,
-            std::f64::consts::FRAC_PI_2,
-            13.88,
-            &ctx,
-        );
+        let err = plugin.compute_heading_error(0.0, 0.0, std::f64::consts::FRAC_PI_2, 13.88, &ctx);
         assert!(err.abs() < 0.01, "expected ~0, got {err}");
     }
 
     #[test]
     fn heading_convention_punkt_vor_rechts_kleiner_positiver_error() {
-        // Reproduziert den Live-Fall: Truck-heading 0.353, Look-Ahead bei dx=145, dz=-156.
-        // Erwartet: error ~ +0.4 rad (positiv, klein, kein Vollanschlag).
         let mut plugin = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [144.89, -156.22]],
             ..Default::default()
@@ -630,10 +910,6 @@ mod tests {
 
     #[test]
     fn test_heading_wraparound() {
-        // ETS2: heading=π → South (+Z). Truck nearly south, waypoint slightly
-        // west of south [-0.1, 100]. target ≈ -π+ε (third quadrant, atan2(-0.1,100)
-        // with negated dz). Naive subtraction would give ~-2π; the wraparound
-        // normalises to a small value near 0.
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [-0.1, 100.0]],
             ..Default::default()
@@ -651,20 +927,15 @@ mod tests {
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
-        // Pump integrator while Active.
         let active = ctx_with_state("Active");
         for _ in 0..10 {
             let _ = lk.tick_request(Some(&t), &active);
         }
-        // Exit to Off — must reset the integrator.
         let off = ctx_with_state("Off");
         assert!(lk.tick_request(Some(&t), &off).is_none());
 
-        // Off-state now clears the waypoint cache (Phase 6.5k). Restore
-        // waypoints explicitly so the re-engage check has a path to steer.
         lk.waypoints = vec![[0.0, 0.0], [20.0, -100.0]];
 
-        // Build a fresh plugin for an independent baseline.
         let mut fresh = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
@@ -694,11 +965,7 @@ mod tests {
         assert!(first_len > 0);
         assert!(first_hash != 0);
 
-        // Different route — hash must differ, waypoints must reload.
-        bb.set(
-            "router.waypoints",
-            "[[100.0,100.0],[110.0,100.0],[120.0,100.0]]",
-        );
+        bb.set("router.waypoints", "[[100.0,100.0],[110.0,100.0],[120.0,100.0]]");
         plugin.tick(None, &mut ControlOutput::default(), &ctx);
 
         assert_ne!(plugin.last_waypoints_hash, first_hash);
@@ -708,47 +975,35 @@ mod tests {
 
     #[test]
     fn test_dt_clamp_at_0_1() {
-        // A huge ctx.dt_s must not blow up the integrator. We can't
-        // observe dt directly, so we drive the same error with a large
-        // ctx.dt_s and assert the output is still within the controller
-        // clamp range [-1, 1].
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [20.0, -100.0]], // err ≈ 0.2 rad < threshold
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
         let bb = SharedBlackboard::new();
         bb.set("autopilot.state", "Active");
-        let ctx = PluginContext::new("lane-keeper", bb).with_dt(10.0); // 10 s
+        let ctx = PluginContext::new("lane-keeper", bb).with_dt(10.0);
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
         assert!((-1.0..=1.0).contains(&s), "output out of range: {s}");
     }
 
-    // ---- Phase 6.5m: Route-End-Guard + Walk-from-Truck-Position tests --------
-
-    /// Route-End-Guard: when progress_idx is at the last waypoint,
-    /// compute_heading_error must return 0.0 and set skip_reason = "route_end".
     #[test]
     fn route_end_returns_zero_error() {
         let mut plugin = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [10.0, 0.0]],
-            progress_idx: 1, // last waypoint
+            progress_idx: 1,
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        // Truck near last waypoint but not at it
         let err = plugin.compute_heading_error(9.0, 0.0, 0.0, 0.0, &ctx);
         assert_eq!(err, 0.0, "Route-End-Guard must return 0.0, got {err}");
         assert_eq!(
             ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
             Some("route_end"),
-            "skip_reason must be 'route_end'"
         );
     }
 
-    /// Progress advances when truck is within WAYPOINT_REACH_M of next waypoint,
-    /// and stops when the following waypoint is out of range.
     #[test]
     fn progress_advances_when_truck_near_next_waypoint() {
         let mut plugin = LaneKeeperPlugin {
@@ -757,18 +1012,10 @@ mod tests {
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        // Truck at (6, 0): dist to WP[1]=(10,0) is 4.0 < 5.0 → advance to 1.
-        // dist to WP[2]=(20,0) is 14.0 > 5.0 → stop advancing.
         plugin.compute_heading_error(6.0, 0.0, 0.0, 0.0, &ctx);
-        assert_eq!(
-            plugin.progress_idx, 1,
-            "progress_idx must be 1 after advancing past WP[1], got {}",
-            plugin.progress_idx
-        );
+        assert_eq!(plugin.progress_idx, 1);
     }
 
-    /// Look-ahead walk starts from the truck's position (progress_idx waypoint),
-    /// not from progress_idx+1. Verifies the look point for a simple straight route.
     #[test]
     fn lookahead_starts_from_truck_position() {
         let mut plugin = LaneKeeperPlugin {
@@ -777,80 +1024,38 @@ mod tests {
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        // Truck at (0,0). Walk over waypoints[0..]:
-        //   iter 1: (0,0)→WP[0](0,0) = 0m, accumulated=0, look=(0,0)
-        //   iter 2: (0,0)→WP[1](20,0) = 20m, accumulated=20 >= 5 → break, look=(20,0)
         plugin.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.look_x").as_deref(),
-            Some("20.00"),
-            "look_x must be 20.00"
-        );
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.look_z").as_deref(),
-            Some("0.00"),
-            "look_z must be 0.00"
-        );
+        assert_eq!(ctx.blackboard.get("lane_keeper.look_x").as_deref(), Some("20.00"));
+        assert_eq!(ctx.blackboard.get("lane_keeper.look_z").as_deref(), Some("0.00"));
     }
 
-    /// Walk accumulates distance across multiple short waypoint segments until
-    /// the look-ahead distance is reached.
     #[test]
     fn lookahead_walks_through_multiple_waypoints() {
         let mut plugin = LaneKeeperPlugin {
-            waypoints: vec![
-                [0.0, 0.0],
-                [3.0, 0.0],
-                [6.0, 0.0],
-                [9.0, 0.0],
-                [12.0, 0.0],
-            ],
+            waypoints: vec![[0.0,0.0],[3.0,0.0],[6.0,0.0],[9.0,0.0],[12.0,0.0]],
             progress_idx: 0,
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        // Truck at (0,0). The advance loop first runs: dist to WP[1]=(3,0) is 3m < 5m
-        // → progress_idx advances to 1. dist to WP[2]=(6,0) is 6m > 5m → stops.
-        // Walk iterates waypoints[(1+1)..] = waypoints[2..], starting from truck (0,0):
-        //   iter 1: (0,0)→WP[2](6,0) = 6m, accumulated=6 >= 5 → break, look=(6,0)
         plugin.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.walk_iterations").as_deref(),
-            Some("1"),
-            "walk_iterations must be 1 (truck→WP[2] = 6m satisfies look_ahead=5m immediately)"
-        );
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.look_x").as_deref(),
-            Some("6.00"),
-            "look_x must be 6.00"
-        );
+        assert_eq!(ctx.blackboard.get("lane_keeper.walk_iterations").as_deref(), Some("1"));
+        assert_eq!(ctx.blackboard.get("lane_keeper.look_x").as_deref(), Some("6.00"));
     }
-
-    // ---- Phase 6.5p: Heading-Mismatch + Rate-Limiter tests --------------------
 
     #[test]
     fn heading_mismatch_above_threshold_returns_none() {
-        // err = π ≈ 3.14 >> 1.4 → mismatch, returns None
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.0, 100.0]], // Süd, truck heading Nord → err = π
+            waypoints: vec![[0.0, 0.0], [0.0, 100.0]],
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
         assert!(lk.tick_request(Some(&t), &ctx).is_none());
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_mismatch")
-        );
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
-            Some("true")
-        );
+        assert_eq!(ctx.blackboard.get("lane_keeper.skip_reason").as_deref(), Some("heading_mismatch"));
     }
 
     #[test]
     fn heading_mismatch_at_threshold_is_allowed() {
-        // err ≈ 0.2 rad << 1.4 → should NOT be blocked
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
@@ -858,15 +1063,11 @@ mod tests {
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
         assert!(lk.tick_request(Some(&t), &ctx).is_some());
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
-            Some("false")
-        );
+        assert_eq!(ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(), Some("false"));
     }
 
     #[test]
     fn steering_rate_limit_clamps_large_delta() {
-        // Large error → PID output large → rate limiter must clamp first tick to MAX_DELTA
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             ..Default::default()
@@ -875,27 +1076,18 @@ mod tests {
         let ctx = ctx_with_state("Active");
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
-        // From 0, delta cannot exceed STEERING_MAX_DELTA_PER_TICK
-        assert!(
-            s.abs() <= STEERING_MAX_DELTA_PER_TICK + 1e-9,
-            "first tick must not exceed max delta {}, got {s}",
-            STEERING_MAX_DELTA_PER_TICK
-        );
+        assert!(s.abs() <= STEERING_MAX_DELTA_PER_TICK + 1e-9);
     }
 
     #[test]
     fn steering_rate_limit_passes_small_delta() {
-        // Straight path → err ≈ 0 → PID output ≈ 0 → well within MAX_DELTA
         let mut lk = active_plugin_with_straight_path();
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
-        assert!(s.abs() < STEERING_MAX_DELTA_PER_TICK, "straight path should be within rate limit, got {s}");
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.steering_rate_limited").as_deref(),
-            Some("false")
-        );
+        assert!(s.abs() < STEERING_MAX_DELTA_PER_TICK);
+        assert_eq!(ctx.blackboard.get("lane_keeper.steering_rate_limited").as_deref(), Some("false"));
     }
 
     #[test]
@@ -905,16 +1097,12 @@ mod tests {
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
-        // Pump a few ticks to build up previous_steering_out
         let active = ctx_with_state("Active");
-        for _ in 0..5 {
-            let _ = lk.tick_request(Some(&t), &active);
-        }
-        assert!(lk.previous_steering_out.abs() > 0.0, "should have non-zero previous_steering after 5 ticks");
-        // Disengage
+        for _ in 0..5 { let _ = lk.tick_request(Some(&t), &active); }
+        assert!(lk.previous_steering_out.abs() > 0.0);
         let off = ctx_with_state("Off");
         lk.tick_request(Some(&t), &off);
-        assert_eq!(lk.previous_steering_out, 0.0, "previous_steering must reset on disengage");
+        assert_eq!(lk.previous_steering_out, 0.0);
     }
 
     #[test]
@@ -924,36 +1112,26 @@ mod tests {
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
-        // Build up previous_steering_out
         let active = ctx_with_state("Active");
-        for _ in 0..5 {
-            let _ = lk.tick_request(Some(&t), &active);
-        }
+        for _ in 0..5 { let _ = lk.tick_request(Some(&t), &active); }
         assert!(lk.previous_steering_out.abs() > 0.0);
-        // Now trigger mismatch (Süd-Waypoints, truck heading Nord)
         lk.waypoints = vec![[0.0, 0.0], [0.0, 100.0]];
         let _ = lk.tick_request(Some(&t), &active);
-        assert_eq!(lk.previous_steering_out, 0.0, "previous_steering must reset on heading_mismatch skip");
+        assert_eq!(lk.previous_steering_out, 0.0);
     }
 
     #[test]
     fn heading_convention_north_regression_unaffected_by_mismatch() {
-        // Phase 6.5l regression: err ≈ 0 for straight north → mismatch check must not fire
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.0, -100.0]], // Nord
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]],
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
         let req = lk.tick_request(Some(&t), &ctx);
-        assert!(req.is_some(), "straight north must not trigger mismatch");
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(),
-            Some("false")
-        );
+        assert!(req.is_some());
+        assert_eq!(ctx.blackboard.get("lane_keeper.heading_mismatch").as_deref(), Some("false"));
     }
-
-    // ---- Phase 6.5s: heading stage tests ------------------------------------
 
     #[test]
     fn auto_replan_stage_returns_none() {
@@ -964,12 +1142,8 @@ mod tests {
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        let result = lk.tick_request(Some(&t), &ctx);
-        assert!(result.is_none());
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_stage")
-        );
+        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        assert_eq!(ctx.blackboard.get("lane_keeper.skip_reason").as_deref(), Some("heading_stage"));
     }
 
     #[test]
@@ -981,12 +1155,8 @@ mod tests {
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        let result = lk.tick_request(Some(&t), &ctx);
-        assert!(result.is_none());
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_stage")
-        );
+        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        assert_eq!(ctx.blackboard.get("lane_keeper.skip_reason").as_deref(), Some("heading_stage"));
     }
 
     #[test]
@@ -1020,7 +1190,7 @@ mod tests {
     #[test]
     fn phase_6_5p_guard_takes_priority_over_heading_stage() {
         let mut lk = LaneKeeperPlugin {
-            waypoints: vec![[0.0, 0.0], [0.0, 100.0]], // err ≈ π >> 1.4
+            waypoints: vec![[0.0, 0.0], [0.0, 100.0]],
             heading_stage: Some("Normal".to_string()),
             ..Default::default()
         };
@@ -1028,9 +1198,152 @@ mod tests {
         let ctx = ctx_with_state("Active");
         let result = lk.tick_request(Some(&t), &ctx);
         assert!(result.is_none());
-        assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_mismatch")
-        );
+        assert_eq!(ctx.blackboard.get("lane_keeper.skip_reason").as_deref(), Some("heading_mismatch"));
+    }
+
+    // ── Vision-mode tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn vision_level0_produces_steering() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = vision_bb("Active", 0.1, 0.85, true, true);
+        let req = plugin.tick_request(Some(&t), &ctx).expect("L0 must produce steering");
+        assert!(req.steering.is_some());
+        assert_eq!(req.priority, PRIORITY_NORMAL);
+        assert_eq!(ctx.blackboard.get("lane_keeper.fallback_level").as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn vision_state_gate_returns_none_when_off() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = vision_bb("Off", 0.0, 0.9, true, true);
+        assert!(plugin.tick_request(Some(&t), &ctx).is_none());
+        assert_eq!(ctx.blackboard.get("lane_keeper.active").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn vision_engine_off_returns_none() {
+        let mut plugin = make_vision_plugin();
+        let mut t = make_telemetry(20.0, 0.0);
+        t.engine_rpm = 0.0;
+        let ctx = vision_bb("Active", 0.0, 0.9, true, true);
+        assert!(plugin.tick_request(Some(&t), &ctx).is_none());
+        assert_eq!(ctx.blackboard.get("lane_keeper.skip_reason").as_deref(), Some("engine_off"));
+    }
+
+    #[test]
+    fn vision_engage_allowed_true_at_level0() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // Pump 5 ticks to build rolling avg > 0.70
+        for _ in 0..5 {
+            let ctx = vision_bb("Active", 0.0, 0.85, true, true);
+            let _ = plugin.tick_request(Some(&t), &ctx);
+        }
+        let ctx = vision_bb("Active", 0.0, 0.85, true, true);
+        let _ = plugin.tick_request(Some(&t), &ctx);
+        assert_eq!(ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn vision_engage_allowed_false_at_level2() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // Low confidence → level 2
+        for _ in 0..5 {
+            let ctx = vision_bb("Active", 0.0, 0.20, true, true);
+            let _ = plugin.tick_request(Some(&t), &ctx);
+        }
+        let ctx = vision_bb("Active", 0.0, 0.20, true, true);
+        let _ = plugin.tick_request(Some(&t), &ctx);
+        assert_eq!(ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn vision_level4_produces_high_priority_request() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // 105 blind ticks → L4
+        for _ in 0..105 {
+            let ctx = vision_bb("Active", 0.0, 0.0, false, false);
+            let _ = plugin.tick_request(Some(&t), &ctx);
+        }
+        let ctx = vision_bb("Active", 0.0, 0.0, false, false);
+        let req = plugin.tick_request(Some(&t), &ctx).expect("L4 must produce ControlRequest");
+        assert_eq!(req.priority, PRIORITY_LEVEL4);
+        assert!(req.steering.is_none(), "L4 must not steer");
+        assert_eq!(ctx.blackboard.get("lane_keeper.active").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn vision_level4_brake_first_50_ticks() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // Get to L4
+        for _ in 0..105 {
+            let ctx = vision_bb("Active", 0.0, 0.0, false, false);
+            let _ = plugin.tick_request(Some(&t), &ctx);
+        }
+        // First L4 tick → brake = 0.30
+        let ctx = vision_bb("Active", 0.0, 0.0, false, false);
+        let req = plugin.tick_request(Some(&t), &ctx).unwrap();
+        assert_eq!(req.brake, Some(0.30), "first L4 tick must brake at 0.30");
+    }
+
+    #[test]
+    fn vision_center_offset_steers_toward_lane_center() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // Positive center_offset = truck to the right → steer left (negative)
+        // vision_error = -center_offset = -0.3 → negative PID → negative steering
+        // Pump a few ticks so rolling avg stabilises before the final assertion.
+        for _ in 0..5 {
+            let c = vision_bb("Active", 0.3, 0.85, true, true);
+            let _ = plugin.tick_request(Some(&t), &c);
+        }
+        let ctx = vision_bb("Active", 0.3, 0.85, true, true);
+        let req = plugin.tick_request(Some(&t), &ctx).unwrap();
+        let s = req.steering.unwrap();
+        assert!(s < 0.0, "positive offset → steer left (negative), got {s}");
+    }
+
+    #[test]
+    fn vision_rate_limiter_clamps_first_tick() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        // Large offset → PID would want large output, rate-limiter clamps it
+        let ctx = vision_bb("Active", 1.0, 0.95, true, true);
+        let req = plugin.tick_request(Some(&t), &ctx).unwrap();
+        if let Some(s) = req.steering {
+            assert!(
+                s.abs() <= STEERING_MAX_DELTA_PER_TICK + 1e-9,
+                "rate limiter must clamp first-tick output, got {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn vision_reset_on_off_clears_engagement_heading() {
+        let mut plugin = make_vision_plugin();
+        let t = make_telemetry(20.0, 0.0);
+        let ctx = vision_bb("Active", 0.0, 0.85, true, true);
+        let _ = plugin.tick_request(Some(&t), &ctx);
+        assert!(plugin.engagement_heading.is_some());
+
+        let ctx_off = vision_bb("Off", 0.0, 0.0, false, false);
+        let _ = plugin.tick_request(Some(&t), &ctx_off);
+        assert!(plugin.engagement_heading.is_none());
+    }
+
+    #[test]
+    fn vision_on_load_publishes_engage_allowed_false() {
+        let mut plugin = make_vision_plugin();
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Off");
+        let ctx = PluginContext::new("lane-keeper", bb);
+        plugin.on_load(&ctx);
+        assert_eq!(ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(), Some("false"));
     }
 }
