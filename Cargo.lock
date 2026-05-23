@@ -4988,6 +4988,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "truckpilot-plugin-ets2-nav-bridge"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "truckpilot-plugin-api",
+]
+
+[[package]]
 name = "truckpilot-plugin-fuel-stops"
 version = "0.1.0"
 dependencies = [

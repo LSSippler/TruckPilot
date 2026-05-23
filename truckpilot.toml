@@ -59,9 +59,13 @@ kd = 0.2
 # Not currently consumed by src/config.rs.
 verbose = false
 
+[plugins.ets2-nav-bridge]
+# Publish nav.* blackboard keys derived from GPS telemetry (1 Hz).
+enabled = true
+
 [plugins.lane-data-collector]
 # Set to true to activate frame+telemetry capture for vision-model training.
-enabled = false
+enabled = true
 # Save one frame every N plugin ticks (PhaseB = 10 Hz → 50 ticks = 5 s).
 capture_interval_ticks = 50
 # Stop automatically after this many frames (~42 min at 5 s intervals).

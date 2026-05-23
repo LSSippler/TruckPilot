@@ -23,6 +23,7 @@ members = [
     "crates/plugins/stats-logger",
     "crates/plugins/vision-frame-source",
     "crates/plugins/lane-data-collector",
+    "crates/plugins/ets2-nav-bridge",
 ]
 resolver = "2"
 
