@@ -25,6 +25,7 @@ members = [
     "crates/plugins/lane-data-collector",
     "crates/plugins/ets2-nav-bridge",
     "crates/plugins/scs-sdk-output",
+    "crates/plugins/lane-detection",
 ]
 resolver = "2"
 

@@ -1,0 +1,27 @@
+[package]
+name = "truckpilot-plugin-lane-detection"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["onnx-cpu"]
+onnx-directml = ["dep:ort", "ort/directml"]
+onnx-cpu      = ["dep:ort"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+image      = { version = "0.25", default-features = false, features = ["jpeg"] }
+crossbeam-channel = "0.5"
+
+[dependencies.ort]
+version = "2.0.0-rc.12"
+optional = true
