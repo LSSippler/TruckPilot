@@ -317,7 +317,7 @@ fn parse_sector_legacy_inner(
             ITEM_TYPE_NO_WEATHER => skip_no_weather(&mut cur),
             ITEM_TYPE_HINGE => skip_hinge(&mut cur),
             ITEM_TYPE_CAMERA_POINT => skip_camera_point(&mut cur),
-            ITEM_TYPE_COMPOUND => skip_compound(&mut cur),
+            ITEM_TYPE_COMPOUND => parse_compound(&mut cur, &mut sector),
             ITEM_TYPE_CAMERA_PATH => skip_camera_path(&mut cur),
             ITEM_TYPE_HOOKUP => skip_hookup(&mut cur),
             ITEM_TYPE_GATE => skip_gate(&mut cur),
@@ -675,7 +675,7 @@ pub fn audit_sector(data: &[u8]) -> AuditReport {
             ITEM_TYPE_NO_WEATHER => skip_no_weather(&mut cur).map(|_| "no_weather"),
             ITEM_TYPE_HINGE => skip_hinge(&mut cur).map(|_| "hinge"),
             ITEM_TYPE_CAMERA_POINT => skip_camera_point(&mut cur).map(|_| "camera_point"),
-            ITEM_TYPE_COMPOUND => skip_compound(&mut cur).map(|_| "compound"),
+            ITEM_TYPE_COMPOUND => parse_compound(&mut cur, &mut throwaway).map(|_| "compound"),
             ITEM_TYPE_CAMERA_PATH => skip_camera_path(&mut cur).map(|_| "camera_path"),
             ITEM_TYPE_HOOKUP => skip_hookup(&mut cur).map(|_| "hookup"),
             ITEM_TYPE_GATE => skip_gate(&mut cur).map(|_| "gate"),
@@ -833,6 +833,12 @@ fn try_parse_sized_sector(
             }
             ITEM_TYPE_BUILDINGS => {
                 let _ = parse_buildings(&mut cur, &mut sector);
+            }
+            ITEM_TYPE_COMPOUND => {
+                // Compound child nodes use the legacy 56-byte layout even
+                // inside sized-format sectors; any parse error is tolerated
+                // and the cursor is corrected by the item_end seek below.
+                let _ = parse_compound(&mut cur, &mut sector);
             }
             _ => { /* unknown — skip via item_end */ }
         }
@@ -1725,11 +1731,12 @@ fn skip_camera_point(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 /// childItems(count u32 + count × SimpleItem) + childNodes(count u32 +
 /// count × 56-byte SectorNode).
 ///
-/// Phase 5.28-A: skip-only, no child-node extraction. Phase 5.28-B will
-/// extract child nodes and add them to the routing graph.
-fn skip_compound(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+/// Phase 5.28-B: child nodes are extracted into `sector.nodes` so that
+/// Roads and Prefabs referencing these UIDs can find their endpoints.
+/// Child items are still skipped (their geometry is decorative).
+fn parse_compound(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    let _ = read_u64(cur)?; // nodeUid
+    let _ = read_u64(cur)?; // nodeUid (the compound's own attachment node)
     let child_item_count = read_u32(cur)?;
     ensure_count(child_item_count, "compound child items")?;
     for i in 0..child_item_count {
@@ -1740,11 +1747,14 @@ fn skip_compound(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let child_node_count = read_u32(cur)?;
     ensure_count(child_node_count, "compound child nodes")?;
     ensure_capacity(cur, child_node_count, 56, "compound child nodes")?;
-    skip(cur, child_node_count as usize * 56)
+    for _ in 0..child_node_count {
+        sector.nodes.push(parse_node(cur)?);
+    }
+    Ok(())
 }
 
 /// Skip a single SimpleItem (type u32 + KdopItem + type-specific body).
-/// Used inside [`skip_compound`] for child items.
+/// Used inside [`parse_compound`] for child items.
 fn skip_child_simple_item(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let item_type = read_u32(cur)?;
     match item_type {
@@ -2363,5 +2373,130 @@ mod tests {
         // Header only, no item_count
         let data = header(895);
         assert!(parse_sector(&data).is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 5.28-B — Compound child node extraction
+    // -------------------------------------------------------------------------
+
+    fn write_u8(buf: &mut Vec<u8>, v: u8) {
+        buf.push(v);
+    }
+    fn write_f32(buf: &mut Vec<u8>, v: f32) {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    /// Append the 53-byte KdopItem header.
+    fn append_kdop_item(buf: &mut Vec<u8>, uid: u64) {
+        write_u64(buf, uid); // uid
+        for _ in 0..10 {
+            write_f32(buf, 0.0); // 10 × f32 bounds
+        }
+        write_u32(buf, 0); // flags
+        write_u8(buf, 0); // view_distance
+    }
+
+    /// Append a compound item (type tag + body) with zero child items
+    /// and `nodes` child nodes.
+    fn append_compound(buf: &mut Vec<u8>, uid: u64, node_uid: u64, child_nodes: &[(u64, i32, i32, i32)]) {
+        write_u32(buf, ITEM_TYPE_COMPOUND);
+        append_kdop_item(buf, uid);
+        write_u64(buf, node_uid); // nodeUid
+        write_u32(buf, 0); // child item count = 0
+        write_u32(buf, child_nodes.len() as u32);
+        for &(cuid, cx, cy, cz) in child_nodes {
+            append_node(buf, cuid, cx, cy, cz);
+        }
+    }
+
+    #[test]
+    fn compound_zero_children() {
+        // Compound with no child items and no child nodes — cursor must advance
+        // cleanly without error, and sector.nodes must stay empty.
+        let mut data = header(895);
+        write_u32(&mut data, 1); // item_count
+        append_compound(&mut data, 0xAB, 0xCD, &[]);
+        write_u32(&mut data, 0); // trailing node_count
+
+        let s = parse_sector(&data).unwrap();
+        assert!(s.nodes.is_empty());
+    }
+
+    #[test]
+    fn compound_extracts_two_child_nodes() {
+        // Compound with 2 child nodes — both must appear in sector.nodes.
+        let mut data = header(895);
+        write_u32(&mut data, 1); // item_count
+        append_compound(&mut data, 0x01, 0x00, &[
+            (10, 256, 0, 0),   // uid=10, x=1.0 m
+            (20, 0, 512, 0),   // uid=20, y=2.0 m
+        ]);
+        write_u32(&mut data, 0); // trailing node_count
+
+        let s = parse_sector(&data).unwrap();
+        assert_eq!(s.nodes.len(), 2);
+        let n10 = s.nodes.iter().find(|n| n.uid == 10).expect("uid 10");
+        let n20 = s.nodes.iter().find(|n| n.uid == 20).expect("uid 20");
+        assert!((n10.x - 1.0).abs() < 1e-4, "x={}", n10.x);
+        assert!((n20.y - 2.0).abs() < 1e-4, "y={}", n20.y);
+    }
+
+    #[test]
+    fn compound_child_nodes_merged_with_trailing_nodes() {
+        // Compound child nodes plus trailing section nodes must all appear.
+        let mut data = header(895);
+        write_u32(&mut data, 1); // item_count
+        append_compound(&mut data, 0x01, 0x00, &[
+            (100, 25600, 0, 0), // uid=100, x=100.0 m
+        ]);
+        write_u32(&mut data, 1); // trailing node_count
+        append_node(&mut data, 200, 0, 25600, 0); // uid=200, y=100.0 m
+
+        let s = parse_sector(&data).unwrap();
+        assert_eq!(s.nodes.len(), 2);
+        assert!(s.nodes.iter().any(|n| n.uid == 100));
+        assert!(s.nodes.iter().any(|n| n.uid == 200));
+    }
+
+    #[test]
+    fn compound_child_nodes_available_for_road_routing() {
+        // A Road whose endpoint UIDs match compound child nodes should be
+        // resolvable in the same sector (both items in same sector payload).
+        let mut data = header(895);
+        write_u32(&mut data, 2); // item_count: 1 compound + 1 road
+        append_compound(&mut data, 0x10, 0x00, &[
+            (1001, 0, 0, 0),
+            (1002, 25600, 0, 0),
+        ]);
+        append_road(&mut data, 0x42, 1001, 1002);
+        write_u32(&mut data, 0); // no trailing nodes
+
+        let s = parse_sector(&data).unwrap();
+        // Both compound child nodes must be present
+        assert_eq!(s.nodes.len(), 2);
+        assert!(s.nodes.iter().any(|n| n.uid == 1001));
+        assert!(s.nodes.iter().any(|n| n.uid == 1002));
+        // Road must reference those node UIDs
+        assert_eq!(s.roads.len(), 1);
+        assert_eq!(s.roads[0].node_a, 1001);
+        assert_eq!(s.roads[0].node_b, 1002);
+    }
+
+    #[test]
+    fn compound_with_five_child_nodes() {
+        let mut data = header(895);
+        let child_nodes: Vec<(u64, i32, i32, i32)> = (1..=5)
+            .map(|i| (i as u64, i * 256, 0, 0))
+            .collect();
+        write_u32(&mut data, 1); // item_count
+        append_compound(&mut data, 0xFF, 0x00, &child_nodes);
+        write_u32(&mut data, 0);
+
+        let s = parse_sector(&data).unwrap();
+        assert_eq!(s.nodes.len(), 5);
+        for i in 1u64..=5 {
+            let node = s.nodes.iter().find(|n| n.uid == i).expect("uid");
+            assert!((node.x - i as f32).abs() < 1e-4);
+        }
     }
 }
