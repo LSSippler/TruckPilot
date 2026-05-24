@@ -893,6 +893,10 @@ static mut CTRL_SHM_HANDLE: HANDLE = NULL;
 static mut CTRL_SHM_PTR: *mut ShmControlLayout = ptr::null_mut();
 /// Which event to emit on the next input_event_cb invocation (0–3, wrapping).
 static mut CTRL_EVENT_IDX: u32 = 0;
+/// Total input_event_cb invocations since DLL load (all indices combined).
+static mut CTRL_CB_TOTAL: u64 = 0;
+/// Number of frames seen (first_in_frame calls).
+static mut CTRL_FRAME_COUNT: u64 = 0;
 
 // ---------------------------------------------------------------------------
 // scs_input_init / scs_input_shutdown — exported alongside scs_telemetry_init
@@ -1018,19 +1022,45 @@ pub unsafe extern "system" fn scs_input_shutdown() {
 /// throttle, brake, clutch in order), then signal done via NOT_FOUND after all 4.
 /// When `active == 0` we emit neutral 0.0 — never NOT_FOUND before the 4th event,
 /// which would risk ETS2 treating the device as dead and stopping the callback.
+///
+/// Diagnostic: logs frame header + per-event info via OutputDebugStringA on frame 1
+/// and every 100 frames. View in Sysinternals DebugView (filter "[TruckPilot]").
 unsafe extern "system" fn input_event_cb(
     event: *mut ScsInputEvent,
     flags: scs_u32_t,
     _ctx: scs_context_t,
 ) -> scs_result_t {
+    CTRL_CB_TOTAL += 1;
+    let cb_total = CTRL_CB_TOTAL;
+
     if event.is_null() || CTRL_SHM_PTR.is_null() {
+        debug_log(&format!("input_event_cb cb#{cb_total}: null ptr -> NOT_FOUND"));
         return SCS_RESULT_NOT_FOUND;
     }
 
     // ETS2 sets this flag on the first call of each frame — use it to resync
     // the index so a mid-frame abort in a previous frame never carries over.
-    if flags & SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME != 0 {
+    let first_in_frame = flags & SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME != 0;
+    if first_in_frame {
         CTRL_EVENT_IDX = 0;
+        CTRL_FRAME_COUNT += 1;
+    }
+    let frame_count = CTRL_FRAME_COUNT;
+
+    // Log frame header on frame 1 and every 100 frames — view in DebugView.
+    let diag = frame_count == 1 || frame_count.is_multiple_of(100);
+    if diag && first_in_frame {
+        // Read via raw ptr — packed struct fields cannot be referenced directly.
+        let (a, seq, steer, thr, brk) = (
+            (*CTRL_SHM_PTR).active,
+            (*CTRL_SHM_PTR).sequence,
+            (*CTRL_SHM_PTR).steering,
+            (*CTRL_SHM_PTR).throttle,
+            (*CTRL_SHM_PTR).brake,
+        );
+        debug_log(&format!(
+            "input_event_cb frame#{frame_count} cb#{cb_total} flags={flags:#010x} active={a} seq={seq} steer={steer:.4} thr={thr:.4} brk={brk:.4}",
+        ));
     }
 
     let active = (*CTRL_SHM_PTR).active != 0;
@@ -1041,16 +1071,25 @@ unsafe extern "system" fn input_event_cb(
         (0.0_f32, 0.0, 0.0, 0.0)
     };
 
-    match CTRL_EVENT_IDX {
-        0 => { (*event).input_index = 0; (*event).value_float = s; }
-        1 => { (*event).input_index = 1; (*event).value_float = t; }
-        2 => { (*event).input_index = 2; (*event).value_float = b; }
-        3 => { (*event).input_index = 3; (*event).value_float = c; }
+    let idx = CTRL_EVENT_IDX;
+    let (written_idx, written_val) = match idx {
+        0 => { (*event).input_index = 0; (*event).value_float = s; (0u32, s) }
+        1 => { (*event).input_index = 1; (*event).value_float = t; (1, t) }
+        2 => { (*event).input_index = 2; (*event).value_float = b; (2, b) }
+        3 => { (*event).input_index = 3; (*event).value_float = c; (3, c) }
         _ => {
+            if diag {
+                debug_log(&format!("  [done] idx_overflow={idx} -> NOT_FOUND (end of frame)"));
+            }
             CTRL_EVENT_IDX = 0;
             return SCS_RESULT_NOT_FOUND;
         }
+    };
+
+    if diag {
+        debug_log(&format!("  event idx={written_idx} val={written_val:.4} -> OK"));
     }
+
     CTRL_EVENT_IDX += 1;
     SCS_RESULT_OK
 }
