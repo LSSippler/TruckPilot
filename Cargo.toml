@@ -26,6 +26,7 @@ members = [
     "crates/plugins/ets2-nav-bridge",
     "crates/plugins/scs-sdk-output",
     "crates/plugins/lane-detection",
+    "crates/plugins/lane-follower",
 ]
 resolver = "2"
 
@@ -49,3 +50,4 @@ zip = "2"
 thiserror = "1"
 tauri = "2"
 tauri-build = "2"
+rstar = { version = "0.12", features = ["serde"] }

@@ -20,6 +20,7 @@ serde      = { workspace = true }
 serde_json = { workspace = true }
 tracing    = { workspace = true }
 tracing-subscriber = { workspace = true }
+rstar      = { workspace = true }
 
 
 [[bin]]
@@ -85,3 +86,7 @@ path = "src/bin/singleton_audit.rs"
 [[bin]]
 name = "truckpilot-node-inspect"
 path = "src/bin/node_inspect.rs"
+
+[[bin]]
+name = "spline_gen"
+path = "src/bin/spline_gen.rs"
