@@ -422,15 +422,20 @@ impl AutopilotStateMachine {
                     } else {
                         self.engine_off_ticks = 0;
                     }
-                    if t.cruise_control_kmh <= 0.0 {
-                        self.cruise_off_ticks += 1;
-                        if self.cruise_off_ticks > CRUISE_OFF_TOLERANCE {
-                            self.transition_to_fault(FailureReason::CruiseDeactivated);
-                            self.publish(bb);
-                            return self.state;
+                    // Vision mode: ETS2 disables its cruise control whenever our
+                    // semantical steering input fires. CruiseDeactivated is
+                    // irrelevant in vision mode — skip the fault entirely.
+                    if self.mode_at_engage != "vision" {
+                        if t.cruise_control_kmh <= 0.0 {
+                            self.cruise_off_ticks += 1;
+                            if self.cruise_off_ticks > CRUISE_OFF_TOLERANCE {
+                                self.transition_to_fault(FailureReason::CruiseDeactivated);
+                                self.publish(bb);
+                                return self.state;
+                            }
+                        } else {
+                            self.cruise_off_ticks = 0;
                         }
-                    } else {
-                        self.cruise_off_ticks = 0;
                     }
                     // Vision mode Level-4 disengage signal from lane-keeper plugin.
                     if bb.get("lane_keeper.fallback_level").as_deref() == Some("4")
@@ -1016,9 +1021,13 @@ fn check_preconditions(telemetry: Option<&Telemetry>, bb: &SharedBlackboard) -> 
     Preconditions {
         telemetry_ok: telemetry.is_some(),
         engine_running: telemetry.map(|t| t.engine_rpm > 100.0).unwrap_or(false),
-        cruise_active: telemetry
-            .map(|t| t.cruise_control_kmh > 0.0)
-            .unwrap_or(false),
+        // Vision mode: ETS2 kills its own cruise control whenever our
+        // semantical steering fires (user-override behaviour). Cruise is
+        // irrelevant — treat it as always satisfied.
+        cruise_active: mode == "vision"
+            || telemetry
+                .map(|t| t.cruise_control_kmh > 0.0)
+                .unwrap_or(false),
         critical_plugins_loaded: check_critical_plugins(bb),
         router_active,
     }
@@ -1373,6 +1382,60 @@ mod tests {
         }
         assert_eq!(sm.state(), AutopilotState::Fault);
         assert_eq!(sm.fault_reason(), Some(&FailureReason::CruiseDeactivated));
+    }
+
+    /// Build a blackboard that satisfies all vision-mode preconditions,
+    /// including cruise_control_kmh = 0 (the bug scenario).
+    fn bb_vision_preconditions() -> SharedBlackboard {
+        let bb = SharedBlackboard::new();
+        bb.set("plugin.lane_keeper.mode", "vision");
+        bb.set("lane_keeper.engage_allowed", "true");
+        bb.set("plugins.loaded", "lane-keeper,speed-controller,scs-sdk-output");
+        bb.set("state.engage_ready", "true");
+        bb
+    }
+
+    /// Telemetry with engine running but cruise OFF — the exact state that
+    /// used to trigger CruiseDeactivated in vision mode.
+    fn mock_running_no_cruise() -> Telemetry {
+        let mut t = mock_running();
+        t.cruise_control_kmh = 0.0;
+        t
+    }
+
+    #[test]
+    fn vision_mode_cruise_off_does_not_fault_while_active() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_vision_preconditions();
+        let t = mock_running_no_cruise();
+        engage_to_active(&mut sm, &bb, &t);
+        // 26 ticks with cruise=0 — would fault in route mode but must not in vision.
+        for _ in 0..26 {
+            sm.evaluate(Some(&t), &bb);
+        }
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Active,
+            "vision mode must not fault on CruiseDeactivated"
+        );
+        assert_ne!(sm.fault_reason(), Some(&FailureReason::CruiseDeactivated));
+    }
+
+    #[test]
+    fn vision_mode_engages_without_cruise() {
+        // cruise_active must not block Engaging→Active in vision mode.
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_vision_preconditions();
+        let t = mock_running_no_cruise(); // cruise_control_kmh == 0
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&t), &bb);
+        }
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Active,
+            "vision mode must reach Active without ETS2 cruise"
+        );
     }
 
     #[test]
