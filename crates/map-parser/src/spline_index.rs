@@ -180,7 +180,8 @@ fn newton_closest(seg: &HermiteSegment, query: Vec3, t_init: f32) -> (f32, f32) 
     (t, dist2)
 }
 
-/// Ergebnis von [`SplineIndex::nearest_with_projection`].
+/// Ergebnis von [`SplineIndex::nearest_with_projection`] und
+/// [`SplineIndex::nearest_with_heading_filter`].
 #[derive(Debug, Clone)]
 pub struct NearestHit {
     /// Index des Segments in `SplineIndex::segments`
@@ -193,6 +194,9 @@ pub struct NearestHit {
     pub dist_m: f32,
     /// Heading an diesem Punkt (0=Nord, 90=Ost, Grad)
     pub heading_deg: f32,
+    /// `true` wenn der Heading-Filter mind. einen kompatiblen Kandidaten gefunden hat.
+    /// Immer `false` bei `nearest_with_projection`.
+    pub heading_filter_applied: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +341,92 @@ impl SplineIndex {
             point_on_curve,
             dist_m: dist2.sqrt(),
             heading_deg,
+            heading_filter_applied: false,
+        })
+    }
+
+    /// Findet das nächste Segment mit Heading-Filter.
+    ///
+    /// Wie [`nearest_with_projection`], aber bevorzugt Segmente deren Tangente in
+    /// die gleiche Richtung wie `truck_heading_deg` zeigt (dot ≥ 0.5, ≤60° Abweichung).
+    /// Fällt auf geometrisch nächstes zurück wenn alle Kandidaten gefiltert werden
+    /// (`heading_filter_applied` = `false` im Rückgabewert).
+    ///
+    /// * `truck_heading_deg` — Fahrtrichtung in CW-Grad von Nord (0=N, 90=E, 180=S, 270=W)
+    pub fn nearest_with_heading_filter(
+        &self,
+        point: Vec3,
+        truck_heading_deg: f32,
+        candidates: usize,
+    ) -> Option<NearestHit> {
+        let h_rad = truck_heading_deg.to_radians();
+        let fw_x = h_rad.sin();
+        let fw_z = -h_rad.cos();
+
+        let p2 = [point.x, point.z];
+
+        let mut best_unfiltered: Option<(usize, f32, f32)> = None; // (seg_idx, t, dist2)
+        let mut best_filtered: Option<(usize, f32, f32)> = None;
+
+        for (entry, _) in self
+            .tree
+            .nearest_neighbor_iter_with_distance_2(&p2)
+            .take(candidates)
+        {
+            let seg_idx = entry.idx as usize;
+            let seg = &self.segments[seg_idx];
+
+            let seeds = [0.0f32, 0.5, 1.0];
+            let (t_best, d2_best) = seeds
+                .iter()
+                .map(|&t0| newton_closest(seg, point, t0))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap();
+
+            match best_unfiltered {
+                None => best_unfiltered = Some((seg_idx, t_best, d2_best)),
+                Some((_, _, bd2)) if d2_best < bd2 => {
+                    best_unfiltered = Some((seg_idx, t_best, d2_best));
+                }
+                _ => {}
+            }
+
+            let tan = evaluate_tangent(seg, t_best);
+            let tan_len = (tan.x * tan.x + tan.z * tan.z).sqrt();
+            if tan_len > 1e-6 {
+                let dot = (tan.x / tan_len) * fw_x + (tan.z / tan_len) * fw_z;
+                if dot >= 0.5 {
+                    match best_filtered {
+                        None => best_filtered = Some((seg_idx, t_best, d2_best)),
+                        Some((_, _, bd2)) if d2_best < bd2 => {
+                            best_filtered = Some((seg_idx, t_best, d2_best));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let (seg_idx, t, dist2, filter_applied) = if let Some((si, t, d2)) = best_filtered {
+            (si, t, d2, true)
+        } else if let Some((si, t, d2)) = best_unfiltered {
+            (si, t, d2, false)
+        } else {
+            return None;
+        };
+
+        let seg = &self.segments[seg_idx];
+        let point_on_curve = evaluate(seg, t);
+        let tan = evaluate_tangent(seg, t);
+        let heading_deg = f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
+
+        Some(NearestHit {
+            segment_idx: seg_idx,
+            t,
+            point_on_curve,
+            dist_m: dist2.sqrt(),
+            heading_deg,
+            heading_filter_applied: filter_applied,
         })
     }
 
@@ -590,6 +680,43 @@ mod tests {
             (hit.heading_deg - 90.0).abs() < 5.0,
             "Ost-Segment → heading≈90°, got {}",
             hit.heading_deg
+        );
+    }
+
+    // --- nearest_with_heading_filter Tests ---
+
+    #[test]
+    fn heading_filter_selects_north_on_bidirectional_road() {
+        // Bidirektionale Straße: Nord-Segment (0,0)→(0,-100) und Süd-Segment (0,-100)→(0,0).
+        // Truck bei (0,0,-50) mit Heading 0° (Nord) → Soll Nord-Segment wählen.
+        let north_seg = make_seg(0.0, 0.0, 0.0, -100.0);
+        let south_seg = make_seg(0.0, -100.0, 0.0, 0.0);
+        let idx = build_index(vec![north_seg, south_seg]);
+        let hit = idx
+            .nearest_with_heading_filter(Vec3::new(0.0, 0.0, -50.0), 0.0, 4)
+            .expect("must find a hit");
+        assert!(
+            hit.heading_filter_applied,
+            "filter must apply when heading-aligned segment exists"
+        );
+        assert!(
+            hit.heading_deg < 10.0 || hit.heading_deg > 350.0,
+            "expected heading ≈ 0° (North), got {:.1}°",
+            hit.heading_deg
+        );
+    }
+
+    #[test]
+    fn heading_filter_falls_back_when_all_candidates_opposite() {
+        // Nur ein Süd-Segment; Truck fährt Nord → Filter lehnt alle ab → Fallback.
+        let south_seg = make_seg(0.0, -100.0, 0.0, 0.0);
+        let idx = build_index(vec![south_seg]);
+        let hit = idx
+            .nearest_with_heading_filter(Vec3::new(0.0, 0.0, -50.0), 0.0, 4)
+            .expect("must find a hit via fallback");
+        assert!(
+            !hit.heading_filter_applied,
+            "filter_applied must be false when all candidates rejected"
         );
     }
 }
