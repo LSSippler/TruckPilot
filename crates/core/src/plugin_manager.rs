@@ -344,13 +344,16 @@ impl PluginManager {
         let mut legacy = ControlOutput::default();
         let mut requests: Vec<ControlRequest> = Vec::new();
 
-        // vjoy-output must observe the FINAL arbitrated output, not
-        // intermediate legacy values. Skip it in the main loop and tick
-        // it once after arbitration with `*output`.
-        let vjoy_idx: Option<usize> = self
+        // Output plugins (PostPhase) must observe the FINAL arbitrated output,
+        // not intermediate legacy values. Collect their indices here, skip them
+        // in the main loop, then tick each one after arbitration with `*output`.
+        let post_phase_indices: Vec<usize> = self
             .plugins
             .iter()
-            .position(|p| p.enabled && p.name == "vjoy-output");
+            .enumerate()
+            .filter(|(_, p)| p.enabled && p.plugin.default_phase() == TickPhase::PostPhase)
+            .map(|(i, _)| i)
+            .collect();
 
         // Set to true whenever a plugin is disabled due to a panic so we
         // refresh `plugins.loaded` in the blackboard after the loop.
@@ -362,7 +365,7 @@ impl PluginManager {
             .enumerate()
             .filter(|(_, p)| p.enabled)
         {
-            if Some(i) == vjoy_idx {
+            if post_phase_indices.contains(&i) {
                 continue;
             }
             let phase = p.plugin.default_phase();
@@ -424,12 +427,18 @@ impl PluginManager {
 
         *output = arbitrate(legacy, &requests);
 
-        if let Some(idx) = vjoy_idx {
-            // Use a block so the mutable borrow of `p` is fully released
-            // before we call `publish_loaded_names` on self below.
-            let vjoy_panicked = {
+        // Tick all PostPhase (output) plugins with the final arbitrated value.
+        // Output plugins must not submit ControlRequests, so tick_request is
+        // intentionally not called here.
+        let mut any_post_disabled = false;
+        for &idx in &post_phase_indices {
+            // Block so the mutable borrow of `p` is released before
+            // `publish_loaded_names` needs `&self`.
+            let panicked = {
                 let p = &mut self.plugins[idx];
-                if p.enabled {
+                if !p.enabled {
+                    false
+                } else {
                     let plugin_start = Instant::now();
                     let phase = p.plugin.default_phase();
                     let mut ctx = PluginContext::new(p.name.clone(), self.blackboard.clone())
@@ -443,13 +452,6 @@ impl PluginManager {
                     let tick_result = catch_unwind(AssertUnwindSafe(|| {
                         p.plugin.tick(telemetry, output, &ctx);
                     }));
-                    let panicked = if let Err(panic) = tick_result {
-                        log_plugin_panic(&p.name, "tick", panic);
-                        p.enabled = false;
-                        true
-                    } else {
-                        false
-                    };
                     let plugin_elapsed = plugin_start.elapsed();
                     if plugin_elapsed.as_millis() > 30 {
                         warn!(
@@ -459,17 +461,23 @@ impl PluginManager {
                             tick_count
                         );
                     }
-                    panicked
-                } else {
-                    false
+                    if let Err(panic) = tick_result {
+                        log_plugin_panic(&p.name, "tick", panic);
+                        p.enabled = false;
+                        true
+                    } else {
+                        false
+                    }
                 }
-            }; // mutable borrow of `p` ends here
-
-            // vjoy-output panicked — update the blackboard immediately
-            // so the watchdog sees the change and can react.
-            if vjoy_panicked {
-                self.publish_loaded_names();
+            };
+            if panicked {
+                any_post_disabled = true;
             }
+        }
+        // Update the blackboard if any output plugin was panic-disabled so the
+        // watchdog sees the change and can react.
+        if any_post_disabled {
+            self.publish_loaded_names();
         }
     }
 
@@ -1095,6 +1103,103 @@ mod frame_store_tests {
         mgr.tick_all(None, &mut out, 0.02);
 
         assert_eq!(*last_seen.lock().unwrap(), Some(99));
+    }
+
+    // --- PostPhase generic dispatch tests ---
+
+    /// Writes a fixed steering value into the legacy output bucket (PhaseC).
+    struct SteeringWriterPlugin {
+        val: f64,
+    }
+    impl Plugin for SteeringWriterPlugin {
+        fn name(&self) -> &str { "steering-writer" }
+        fn version(&self) -> &str { "0.0.0" }
+        fn settings_schema(&self) -> &str { "{}" }
+        fn on_load(&mut self, _ctx: &PluginContext) {}
+        fn on_unload(&mut self) {}
+        fn tick(&mut self, _t: Option<&Telemetry>, out: &mut ControlOutput, _ctx: &PluginContext) {
+            out.steering = self.val;
+        }
+        fn tick_request(&mut self, _t: Option<&Telemetry>, _ctx: &PluginContext) -> Option<ControlRequest> {
+            None
+        }
+        fn default_phase(&self) -> TickPhase { TickPhase::PhaseC }
+    }
+
+    /// Captures the steering value passed to its `tick()` call (PostPhase).
+    struct SteeringCapturePlugin {
+        plugin_name: String,
+        captured: Arc<StdMutex<Option<f64>>>,
+    }
+    impl SteeringCapturePlugin {
+        fn new(name: &str) -> (Self, Arc<StdMutex<Option<f64>>>) {
+            let cell = Arc::new(StdMutex::new(None));
+            (Self { plugin_name: name.into(), captured: Arc::clone(&cell) }, cell)
+        }
+    }
+    impl Plugin for SteeringCapturePlugin {
+        fn name(&self) -> &str { &self.plugin_name }
+        fn version(&self) -> &str { "0.0.0" }
+        fn settings_schema(&self) -> &str { "{}" }
+        fn on_load(&mut self, _ctx: &PluginContext) {}
+        fn on_unload(&mut self) {}
+        fn tick(&mut self, _t: Option<&Telemetry>, out: &mut ControlOutput, _ctx: &PluginContext) {
+            *self.captured.lock().unwrap() = Some(out.steering);
+        }
+        fn tick_request(&mut self, _t: Option<&Telemetry>, _ctx: &PluginContext) -> Option<ControlRequest> {
+            None
+        }
+        fn default_phase(&self) -> TickPhase { TickPhase::PostPhase }
+    }
+
+    #[test]
+    fn post_phase_plugin_sees_arbitrated_steering() {
+        let mut mgr = new_test_manager();
+        inject(&mut mgr, Box::new(SteeringWriterPlugin { val: 0.5 }));
+        let (capture, cell) = SteeringCapturePlugin::new("capture");
+        inject(&mut mgr, Box::new(capture));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        let seen = cell.lock().unwrap().expect("PostPhase plugin must be called");
+        assert!(
+            (seen - 0.5).abs() < 1e-9,
+            "PostPhase plugin should see arbitrated steering 0.5, got {seen}"
+        );
+    }
+
+    #[test]
+    fn two_post_phase_plugins_both_see_arbitrated_steering() {
+        let mut mgr = new_test_manager();
+        inject(&mut mgr, Box::new(SteeringWriterPlugin { val: 0.75 }));
+        let (cap_a, cell_a) = SteeringCapturePlugin::new("capture-a");
+        let (cap_b, cell_b) = SteeringCapturePlugin::new("capture-b");
+        inject(&mut mgr, Box::new(cap_a));
+        inject(&mut mgr, Box::new(cap_b));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        let a = cell_a.lock().unwrap().expect("capture-a must be called");
+        let b = cell_b.lock().unwrap().expect("capture-b must be called");
+        assert!((a - 0.75).abs() < 1e-9, "capture-a saw {a}");
+        assert!((b - 0.75).abs() < 1e-9, "capture-b saw {b}");
+    }
+
+    #[test]
+    fn no_post_phase_plugins_arbitrate_still_runs() {
+        let mut mgr = new_test_manager();
+        inject(&mut mgr, Box::new(SteeringWriterPlugin { val: 0.3 }));
+
+        let mut out = ControlOutput::default();
+        mgr.tick_all(None, &mut out, 0.02);
+
+        assert!(
+            (out.steering - 0.3).abs() < 1e-9,
+            "arbitrated output should be 0.3, got {}",
+            out.steering
+        );
     }
 }
 
