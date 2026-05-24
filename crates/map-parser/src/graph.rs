@@ -13,8 +13,8 @@ use crate::road_look::RoadLookEntry;
 use crate::sector::{ParsedSector, RawBuilding, RawFerry, RawNode, RawPrefab, RawRoad};
 use crate::signs::TrafficSign;
 use crate::spatial_match::{
-    apply_filters, build_spatial_index, pass1_strict_config, query_circle, select_best_match,
-    OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
+    apply_filters, build_spatial_index, pass1_strict_config, pass2_config, query_circle,
+    select_best_match, OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
 };
 use std::collections::HashSet;
 
@@ -220,6 +220,25 @@ impl GraphBuilder {
         let mut edges: Vec<GraphEdge> = Vec::new();
         let mut edge_uid: u64 = 1;
 
+        // Phase 0d.2b: node → resolved-neighbor positions for road_dir_hint.
+        // Maps each node UID to the world positions of all nodes it shares a
+        // fully-resolved road with. Used below when building OrphanEndpoints.
+        let mut node_neighbors: HashMap<u64, Vec<[f64; 3]>> = HashMap::new();
+        for road in &self.roads {
+            if let (Some(a_node), Some(b_node)) =
+                (node_lookup.get(&road.node_a), node_lookup.get(&road.node_b))
+            {
+                node_neighbors
+                    .entry(road.node_a)
+                    .or_default()
+                    .push([b_node.x, b_node.y, b_node.z]);
+                node_neighbors
+                    .entry(road.node_b)
+                    .or_default()
+                    .push([a_node.x, a_node.y, a_node.z]);
+            }
+        }
+
         // Phase 5.23b: orphan endpoints collected during road-edge generation.
         // An "orphan" is a road whose ONE endpoint resolves in node_lookup
         // and the other does not. Both-unresolved roads are dropped with
@@ -233,32 +252,46 @@ impl GraphBuilder {
             let (a, b) = match (a_node, b_node) {
                 (Some(a), Some(b)) => (a, b),
                 (Some(a), None) => {
+                    let pos = [a.x, a.y, a.z];
                     orphans.push(OrphanEndpoint {
                         road_uid: road.uid,
                         resolved_uid: road.node_a,
-                        resolved_pos: [a.x, a.y, a.z],
+                        resolved_pos: pos,
                         missing_uid: road.node_b,
                         sector_id: self
                             .node_to_sector
                             .get(&road.node_a)
                             .copied()
                             .unwrap_or(SECTOR_ID_UNKNOWN),
-                        road_dir_hint: None,
+                        road_dir_hint: compute_dir_hint(
+                            &pos,
+                            node_neighbors
+                                .get(&road.node_a)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                        ),
                     });
                     continue;
                 }
                 (None, Some(b)) => {
+                    let pos = [b.x, b.y, b.z];
                     orphans.push(OrphanEndpoint {
                         road_uid: road.uid,
                         resolved_uid: road.node_b,
-                        resolved_pos: [b.x, b.y, b.z],
+                        resolved_pos: pos,
                         missing_uid: road.node_a,
                         sector_id: self
                             .node_to_sector
                             .get(&road.node_b)
                             .copied()
                             .unwrap_or(SECTOR_ID_UNKNOWN),
-                        road_dir_hint: None,
+                        road_dir_hint: compute_dir_hint(
+                            &pos,
+                            node_neighbors
+                                .get(&road.node_b)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                        ),
                     });
                     continue;
                 }
@@ -609,6 +642,61 @@ impl GraphBuilder {
             pass1_matches, pass1_edges, orphans.len(), pass1_high, pass1_medium, pass1_low
         );
 
+        // Phase 0d.2b — Cross-sector spatial matching (Pass 2 WIDE).
+        //
+        // 200m XZ radius, 15m Y-tolerance, virtual-sector adjacency guard
+        // (prevents cross-continent false matches from isolated DLC islands).
+        // Runs over ALL orphans; the `matched_pairs` dedup set already
+        // contains Pass-1 pairs, so no orphan that was matched in Pass 1 can
+        // produce a duplicate edge here.
+        let pass2 = pass2_config();
+        let mut pass2_matches = 0usize;
+        let mut pass2_edges = 0usize;
+
+        for orphan in &orphans {
+            let raw_candidates =
+                query_circle(&spatial_index, &orphan.resolved_pos, pass2.max_dist);
+            let mut filtered: Vec<(&_, f64)> = Vec::new();
+            for cand in raw_candidates {
+                if let Some(d) = apply_filters(orphan, cand, &pass2) {
+                    filtered.push((cand, d));
+                }
+            }
+            let Some((best, dist, _conf)) = select_best_match(&mut filtered, pass2.level) else {
+                continue;
+            };
+            if best.uid == orphan.resolved_uid {
+                continue;
+            }
+            let from = orphan.resolved_uid;
+            let to = best.uid;
+            let pair = if from < to { (from, to) } else { (to, from) };
+            if !matched_pairs.insert(pair) {
+                continue;
+            }
+            pass2_matches += 1;
+            for (f, t) in [(from, to), (to, from)] {
+                edges.push(GraphEdge {
+                    uid: edge_uid,
+                    from: f,
+                    to: t,
+                    distance_m: dist,
+                    speed_limit_kmh: None,
+                    lanes: 1,
+                    direction: "cross_sector_pass2".into(),
+                    dlc_guard: 0,
+                    is_hidden: false,
+                    gps_avoid: false,
+                });
+                edge_uid += 1;
+                pass2_edges += 1;
+            }
+        }
+        info!(
+            "Pass 2 (WIDE 200m/15m + adj-sector): {} unique matches ({} edges) from {} orphans",
+            pass2_matches, pass2_edges, orphans.len()
+        );
+
         // Process prefabs
         let prefabs: Vec<Prefab> = self
             .raw_prefabs
@@ -719,6 +807,37 @@ impl GraphBuilder {
     }
 }
 
+/// Average unit-vector from `resolved_pos` toward each `neighbors` position.
+/// Returns `None` when there are no neighbors or all are degenerate (same pos).
+/// Used to populate `OrphanEndpoint::road_dir_hint` for the optional heading
+/// filter in Pass 2 and later passes.
+fn compute_dir_hint(resolved_pos: &[f64; 3], neighbors: &[[f64; 3]]) -> Option<[f64; 3]> {
+    let mut sx = 0.0_f64;
+    let mut sy = 0.0_f64;
+    let mut sz = 0.0_f64;
+    let mut count = 0usize;
+    for nb in neighbors {
+        let dx = nb[0] - resolved_pos[0];
+        let dy = nb[1] - resolved_pos[1];
+        let dz = nb[2] - resolved_pos[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len > 0.001 {
+            sx += dx / len;
+            sy += dy / len;
+            sz += dz / len;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    let mag = (sx * sx + sy * sy + sz * sz).sqrt();
+    if mag < 0.001 {
+        return None;
+    }
+    Some([sx / mag, sy / mag, sz / mag])
+}
+
 fn euclidean_3d(a: &GraphNode, b: &GraphNode) -> f64 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
@@ -768,6 +887,7 @@ mod tests {
                     x: 0.0,
                     y: 0.0,
                     z: 0.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },
@@ -776,6 +896,7 @@ mod tests {
                     x: 100.0,
                     y: 0.0,
                     z: 0.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },
@@ -812,6 +933,7 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
+                rotation: [0.0; 4],
                 forward_item_uid: 0,
                 backward_item_uid: 0,
             }],
@@ -824,6 +946,7 @@ mod tests {
                 x: 5.0,
                 y: 0.0,
                 z: 0.0,
+                rotation: [0.0; 4],
                 forward_item_uid: 0,
                 backward_item_uid: 0,
             }], // same UID, different pos
@@ -845,6 +968,7 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
+                rotation: [0.0; 4],
                 forward_item_uid: 0,
                 backward_item_uid: 0,
             }],
@@ -877,6 +1001,7 @@ mod tests {
                     x: 0.0,
                     y: 0.0,
                     z: 0.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },
@@ -885,6 +1010,7 @@ mod tests {
                     x: 10.0,
                     y: 0.0,
                     z: 0.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },
@@ -918,6 +1044,7 @@ mod tests {
                     x: 0.0,
                     y: 0.0,
                     z: 0.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },
@@ -926,6 +1053,7 @@ mod tests {
                     x: 30.0,
                     y: 0.0,
                     z: 40.0,
+                    rotation: [0.0; 4],
                     forward_item_uid: 0,
                     backward_item_uid: 0,
                 },

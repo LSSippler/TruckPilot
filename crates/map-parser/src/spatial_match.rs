@@ -85,12 +85,21 @@ pub struct PassConfig {
     pub z_tol: f64,
     pub heading_threshold: f64,
     pub require_heading: bool,
+    /// When `true`, reject candidates whose virtual sector (4096-unit grid) is
+    /// more than 1 step away from the orphan's virtual sector. Prevents
+    /// cross-continent false matches in Pass 2. Pass 1 leaves this `false`
+    /// because its strict 50m radius already limits range.
+    pub require_adjacent_sector: bool,
     pub level: ConfidenceLevel,
 }
 
 /// Default cell size in world units (metres). 250 m yields ~260 nodes/cell
 /// on average for `base_map.scs` and bounds query cost at ~9–25 cells.
 pub const DEFAULT_CELL_SIZE: f64 = 250.0;
+
+/// ETS2 virtual-sector grid size in world units. Used by Pass 2 adjacency
+/// filter to prevent cross-continent false matches.
+pub const VIRTUAL_SECTOR_SIZE: f64 = 4096.0;
 
 /// 2D-distance threshold above which the Z-tolerance is doubled (long road
 /// segments through hilly terrain may cross significant elevation deltas).
@@ -152,7 +161,23 @@ pub fn pass1_strict_config() -> PassConfig {
         z_tol: 5.0,
         heading_threshold: 0.5,
         require_heading: false,
+        require_adjacent_sector: false,
         level: ConfidenceLevel::High,
+    }
+}
+
+/// Pass-2 wide configuration (Phase 0d.2b). 200 m XZ radius, 15 m Y tolerance,
+/// virtual-sector adjacency filter active. Generates `Medium` confidence.
+/// Heading filter is optional and disabled by default — orphan `road_dir_hint`
+/// is populated but not enforced, keeping recall high.
+pub fn pass2_config() -> PassConfig {
+    PassConfig {
+        max_dist: 200.0,
+        z_tol: 15.0,
+        heading_threshold: 0.866,
+        require_heading: false,
+        require_adjacent_sector: true,
+        level: ConfidenceLevel::Medium,
     }
 }
 
@@ -177,6 +202,17 @@ pub fn apply_filters(
         && candidate.sector_id == orphan.sector_id
     {
         return None;
+    }
+
+    // Filter 1.5: VIRTUAL-SECTOR ADJACENCY — reject cross-continent matches.
+    // Two positions are adjacent when their 4096-unit virtual-sector coords
+    // differ by at most 1 in each dimension (Chebyshev ≤ 1).
+    if pass.require_adjacent_sector {
+        let (osx, osz) = virtual_sector(orphan.resolved_pos[0], orphan.resolved_pos[2]);
+        let (csx, csz) = virtual_sector(candidate.x, candidate.z);
+        if (osx - csx).abs() > 1 || (osz - csz).abs() > 1 {
+            return None;
+        }
     }
 
     let dx = candidate.x - orphan.resolved_pos[0];
@@ -260,6 +296,13 @@ pub fn query_circle<'a>(
         }
     }
     results
+}
+
+fn virtual_sector(x: f64, z: f64) -> (i32, i32) {
+    (
+        (x / VIRTUAL_SECTOR_SIZE).floor() as i32,
+        (z / VIRTUAL_SECTOR_SIZE).floor() as i32,
+    )
 }
 
 #[cfg(test)]
@@ -407,6 +450,7 @@ mod tests {
             z_tol: 5.0,
             heading_threshold: 0.0,
             require_heading: false,
+            require_adjacent_sector: false,
             level: ConfidenceLevel::High,
         };
         let o = orphan(7, [0.0, 0.0, 0.0]);
@@ -451,6 +495,71 @@ mod tests {
     fn select_best_match_empty_returns_none() {
         let mut cands: Vec<(&NodeRef, f64)> = Vec::new();
         assert!(select_best_match(&mut cands, ConfidenceLevel::High).is_none());
+    }
+
+    #[test]
+    fn pass2_adjacency_accepts_same_virtual_sector() {
+        let cfg = pass2_config();
+        // Both within sector (0,0) — candidate at 100m XZ is well within 200m and same vsector.
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        let c = nref(50, 100.0, 0.0, 100.0, 8);
+        assert!(
+            apply_filters(&o, &c, &cfg).is_some(),
+            "same virtual sector should be accepted"
+        );
+    }
+
+    #[test]
+    fn pass2_adjacency_accepts_neighbor_virtual_sector() {
+        let cfg = pass2_config();
+        // Orphan at x=4090 (vsector 0), candidate at x=4100 (vsector 1) — adjacent.
+        let o = orphan(7, [4090.0, 0.0, 0.0]);
+        let c = nref(50, 4100.0, 0.0, 0.0, 8); // 10m away
+        assert!(
+            apply_filters(&o, &c, &cfg).is_some(),
+            "adjacent virtual sector should be accepted"
+        );
+    }
+
+    #[test]
+    fn pass2_adjacency_rejects_distant_virtual_sector() {
+        let cfg = pass2_config();
+        // Orphan at (0,0,0) vsector(0,0), candidate at (9000,0,0) vsector(2,0) — 2 sectors away.
+        // But 9000m is beyond max_dist=200m, so distance filter would also reject it.
+        // Use a config without distance limit to isolate adjacency rejection.
+        let cfg_wide = PassConfig {
+            max_dist: 100_000.0,
+            z_tol: 100_000.0,
+            require_adjacent_sector: true,
+            ..cfg
+        };
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        let c = nref(50, 9000.0, 0.0, 0.0, 8); // vsector (2,0) — 2 away
+        assert!(
+            apply_filters(&o, &c, &cfg_wide).is_none(),
+            "2+ virtual sectors away should be rejected by adjacency filter"
+        );
+    }
+
+    #[test]
+    fn pass1_does_not_apply_adjacency_filter() {
+        let cfg = pass1_strict_config();
+        // Pass 1 has require_adjacent_sector = false — distant sectors should NOT be filtered by it.
+        // (Distance filter still applies, so use tiny distance.)
+        let o = orphan(7, [0.0, 0.0, 0.0]);
+        let c = nref(50, 9000.0, 0.0, 0.0, 8); // distant sector but pass1 doesn't check adjacency
+        // Distance (9000m) > max_dist (50m) so will be rejected by distance filter, not adjacency.
+        // Test that removing distance limit + disabling adjacency still accepts cross-continent.
+        let cfg_no_dist_no_adj = PassConfig {
+            max_dist: 100_000.0,
+            z_tol: 100_000.0,
+            require_adjacent_sector: false,
+            ..cfg
+        };
+        assert!(
+            apply_filters(&o, &c, &cfg_no_dist_no_adj).is_some(),
+            "pass1 config (no adjacency filter) should accept cross-continent when distance allows"
+        );
     }
 
     #[test]
