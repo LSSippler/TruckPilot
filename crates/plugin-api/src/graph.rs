@@ -13,10 +13,8 @@ impl RouterGraph {
     pub fn new(nodes: Vec<(u64, f64, f64)>, edges: Vec<(u64, u64, f64)>) -> Self {
         let positions: HashMap<u64, (f64, f64)> =
             nodes.iter().map(|&(uid, x, z)| (uid, (x, z))).collect();
-        let nodes_with_edges: HashSet<u64> = edges
-            .iter()
-            .flat_map(|&(from, to, _)| [from, to])
-            .collect();
+        let nodes_with_edges: HashSet<u64> =
+            edges.iter().flat_map(|&(from, to, _)| [from, to]).collect();
         Self {
             nodes,
             edges,
@@ -43,6 +41,11 @@ impl RouterGraph {
             .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    /// Find the nearest graph node within `max_dist_m`, preferring nodes whose
+    /// outgoing edges align with the truck's forward direction.
+    ///
+    /// * `heading` — ETS2 raw heading in `[0..1]` CCW from North (as returned by
+    ///   `telemetry.heading`). **Not radians.**
     pub fn find_nearest_with_heading(
         &self,
         x: f64,
@@ -50,8 +53,10 @@ impl RouterGraph {
         heading: f64,
         max_dist_m: f64,
     ) -> Option<(u64, f64, bool)> {
-        let hx = heading.sin();
-        let hz = -heading.cos();
+        // ETS2: 0..1 CCW from North. Convert to forward vector in (x,z) world space.
+        let heading_rad = -heading * std::f64::consts::TAU;
+        let hx = heading_rad.sin();
+        let hz = -heading_rad.cos();
         let max_dist_sq = max_dist_m * max_dist_m;
 
         let candidates: Vec<(u64, f64, f64, f64)> = self
@@ -201,4 +206,29 @@ fn reconstruct(came_from: &HashMap<u64, u64>, start: u64, goal: u64) -> Vec<u64>
     }
     path.reverse();
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heading_south_ets2_accepts_south_pointing_edge() {
+        // ETS2 heading=0.5 = South; forward vector = (0, +1) in (x,z).
+        // With the old radians interpretation sin(0.5)≈0.48, -cos(0.5)≈-0.88
+        // would point NE-ish and reject the south edge → filter_used=false.
+        // With the correct ETS2 conversion: heading_rad=-π → hx=0, hz=1 → accept.
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 0.0, 100.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // Truck 5 m north of node 1, heading=0.5 (ETS2 South).
+        let result = graph.find_nearest_with_heading(0.0, -5.0, 0.5, 20.0);
+        assert!(result.is_some(), "should find node 1");
+        let (uid, _, filter_used) = result.unwrap();
+        assert_eq!(uid, 1, "should snap to node 1");
+        assert!(
+            filter_used,
+            "ETS2 heading=0.5 (South) must accept south-pointing edge (filter_used=true)"
+        );
+    }
 }

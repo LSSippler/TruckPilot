@@ -105,10 +105,7 @@ impl SnapWindow {
             return (None, 0, 0);
         }
 
-        let (&top_edge, &top_count) = counts
-            .iter()
-            .max_by_key(|(_, c)| *c)
-            .unwrap();
+        let (&top_edge, &top_count) = counts.iter().max_by_key(|(_, c)| *c).unwrap();
 
         let cur_count = current_stable
             .and_then(|s| counts.get(&s).copied())
@@ -311,7 +308,13 @@ impl RouterPlugin {
         self.snap_window_unique_edges = 0;
     }
 
-    fn send_route_request(&mut self, pos_x: f64, pos_z: f64, truck_heading: f64, ctx: &PluginContext) {
+    fn send_route_request(
+        &mut self,
+        pos_x: f64,
+        pos_z: f64,
+        truck_heading: f64,
+        ctx: &PluginContext,
+    ) {
         if let Some(chan) = &self.request_tx {
             ctx.blackboard
                 .set("router.last_planning_attempt_at", epoch_ms().to_string());
@@ -361,12 +364,8 @@ fn router_worker_loop(
         }
 
         // Find nearest graph node to the truck's current position (heading-aware).
-        let snap_result = graph.find_nearest_with_heading(
-            req.truck_x,
-            req.truck_z,
-            req.truck_heading,
-            20.0,
-        );
+        let snap_result =
+            graph.find_nearest_with_heading(req.truck_x, req.truck_z, req.truck_heading, 20.0);
         let (start_uid, snap_dist_m, heading_filter_applied) = match snap_result {
             Some(r) => r,
             None => {
@@ -533,7 +532,8 @@ impl Plugin for RouterPlugin {
             },
         );
         ctx.blackboard.set("router.last_snap_dist", "0");
-        ctx.blackboard.set("router.last_snap_heading_filter_applied", "false");
+        ctx.blackboard
+            .set("router.last_snap_heading_filter_applied", "false");
         ctx.blackboard.set("router.auto_replan_count", "0");
         ctx.blackboard.set("router.auto_replan_triggered_at", "");
         ctx.blackboard.set("router.last_replan_reason", "");
@@ -564,12 +564,7 @@ impl Plugin for RouterPlugin {
         ctx: &PluginContext,
     ) {
         // ── 0. Phase 6.5q.1: consume synchronous replan from state machine ──
-        if ctx
-            .blackboard
-            .get("router.sync_replan_done")
-            .as_deref()
-            == Some("true")
-        {
+        if ctx.blackboard.get("router.sync_replan_done").as_deref() == Some("true") {
             ctx.blackboard.remove("router.sync_replan_done");
             self.pending_request = false;
             if let Some(ref lock) = ctx.route_node_ids {
@@ -595,7 +590,8 @@ impl Plugin for RouterPlugin {
                                 self.path_total_distance_m = result.distance_m;
                                 self.active = true;
                                 self.last_snap_dist_m = result.snap_dist_m;
-                                self.last_snap_heading_filter_applied = result.heading_filter_applied;
+                                self.last_snap_heading_filter_applied =
+                                    result.heading_filter_applied;
                                 self.current_route_node_ids =
                                     result.route_node_ids.iter().copied().collect();
                                 if let Some(ref lock) = ctx.route_node_ids {
@@ -679,10 +675,8 @@ impl Plugin for RouterPlugin {
                     Err(_) => {
                         self.goal_uid = 0;
                         self.last_planning_result = "uid_parse_error".to_string();
-                        self.last_planning_error_detail = format!(
-                            "UID parse error: could not parse '{}' as u64",
-                            goal_str
-                        );
+                        self.last_planning_error_detail =
+                            format!("UID parse error: could not parse '{}' as u64", goal_str);
                         ctx.blackboard.set("router.current_goal_uid", "");
                         ctx.blackboard
                             .set("router.last_planning_result", "uid_parse_error");
@@ -698,9 +692,10 @@ impl Plugin for RouterPlugin {
 
         // ── 2.3. Per-tick snap → sliding-window vote (Phase 6.5t) ──────────────
         if let (Some(tel), Some(graph)) = (telemetry, self.graph.as_ref()) {
-            let snap =
-                graph.find_nearest_with_heading(
-                    tel.position[0], tel.position[2],
+            let snap = graph
+                .find_nearest_with_heading(
+                    tel.position[0],
+                    tel.position[2],
                     tel.heading,
                     OFF_ROUTE_DETECT_RADIUS_M,
                 )
@@ -779,10 +774,11 @@ impl Plugin for RouterPlugin {
                         self.send_route_request(pos_x, pos_z, tel.heading, ctx);
                         ctx.blackboard
                             .set("router.auto_replan_triggered_at", now_ms.to_string());
-                        ctx.blackboard
-                            .set("router.auto_replan_count", self.auto_replan_count.to_string());
-                        ctx.blackboard
-                            .set("router.last_replan_reason", reason);
+                        ctx.blackboard.set(
+                            "router.auto_replan_count",
+                            self.auto_replan_count.to_string(),
+                        );
+                        ctx.blackboard.set("router.last_replan_reason", reason);
                     } else if self.auto_replan_count >= 3 {
                         ctx.blackboard.set("state.precondition_route_ok", "false");
                         tracing::warn!(
@@ -813,20 +809,25 @@ impl Plugin for RouterPlugin {
             "router.path_total_distance_m",
             format!("{:.1}", self.path_total_distance_m),
         );
-        ctx.blackboard
-            .set("router.last_snap_dist", format!("{:.1}", self.last_snap_dist_m));
+        ctx.blackboard.set(
+            "router.last_snap_dist",
+            format!("{:.1}", self.last_snap_dist_m),
+        );
         ctx.blackboard.set(
             "router.last_snap_heading_filter_applied",
             self.last_snap_heading_filter_applied.to_string(),
         );
-        ctx.blackboard
-            .set("router.auto_replan_count", self.auto_replan_count.to_string());
+        ctx.blackboard.set(
+            "router.auto_replan_count",
+            self.auto_replan_count.to_string(),
+        );
         ctx.blackboard
             .set("router.last_replan_reason", &self.last_replan_reason);
         // Phase 6.5t: Snap sliding-window diagnostics
         ctx.blackboard.set(
             "router.snap_stable_edge_id",
-            self.stable_snap_edge_id.map_or(String::new(), |uid| uid.to_string()),
+            self.stable_snap_edge_id
+                .map_or(String::new(), |uid| uid.to_string()),
         );
         ctx.blackboard
             .set("router.snap_stability", self.snap_stability.to_string());
@@ -835,8 +836,10 @@ impl Plugin for RouterPlugin {
             self.snap_window_unique_edges.to_string(),
         );
         if self.snap_last_change_at_ms > 0 {
-            ctx.blackboard
-                .set("router.snap_last_change_at", self.snap_last_change_at_ms.to_string());
+            ctx.blackboard.set(
+                "router.snap_last_change_at",
+                self.snap_last_change_at_ms.to_string(),
+            );
         } else {
             ctx.blackboard.set("router.snap_last_change_at", "");
         }
@@ -938,7 +941,10 @@ mod tests {
 
         // First tick: submits route request to worker.
         p.tick(Some(&t), &mut out, &ctx);
-        assert!(p.pending_request, "request should be pending after first tick");
+        assert!(
+            p.pending_request,
+            "request should be pending after first tick"
+        );
 
         // Let the worker complete A*.
         std::thread::sleep(Duration::from_millis(300));
@@ -1107,9 +1113,9 @@ mod tests {
     #[test]
     fn heading_filter_accepts_forward_edge() {
         let graph = dual_lane_graph();
-        // Truck at (2,0), heading π/2 (east): hx=1,hz=0
+        // Truck at (2,0), heading 0.75 (ETS2 East): hx=1,hz=0
         // Node 10 at (0,0) dist=2: edge 10→11 dir=(1,0), dot=1.0 ≥ 0.5 → accept
-        let result = graph.find_nearest_with_heading(2.0, 0.0, std::f64::consts::FRAC_PI_2, 20.0);
+        let result = graph.find_nearest_with_heading(2.0, 0.0, 0.75, 20.0);
         assert!(result.is_some());
         let (uid, _, filter_used) = result.unwrap();
         assert_eq!(uid, 10, "should snap to forward node 10, got {uid}");
@@ -1119,12 +1125,18 @@ mod tests {
     #[test]
     fn heading_filter_falls_back_when_no_compatible_candidate() {
         let graph = dual_lane_graph();
-        // Truck at (98,5), heading π/2 (east): only node 20 in range (dist≈2)
+        // Truck at (98,5), heading 0.75 (ETS2 East): only node 20 in range (dist≈2)
         // Node 20's edge 20→21 dir=(-1,0), dot((-1,0),(1,0))=-1 < 0.5 → filter fails → fallback
-        let result = graph.find_nearest_with_heading(98.0, 5.0, std::f64::consts::FRAC_PI_2, 20.0);
-        assert!(result.is_some(), "fallback should return a result when filter has no candidates");
+        let result = graph.find_nearest_with_heading(98.0, 5.0, 0.75, 20.0);
+        assert!(
+            result.is_some(),
+            "fallback should return a result when filter has no candidates"
+        );
         let (_, _, filter_used) = result.unwrap();
-        assert!(!filter_used, "fallback path should report heading_filter_applied=false");
+        assert!(
+            !filter_used,
+            "fallback path should report heading_filter_applied=false"
+        );
     }
 
     #[test]
@@ -1133,12 +1145,15 @@ mod tests {
         let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 50.0, 86.6)];
         let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
         let graph = RouterGraph::new(nodes, edges);
-        // heading π/2 (east), edge dir ≈ (0.5, 0.866) normalized, dot with (1,0) ≈ 0.5
-        let result = graph.find_nearest_with_heading(0.0, 0.0, std::f64::consts::FRAC_PI_2, 20.0);
+        // heading 0.75 (ETS2 East), edge dir ≈ (0.5, 0.866) normalized, dot with (1,0) ≈ 0.5
+        let result = graph.find_nearest_with_heading(0.0, 0.0, 0.75, 20.0);
         assert!(result.is_some());
         let (uid, _, filter_used) = result.unwrap();
         assert_eq!(uid, 1, "boundary dot≈0.5 should be accepted");
-        assert!(filter_used, "boundary case should be accepted by heading filter, not fallback");
+        assert!(
+            filter_used,
+            "boundary case should be accepted by heading filter, not fallback"
+        );
     }
 
     #[test]
@@ -1272,7 +1287,10 @@ mod tests {
         let t = fake_telemetry_at(0.0, 0.0);
 
         p.tick(Some(&t), &mut out, &ctx);
-        assert!(p.pending_request, "heading stage AutoReplan should trigger replan");
+        assert!(
+            p.pending_request,
+            "heading stage AutoReplan should trigger replan"
+        );
         assert_eq!(p.auto_replan_count, 1);
         assert_eq!(p.last_replan_reason, "heading_stage");
     }
@@ -1394,7 +1412,11 @@ mod tests {
         w.push_snap(Some(10));
         // window: [B,B,B,A,A]
         let (stable, stability, _) = w.vote(Some(10), 3, 4);
-        assert_eq!(stable, Some(10), "A should hold: B=3 < hysteresis=4, incumbent holds as long as >0 votes");
+        assert_eq!(
+            stable,
+            Some(10),
+            "A should hold: B=3 < hysteresis=4, incumbent holds as long as >0 votes"
+        );
         assert_eq!(stability, 2, "2 votes for A");
     }
 
@@ -1429,7 +1451,11 @@ mod tests {
         }
         // current_stable=10 is no longer in the window
         let (stable, stability, _) = w.vote(Some(10), 3, 4);
-        assert_eq!(stable, Some(20), "old stable gone, new majority B=5 should take over");
+        assert_eq!(
+            stable,
+            Some(20),
+            "old stable gone, new majority B=5 should take over"
+        );
         assert_eq!(stability, 5);
     }
 
@@ -1501,7 +1527,11 @@ mod tests {
         w.push_snap(Some(10));
         w.push_snap(Some(10));
         let (stable, stability, _) = w.vote(Some(10), 3, 4);
-        assert_eq!(stable, Some(10), "incumbent A holds with only 2 votes: B=3 < hysteresis=4");
+        assert_eq!(
+            stable,
+            Some(10),
+            "incumbent A holds with only 2 votes: B=3 < hysteresis=4"
+        );
         assert_eq!(stability, 2);
     }
 
