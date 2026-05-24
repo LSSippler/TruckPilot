@@ -508,14 +508,13 @@ fn load_router_graph_or_exit() -> RouterGraph {
         eprintln!("ERROR: Cannot read graph.json: {e}");
         std::process::exit(1);
     });
-    let map_graph: truckpilot_map_parser::graph::MapGraph =
-        serde_json::from_str(&json).unwrap_or_else(|e| {
+    let map_graph: truckpilot_map_parser::graph::MapGraph = serde_json::from_str(&json)
+        .unwrap_or_else(|e| {
             eprintln!("ERROR: Cannot parse graph.json: {e}");
             std::process::exit(1);
         });
 
-    let nodes: Vec<(u64, f64, f64)> =
-        map_graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+    let nodes: Vec<(u64, f64, f64)> = map_graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
     let edges: Vec<(u64, u64, f64)> = map_graph
         .edges
         .iter()
@@ -590,14 +589,28 @@ async fn run_daemon() {
     let config_plugin_names: std::collections::HashSet<String> =
         app_config.plugins.keys().cloned().collect();
     let plugin_configs: std::collections::HashMap<String, plugin_manager::PluginTomlConfig> =
-        app_config.plugins.into_iter().map(|(plugin_name, cfg)| {
-            let slug = plugin_name.replace('-', "_");
-            let extra: Vec<(String, String)> = cfg.extra.into_iter()
-                .filter(|(k, _)| k != "enabled")
-                .filter_map(|(k, v)| toml_value_to_string(&v).map(|s| (format!("{slug}.{k}"), s)))
-                .collect();
-            (plugin_name, plugin_manager::PluginTomlConfig { enabled: cfg.enabled, extra })
-        }).collect();
+        app_config
+            .plugins
+            .into_iter()
+            .map(|(plugin_name, cfg)| {
+                let slug = plugin_name.replace('-', "_");
+                let extra: Vec<(String, String)> = cfg
+                    .extra
+                    .into_iter()
+                    .filter(|(k, _)| k != "enabled")
+                    .filter_map(|(k, v)| {
+                        toml_value_to_string(&v).map(|s| (format!("{slug}.{k}"), s))
+                    })
+                    .collect();
+                (
+                    plugin_name,
+                    plugin_manager::PluginTomlConfig {
+                        enabled: cfg.enabled,
+                        extra,
+                    },
+                )
+            })
+            .collect();
 
     let plugin_dir = PathBuf::from("./plugins");
     if !plugin_dir.exists() {
@@ -756,6 +769,12 @@ async fn run_daemon() {
                 heading_stage_mgr.reset();
             }
 
+            // P0.2: consume heading_stage_reset_requested from engage_mode transitions
+            if blackboard.get("state.heading_stage_reset_requested").as_deref() == Some("true") {
+                blackboard.set("state.heading_stage_reset_requested", "false");
+                heading_stage_mgr.reset();
+            }
+
             // Publish AutopilotStatus to the UI: every 5th tick (10 Hz) and
             // immediately on state change so transitions never wait up to
             // ~100 ms to surface.
@@ -784,7 +803,10 @@ async fn run_daemon() {
             });
             let ipc_elapsed = ipc_start.elapsed();
             if ipc_elapsed.as_millis() > 20 {
-                warn!("[tick-profile] IPC send took {} ms", ipc_elapsed.as_millis());
+                warn!(
+                    "[tick-profile] IPC send took {} ms",
+                    ipc_elapsed.as_millis()
+                );
             }
         }
 
