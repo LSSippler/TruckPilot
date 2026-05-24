@@ -119,6 +119,14 @@ path = "src/bin/route_success_audit.rs"
 name = "compare-with-ets2la"
 path = "src/bin/compare_with_ets2la.rs"
 
+[[bin]]
+name = "quaternion-validate"
+path = "src/bin/quaternion_validate.rs"
+
+[[bin]]
+name = "seg-inspect"
+path = "src/bin/seg-inspect.rs"
+
 [dependencies]
 rustc-hash      = "2"
 truckpilot-telemetry = { path = "../telemetry" }
