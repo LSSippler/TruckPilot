@@ -1,9 +1,19 @@
 # BB Monitor — Phase 1a Live-Test
 # Polls lane_follower.* Blackboard keys at 1 Hz and writes a timestamped log.
+# Compatible with Windows PowerShell 5.1+.
 #
 # Usage:
-#   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-24\phase_1a_livetest_highway.txt -Duration 30
-#   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-24\phase_1a_livetest_junctions.txt -Duration 120
+#   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-25\phase_1a_livetest_highway.txt -Duration 30
+#   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-25\phase_1a_livetest_junctions.txt -Duration 120
+
+# Helper: null-safe hashtable lookup (PS 5.1 has no ?? operator)
+function Get-OrDefault {
+    param($Hash, $Key, $Default = "?")
+    if ($Hash.ContainsKey($Key) -and $null -ne $Hash[$Key] -and $Hash[$Key] -ne '') {
+        return $Hash[$Key]
+    }
+    return $Default
+}
 
 param(
     [Parameter(Mandatory=$true)]
@@ -64,15 +74,15 @@ while ($infinite -or (([datetime]::Now - $start).TotalSeconds -lt $Duration)) {
                 $kvPairs[$Matches[1]] = $Matches[2].Trim()
             }
         }
-        $snap = "T+{0:D3}s {1} idx={2} dist={3}m t={4} road_hdg={5}° truck_hdg={6}° diff={7}° status={8}" -f `
+        $snap = ("T+{0:D3}s {1} idx={2} dist={3}m t={4} road_hdg={5}deg truck_hdg={6}deg diff={7}deg status={8}") -f `
             $elapsed, $ts,
-            ($kvPairs["lane_follower.nearest_seg_idx"] ?? "?"),
-            ($kvPairs["lane_follower.nearest_seg_dist_m"] ?? "?"),
-            ($kvPairs["lane_follower.nearest_seg_t"] ?? "?"),
-            ($kvPairs["lane_follower.heading_deg"] ?? "?"),
-            ($kvPairs["lane_follower.truck_heading_deg"] ?? "?"),
-            ($kvPairs["lane_follower.heading_diff_deg"] ?? "?"),
-            ($kvPairs["lane_follower.status"] ?? "no_reply")
+            (Get-OrDefault $kvPairs "lane_follower.nearest_seg_idx"),
+            (Get-OrDefault $kvPairs "lane_follower.nearest_seg_dist_m"),
+            (Get-OrDefault $kvPairs "lane_follower.nearest_seg_t"),
+            (Get-OrDefault $kvPairs "lane_follower.heading_deg"),
+            (Get-OrDefault $kvPairs "lane_follower.truck_heading_deg"),
+            (Get-OrDefault $kvPairs "lane_follower.heading_diff_deg"),
+            (Get-OrDefault $kvPairs "lane_follower.status" "no_reply")
     } catch {
         $snap = "T+{0:D3}s {1} ERROR: {2}" -f $elapsed, $ts, $_.Exception.Message
     }
