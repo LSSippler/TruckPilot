@@ -61,8 +61,8 @@ z    =   8200.0
 # --- Iberia DLC ---
 [[city]]
 name = "Madrid"
-x    = -65000.0
-z    =  14000.0
+x    = -56600.0
+z    =   5400.0
 
 [[city]]
 name = "Barcelona"
@@ -76,13 +76,13 @@ z    =  24000.0
 
 [[city]]
 name = "Valencia"
-x    = -58000.0
-z    =  14000.0
+x    = -53750.0
+z    =   8100.0
 
 [[city]]
 name = "Lissabon"
-x    = -95000.0
-z    =  13000.0
+x    = -85440.0
+z    =  27048.0
 
 [[city]]
 name = "Porto"
@@ -134,8 +134,8 @@ z    = -33500.0
 
 [[city]]
 name = "Goeteborg"
-x    = -19500.0
-z    = -23000.0
+x    = -15813.0
+z    = -16230.0
 
 [[city]]
 name = "Bergen"
