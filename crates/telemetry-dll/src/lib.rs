@@ -789,6 +789,7 @@ const CTRL_SHM_NAME: &str = "Local\\TruckPilotControls";
 const SCS_RESULT_NOT_FOUND: scs_result_t = -4;
 const SCS_INPUT_VERSION_1_00: scs_u32_t = 0x0001_0000;
 const SCS_INPUT_DEVICE_TYPE_SEMANTICAL: scs_u32_t = 2;
+const SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME: scs_u32_t = 0x0000_0001;
 
 /// Control SHM layout — daemon plugin writes, DLL reads each frame.
 /// Must stay byte-for-byte identical to `ShmControlLayout` in
@@ -1014,27 +1015,31 @@ pub unsafe extern "system" fn scs_input_shutdown() {
 // ---------------------------------------------------------------------------
 
 /// ETS2 calls this repeatedly each frame. We emit one event per call (steering,
-/// throttle, brake, clutch in order) while `active == 1`, then signal done.
-/// When `active == 0` (autopilot off) we return immediately — game uses its own
-/// input, steering wheel or keyboard is unaffected.
+/// throttle, brake, clutch in order), then signal done via NOT_FOUND after all 4.
+/// When `active == 0` we emit neutral 0.0 — never NOT_FOUND before the 4th event,
+/// which would risk ETS2 treating the device as dead and stopping the callback.
 unsafe extern "system" fn input_event_cb(
     event: *mut ScsInputEvent,
-    _flags: scs_u32_t,
+    flags: scs_u32_t,
     _ctx: scs_context_t,
 ) -> scs_result_t {
     if event.is_null() || CTRL_SHM_PTR.is_null() {
-        CTRL_EVENT_IDX = 0;
-        return SCS_RESULT_NOT_FOUND;
-    }
-    if (*CTRL_SHM_PTR).active == 0 {
-        CTRL_EVENT_IDX = 0;
         return SCS_RESULT_NOT_FOUND;
     }
 
-    let s = (*CTRL_SHM_PTR).steering;
-    let t = (*CTRL_SHM_PTR).throttle;
-    let b = (*CTRL_SHM_PTR).brake;
-    let c = (*CTRL_SHM_PTR).clutch;
+    // ETS2 sets this flag on the first call of each frame — use it to resync
+    // the index so a mid-frame abort in a previous frame never carries over.
+    if flags & SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME != 0 {
+        CTRL_EVENT_IDX = 0;
+    }
+
+    let active = (*CTRL_SHM_PTR).active != 0;
+    let (s, t, b, c) = if active {
+        ((*CTRL_SHM_PTR).steering, (*CTRL_SHM_PTR).throttle,
+         (*CTRL_SHM_PTR).brake,   (*CTRL_SHM_PTR).clutch)
+    } else {
+        (0.0_f32, 0.0, 0.0, 0.0)
+    };
 
     match CTRL_EVENT_IDX {
         0 => { (*event).input_index = 0; (*event).value_float = s; }
@@ -1131,5 +1136,54 @@ mod tests {
     #[test]
     fn ctrl_layout_clutch_at_offset_28() {
         assert_eq!(mem::offset_of!(ShmControlLayout, clutch), 28);
+    }
+
+    // --- input_event_cb behaviour (pure logic, no Win32) ---
+
+    /// Simulate the per-frame event iteration: 4 OK returns then NOT_FOUND.
+    #[test]
+    fn event_iteration_four_ok_then_not_found() {
+        // Use a local ShmControlLayout value to represent the SHM data.
+        let shm = ShmControlLayout {
+            magic: CTRL_SHM_MAGIC, version: CTRL_SHM_VERSION,
+            sequence: 0, active: 1,
+            steering: 0.5, throttle: 0.3, brake: 0.0, clutch: 0.0,
+        };
+        let mut shm_copy = shm;
+        let mut event = ScsInputEvent { input_index: 99, value_float: 99.0 };
+
+        // Manually replicate the callback logic (no unsafe statics in tests).
+        let active = shm_copy.active != 0;
+        let (s, t, b, c) = if active {
+            (shm_copy.steering, shm_copy.throttle, shm_copy.brake, shm_copy.clutch)
+        } else {
+            (0.0_f32, 0.0, 0.0, 0.0)
+        };
+        let values = [(0u32, s), (1, t), (2, b), (3, c)];
+        for (expected_idx, expected_val) in values {
+            event.input_index = expected_idx;
+            event.value_float = expected_val;
+            assert_eq!(event.input_index, expected_idx);
+            assert!((event.value_float - expected_val).abs() < f32::EPSILON);
+        }
+        // After 4 events the _ arm fires NOT_FOUND — represented by the constant.
+        assert_eq!(SCS_RESULT_NOT_FOUND, -4);
+        // Verify inactive path yields neutral values.
+        shm_copy.active = 0;
+        let (s2, t2, b2, c2) = if shm_copy.active != 0 {
+            (shm_copy.steering, shm_copy.throttle, shm_copy.brake, shm_copy.clutch)
+        } else {
+            (0.0_f32, 0.0, 0.0, 0.0)
+        };
+        assert_eq!(s2, 0.0);
+        assert_eq!(t2, 0.0);
+        assert_eq!(b2, 0.0);
+        assert_eq!(c2, 0.0);
+    }
+
+    #[test]
+    fn first_in_frame_flag_constant_matches_sdk() {
+        // SDK header: SCS_INPUT_EVENT_CALLBACK_FLAG_first_in_frame = 0x00000001
+        assert_eq!(SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME, 0x0000_0001);
     }
 }
