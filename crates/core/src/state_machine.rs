@@ -131,6 +131,9 @@ pub struct Preconditions {
     pub cruise_active: bool,
     pub critical_plugins_loaded: bool,
     pub router_active: bool,
+    /// Lane-only mode: truck must be within 20m of a known road node.
+    /// Always `true` in route/vision mode — only gated for lane_only.
+    pub truck_on_road: bool,
 }
 
 impl Preconditions {
@@ -140,6 +143,7 @@ impl Preconditions {
             && self.cruise_active
             && self.critical_plugins_loaded
             && self.router_active
+            && self.truck_on_road
     }
 }
 
@@ -963,7 +967,7 @@ impl AutopilotStateMachine {
             .map(|s| s == "true")
             .unwrap_or(false);
 
-        EngagementPreconditions {
+        let mut ep = EngagementPreconditions {
             telemetry_fresh,
             truck_on_road,
             heading_aligned,
@@ -973,7 +977,18 @@ impl AutopilotStateMachine {
             heading_ok_for_engage,
             lane_keeper_engage_allowed,
             mode,
+        };
+        // Lane-only engage bypasses route/heading conditions — these aren't relevant
+        // without a planned route. Safety conditions (truck_on_road, telemetry_fresh,
+        // speed_ok) are intentionally NOT bypassed.
+        if self.lane_only_engage {
+            ep.heading_aligned = true;
+            ep.route_planned = true;
+            ep.truck_on_route = true;
+            ep.heading_ok_for_engage = true;
+            ep.lane_keeper_engage_allowed = true;
         }
+        ep
     }
 
     fn publish_engagement_preconditions(
@@ -1019,6 +1034,15 @@ impl AutopilotStateMachine {
             bb.set("state.engage_precondition_route_planned", "true");
             bb.set("state.engage_precondition_truck_on_route", "true");
             bb.set("state.engage_precondition_heading_aligned", "true");
+        }
+        // Lane-only engage: route/heading conditions are irrelevant — force them to
+        // "true" in the diagnostic output so preflight checks don't block the engage.
+        if self.lane_only_engage {
+            bb.set("state.engage_precondition_route_planned", "true");
+            bb.set("state.engage_precondition_truck_on_route", "true");
+            bb.set("state.engage_precondition_heading_aligned", "true");
+            bb.set("state.engage_precondition_heading_ok_for_engage", "true");
+            bb.set("state.engage_precondition_lane_keeper_engage_allowed", "true");
         }
         bb.set("state.engage_ready", pre.hard_blockers_met().to_string());
         bb.set("state.engage_all_ok", pre.all_met().to_string());
@@ -1081,8 +1105,14 @@ impl AutopilotStateMachine {
     fn evaluate_engage_mode(&mut self, bb: &SharedBlackboard) {
         if self.state != AutopilotState::Active {
             self.reset_engage_mode_timers();
-            self.engage_mode = EngageMode::Route;
-            bb.set("autopilot.engage_mode", "route");
+            if self.lane_only_engage {
+                // Latch "lane" immediately on engage-request, before reaching Active.
+                self.engage_mode = EngageMode::Lane;
+                bb.set("autopilot.engage_mode", EngageMode::Lane.as_str());
+            } else {
+                self.engage_mode = EngageMode::Route;
+                bb.set("autopilot.engage_mode", "route");
+            }
             bb.set("autopilot.advisory_reason", "");
             return;
         }
@@ -1230,6 +1260,16 @@ fn check_preconditions(
             .map(|s| s == "true")
             .unwrap_or(false)
     };
+    // Lane-only: gate on actual road proximity (snap_dist < 20m).
+    // Route/vision: not gated here — router guarantees on-graph position.
+    let truck_on_road = if lane_only {
+        bb.get("router.last_snap_dist")
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .map(|d| d < 20.0)
+            .unwrap_or(false)
+    } else {
+        true
+    };
     Preconditions {
         telemetry_ok: telemetry.is_some(),
         engine_running: telemetry.map(|t| t.engine_rpm > 100.0).unwrap_or(false),
@@ -1242,6 +1282,7 @@ fn check_preconditions(
                 .unwrap_or(false),
         critical_plugins_loaded: check_critical_plugins(bb),
         router_active,
+        truck_on_road,
     }
 }
 
@@ -1281,6 +1322,8 @@ fn precondition_failure_reason(pre: &Preconditions) -> &'static str {
         "cruise_inactive"
     } else if !pre.critical_plugins_loaded {
         "plugins_missing"
+    } else if !pre.truck_on_road {
+        "truck_off_road"
     } else {
         "router_inactive"
     }
@@ -3026,6 +3069,8 @@ mod tests {
         let bb = SharedBlackboard::new();
         // No router.active — lane_only must bypass this
         bb.set("plugins.loaded", "lane-keeper,speed-controller,vjoy-output");
+        // Truck is on-road (snap_dist < 20m) — physical safety gate must pass
+        bb.set("router.last_snap_dist", "5.0");
         bb
     }
 
@@ -3122,6 +3167,117 @@ mod tests {
             sm.state(),
             AutopilotState::Active,
             "normal engage without router.active must not reach Active"
+        );
+    }
+
+    // ── P0.3 additional tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_engage_lane_only_with_misaligned_heading_succeeds() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        // Waypoints going north (-Z): south-facing truck → heading_aligned=false, heading_ok=false
+        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        let south_truck = Telemetry { heading: 0.5, ..mock_running() };
+        sm.evaluate(Some(&south_truck), &bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&south_truck), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+        assert_eq!(bb.get("autopilot.engage_mode").as_deref(), Some("lane"));
+        assert_eq!(
+            bb.get("state.engage_precondition_heading_aligned").as_deref(),
+            Some("true"),
+            "heading_aligned must be bypassed to true for lane_only"
+        );
+    }
+
+    #[test]
+    fn test_engage_lane_only_without_telemetry_fails() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        bb.set("autopilot.requested_mode", "lane_only");
+        // No evaluate() call → last_telemetry is None
+        let result = sm.handle_event(AutopilotEvent::UserEngage, &bb);
+        assert!(result.is_err(), "lane_only engage must fail when no telemetry");
+        assert_eq!(sm.state(), AutopilotState::Off);
+    }
+
+    #[test]
+    fn test_engage_lane_only_truck_on_road_not_bypassed() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        // Snap dist 55m > 20m threshold → truck_on_road=false in both gate and diagnostic
+        bb.set("router.last_snap_dist", "55.0");
+        // Seed last_telemetry
+        sm.evaluate(Some(&running), &bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        // Run past ENGAGE_TIMEOUT (250 ticks) → preconditions never stable → Off
+        for _ in 0..300 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Off,
+            "lane_only with snap_dist=55m must time out to Off (truck_on_road gate)"
+        );
+        // Diagnostic must also show truck_on_road as blocked (not bypassed)
+        let blocked = bb.get("state.engage_blocked_by").unwrap_or_default();
+        assert!(
+            blocked.contains("truck_on_road"),
+            "blocked_by must contain truck_on_road when snap_dist=55m: got '{blocked}'"
+        );
+    }
+
+    #[test]
+    fn test_engage_blocked_by_is_empty_when_lane_only_succeeds() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        // snap_dist < 20m → truck_on_road=true; mock_running speed=22 m/s → speed_ok=true
+        bb.set("router.last_snap_dist", "5.0");
+        activate_sm_lane_only(&mut sm, &bb);
+        // Trigger fresh diagnostic publish
+        for _ in 0..17 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        let blocked = bb.get("state.engage_blocked_by").unwrap_or_default();
+        assert!(
+            blocked.is_empty(),
+            "blocked_by must be empty when all physical conditions ok for lane_only: got '{blocked}'"
+        );
+        assert_eq!(
+            bb.get("state.engage_all_ok").as_deref(),
+            Some("true"),
+            "engage_all_ok must be true when all conditions met"
+        );
+    }
+
+    #[test]
+    fn test_engage_mode_is_lane_immediately_on_lane_only_engage() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        // Seed last_telemetry
+        sm.evaluate(Some(&running), &bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        assert_eq!(sm.state(), AutopilotState::Engaging, "should be Engaging after UserEngage");
+        // Run 1 tick — still Engaging (PRECONDITION_STABLE=50 ticks)
+        sm.evaluate(Some(&running), &bb);
+        assert_eq!(
+            bb.get("autopilot.engage_mode").as_deref(),
+            Some("lane"),
+            "engage_mode must latch to 'lane' immediately in Engaging for lane_only"
+        );
+        assert_ne!(
+            sm.state(),
+            AutopilotState::Active,
+            "must still be Engaging after only 1 stable tick"
         );
     }
 }
