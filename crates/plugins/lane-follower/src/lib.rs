@@ -33,7 +33,10 @@
 //! | `lane_follower.status` | string | `ok` / `dist_warn` / `heading_warn` / … |
 //! | `lane_follower.steering_cmd` | f64 [-1,1] | raw Pure-Pursuit command (status==ok only) |
 //! | `lane_follower.steering_curvature` | f64 | geometric curvature κ = 2·y / d² |
-//! | `lane_follower.steering_filtered` | f64 [-1,1] | EMA-filtered steering (α=0.3) |
+//! | `lane_follower.steering_filtered` | f64 [-1,1] | rate-limited EMA steering (α=0.15, rate=0.05/tick) |
+//! | `lane_follower.lookahead_distance_m` | f32 metres | effective lookahead distance this tick |
+//! | `lane_follower.wheelbase_m` | f64 metres | truck wheelbase (diagnostic constant) |
+//! | `lane_follower.rate_limited` | `"true"/"false"` | rate-limiter was active this tick |
 
 mod pure_pursuit;
 
@@ -66,14 +69,21 @@ const DIST_WARN_M: f32 = 50.0;
 /// Heading difference threshold above which status is set to `heading_warn`.
 const HEADING_WARN_DEG: f32 = 90.0;
 
-/// Lookahead distance for arc-length-based forward point computation.
-const LOOKAHEAD_DIST_M: f32 = 15.0;
+/// Minimum lookahead distance. Floor at low/zero speed.
+const LOOKAHEAD_DIST_M_MIN: f32 = 15.0;
+/// Maximum lookahead distance. Caps at high speed.
+const LOOKAHEAD_DIST_M_MAX: f32 = 50.0;
+/// Speed-adaptive lookahead factor: lookahead_m = speed_kmh * factor (≈1 sec ahead).
+const LOOKAHEAD_SPEED_FACTOR: f32 = 0.3;
 
 /// Ring-buffer size for lookahead stability metric (ticks = 1 second at 50 Hz).
 const STABILITY_WINDOW: usize = 50;
 
 /// EMA smoothing factor for the steering output (higher = faster response).
-const STEERING_EMA_ALPHA: f64 = 0.3;
+const STEERING_EMA_ALPHA: f64 = 0.15;
+
+/// Rate limiter: max steering change per tick (50 Hz → 2.5/s max slew rate).
+const STEERING_RATE_LIMIT: f64 = 0.05;
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -118,6 +128,8 @@ pub struct LaneFollowerPlugin {
     last_steering_cmd: Option<f64>,
     /// EMA-filtered steering state.
     steering_ema: f64,
+    /// Previous rate-limited steering output (rate-limiter state).
+    steering_rate_limited_prev: f64,
 }
 
 impl LaneFollowerPlugin {
@@ -201,6 +213,7 @@ impl Plugin for LaneFollowerPlugin {
         self.tick_count = 0;
         self.last_steering_cmd = None;
         self.steering_ema = 0.0;
+        self.steering_rate_limited_prev = 0.0;
     }
 
     fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
@@ -266,12 +279,22 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.tick_count", self.tick_count.to_string());
 
+        // Speed-adaptive lookahead: 1 sec ahead, clamped to [15m, 50m].
+        let speed_kmh = tel.speed_ms as f32 * 3.6;
+        let lookahead_dist_m = (speed_kmh * LOOKAHEAD_SPEED_FACTOR)
+            .max(LOOKAHEAD_DIST_M_MIN)
+            .min(LOOKAHEAD_DIST_M_MAX);
+        ctx.blackboard
+            .set("lane_follower.lookahead_distance_m", format!("{lookahead_dist_m:.1}"));
+        ctx.blackboard
+            .set("lane_follower.wheelbase_m", format!("{:.1}", pure_pursuit::WHEELBASE_M));
+
         // Lookahead — computed before warn-checks so keys are always present after a hit
         if !self.luts.is_empty() {
             if let Some(la) = lookahead(
                 hit.segment_idx,
                 hit.t,
-                LOOKAHEAD_DIST_M,
+                lookahead_dist_m,
                 &self.forward_adj,
                 index.segments.as_slice(),
                 &self.luts,
@@ -327,9 +350,15 @@ impl Plugin for LaneFollowerPlugin {
             );
             ctx.blackboard.set("lane_follower.status", "dist_warn");
             self.steering_ema *= 1.0 - STEERING_EMA_ALPHA;
+            let rl = self.steering_ema.clamp(
+                self.steering_rate_limited_prev - STEERING_RATE_LIMIT,
+                self.steering_rate_limited_prev + STEERING_RATE_LIMIT,
+            );
+            self.steering_rate_limited_prev = rl;
             ctx.blackboard.set("lane_follower.steering_cmd", "0.0000");
             ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
-            ctx.blackboard.set("lane_follower.steering_filtered", format!("{:.4}", self.steering_ema));
+            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard.set("lane_follower.rate_limited", "false");
             return;
         }
 
@@ -342,9 +371,15 @@ impl Plugin for LaneFollowerPlugin {
             );
             ctx.blackboard.set("lane_follower.status", "heading_warn");
             self.steering_ema *= 1.0 - STEERING_EMA_ALPHA;
+            let rl = self.steering_ema.clamp(
+                self.steering_rate_limited_prev - STEERING_RATE_LIMIT,
+                self.steering_rate_limited_prev + STEERING_RATE_LIMIT,
+            );
+            self.steering_rate_limited_prev = rl;
             ctx.blackboard.set("lane_follower.steering_cmd", "0.0000");
             ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
-            ctx.blackboard.set("lane_follower.steering_filtered", format!("{:.4}", self.steering_ema));
+            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard.set("lane_follower.rate_limited", "false");
             return;
         }
 
@@ -372,11 +407,17 @@ impl Plugin for LaneFollowerPlugin {
 
             self.steering_ema =
                 STEERING_EMA_ALPHA * cmd + (1.0 - STEERING_EMA_ALPHA) * self.steering_ema;
+            let rl = self.steering_ema.clamp(
+                self.steering_rate_limited_prev - STEERING_RATE_LIMIT,
+                self.steering_rate_limited_prev + STEERING_RATE_LIMIT,
+            );
+            let is_rate_limited = (self.steering_ema - rl).abs() > 1e-9;
+            self.steering_rate_limited_prev = rl;
 
             ctx.blackboard.set("lane_follower.steering_cmd", format!("{cmd:.4}"));
             ctx.blackboard.set("lane_follower.steering_curvature", format!("{curvature:.6}"));
-            ctx.blackboard
-                .set("lane_follower.steering_filtered", format!("{:.4}", self.steering_ema));
+            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard.set("lane_follower.rate_limited", is_rate_limited.to_string());
 
             self.last_steering_cmd = Some(cmd);
         }
@@ -849,7 +890,8 @@ mod tests {
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
-        // 30 ticks is plenty for α=0.3 EMA to converge to >95% of final value.
+        // With α=0.15, rate-limiter disengages at ~tick 11; by tick 30 both EMA and
+        // rate-limited output are >99% converged to raw cmd (0.85^30 ≈ 0.008 residual).
         for _ in 0..30 {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
@@ -1060,6 +1102,115 @@ mod tests {
         let req = plugin.tick_request(Some(&tel), &ctx);
         assert!(req.is_none(), "Observer mode must never emit ControlRequest regardless of engage_mode");
         assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("none"));
+    }
+
+    // ── Task-5 tuning tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_steering_at_small_offset() {
+        // Road at x=0.5m, truck at x=0 heading North: dist≈0.5m, heading_diff≈0°.
+        // With L=4.0m, cmd = 2*y/L² = 2*0.5/16 ≈ 0.0625 — well under 0.15.
+        let mut plugin = make_chain_plugin_at_x(0.5);
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        assert!(cmd > 0.0, "road to right → cmd positive, got {cmd:.4}");
+        assert!(cmd < 0.15, "0.5m offset must produce cmd < 0.15 (was ~0.39 pre-fix), got {cmd:.4}");
+    }
+
+    #[test]
+    fn test_lookahead_scales_with_speed() {
+        let mut plugin = make_chain_plugin();
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+
+        // 50 km/h = 13.89 m/s → max(15, 50 * 0.3) = 15.0 m (floor)
+        let mut tel = make_telemetry(0.0, 0.0, -1.0, 0.0);
+        tel.speed_ms = 13.89;
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let la: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_distance_m")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((la - 15.0).abs() < 0.5, "50 km/h should give 15 m lookahead, got {la:.1}");
+
+        // 80 km/h = 22.22 m/s → max(15, 80 * 0.3) = 24.0 m
+        tel.speed_ms = 22.22;
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let la: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_distance_m")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((la - 24.0).abs() < 0.5, "80 km/h should give 24 m lookahead, got {la:.1}");
+    }
+
+    #[test]
+    fn test_rate_limiter_clamps_jumps() {
+        // Road far right (x=8m) → cmd saturates to ~1.0. From cold start, rate-limiter
+        // must cap the first filtered output at 0.05 (max delta per tick).
+        let mut plugin = make_chain_plugin_at_x(8.0);
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        assert!(cmd > 0.9, "large offset must saturate cmd near 1.0, got {cmd:.4}");
+        let filtered: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_filtered")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            filtered <= 0.05 + 1e-9,
+            "rate-limiter must cap first-tick output at 0.05, got {filtered:.4}"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.rate_limited").as_deref(),
+            Some("true"),
+            "rate_limited BB key must be true when limiter fires"
+        );
+    }
+
+    #[test]
+    fn test_ema_smoothing_at_alpha_015() {
+        // Road at x=0.8m → cmd ≈ 0.10; small enough that rate-limiter doesn't fire on tick 1.
+        // After 1 tick: filtered = α * cmd ≈ 0.015 — less than cmd/2, showing α=0.15 not 0.3.
+        // After 60 ticks: filtered converges to cmd within 0.005.
+        let mut plugin = make_chain_plugin_at_x(0.8);
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let raw: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        let filtered: f64 =
+            ctx.blackboard.get("lane_follower.steering_filtered").unwrap().parse().unwrap();
+        assert!(raw > 0.0, "road at x=0.8 must produce positive cmd");
+        assert!(
+            filtered < raw / 2.0,
+            "after 1 tick, EMA (α=0.15) produces filtered < raw/2: raw={raw:.4}, filtered={filtered:.4}"
+        );
+
+        for _ in 0..59 {
+            plugin.tick(Some(&tel), &mut out, &ctx);
+        }
+        let raw_final: f64 =
+            ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        let filtered_final: f64 =
+            ctx.blackboard.get("lane_follower.steering_filtered").unwrap().parse().unwrap();
+        assert!(
+            (raw_final - filtered_final).abs() < 0.005,
+            "after 60 ticks EMA must converge: raw={raw_final:.4}, filtered={filtered_final:.4}"
+        );
     }
 
     // ── Stability: stable after repeated same-position ticks ────────────────
