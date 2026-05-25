@@ -47,12 +47,18 @@ use crate::archive::Archive;
 // ---------------------------------------------------------------------------
 
 /// Compact lane-count entry for one road-look definition.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RoadLookEntry {
-    /// Lane count on the left side — **lanes going backward** (`lanes_backward`).
     pub lanes_left: u8,
-    /// Lane count on the right side — **lanes going forward** (`lanes_forward`).
     pub lanes_right: u8,
+    /// Lane width in metres derived from the lane-type name (e.g. motorway→3.75, local→3.0).
+    pub lane_width_m: f32,
+}
+
+impl Default for RoadLookEntry {
+    fn default() -> Self {
+        Self { lanes_left: 0, lanes_right: 0, lane_width_m: 3.75 }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +91,21 @@ pub fn scs_token_hash(s: &str) -> u64 {
     h
 }
 
+/// Maps an ETS2 lane-type name (from `lanes_left[]` / `lanes_right[]`) to a lane width.
+///
+/// Motorway and highway lanes are wider; local/city lanes are narrower.
+pub fn lane_type_to_width(s: &str) -> f32 {
+    if s.contains("motorway") || s.contains("highway") {
+        3.75
+    } else if s.contains("local") || s.contains("city") {
+        3.0
+    } else if s.contains("country") {
+        3.5
+    } else {
+        3.75
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SII parser
 // ---------------------------------------------------------------------------
@@ -111,6 +132,13 @@ pub fn parse_road_look_sii(data: &[u8]) -> HashMap<u64, RoadLookEntry> {
     parse_road_look_text(text)
 }
 
+/// Extract the value after the first `:` on a lane-entry line, stripping quotes.
+fn extract_lane_type(line: &str) -> Option<&str> {
+    let colon = line.find(':')?;
+    let val = line[colon + 1..].trim().trim_matches('"');
+    if val.is_empty() { None } else { Some(val) }
+}
+
 fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
     let mut map: HashMap<u64, RoadLookEntry> = HashMap::new();
     let mut in_block = false;
@@ -118,6 +146,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
     let mut current_name = String::new();
     let mut lanes_left: u8 = 0;
     let mut lanes_right: u8 = 0;
+    let mut current_lane_width: f32 = 3.75;
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
@@ -141,6 +170,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                     current_token = scs_token_hash(&current_name);
                     lanes_left = 0;
                     lanes_right = 0;
+                    current_lane_width = 3.75;
                     in_block = true;
                     debug!(token = current_token, name = %current_name, "road_look block start (modern)");
                 }
@@ -154,6 +184,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                     current_token = scs_token_hash(class_name);
                     lanes_left = 0;
                     lanes_right = 0;
+                    current_lane_width = 3.75;
                     in_block = true;
                     debug!(token = current_token, name = %current_name, "road_look block start (legacy)");
                 }
@@ -166,19 +197,27 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                     RoadLookEntry {
                         lanes_left,
                         lanes_right,
+                        lane_width_m: current_lane_width,
                     },
                 );
                 debug!(
                     name = %current_name,
                     lanes_left,
                     lanes_right,
+                    lane_width_m = current_lane_width,
                     "road_look block end"
                 );
                 in_block = false;
             } else if line.starts_with("lanes_left[") {
                 lanes_left = lanes_left.saturating_add(1);
+                if let Some(typ) = extract_lane_type(line) {
+                    current_lane_width = lane_type_to_width(typ);
+                }
             } else if line.starts_with("lanes_right[") {
                 lanes_right = lanes_right.saturating_add(1);
+                if let Some(typ) = extract_lane_type(line) {
+                    current_lane_width = lane_type_to_width(typ);
+                }
             }
         }
     }
@@ -190,6 +229,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
             RoadLookEntry {
                 lanes_left,
                 lanes_right,
+                lane_width_m: current_lane_width,
             },
         );
     }
@@ -410,6 +450,34 @@ mod tests {
         assert_eq!((legacy.lanes_left, legacy.lanes_right), (1, 1));
         let modern = map[&scs_token_hash("road_look.narrow1.road")];
         assert_eq!((modern.lanes_left, modern.lanes_right), (2, 1));
+    }
+
+    // ── lane_type_to_width ───────────────────────────────────────────────────
+
+    #[test]
+    fn lane_type_to_width_motorway() {
+        assert_eq!(lane_type_to_width("traffic_lane.road.motorway"), 3.75);
+        assert_eq!(lane_type_to_width("highway_lane"), 3.75);
+        assert_eq!(lane_type_to_width("traffic_lane.road.local"), 3.0);
+        assert_eq!(lane_type_to_width("traffic_lane.road.city"), 3.0);
+        assert_eq!(lane_type_to_width("traffic_lane.road.country"), 3.5);
+        assert_eq!(lane_type_to_width("unknown_type"), 3.75);
+    }
+
+    #[test]
+    fn lane_width_propagated_to_entry() {
+        let sii = "SiiNunit\n{\nroad_look.motor2.road : .road_look_data {\n\
+                   lanes_left[]: traffic_lane.road.motorway\n\
+                   lanes_left[]: traffic_lane.road.motorway\n\
+                   lanes_right[]: traffic_lane.road.motorway\n\
+                   lanes_right[]: traffic_lane.road.motorway\n\
+                   }\n}\n";
+        let map = parse_road_look_text(sii);
+        let tok = scs_token_hash("road_look.motor2.road");
+        let e = map.get(&tok).expect("motorway entry must exist");
+        assert_eq!(e.lanes_left, 2);
+        assert_eq!(e.lanes_right, 2);
+        assert!((e.lane_width_m - 3.75).abs() < 1e-5, "motorway lane width = 3.75, got {}", e.lane_width_m);
     }
 
     /// Diagnostic: print CityHash64 vs scs_token_hash for road.lookN names.

@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
+use crate::ppd::{self, NavCurve, PrefabDescriptor};
 use crate::road_look::RoadLookEntry;
 use crate::sector::{ParsedSector, RawBuilding, RawFerry, RawNode, RawPrefab, RawRoad};
 use crate::signs::TrafficSign;
@@ -22,6 +23,14 @@ use std::collections::HashSet;
 // Graph types
 // ---------------------------------------------------------------------------
 
+fn default_quat() -> [f32; 4] {
+    [0.0; 4]
+}
+
+fn default_lane_width() -> f32 {
+    3.75
+}
+
 /// A node in the routing graph.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
 pub struct GraphNode {
@@ -29,6 +38,10 @@ pub struct GraphNode {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    /// Rotation quaternion [qw, qx, qy, qz] from the binary node record.
+    /// `[0.0; 4]` means not set (sized-format nodes or missing data).
+    #[serde(default = "default_quat")]
+    pub rotation: [f32; 4],
 }
 
 /// A directed edge in the routing graph.
@@ -54,14 +67,50 @@ pub struct GraphEdge {
     /// `true` when the underlying road is flagged "GPS-avoid".
     /// Prefab-derived edges default to `false`.
     pub gps_avoid: bool,
+    /// Road-look token64 for this direction (0 for non-road edges).
+    #[serde(default)]
+    pub road_look_token: u64,
+    /// Lane count in the opposite direction on the same road (0 for non-road edges).
+    #[serde(default)]
+    pub lanes_opposite: u8,
+    /// Lane width in metres derived from the road-look type (default 3.75 for unknown).
+    #[serde(default = "default_lane_width")]
+    pub lane_width_m: f32,
 }
 
 /// A prefab (junction/intersection) in the graph.
 #[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode, PartialEq)]
 pub struct Prefab {
     pub uid: u64,
-    pub template_token: u32,
+    pub template_token: u64,
     pub connected_node_uids: Vec<u64>,
+}
+
+/// A single AI nav path through a prefab: one input ControlNode -> one output
+/// ControlNode, optionally lane-resolved, with pre-sampled spline points in
+/// WORLD coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
+pub struct PrefabAiPath {
+    pub from_node_uid: u64,
+    pub to_node_uid: u64,
+    pub start_lane_idx: u8,
+    pub end_lane_idx: u8,
+    pub spline_points: Vec<[f32; 3]>,
+    pub length_m: f32,
+    pub speed_kmh: Option<u16>,
+    pub blinker: Option<ppd::Blinker>,
+    pub curve_indices: Vec<u16>,
+    pub semaphore_id: Option<i32>,
+}
+
+/// A single prefab placement in the world, referencing a shared descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, bincode::Encode, bincode::Decode)]
+pub struct PrefabInstance {
+    pub uid: u64,
+    pub token: u64,
+    pub origin_pos: [f32; 3],
+    pub origin_rot: [f32; 4],
+    pub node_uids: Vec<u64>,
 }
 
 /// The complete routing graph produced from one or more sectors.
@@ -72,6 +121,9 @@ pub struct MapGraph {
     pub signs: Vec<TrafficSign>,
     pub prefabs: Vec<Prefab>,
     pub stats: BuildStats,
+    pub prefab_ai_paths: Vec<PrefabAiPath>,
+    pub prefab_instances: Vec<PrefabInstance>,
+    pub prefab_descriptors: HashMap<u64, PrefabDescriptor>,
 }
 
 /// Result of [`GraphBuilder::analyze_roads_for_audit`] — road classification
@@ -118,6 +170,8 @@ pub struct GraphBuilder {
     /// `lanes_forward` / `lanes_backward` for legacy-format roads that carry
     /// zero in those fields.
     road_look: HashMap<u64, RoadLookEntry>,
+    /// PPD descriptor cache: template_token -> PrefabDescriptor.
+    ppd_descriptors: HashMap<u64, PrefabDescriptor>,
 }
 
 impl GraphBuilder {
@@ -129,6 +183,12 @@ impl GraphBuilder {
     /// Must be called before [`GraphBuilder::build`].
     pub fn set_road_look(&mut self, map: HashMap<u64, RoadLookEntry>) {
         self.road_look = map;
+    }
+
+    /// Attach PPD descriptors loaded from archive PPD files.
+    /// Must be called before [`GraphBuilder::build`].
+    pub fn set_ppd_descriptors(&mut self, map: HashMap<u64, PrefabDescriptor>) {
+        self.ppd_descriptors = map;
     }
 
     /// Merge one parsed sector into the builder.
@@ -211,9 +271,23 @@ impl GraphBuilder {
                 x: n.x as f64,
                 y: n.y as f64,
                 z: n.z as f64,
+                rotation: n.rotation,
             })
             .collect();
         nodes.sort_by_key(|n| n.uid);
+
+        let zero_quat = nodes
+            .iter()
+            .filter(|n| {
+                let q = n.rotation;
+                q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] < 1e-6
+            })
+            .count();
+        debug!(
+            "rotation propagation: {}/{} nodes have valid quaternion",
+            nodes.len() - zero_quat,
+            nodes.len()
+        );
 
         let node_lookup: HashMap<u64, &GraphNode> = nodes.iter().map(|n| (n.uid, n)).collect();
 
@@ -308,6 +382,15 @@ impl GraphBuilder {
                 None
             };
 
+            // DS8: resolve lane width from road_look map.
+            let lane_width = if road.road_type_token != 0 {
+                self.road_look.get(&road.road_type_token).map(|e| e.lane_width_m).unwrap_or(3.75)
+            } else if road.look_token != 0 {
+                self.road_look.get(&road.look_token).map(|e| e.lane_width_m).unwrap_or(3.75)
+            } else {
+                3.75_f32
+            };
+
             if road.lanes_forward > 0 {
                 edges.push(GraphEdge {
                     uid: edge_uid,
@@ -320,6 +403,9 @@ impl GraphBuilder {
                     dlc_guard: road.dlc_guard,
                     is_hidden: road.is_hidden,
                     gps_avoid: road.gps_avoid,
+                    road_look_token: road.road_type_token,
+                    lanes_opposite: road.lanes_backward,
+                    lane_width_m: lane_width,
                 });
                 edge_uid += 1;
             }
@@ -336,6 +422,9 @@ impl GraphBuilder {
                     dlc_guard: road.dlc_guard,
                     is_hidden: road.is_hidden,
                     gps_avoid: road.gps_avoid,
+                    road_look_token: road.look_token,
+                    lanes_opposite: road.lanes_forward,
+                    lane_width_m: lane_width,
                 });
                 edge_uid += 1;
             }
@@ -357,6 +446,9 @@ impl GraphBuilder {
                         dlc_guard: road.dlc_guard,
                         is_hidden: road.is_hidden,
                         gps_avoid: road.gps_avoid,
+                        road_look_token: road.road_type_token,
+                        lanes_opposite: 1,
+                        lane_width_m: lane_width,
                     });
                     edge_uid += 1;
                 }
@@ -417,6 +509,9 @@ impl GraphBuilder {
                     dlc_guard: 0,
                     is_hidden: false,
                     gps_avoid: false,
+                    road_look_token: 0,
+                    lanes_opposite: 0,
+                    lane_width_m: 3.75,
                 });
                 edge_uid += 1;
                 building_edges_count += 1;
@@ -477,6 +572,9 @@ impl GraphBuilder {
                             dlc_guard: 0,
                             is_hidden: false,
                             gps_avoid: false,
+                            road_look_token: 0,
+                            lanes_opposite: 0,
+                            lane_width_m: 3.75,
                         });
                         edge_uid += 1;
                     }
@@ -541,6 +639,9 @@ impl GraphBuilder {
                             dlc_guard: 0,
                             is_hidden: false,
                             gps_avoid: false,
+                            road_look_token: 0,
+                            lanes_opposite: 0,
+                            lane_width_m: 3.75,
                         });
                         edge_uid += 1;
                         ferry_edges_count += 1;
@@ -632,6 +733,9 @@ impl GraphBuilder {
                     dlc_guard: 0,
                     is_hidden: false,
                     gps_avoid: false,
+                    road_look_token: 0,
+                    lanes_opposite: 0,
+                    lane_width_m: 3.75,
                 });
                 edge_uid += 1;
                 pass1_edges += 1;
@@ -687,6 +791,9 @@ impl GraphBuilder {
                     dlc_guard: 0,
                     is_hidden: false,
                     gps_avoid: false,
+                    road_look_token: 0,
+                    lanes_opposite: 0,
+                    lane_width_m: 3.75,
                 });
                 edge_uid += 1;
                 pass2_edges += 1;
@@ -697,16 +804,81 @@ impl GraphBuilder {
             pass2_matches, pass2_edges, orphans.len()
         );
 
-        // Process prefabs
-        let prefabs: Vec<Prefab> = self
-            .raw_prefabs
-            .into_iter()
-            .map(|p| Prefab {
-                uid: p.uid,
-                template_token: p.template_token,
-                connected_node_uids: p.nodes,
-            })
+        // Process prefabs and generate PrefabAiPaths
+        let mut prefabs: Vec<Prefab> = Vec::with_capacity(self.raw_prefabs.len());
+        let mut prefab_instances: Vec<PrefabInstance> =
+            Vec::with_capacity(self.raw_prefabs.len());
+        let mut prefab_ai_paths: Vec<PrefabAiPath> = Vec::new();
+        let mut used_descriptors: HashMap<u64, PrefabDescriptor> = HashMap::new();
+
+        // Build a quick node position lookup for origin derivation
+        let node_pos_map: HashMap<u64, [f32; 3]> = nodes
+            .iter()
+            .map(|n| (n.uid, [n.x as f32, n.y as f32, n.z as f32]))
             .collect();
+
+        for raw in &self.raw_prefabs {
+            let valid_nodes: Vec<u64> = raw
+                .nodes
+                .iter()
+                .copied()
+                .filter(|uid| node_lookup.contains_key(uid))
+                .collect();
+
+            let origin_pos = if let Some(first) = valid_nodes.first() {
+                if let Some(n) = node_lookup.get(first) {
+                    [n.x as f32, n.y as f32, n.z as f32]
+                } else {
+                    [0.0f32; 3]
+                }
+            } else {
+                [0.0f32; 3]
+            };
+
+            let origin_rot = [0.0f32, 0.0f32, 0.0f32, 1.0f32];
+
+            prefab_instances.push(PrefabInstance {
+                uid: raw.uid,
+                token: raw.template_token,
+                origin_pos,
+                origin_rot,
+                node_uids: valid_nodes.clone(),
+            });
+
+            // Try to look up the PPD descriptor
+            if let Some(desc) = self.ppd_descriptors.get(&raw.template_token) {
+                used_descriptors
+                    .entry(raw.template_token)
+                    .or_insert_with(|| desc.clone());
+
+                // Generate AI paths
+                let paths = build_prefab_ai_paths(
+                    desc,
+                    &origin_pos,
+                    &origin_rot,
+                    &valid_nodes,
+                    &node_pos_map,
+                );
+                prefab_ai_paths.extend(paths);
+            }
+
+            prefabs.push(Prefab {
+                uid: raw.uid,
+                template_token: raw.template_token,
+                connected_node_uids: raw.nodes.clone(),
+            });
+        }
+
+        let ai_path_count = prefab_ai_paths.len();
+        let descriptor_count = used_descriptors.len();
+        if descriptor_count > 0 {
+            info!(
+                "Generated {} AI paths from {} PPD descriptors for {} prefab instances",
+                ai_path_count,
+                descriptor_count,
+                prefab_instances.len()
+            );
+        }
 
         // Attach signs to nearest nodes
         let signs = crate::signs::attach_signs_to_nodes(&self.raw_signs, &nodes);
@@ -734,6 +906,9 @@ impl GraphBuilder {
             edges,
             signs,
             prefabs,
+            prefab_ai_paths,
+            prefab_instances,
+            prefab_descriptors: used_descriptors,
         }
     }
 
@@ -749,6 +924,11 @@ impl GraphBuilder {
     /// All raw nodes accumulated so far.
     pub fn raw_nodes(&self) -> &HashMap<u64, RawNode> {
         &self.nodes
+    }
+
+    /// All raw prefabs accumulated so far (before graph build).
+    pub fn raw_prefabs(&self) -> &[RawPrefab] {
+        &self.raw_prefabs
     }
 
     /// Find the nearest node to `(x, z)` in XZ-plane within `max_dist` metres.
@@ -843,6 +1023,288 @@ fn euclidean_3d(a: &GraphNode, b: &GraphNode) -> f64 {
     let dy = a.y - b.y;
     let dz = a.z - b.z;
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+// ---------------------------------------------------------------------------
+// Prefab AI path generation
+// ---------------------------------------------------------------------------
+
+/// Sample a NavCurve into `n` world-space points using Hermite interpolation.
+fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n: usize) -> Vec<[f32; 3]> {
+    let ox = origin[0];
+    let oy = origin[1];
+    let oz = origin[2];
+
+    let p0: [f32; 3] = [
+        nc.start_position[0] + ox,
+        nc.start_position[1] + oy,
+        nc.start_position[2] + oz,
+    ];
+    let p1: [f32; 3] = [
+        nc.end_position[0] + ox,
+        nc.end_position[1] + oy,
+        nc.end_position[2] + oz,
+    ];
+
+    let len = nc.length.max(0.001);
+
+    // Tangent from rotation quaternion: rotate (0,0,-len) by q.
+    let m0 = quat_rotate_vec(&nc.start_rotation, &[0.0, 0.0, -len]);
+    let m1 = quat_rotate_vec(&nc.end_rotation, &[0.0, 0.0, -len]);
+
+    let nf = n as f32;
+    let mut pts = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let t = i as f32 / nf.max(1.0);
+        let t2 = t * t;
+        let t3 = t2 * t;
+
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+
+        let x = h00 * p0[0] + h10 * m0[0] + h01 * p1[0] + h11 * m1[0];
+        let y = h00 * p0[1] + h10 * m0[1] + h01 * p1[1] + h11 * m1[1];
+        let z = h00 * p0[2] + h10 * m0[2] + h01 * p1[2] + h11 * m1[2];
+
+        pts.push([x, y, z]);
+    }
+
+    if n > 1 {
+        // Snap first and last to endpoints
+        pts[0] = p0;
+        pts[n - 1] = p1;
+    }
+
+    pts
+}
+
+/// Basic quaternion rotation: q * v, where q = [x, y, z, w].
+fn quat_rotate_vec(q: &[f32; 4], v: &[f32; 3]) -> [f32; 3] {
+    let qx = q[0];
+    let qy = q[1];
+    let qz = q[2];
+    let qw = q[3];
+    let vx = v[0];
+    let vy = v[1];
+    let vz = v[2];
+
+    // t = 2.0 * cross(q.xyz, v)
+    let tx = 2.0 * (qy * vz - qz * vy);
+    let ty = 2.0 * (qz * vx - qx * vz);
+    let tz = 2.0 * (qx * vy - qy * vx);
+
+    // result = v + qw * t + cross(q.xyz, t)
+    let rx = vx + qw * tx + (qy * tz - qz * ty);
+    let ry = vy + qw * ty + (qz * tx - qx * tz);
+    let rz = vz + qw * tz + (qx * ty - qy * tx);
+
+    [rx, ry, rz]
+}
+
+/// Build PrefabAiPath records by walking NavCurves within a PrefabDescriptor,
+/// mapping control nodes to world-space GraphNode UIDs.
+fn build_prefab_ai_paths(
+    desc: &PrefabDescriptor,
+    origin_pos: &[f32; 3],
+    _origin_rot: &[f32; 4],
+    node_uids: &[u64],
+    _node_pos_map: &HashMap<u64, [f32; 3]>,
+) -> Vec<PrefabAiPath> {
+    let mut paths = Vec::new();
+
+    // For each ControlNode in the PPD, map its output lines to paths.
+    // Each output line (NavCurve index) from a ControlNode represents a path
+    // starting at that control node.
+    for (cn_idx, cn) in desc.control_nodes.iter().enumerate() {
+        // Map this ControlNode to a world-space GraphNode UID
+        let from_node_uid = if cn_idx < node_uids.len() {
+            node_uids[cn_idx]
+        } else {
+            continue; // No corresponding world node
+        };
+
+        // Walk each output line (NavCurve) from this ControlNode
+        for &curve_idx_raw in &cn.output_lines {
+            if curve_idx_raw < 0 {
+                continue;
+            }
+            let start_curve_idx = curve_idx_raw as usize;
+            if start_curve_idx >= desc.nav_curves.len() {
+                continue;
+            }
+
+            // Follow the curve chain to find the terminating node
+            let (to_node_idx, curve_indices) = trace_curve_chain_to_node(
+                &desc.control_nodes,
+                &desc.nav_curves,
+                cn_idx as u32,
+                start_curve_idx,
+                64, // max depth to prevent infinite loops
+            );
+
+            if to_node_idx >= desc.control_nodes.len() as u32 {
+                continue;
+            }
+
+            let to_node_uid = if (to_node_idx as usize) < node_uids.len() {
+                node_uids[to_node_idx as usize]
+            } else {
+                continue;
+            };
+
+            // Don't create self-loops
+            if from_node_uid == to_node_uid {
+                continue;
+            }
+
+            // Sample all curves in the chain into world-space points
+            let mut spline_points: Vec<[f32; 3]> = Vec::new();
+            let mut total_length = 0.0f32;
+
+            for (i, &ci) in curve_indices.iter().enumerate() {
+                if ci >= desc.nav_curves.len() {
+                    continue;
+                }
+                let nc = &desc.nav_curves[ci];
+                let n_pts = 16usize;
+                let pts = sample_nav_curve(nc, origin_pos, &[0.0, 0.0, 0.0, 1.0], n_pts);
+
+                for (j, pt) in pts.iter().enumerate() {
+                    if i > 0 && j == 0 {
+                        continue; // skip duplicate at curve junction
+                    }
+                    spline_points.push(*pt);
+                }
+                total_length += nc.length;
+            }
+
+            if spline_points.is_empty() {
+                continue;
+            }
+
+            // Get meta from first curve
+            let first_curve = &desc.nav_curves[start_curve_idx];
+
+            paths.push(PrefabAiPath {
+                from_node_uid,
+                to_node_uid,
+                start_lane_idx: first_curve.leads_to.start_lane,
+                end_lane_idx: first_curve.leads_to.end_lane,
+                spline_points,
+                length_m: total_length,
+                speed_kmh: None,
+                blinker: Some(ppd::Blinker::from_nav_curve_flags(first_curve.flags)),
+                curve_indices: curve_indices.iter().map(|&i| i as u16).collect(),
+                semaphore_id: if first_curve.semaphore_id >= 0 {
+                    Some(first_curve.semaphore_id)
+                } else {
+                    None
+                },
+            });
+        }
+    }
+
+    paths
+}
+
+/// Follow a NavCurve chain from a start curve to the next ControlNode.
+/// Returns (end_control_node_index, curve_indices_visited).
+fn trace_curve_chain_to_node(
+    control_nodes: &[ppd::ControlNode],
+    nav_curves: &[NavCurve],
+    start_node: u32,
+    start_curve: usize,
+    max_depth: usize,
+) -> (u32, Vec<usize>) {
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut curve_indices: Vec<usize> = Vec::new();
+
+    let mut current_curve = start_curve;
+
+    for _depth in 0..max_depth {
+        if current_curve >= nav_curves.len() {
+            break;
+        }
+        if !visited.insert(current_curve) {
+            break; // cycle detected
+        }
+        curve_indices.push(current_curve);
+
+        let nc = &nav_curves[current_curve];
+
+        // Check if this curve terminates at a ControlNode
+        let end_node = nc.leads_to.end_node as u32;
+        if end_node as usize != start_node as usize
+            && end_node < control_nodes.len() as u32
+        {
+            return (end_node, curve_indices);
+        }
+
+        // Follow next_lines to continue
+        let mut found_next = false;
+        for &next_raw in &nc.next_lines {
+            if next_raw < 0 {
+                continue;
+            }
+            let next_idx = next_raw as usize;
+            if next_idx < nav_curves.len() && !visited.contains(&next_idx) {
+                current_curve = next_idx;
+                found_next = true;
+                break;
+            }
+        }
+        if !found_next {
+            break;
+        }
+    }
+
+    (start_node, Vec::new())
+}
+
+// ---------------------------------------------------------------------------
+// SplineIndex helpers
+// ---------------------------------------------------------------------------
+
+impl MapGraph {
+    /// Generate HermiteSegments from all PrefabAiPaths for SplineIndex
+    /// consumption. Each path's spline_points are decomposed into consecutive
+    /// segments usable by the lane-follower's nearest/heading queries.
+    pub fn prefab_hermite_segments(&self) -> Vec<crate::spline::HermiteSegment> {
+        let mut segments = Vec::new();
+        for path in &self.prefab_ai_paths {
+            let pts = &path.spline_points;
+            if pts.len() < 2 {
+                continue;
+            }
+            for i in 0..pts.len() - 1 {
+                let p0 = crate::spline::Vec3::new(pts[i][0], pts[i][1], pts[i][2]);
+                let p1 = crate::spline::Vec3::new(pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
+                let dx = p1.x - p0.x;
+                let dy = p1.y - p0.y;
+                let dz = p1.z - p0.z;
+                let chord = (dx * dx + dy * dy + dz * dz).sqrt();
+                let tangent = if chord > 0.001 {
+                    crate::spline::Vec3::new(dx / chord, dy / chord, dz / chord) * chord
+                } else {
+                    crate::spline::Vec3::default()
+                };
+                segments.push(crate::spline::HermiteSegment {
+                    p0,
+                    p1,
+                    m0: tangent,
+                    m1: tangent,
+                    length_m: chord,
+                    from_uid: path.from_node_uid,
+                    to_uid: path.to_node_uid,
+                    edge_uid: 0,
+                });
+            }
+        }
+        segments
+    }
 }
 
 // ---------------------------------------------------------------------------

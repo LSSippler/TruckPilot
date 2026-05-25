@@ -10,7 +10,7 @@
 
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
 
-use crate::spline::{evaluate, evaluate_tangent, HermiteSegment, Vec3};
+use crate::spline::{evaluate, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3};
 
 // ---------------------------------------------------------------------------
 // Segment-AABB (intern + export)
@@ -205,18 +205,24 @@ pub struct NearestHit {
 
 /// R*-Tree-Index über alle Hermite-Segmente.
 ///
-/// Aufgebaut via [`build_index`], nutzt rstar Bulk-Load für optimale Baumstruktur.
+/// Aufgebaut via [`build_index`] oder [`build_index_with_metadata`].
 pub struct SplineIndex {
     /// Alle Segmente — Ownership liegt hier.
     pub segments: Vec<HermiteSegment>,
+    /// Per-Segment DS8-Metadaten; `metadata[i]` gehört zu `segments[i]`.
+    /// `None` für Nicht-Road-Edges (prefab, building, ferry, …).
+    pub metadata: Vec<Option<SegmentMetadata>>,
     /// rstar R*-Tree mit SegmentEntry-Referenzen (Index in `segments`).
     tree: RTree<SegmentEntry>,
 }
 
-/// Baut einen SplineIndex aus einem Segment-Vec.
+/// Baut einen SplineIndex mit Segment-Metadaten (DS8).
 ///
-/// Nutzt rstar-Bulk-Load (O(n log n), optimal für statische Daten).
-pub fn build_index(segments: Vec<HermiteSegment>) -> SplineIndex {
+/// `metadata.len()` muss `segments.len()` entsprechen.
+pub fn build_index_with_metadata(
+    segments: Vec<HermiteSegment>,
+    metadata: Vec<Option<SegmentMetadata>>,
+) -> SplineIndex {
     let entries: Vec<SegmentEntry> = segments
         .iter()
         .enumerate()
@@ -225,9 +231,16 @@ pub fn build_index(segments: Vec<HermiteSegment>) -> SplineIndex {
             aabb: SegmentAabb::from_sampled(seg, 10),
         })
         .collect();
-
     let tree = RTree::bulk_load(entries);
-    SplineIndex { segments, tree }
+    SplineIndex { segments, metadata, tree }
+}
+
+/// Baut einen SplineIndex aus einem Segment-Vec (alle Metadaten `None`).
+///
+/// Nutzt rstar-Bulk-Load (O(n log n), optimal für statische Daten).
+pub fn build_index(segments: Vec<HermiteSegment>) -> SplineIndex {
+    let n = segments.len();
+    build_index_with_metadata(segments, vec![None; n])
 }
 
 /// AABB-Vergleichsstatistik (für Report).
@@ -433,16 +446,17 @@ impl SplineIndex {
     /// Gibt Speicher-Statistiken zurück.
     pub fn memory_stats(&self) -> IndexMemoryStats {
         let seg_bytes = self.segments.len() * std::mem::size_of::<HermiteSegment>();
+        let meta_bytes = self.metadata.len() * std::mem::size_of::<Option<SegmentMetadata>>();
         // rstar-Entry: AABB (4×f32=16B) + idx (4B) + overhead ≈ 32B
         let entry_bytes = self.tree.size() * 32;
         // rstar-Interne-Knoten: typisch ~10–20% Overhead über Entries
         let tree_overhead = entry_bytes + entry_bytes / 10;
         IndexMemoryStats {
             segment_count: self.segments.len(),
-            seg_bytes,
+            seg_bytes: seg_bytes + meta_bytes,
             tree_entry_count: self.tree.size(),
             tree_bytes_approx: tree_overhead,
-            total_bytes_approx: seg_bytes + tree_overhead,
+            total_bytes_approx: seg_bytes + meta_bytes + tree_overhead,
         }
     }
 }

@@ -43,6 +43,9 @@
 //! | `lane_follower.lateral_dist_signed` | f32 metres | signed lateral dist (+ = truck right of centreline) |
 //! | `lane_follower.lookahead_offset_x` | f32 metres | lane-offset lookahead X (input to Pure-Pursuit) |
 //! | `lane_follower.lookahead_offset_z` | f32 metres | lane-offset lookahead Z (input to Pure-Pursuit) |
+//! | `lane_follower.segment_lanes` | u8 | lanes in this direction (DS8; absent on prefab/ferry hits) |
+//! | `lane_follower.segment_lane_width` | f32 metres | lane width from road_look (DS8) |
+//! | `lane_follower.segment_offset` | f32 metres | computed lane offset = (lanes−0.5)×width (DS8) |
 
 mod junction;
 mod pure_pursuit;
@@ -54,8 +57,8 @@ use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
     arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
     graph::MapGraph,
-    spline::{build_splines, evaluate_tangent, HermiteSegment, Vec3},
-    spline_index::{build_index, SplineIndex},
+    spline::{build_splines_ex, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3},
+    spline_index::{build_index, build_index_with_metadata, SplineIndex},
 };
 use truckpilot_plugin_api::{
     ctx_info, ctx_warn, graph::RouterGraph, ControlOutput, ControlRequest, Plugin, PluginContext,
@@ -210,7 +213,7 @@ impl LaneFollowerPlugin {
                 return;
             }
         };
-        let (segments, stats) = build_splines(&graph);
+        let (segments, metadata, stats) = build_splines_ex(&graph);
         ctx_info!(
             ctx,
             "lane-follower: {} segments built, {} skipped (missing node)",
@@ -231,7 +234,7 @@ impl LaneFollowerPlugin {
         );
         self.luts = luts;
         self.forward_adj = forward_adj;
-        self.index = Some(build_index(segments));
+        self.index = Some(build_index_with_metadata(segments, metadata));
 
         let rg_nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
         let rg_edges: Vec<(u64, u64, f64)> = graph.edges.iter().map(|e| (e.from, e.to, e.distance_m)).collect();
@@ -402,6 +405,10 @@ impl Plugin for LaneFollowerPlugin {
             return;
         };
 
+        // DS8: per-segment lane metadata (None for prefab/building/ferry segments).
+        let seg_meta: Option<SegmentMetadata> =
+            index.metadata.get(hit.segment_idx).copied().flatten();
+
         ctx.blackboard
             .set("lane_follower.nearest_seg_idx", hit.segment_idx.to_string());
         ctx.blackboard
@@ -423,12 +430,23 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.heading_diff_deg", format!("{heading_diff:.2}"));
 
-        // Lane offset: BB-key override → code constant.
+        // Lane offset: BB-key override → DS8 dynamic metadata → QW1 fallback constant.
         let lane_offset_m = ctx
             .blackboard
             .get("plugin.lane-follower.lane_offset_m")
             .and_then(|v| v.parse::<f32>().ok())
+            .or_else(|| seg_meta.map(|m| m.lane_offset_right_m))
             .unwrap_or(LANE_OFFSET_RIGHT_M);
+
+        // DS8: publish per-segment lane metadata keys.
+        if let Some(meta) = seg_meta {
+            ctx.blackboard
+                .set("lane_follower.segment_lanes", meta.lanes_in_direction.to_string());
+            ctx.blackboard
+                .set("lane_follower.segment_lane_width", format!("{:.2}", meta.lane_width_m));
+            ctx.blackboard
+                .set("lane_follower.segment_offset", format!("{:.3}", meta.lane_offset_right_m));
+        }
 
         // Task 4 — Diagnostic: right-normal and signed lateral distance at nearest spline point.
         // Right-normal at heading h (CW degrees): n = (cos h, sin h) in XZ.

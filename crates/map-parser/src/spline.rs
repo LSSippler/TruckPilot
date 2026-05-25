@@ -1,8 +1,8 @@
 //! Phase 0b — Hermite Spline Generator
 //!
 //! Erzeugt Hermite-Segmente aus Edge-Geometrie des Routing-Graphen.
-//! Heading-Quelle: `atan2(dx, -dz)` aus Node-Positionen (Spec §1.3, Phase 0a).
-//! Node-Rotations-Quaternions werden NICHT verwendet.
+//! Tangenten-Quelle: `GraphNode.rotation` Quaternion (DS12); Fallback auf
+//! gewichteten Edge-Richtungs-Durchschnitt wenn Quaternion null ist (sized-format nodes).
 //!
 //! # Übersicht
 //! 1. [`build_splines`] — Haupteinstieg: MapGraph → Vec<HermiteSegment>
@@ -123,6 +123,33 @@ impl std::ops::Mul<Vec3> for f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Quaternion-Hilfsfunktionen
+// ---------------------------------------------------------------------------
+
+/// Returns true if the quaternion has a non-zero magnitude (i.e., a valid rotation).
+/// `[0.0; 4]` is the sentinel for "not set" (sized-format nodes).
+#[inline]
+fn quat_is_set(q: [f32; 4]) -> bool {
+    q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3] > 1e-6
+}
+
+/// Rotates vector `v` by unit quaternion `q = [qw, qx, qy, qz]` (w-first, ETS2 convention).
+///
+/// Uses the Rodrigues formula: `t = 2·(q_xyz × v); v' = v + qw·t + q_xyz × t`
+#[inline]
+pub fn quat_rotate_vec(q: [f32; 4], v: Vec3) -> Vec3 {
+    let (qw, qx, qy, qz) = (q[0], q[1], q[2], q[3]);
+    let tx = 2.0 * (qy * v.z - qz * v.y);
+    let ty = 2.0 * (qz * v.x - qx * v.z);
+    let tz = 2.0 * (qx * v.y - qy * v.x);
+    Vec3::new(
+        v.x + qw * tx + qy * tz - qz * ty,
+        v.y + qw * ty + qz * tx - qx * tz,
+        v.z + qw * tz + qx * ty - qy * tx,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tangenten-Ableitung
 // ---------------------------------------------------------------------------
 
@@ -208,21 +235,51 @@ fn node_tangent(adj: &NodeAdjacency, magnitude: f32) -> Vec3 {
 // Hauptfunktion
 // ---------------------------------------------------------------------------
 
-/// Baut alle Hermite-Segmente aus dem MapGraph.
+/// Per-Segment metadata derived from the originating GraphEdge (DS8).
 ///
-/// Gibt `(segmente, stats)` zurück, wobei `stats` Debug-Infos enthält.
-pub fn build_splines(graph: &MapGraph) -> (Vec<HermiteSegment>, SplineStats) {
-    // Node-Map: uid → Vec3 Position
+/// Present only for road edges (`"forward"`, `"backward"`, `"bidirectional_unknown"`).
+/// `None` for prefab, building, ferry, and cross-sector edges.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SegmentMetadata {
+    /// Number of lanes travelling in this direction.
+    pub lanes_in_direction: u8,
+    /// Number of lanes in the opposite direction on the same road.
+    pub lanes_opposite: u8,
+    /// Total lanes on the road cross-section.
+    pub lanes_total: u8,
+    /// Lane width in metres from the road-look definition.
+    pub lane_width_m: f32,
+    /// Right-of-centreline offset: `(lanes_in_direction − 0.5) × lane_width_m`.
+    pub lane_offset_right_m: f32,
+    /// Road-look token64 for this direction (0 = unknown).
+    pub road_look_token: u64,
+}
+
+/// Baut alle Hermite-Segmente aus dem MapGraph und liefert pro Segment optionale Metadaten.
+///
+/// Gibt `(segmente, metadaten, stats)` zurück.  `metadaten[i]` entspricht `segmente[i]`;
+/// road-Edges (`"forward"` / `"backward"` / `"bidirectional_unknown"`) liefern `Some(SegmentMetadata)`,
+/// alle anderen `None`.
+pub fn build_splines_ex(
+    graph: &MapGraph,
+) -> (Vec<HermiteSegment>, Vec<Option<SegmentMetadata>>, SplineStats) {
     let node_map: HashMap<u64, Vec3> = graph
         .nodes
         .iter()
         .map(|n| (n.uid, Vec3::new(n.x as f32, n.y as f32, n.z as f32)))
         .collect();
 
+    let rotation_map: HashMap<u64, [f32; 4]> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.uid, n.rotation))
+        .collect();
+
     let adj = build_adjacency(&node_map, &graph.edges);
     let neighbor_degree = build_neighbor_degree(&graph.edges);
 
     let mut segments = Vec::with_capacity(graph.edges.len());
+    let mut metadata: Vec<Option<SegmentMetadata>> = Vec::with_capacity(graph.edges.len());
     let mut stats = SplineStats::default();
 
     for edge in &graph.edges {
@@ -237,23 +294,36 @@ pub fn build_splines(graph: &MapGraph) -> (Vec<HermiteSegment>, SplineStats) {
             continue;
         }
 
-        // Tangenten-Magnitude: chord-length × TANGENT_SCALE (Catmull-Rom-artig)
         let mag = chord_len * TANGENT_SCALE;
 
-        let m0 = match adj.get(&edge.from) {
-            Some(a) => node_tangent(a, mag),
-            None => {
-                // Isolated node: Tangente = Edge-Richtung
-                (p1 - p0).normalize() * mag
+        let m0 = {
+            let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
+            if quat_is_set(q) {
+                stats.quat_tangents += 1;
+                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+            } else {
+                stats.fallback_tangents += 1;
+                match adj.get(&edge.from) {
+                    Some(a) => node_tangent(a, mag),
+                    None => (p1 - p0).normalize() * mag,
+                }
             }
         };
 
-        let m1 = match adj.get(&edge.to) {
-            Some(a) => node_tangent(a, mag),
-            None => (p1 - p0).normalize() * mag,
+        let m1 = {
+            let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
+            if quat_is_set(q) {
+                stats.quat_tangents += 1;
+                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+            } else {
+                stats.fallback_tangents += 1;
+                match adj.get(&edge.to) {
+                    Some(a) => node_tangent(a, mag),
+                    None => (p1 - p0).normalize() * mag,
+                }
+            }
         };
 
-        // Degree-Klassifikation für Stats (korrekter Nachbar-Degree, nicht Edge-Count)
         let deg_from = neighbor_degree.get(&edge.from).copied().unwrap_or(0);
         let deg_to = neighbor_degree.get(&edge.to).copied().unwrap_or(0);
         if deg_from == 1 || deg_to == 1 {
@@ -263,7 +333,6 @@ pub fn build_splines(graph: &MapGraph) -> (Vec<HermiteSegment>, SplineStats) {
             stats.high_degree_junctions += 1;
         }
 
-        // Pathologie-Check: Tangenten-Magnitude im Verhältnis zur Chord-Length
         let m0_ratio = m0.length() / chord_len.max(1.0);
         let m1_ratio = m1.length() / chord_len.max(1.0);
         if m0_ratio > 3.0 || m1_ratio > 3.0 {
@@ -280,10 +349,35 @@ pub fn build_splines(graph: &MapGraph) -> (Vec<HermiteSegment>, SplineStats) {
             to_uid: edge.to,
             edge_uid: edge.uid,
         });
+
+        let seg_meta = match edge.direction.as_str() {
+            "forward" | "backward" | "bidirectional_unknown" => {
+                let lanes = edge.lanes.max(1);
+                Some(SegmentMetadata {
+                    lanes_in_direction: lanes,
+                    lanes_opposite: edge.lanes_opposite,
+                    lanes_total: lanes.saturating_add(edge.lanes_opposite),
+                    lane_width_m: edge.lane_width_m,
+                    lane_offset_right_m: (lanes as f32 - 0.5) * edge.lane_width_m,
+                    road_look_token: edge.road_look_token,
+                })
+            }
+            _ => None,
+        };
+        metadata.push(seg_meta);
     }
 
     stats.total_segments = segments.len();
-    (segments, stats)
+    (segments, metadata, stats)
+}
+
+/// Baut alle Hermite-Segmente aus dem MapGraph.
+///
+/// Gibt `(segmente, stats)` zurück, wobei `stats` Debug-Infos enthält.
+/// Wrapper um [`build_splines_ex`] — drop die Metadaten.
+pub fn build_splines(graph: &MapGraph) -> (Vec<HermiteSegment>, SplineStats) {
+    let (segs, _, stats) = build_splines_ex(graph);
+    (segs, stats)
 }
 
 /// Baut Splines für Nodes in einem Bounding-Box-Filter.
@@ -295,6 +389,13 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
         .iter()
         .filter(|n| bbox.contains(n.x as f32, n.z as f32))
         .map(|n| (n.uid, Vec3::new(n.x as f32, n.y as f32, n.z as f32)))
+        .collect();
+
+    // Rotation-Map: uid → [qw, qx, qy, qz] (alle Nodes, Lookup miss = zero sentinel)
+    let rotation_map: HashMap<u64, [f32; 4]> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.uid, n.rotation))
         .collect();
 
     // Filtere Edges: beide Nodes in BBox
@@ -324,13 +425,35 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
         }
 
         let mag = chord_len * TANGENT_SCALE;
-        let m0 = match adj.get(&edge.from) {
-            Some(a) => node_tangent(a, mag),
-            None => (p1 - p0).normalize() * mag,
+
+        // m0: quaternion-derived if set, else weighted-average fallback
+        let m0 = {
+            let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
+            if quat_is_set(q) {
+                stats.quat_tangents += 1;
+                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+            } else {
+                stats.fallback_tangents += 1;
+                match adj.get(&edge.from) {
+                    Some(a) => node_tangent(a, mag),
+                    None => (p1 - p0).normalize() * mag,
+                }
+            }
         };
-        let m1 = match adj.get(&edge.to) {
-            Some(a) => node_tangent(a, mag),
-            None => (p1 - p0).normalize() * mag,
+
+        // m1: quaternion-derived if set, else weighted-average fallback
+        let m1 = {
+            let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
+            if quat_is_set(q) {
+                stats.quat_tangents += 1;
+                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+            } else {
+                stats.fallback_tangents += 1;
+                match adj.get(&edge.to) {
+                    Some(a) => node_tangent(a, mag),
+                    None => (p1 - p0).normalize() * mag,
+                }
+            }
         };
 
         let deg_from = neighbor_degree.get(&edge.from).copied().unwrap_or(0);
@@ -514,6 +637,10 @@ pub struct SplineStats {
     pub end_nodes: usize,
     pub high_degree_junctions: usize,
     pub pathological_tangents: usize,
+    /// Tangenten die aus Node-Quaternion berechnet wurden (DS12).
+    pub quat_tangents: usize,
+    /// Tangenten die auf Edge-Richtungs-Fallback zurückgefallen sind (sized-format nodes).
+    pub fallback_tangents: usize,
 }
 
 impl SplineStats {
@@ -525,6 +652,8 @@ impl SplineStats {
         println!("  End-Nodes (deg=1):      {}", self.end_nodes);
         println!("  High-Degree Junctions:  {}", self.high_degree_junctions);
         println!("  Pathologische Tangenten:{}", self.pathological_tangents);
+        println!("  Quat-Tangenten:         {}", self.quat_tangents);
+        println!("  Fallback-Tangenten:     {}", self.fallback_tangents);
         let bytes = self.total_segments * std::mem::size_of::<HermiteSegment>();
         println!(
             "  Memory (approx):        {:.1} MB ({} bytes/segment)",
@@ -764,6 +893,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 2,
@@ -776,6 +908,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 3,
@@ -788,6 +923,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -816,6 +954,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 2,
@@ -828,6 +969,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 3,
@@ -840,6 +984,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 4,
@@ -852,6 +999,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -878,6 +1028,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
             GraphEdge {
                 uid: 2,
@@ -890,6 +1043,9 @@ mod tests {
                 dlc_guard: 0,
                 is_hidden: false,
                 gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -903,5 +1059,167 @@ mod tests {
             1,
             "Bidir: B has 1 unique neighbor A"
         );
+    }
+
+    // --- DS12 Quaternion-Tangent Tests ---
+
+    #[test]
+    fn test_quaternion_to_tangent_north() {
+        // Identity quaternion [1,0,0,0] → North direction (0,0,-len) unchanged
+        let q = [1.0f32, 0.0, 0.0, 0.0];
+        let result = quat_rotate_vec(q, Vec3::new(0.0, 0.0, -10.0));
+        assert!((result.x).abs() < 1e-4, "x≈0, got {}", result.x);
+        assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
+        assert!((result.z + 10.0).abs() < 1e-4, "z≈-10 (North), got {}", result.z);
+    }
+
+    #[test]
+    fn test_quaternion_to_tangent_east() {
+        // East quaternion [√2/2, 0, -√2/2, 0] → rotates North to East
+        let s = (2.0f32).sqrt() / 2.0;
+        let q = [s, 0.0, -s, 0.0];
+        let result = quat_rotate_vec(q, Vec3::new(0.0, 0.0, -10.0));
+        assert!((result.x - 10.0).abs() < 1e-4, "x≈10 (East), got {}", result.x);
+        assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
+        assert!((result.z).abs() < 1e-4, "z≈0, got {}", result.z);
+    }
+
+    #[test]
+    fn test_build_splines_uses_quaternion_when_available() {
+        // Node A at origin with East quaternion, edge goes North.
+        // m0 must point East (from quat), not North (from edge geometry).
+        use crate::graph::GraphNode;
+        let s = (2.0f32).sqrt() / 2.0;
+        let graph = MapGraph {
+            nodes: vec![
+                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [s, 0.0, -s, 0.0] },
+                GraphNode { uid: 2, x: 0.0, y: 0.0, z: -10.0, rotation: [1.0, 0.0, 0.0, 0.0] },
+            ],
+            edges: vec![GraphEdge {
+                uid: 10, from: 1, to: 2,
+                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                direction: "forward".to_string(),
+                dlc_guard: 0, is_hidden: false, gps_avoid: false,
+                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+            }],
+            ..MapGraph::default()
+        };
+        let (segs, stats) = build_splines(&graph);
+        assert_eq!(segs.len(), 1);
+        let seg = &segs[0];
+        // m0 from East quaternion → positive x, near-zero z
+        assert!(seg.m0.x > 0.1, "m0.x should be positive (East), got {}", seg.m0.x);
+        assert!(
+            seg.m0.z.abs() < seg.m0.x.abs() * 0.1,
+            "m0.z should be near zero, got {}",
+            seg.m0.z
+        );
+        assert_eq!(stats.quat_tangents, 2, "both endpoints should use quaternion");
+        assert_eq!(stats.fallback_tangents, 0);
+    }
+
+    // --- DS8 SegmentMetadata Tests ---
+
+    fn make_road_graph(lanes_fwd: u8, lanes_bwd: u8, lane_width: f32, direction: &str) -> MapGraph {
+        use crate::graph::GraphNode;
+        MapGraph {
+            nodes: vec![
+                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+                GraphNode { uid: 2, x: 100.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+            ],
+            edges: vec![GraphEdge {
+                uid: 1, from: 1, to: 2,
+                distance_m: 100.0, speed_limit_kmh: None,
+                lanes: lanes_fwd,
+                direction: direction.to_string(),
+                dlc_guard: 0, is_hidden: false, gps_avoid: false,
+                road_look_token: 42, lanes_opposite: lanes_bwd, lane_width_m: lane_width,
+            }],
+            ..MapGraph::default()
+        }
+    }
+
+    #[test]
+    fn ds8_motorway_3lane_offset() {
+        // 3-lane motorway, 3.75m: offset = (3 − 0.5) × 3.75 = 9.375m
+        let graph = make_road_graph(3, 3, 3.75, "forward");
+        let (_, meta, _) = build_splines_ex(&graph);
+        assert_eq!(meta.len(), 1);
+        let m = meta[0].expect("forward edge must have metadata");
+        assert_eq!(m.lanes_in_direction, 3);
+        assert_eq!(m.lane_width_m, 3.75);
+        assert!((m.lane_offset_right_m - 9.375).abs() < 1e-4, "expected 9.375, got {}", m.lane_offset_right_m);
+    }
+
+    #[test]
+    fn ds8_city_1lane_offset() {
+        // 1-lane city road, 3.0m: offset = (1 − 0.5) × 3.0 = 1.5m
+        let graph = make_road_graph(1, 1, 3.0, "forward");
+        let (_, meta, _) = build_splines_ex(&graph);
+        let m = meta[0].expect("forward edge must have metadata");
+        assert_eq!(m.lanes_in_direction, 1);
+        assert_eq!(m.lane_width_m, 3.0);
+        assert!((m.lane_offset_right_m - 1.5).abs() < 1e-4, "expected 1.5, got {}", m.lane_offset_right_m);
+    }
+
+    #[test]
+    fn ds8_prefab_metadata_is_none() {
+        use crate::graph::GraphNode;
+        let graph = MapGraph {
+            nodes: vec![
+                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+                GraphNode { uid: 2, x: 10.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+            ],
+            edges: vec![GraphEdge {
+                uid: 1, from: 1, to: 2,
+                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                direction: "prefab".to_string(),
+                dlc_guard: 0, is_hidden: false, gps_avoid: false,
+                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+            }],
+            ..MapGraph::default()
+        };
+        let (_, meta, _) = build_splines_ex(&graph);
+        assert_eq!(meta.len(), 1);
+        assert!(meta[0].is_none(), "prefab edge must have no metadata");
+    }
+
+    #[test]
+    fn ds8_fallback_default_width() {
+        // Edge with lane_width_m = 3.75 (default) for unknown road type.
+        let graph = make_road_graph(1, 0, 3.75, "forward");
+        let (_, meta, _) = build_splines_ex(&graph);
+        let m = meta[0].expect("forward edge must have metadata");
+        assert!((m.lane_width_m - 3.75).abs() < 1e-4, "default width = 3.75, got {}", m.lane_width_m);
+        // (1 − 0.5) × 3.75 = 1.875m — QW1 baseline
+        assert!((m.lane_offset_right_m - 1.875).abs() < 1e-4, "offset = 1.875m, got {}", m.lane_offset_right_m);
+    }
+
+    #[test]
+    fn test_build_splines_fallback_when_quaternion_zero() {
+        // Both nodes have zero quaternion → fallback to edge geometry (North).
+        use crate::graph::GraphNode;
+        let graph = MapGraph {
+            nodes: vec![
+                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+                GraphNode { uid: 2, x: 0.0, y: 0.0, z: -10.0, rotation: [0.0; 4] },
+            ],
+            edges: vec![GraphEdge {
+                uid: 10, from: 1, to: 2,
+                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                direction: "forward".to_string(),
+                dlc_guard: 0, is_hidden: false, gps_avoid: false,
+                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+            }],
+            ..MapGraph::default()
+        };
+        let (segs, stats) = build_splines(&graph);
+        assert_eq!(segs.len(), 1);
+        let seg = &segs[0];
+        // Fallback: edge direction is (0,0,-10) = North → m0.z should be negative
+        assert!(seg.m0.z < -0.1, "m0.z should be negative (North), got {}", seg.m0.z);
+        assert!(seg.m0.x.abs() < 0.01, "m0.x should be ~0, got {}", seg.m0.x);
+        assert_eq!(stats.quat_tangents, 0);
+        assert_eq!(stats.fallback_tangents, 2, "both endpoints should use fallback");
     }
 }
