@@ -16,7 +16,7 @@ use crate::error::ParseError;
 use crate::graph::MapGraph;
 
 /// Increment when the `MapGraph` schema changes to invalidate old caches.
-const PARSER_VERSION: u32 = 3; // Bumped: GraphEdge gained dlc_guard/is_hidden/gps_avoid (Phase 5.6)
+const PARSER_VERSION: u32 = 5; // Bumped: BuildStats gained PPD diagnostic fields (DS7 fix)
 const BINCODE_CONFIG: Configuration = bincode::config::standard();
 
 /// On-disk cache envelope.
@@ -135,6 +135,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::graph::{BuildStats, MapGraph};
+    use std::collections::HashMap;
 
     fn empty_graph() -> MapGraph {
         MapGraph {
@@ -143,6 +144,9 @@ mod tests {
             signs: vec![],
             prefabs: vec![],
             stats: BuildStats::default(),
+            prefab_ai_paths: vec![],
+            prefab_instances: vec![],
+            prefab_descriptors: HashMap::new(),
         }
     }
 

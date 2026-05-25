@@ -400,6 +400,7 @@ fn hashfs_probe_len(arc: &dyn Archive) -> usize {
 /// of a HashFS archive using directory listings.
 fn walk_ppd_paths(arc: &HashFsArchive) -> Vec<String> {
     use std::collections::HashSet;
+    info!("PPD loading: starting walk of prefab/ and prefab2/");
     let mut hits = Vec::new();
     // Seed from known PPD roots; avoids scanning the whole archive.
     let mut stack: Vec<String> = vec!["prefab2".into(), "prefab".into()];
@@ -425,6 +426,7 @@ fn walk_ppd_paths(arc: &HashFsArchive) -> Vec<String> {
             }
         }
     }
+    info!("PPD walk found {} candidate paths", hits.len());
     hits
 }
 
@@ -498,32 +500,39 @@ fn load_ppd_descriptors(
     let mut total_nav_curves = 0usize;
 
     for token in &tokens {
-        let data = token_to_path
-            .get(token)
-            .and_then(|path| archives.iter_mut().rev().find_map(|arc| arc.read_path(path).ok()));
-
-        if let Some(raw) = data {
-            match parse_ppd(&raw) {
-                Ok(desc) => {
-                    total_nav_curves += desc.nav_curves.len();
-                    descriptors.insert(*token, desc);
-                    loaded += 1;
+        if let Some(path) = token_to_path.get(token) {
+            let data = archives
+                .iter_mut()
+                .rev()
+                .find_map(|arc| arc.read_path(path).ok());
+            if let Some(raw) = data {
+                match parse_ppd(&raw) {
+                    Ok(desc) => {
+                        let nc = desc.nav_curves.len();
+                        info!("PPD {}: parsed {} nav_curves", path, nc);
+                        total_nav_curves += nc;
+                        descriptors.insert(*token, desc);
+                        loaded += 1;
+                    }
+                    Err(e) => {
+                        warn!("PPD {} failed: {}", path, e);
+                        failed += 1;
+                    }
                 }
-                Err(e) => {
-                    debug!("Failed to parse PPD for token 0x{token:016X}: {e}");
-                    failed += 1;
-                }
+            } else {
+                warn!("PPD {} could not be read from any archive", path);
+                failed += 1;
             }
         } else {
-            debug!("No PPD path found for token 0x{token:016X}");
+            debug!("No PPD path for token 0x{token:016X}");
             failed += 1;
         }
     }
 
     let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
     info!(
-        "PPD load: {}/{} loaded, {} failed, {} nav_curves in {:.1} ms",
-        loaded, attempted, failed, total_nav_curves, elapsed
+        "PPD total: {} loaded, {} failed, {} nav_curves in {:.1} ms",
+        loaded, failed, total_nav_curves, elapsed
     );
 
     (descriptors, (attempted, loaded, failed, total_nav_curves))
