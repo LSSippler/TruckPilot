@@ -28,7 +28,10 @@ use serde_json::Value;
 struct Args {
     #[arg(long, default_value = "graph.json")]
     graph: PathBuf,
-    #[arg(long, default_value = "crates/map-parser/tests/fixtures/test_cities.toml")]
+    #[arg(
+        long,
+        default_value = "crates/map-parser/tests/fixtures/test_cities.toml"
+    )]
     cities: PathBuf,
     #[arg(long, default_value = "outputs/diag")]
     out_dir: PathBuf,
@@ -214,7 +217,11 @@ fn read_cities(path: &PathBuf) -> Result<Vec<City>> {
                  x: &mut Option<f64>,
                  z: &mut Option<f64>| {
         if let (Some(n), Some(xv), Some(zv)) = (name.take(), x.take(), z.take()) {
-            list.push(City { name: n, x: xv, z: zv });
+            list.push(City {
+                name: n,
+                x: xv,
+                z: zv,
+            });
         }
     };
 
@@ -273,8 +280,7 @@ fn main() -> Result<()> {
     // the full MapGraph type (avoids version skew issues with bincode derive).
     let graph_bytes = std::fs::read(&args.graph)
         .with_context(|| format!("open graph: {}", args.graph.display()))?;
-    let graph: Value = serde_json::from_slice(&graph_bytes)
-        .context("parse graph.json")?;
+    let graph: Value = serde_json::from_slice(&graph_bytes).context("parse graph.json")?;
     drop(graph_bytes); // free the raw bytes
 
     let node_arr = graph["nodes"].as_array().context("graph.nodes missing")?;
@@ -383,10 +389,18 @@ fn main() -> Result<()> {
         for &ni in scc {
             let x = node_x[ni];
             let z = node_z[ni];
-            if x < x_min { x_min = x; }
-            if x > x_max { x_max = x; }
-            if z < z_min { z_min = z; }
-            if z > z_max { z_max = z; }
+            if x < x_min {
+                x_min = x;
+            }
+            if x > x_max {
+                x_max = x;
+            }
+            if z < z_min {
+                z_min = z;
+            }
+            if z > z_max {
+                z_max = z;
+            }
             x_sum += x;
             z_sum += z;
         }
@@ -394,7 +408,11 @@ fn main() -> Result<()> {
         components.push(ComponentInfo {
             id: cid,
             size: scc.len(),
-            edge_count: if cid < top_n { intra_edge_count[cid] } else { 0 },
+            edge_count: if cid < top_n {
+                intra_edge_count[cid]
+            } else {
+                0
+            },
             cities: Vec::new(), // filled below
             x_min,
             x_max,
@@ -431,7 +449,9 @@ fn main() -> Result<()> {
                     (None, None, "NO_COMPONENT".to_string())
                 } else {
                     let size = sccs[cid].len();
-                    if cid == 0 { cities_in_largest += 1; }
+                    if cid == 0 {
+                        cities_in_largest += 1;
+                    }
                     (Some(cid), Some(size), format!("comp-{cid}"))
                 };
 
@@ -463,7 +483,11 @@ fn main() -> Result<()> {
     // ---------------------------------------------------------------------------
     let mut cross_edges: Vec<CrossEdge> = cross_matrix
         .into_iter()
-        .map(|((fc, tc), count)| CrossEdge { from_comp: fc, to_comp: tc, count })
+        .map(|((fc, tc), count)| CrossEdge {
+            from_comp: fc,
+            to_comp: tc,
+            count,
+        })
         .collect();
     cross_edges.sort_by_key(|b| std::cmp::Reverse(b.count));
 
@@ -494,12 +518,16 @@ fn main() -> Result<()> {
 
     // --- Markdown ---
     let md_path = args.out_dir.join("routing_islands_audit.md");
-    let mut md = std::fs::File::create(&md_path)
-        .with_context(|| format!("create {}", md_path.display()))?;
+    let mut md =
+        std::fs::File::create(&md_path).with_context(|| format!("create {}", md_path.display()))?;
 
     let now = chrono_lite();
     let largest_size = sccs.first().map(|c| c.len()).unwrap_or(0);
-    let largest_pct = if n > 0 { largest_size as f64 / n as f64 * 100.0 } else { 0.0 };
+    let largest_pct = if n > 0 {
+        largest_size as f64 / n as f64 * 100.0
+    } else {
+        0.0
+    };
 
     writeln!(md, "# Routing-Islands-Audit")?;
     writeln!(md)?;
@@ -511,7 +539,12 @@ fn main() -> Result<()> {
         n,
         raw_edges.len()
     )?;
-    writeln!(md, "Cities-Fixture: `{}`, {} cities", args.cities.display(), cities.len())?;
+    writeln!(
+        md,
+        "Cities-Fixture: `{}`, {} cities",
+        args.cities.display(),
+        cities.len()
+    )?;
     writeln!(md)?;
     writeln!(md, "## Summary")?;
     writeln!(md)?;
@@ -521,7 +554,11 @@ fn main() -> Result<()> {
         "- Largest SCC: {} nodes ({:.1}% of graph)",
         largest_size, largest_pct
     )?;
-    writeln!(md, "- Cities mapped to largest SCC: {cities_in_largest}/{}", cities.len())?;
+    writeln!(
+        md,
+        "- Cities mapped to largest SCC: {cities_in_largest}/{}",
+        cities.len()
+    )?;
     writeln!(md, "- Singleton SCCs: {singleton_sccs}")?;
     writeln!(md)?;
 
@@ -563,26 +600,44 @@ fn main() -> Result<()> {
     // City -> Component table
     writeln!(md, "## Cities -> Component Mapping")?;
     writeln!(md)?;
-    writeln!(md, "| City | Component-ID | Component-Size | Snap-Dist (m) | Notes |")?;
-    writeln!(md, "|------|--------------|----------------|---------------|-------|")?;
+    writeln!(
+        md,
+        "| City | Component-ID | Component-Size | Snap-Dist (m) | Notes |"
+    )?;
+    writeln!(
+        md,
+        "|------|--------------|----------------|---------------|-------|"
+    )?;
     for row in &city_audit {
         writeln!(
             md,
             "| {} | {} | {} | {} | {} |",
             row.city,
-            row.component_id.map(|c| (c + 1).to_string()).unwrap_or("-".to_string()),
-            row.component_size.map(|s| s.to_string()).unwrap_or("-".to_string()),
-            row.snap_dist_m.map(|d| format!("{d:.0}")).unwrap_or("-".to_string()),
+            row.component_id
+                .map(|c| (c + 1).to_string())
+                .unwrap_or("-".to_string()),
+            row.component_size
+                .map(|s| s.to_string())
+                .unwrap_or("-".to_string()),
+            row.snap_dist_m
+                .map(|d| format!("{d:.0}"))
+                .unwrap_or("-".to_string()),
             row.note
         )?;
     }
     writeln!(md)?;
 
     // Cross-component edges
-    writeln!(md, "## Cross-Component Connectivity (Top-{cross_n} Components)")?;
+    writeln!(
+        md,
+        "## Cross-Component Connectivity (Top-{cross_n} Components)"
+    )?;
     writeln!(md)?;
     if cross_edges.is_empty() {
-        writeln!(md, "No cross-component edges found between top-{cross_n} components.")?;
+        writeln!(
+            md,
+            "No cross-component edges found between top-{cross_n} components."
+        )?;
     } else {
         writeln!(md, "| From Comp | To Comp | Edge-Count |")?;
         writeln!(md, "|-----------|---------|------------|")?;
@@ -634,7 +689,11 @@ fn main() -> Result<()> {
         writeln!(
             md,
             "  Isolierte Staedte: {}",
-            isolated_cities.iter().map(|r| r.city.as_str()).collect::<Vec<_>>().join(", ")
+            isolated_cities
+                .iter()
+                .map(|r| r.city.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )?;
         writeln!(md)?;
 
@@ -718,11 +777,11 @@ mod tests {
         // 0->1->2->0  (SCC of size 3)
         // 3->4        (two singletons OR one SCC if 4->3 added)
         let adj = vec![
-            vec![1],    // 0->1
-            vec![2],    // 1->2
-            vec![0],    // 2->0
-            vec![4],    // 3->4
-            vec![],     // 4 (no outgoing)
+            vec![1], // 0->1
+            vec![2], // 1->2
+            vec![0], // 2->0
+            vec![4], // 3->4
+            vec![],  // 4 (no outgoing)
         ];
         let sccs = tarjan_scc(&adj);
         // Should have 3 SCCs: {0,1,2}, {3}, {4} (or {4},{3} order)
@@ -735,12 +794,7 @@ mod tests {
     #[test]
     fn fully_connected_cycle() {
         // 0->1->2->3->0 — one big SCC
-        let adj = vec![
-            vec![1],
-            vec![2],
-            vec![3],
-            vec![0],
-        ];
+        let adj = vec![vec![1], vec![2], vec![3], vec![0]];
         let sccs = tarjan_scc(&adj);
         assert_eq!(sccs.len(), 1);
         assert_eq!(sccs[0].len(), 4);
@@ -749,11 +803,7 @@ mod tests {
     #[test]
     fn dag_all_singletons() {
         // 0->1  1->2  (DAG — no back edges)
-        let adj = vec![
-            vec![1],
-            vec![2],
-            vec![],
-        ];
+        let adj = vec![vec![1], vec![2], vec![]];
         let sccs = tarjan_scc(&adj);
         assert_eq!(sccs.len(), 3);
         for scc in &sccs {

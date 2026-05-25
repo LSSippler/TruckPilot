@@ -64,7 +64,9 @@ fn main() -> Result<()> {
     let node_arr = graph["nodes"].as_array().context("graph.nodes missing")?;
     let edge_arr = graph["edges"].as_array().context("graph.edges missing")?;
     let sign_arr = graph["signs"].as_array().context("graph.signs missing")?;
-    let prefab_arr = graph["prefabs"].as_array().context("graph.prefabs missing")?;
+    let prefab_arr = graph["prefabs"]
+        .as_array()
+        .context("graph.prefabs missing")?;
 
     eprintln!(
         "[graph-stats] {} nodes, {} edges, {} signs, {} prefabs — loaded in {:.1}s",
@@ -120,7 +122,9 @@ fn main() -> Result<()> {
             d if d.contains("ferry") => "ferry",
             _ => "other",
         };
-        *edge_type_distribution.entry(bucket.to_string()).or_insert(0) += 1;
+        *edge_type_distribution
+            .entry(bucket.to_string())
+            .or_insert(0) += 1;
 
         let dlc_guard = e["dlc_guard"].as_u64().unwrap_or(0);
         *dlc_guard_counts.entry(dlc_guard).or_insert(0) += 1;
@@ -171,16 +175,28 @@ fn main() -> Result<()> {
         }
     }
 
-    let avg_out = if total_nodes > 0 { out_sum as f64 / total_nodes as f64 } else { 0.0 };
-    let avg_in = if total_nodes > 0 { in_sum as f64 / total_nodes as f64 } else { 0.0 };
+    let avg_out = if total_nodes > 0 {
+        out_sum as f64 / total_nodes as f64
+    } else {
+        0.0
+    };
+    let avg_in = if total_nodes > 0 {
+        in_sum as f64 / total_nodes as f64
+    } else {
+        0.0
+    };
 
     // --- Prefab connectivity ---
     // Collect all node UIDs that appear in edges (as from or to)
     let mut edge_node_set: std::collections::HashSet<u64> =
         std::collections::HashSet::with_capacity(total_nodes);
     for e in edge_arr.iter() {
-        if let Some(f) = e["from"].as_u64() { edge_node_set.insert(f); }
-        if let Some(t) = e["to"].as_u64() { edge_node_set.insert(t); }
+        if let Some(f) = e["from"].as_u64() {
+            edge_node_set.insert(f);
+        }
+        if let Some(t) = e["to"].as_u64() {
+            edge_node_set.insert(t);
+        }
     }
 
     let mut prefab_nodes_total = 0usize;
@@ -249,8 +265,8 @@ fn main() -> Result<()> {
 
     // --- Markdown output ---
     let md_path = args.out_dir.join("graph_stats.md");
-    let mut md = std::fs::File::create(&md_path)
-        .with_context(|| format!("create {}", md_path.display()))?;
+    let mut md =
+        std::fs::File::create(&md_path).with_context(|| format!("create {}", md_path.display()))?;
 
     let now = chrono_lite();
     writeln!(md, "# Graph Stats")?;
@@ -286,8 +302,16 @@ fn main() -> Result<()> {
     writeln!(md, "|----------|-------|---|")?;
     let base_pct = stats.dlc_guard_base_edges as f64 / stats.total_edges as f64 * 100.0;
     let dlc_pct = stats.dlc_guard_dlc_edges as f64 / stats.total_edges as f64 * 100.0;
-    writeln!(md, "| base (guard=0) | {} | {base_pct:.2}% |", stats.dlc_guard_base_edges)?;
-    writeln!(md, "| dlc (guard>0) | {} | {dlc_pct:.2}% |", stats.dlc_guard_dlc_edges)?;
+    writeln!(
+        md,
+        "| base (guard=0) | {} | {base_pct:.2}% |",
+        stats.dlc_guard_base_edges
+    )?;
+    writeln!(
+        md,
+        "| dlc (guard>0) | {} | {dlc_pct:.2}% |",
+        stats.dlc_guard_dlc_edges
+    )?;
     writeln!(md)?;
     writeln!(md, "Top-5 DLC guard values:")?;
     writeln!(md)?;
@@ -330,9 +354,21 @@ fn main() -> Result<()> {
     writeln!(md)?;
     writeln!(md, "| Metric | Value |")?;
     writeln!(md, "|--------|-------|")?;
-    writeln!(md, "| isolated_nodes (in=0, out=0) | {} |", stats.isolated_nodes)?;
-    writeln!(md, "| source_only_nodes (out>0, in=0) | {} |", stats.source_only_nodes)?;
-    writeln!(md, "| sink_only_nodes (out=0, in>0) | {} |", stats.sink_only_nodes)?;
+    writeln!(
+        md,
+        "| isolated_nodes (in=0, out=0) | {} |",
+        stats.isolated_nodes
+    )?;
+    writeln!(
+        md,
+        "| source_only_nodes (out>0, in=0) | {} |",
+        stats.source_only_nodes
+    )?;
+    writeln!(
+        md,
+        "| sink_only_nodes (out=0, in>0) | {} |",
+        stats.sink_only_nodes
+    )?;
     writeln!(md, "| avg_out_degree | {:.3} |", stats.avg_out_degree)?;
     writeln!(md, "| avg_in_degree | {:.3} |", stats.avg_in_degree)?;
     writeln!(md)?;
@@ -352,8 +388,7 @@ fn main() -> Result<()> {
         stats.prefab_nodes_also_in_edges
     )?;
     if stats.prefab_nodes_total > 0 {
-        let pct =
-            stats.prefab_nodes_also_in_edges as f64 / stats.prefab_nodes_total as f64 * 100.0;
+        let pct = stats.prefab_nodes_also_in_edges as f64 / stats.prefab_nodes_total as f64 * 100.0;
         writeln!(md, "| coverage_pct | {pct:.2}% |")?;
     }
     writeln!(md)?;
@@ -368,7 +403,10 @@ fn main() -> Result<()> {
     }
 
     eprintln!("[graph-stats] wrote {}", md_path.display());
-    eprintln!("[graph-stats] total time: {:.1}s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[graph-stats] total time: {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
 
     Ok(())
 }

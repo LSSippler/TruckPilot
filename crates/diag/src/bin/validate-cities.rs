@@ -20,10 +20,10 @@ use truckpilot_map_parser::graph::MapGraph;
 // ── Hardcoded UI presets from crates/ui/src/components/RouteCard.tsx ──────────
 // These are the UIDs users actually click — we validate them against graph.json.
 const UI_PRESETS: &[(&str, u64)] = &[
-    ("Berlin",    282_353_445_640_339_601),
-    ("Hamburg",   6_526_933_291_294_064_640),
-    ("München",   12_090_290_263_537_061_888),
-    ("Köln",      4_789_015_231_856_640_000),
+    ("Berlin", 282_353_445_640_339_601),
+    ("Hamburg", 6_526_933_291_294_064_640),
+    ("München", 12_090_290_263_537_061_888),
+    ("Köln", 4_789_015_231_856_640_000),
     ("Frankfurt", 7_891_234_567_890_123_456),
 ];
 
@@ -43,11 +43,15 @@ fn read_cities(path: &PathBuf) -> Vec<City> {
     let (mut cur_name, mut cur_x, mut cur_z): (Option<String>, Option<f64>, Option<f64>) =
         (None, None, None);
     let flush = |list: &mut Vec<City>,
-                     name: &mut Option<String>,
-                     x: &mut Option<f64>,
-                     z: &mut Option<f64>| {
+                 name: &mut Option<String>,
+                 x: &mut Option<f64>,
+                 z: &mut Option<f64>| {
         if let (Some(n), Some(xv), Some(zv)) = (name.take(), x.take(), z.take()) {
-            list.push(City { name: n, x: xv, z: zv });
+            list.push(City {
+                name: n,
+                x: xv,
+                z: zv,
+            });
         }
     };
     for raw in text.lines() {
@@ -63,9 +67,9 @@ fn read_cities(path: &PathBuf) -> Vec<City> {
             let (key, val) = (key.trim(), val.trim());
             match key {
                 "name" => cur_name = Some(val.trim_matches('"').to_string()),
-                "x"    => cur_x = val.parse::<f64>().ok(),
-                "z"    => cur_z = val.parse::<f64>().ok(),
-                _      => {}
+                "x" => cur_x = val.parse::<f64>().ok(),
+                "z" => cur_z = val.parse::<f64>().ok(),
+                _ => {}
             }
         }
     }
@@ -84,15 +88,18 @@ struct GraphIndex {
 
 impl GraphIndex {
     fn build(graph: &MapGraph) -> Self {
-        let nodes: Vec<(u64, f64, f64)> =
-            graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+        let nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
         let positions: HashMap<u64, (f64, f64)> =
             graph.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
         let mut edge_count: HashMap<u64, usize> = HashMap::new();
         for e in &graph.edges {
             *edge_count.entry(e.from).or_insert(0) += 1;
         }
-        Self { nodes, positions, edge_count }
+        Self {
+            nodes,
+            positions,
+            edge_count,
+        }
     }
 
     fn find_nearest(&self, x: f64, z: f64) -> Option<(u64, f64)> {
@@ -144,9 +151,7 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "-h" | "--help" => {
-                eprintln!(
-                    "usage: validate-cities [--graph PATH] [--cities PATH] [--output PATH]"
-                );
+                eprintln!("usage: validate-cities [--graph PATH] [--cities PATH] [--output PATH]");
                 std::process::exit(0);
             }
             other => {
@@ -155,7 +160,11 @@ fn parse_args() -> Args {
             }
         }
     }
-    Args { graph, cities, output }
+    Args {
+        graph,
+        cities,
+        output,
+    }
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -220,8 +229,7 @@ fn main() {
             }
             None => {
                 println!("{:<16}  (no graph nodes loaded)", city.name);
-                city_rows
-                    .push(format!("| {:<16} | — | — | — | — | NO NODES |", city.name));
+                city_rows.push(format!("| {:<16} | — | — | — | — | NO NODES |", city.name));
             }
         }
     }
@@ -229,10 +237,7 @@ fn main() {
     // ── Section 2: UI preset UID validation ─────────────────────────────────
     println!();
     println!("=== Section 2: UI Preset UID Validation (RouteCard.tsx) ===");
-    println!(
-        "{:<12} {:>22}  Status",
-        "Preset", "UID"
-    );
+    println!("{:<12} {:>22}  Status", "Preset", "UID");
     println!("{}", "-".repeat(60));
 
     let mut preset_rows: Vec<String> = Vec::new();
@@ -260,7 +265,10 @@ fn main() {
     if missing_count > 0 {
         println!();
         println!("*** ROOT CAUSE HYPOTHESIS ***");
-        println!("  {missing_count}/{} UI preset UIDs are NOT in graph.json.", UI_PRESETS.len());
+        println!(
+            "  {missing_count}/{} UI preset UIDs are NOT in graph.json.",
+            UI_PRESETS.len()
+        );
         println!("  This is the likely root cause of the Live-Test failure.");
         println!("  The router receives the correct UID but cannot find it in the graph.");
         println!("  Resolution: regenerate cities.toml presets from current graph.json,");

@@ -112,19 +112,19 @@ fn sector_world_xz(path: &str) -> Option<(f32, f32)> {
 
 fn known_cities() -> &'static [(&'static str, f32, f32)] {
     &[
-        ("Berlin",    -16400.0, -3200.0),
-        ("Hamburg",   -22300.0, -7200.0),
-        ("Wien",       -8400.0,  3500.0),
-        ("Paris",     -29000.0,  -500.0),
+        ("Berlin", -16400.0, -3200.0),
+        ("Hamburg", -22300.0, -7200.0),
+        ("Wien", -8400.0, 3500.0),
+        ("Paris", -29000.0, -500.0),
         ("Amsterdam", -25400.0, -9900.0),
-        ("Köln",      -23600.0, -5000.0),
+        ("Köln", -23600.0, -5000.0),
         ("Frankfurt", -20700.0, -2200.0),
-        ("München",   -16800.0,  2000.0),
-        ("Prag",      -12600.0,   400.0),
-        ("Warschau",   -4200.0, -5800.0),
-        ("Calais",    -30000.0, -8500.0),
-        ("London",    -32000.0, -9000.0),
-        ("Duisburg",  -22800.0, -5200.0),
+        ("München", -16800.0, 2000.0),
+        ("Prag", -12600.0, 400.0),
+        ("Warschau", -4200.0, -5800.0),
+        ("Calais", -30000.0, -8500.0),
+        ("London", -32000.0, -9000.0),
+        ("Duisburg", -22800.0, -5200.0),
     ]
 }
 
@@ -209,15 +209,26 @@ fn main() -> Result<()> {
     let mut type_vec: Vec<(u32, usize)> = type_counts.into_iter().collect();
     type_vec.sort_by_key(|(t, _)| *t);
 
-    let audit_failure = audit.failure.as_ref().map(|f| {
-        format!("offset=0x{:X}, raw_type=0x{:X}, msg={}", f.error_offset, f.raw_type, f.error_msg)
-    }).unwrap_or_else(|| "none (clean parse)".to_string());
+    let audit_failure = audit
+        .failure
+        .as_ref()
+        .map(|f| {
+            format!(
+                "offset=0x{:X}, raw_type=0x{:X}, msg={}",
+                f.error_offset, f.raw_type, f.error_msg
+            )
+        })
+        .unwrap_or_else(|| "none (clean parse)".to_string());
 
     eprintln!(
         "  item_count={}, items_parsed={}, failure={}",
         audit.item_count,
         audit.items.len(),
-        if audit.failure.is_none() { "NONE" } else { "YES" }
+        if audit.failure.is_none() {
+            "NONE"
+        } else {
+            "YES"
+        }
     );
 
     // ── Step 4: parse_sector — node/road counts + first 5 roads ──────────
@@ -237,26 +248,30 @@ fn main() -> Result<()> {
     );
 
     // First 5 roads
-    let sample_roads: Vec<(u64, u64, u64)> = parsed.roads
+    let sample_roads: Vec<(u64, u64, u64)> = parsed
+        .roads
         .iter()
         .take(5)
         .map(|r| (r.uid, r.node_a, r.node_b))
         .collect();
 
     // ── Step 5: H7 check — prefab UID × road node UID intersection ────────
-    let road_node_uids: std::collections::HashSet<u64> = parsed.roads
+    let road_node_uids: std::collections::HashSet<u64> = parsed
+        .roads
         .iter()
         .flat_map(|r| [r.node_a, r.node_b])
         .filter(|&uid| uid != 0)
         .collect();
 
-    let prefab_node_uids: std::collections::HashSet<u64> = parsed.prefabs
+    let prefab_node_uids: std::collections::HashSet<u64> = parsed
+        .prefabs
         .iter()
         .flat_map(|p| p.nodes.iter().copied())
         .filter(|&uid| uid != 0)
         .collect();
 
-    let intersection: std::collections::HashSet<&u64> = road_node_uids.intersection(&prefab_node_uids).collect();
+    let intersection: std::collections::HashSet<&u64> =
+        road_node_uids.intersection(&prefab_node_uids).collect();
     let h7_overlap_count = intersection.len();
     let h7_overlap_pct = if road_node_uids.is_empty() {
         0.0
@@ -331,7 +346,11 @@ fn main() -> Result<()> {
         w!("- World Z ≈ {:.0}", wz);
         w!();
         let (city, dist_m) = nearest_city(wx, wz);
-        w!("Nearest known city: **{}** ({:.0}m from sector center)", city, dist_m);
+        w!(
+            "Nearest known city: **{}** ({:.0}m from sector center)",
+            city,
+            dist_m
+        );
         w!();
 
         // Top 5 nearest cities
@@ -346,7 +365,10 @@ fn main() -> Result<()> {
             w!("| {} | {:.0} |", city_name, dist);
         }
     } else {
-        w!("Could not parse sector coordinates from path `{}`.", sector_path);
+        w!(
+            "Could not parse sector coordinates from path `{}`.",
+            sector_path
+        );
     }
     w!();
 
@@ -362,7 +384,10 @@ fn main() -> Result<()> {
     w!("| `sector.buildings.len()` | {} |", building_count);
     w!("| `sector.ferries.len()` | {} |", ferry_count);
     w!("| `audit.item_count` (header) | {} |", audit.item_count);
-    w!("| `audit.items.len()` (parsed by walker) | {} |", audit.items.len());
+    w!(
+        "| `audit.items.len()` (parsed by walker) | {} |",
+        audit.items.len()
+    );
     w!("| Audit failure | {} |", audit_failure);
     w!();
 
@@ -372,7 +397,10 @@ fn main() -> Result<()> {
         w!("The brute-force forensic scan finds these UIDs in the road body bytes (+245/+253 offsets),");
         w!("not in a node definition block — consistent with the spec's critical constraint.");
     } else {
-        w!("**H1 FALSIFIED**: sector has {} nodes — parse produced nodes.", node_count);
+        w!(
+            "**H1 FALSIFIED**: sector has {} nodes — parse produced nodes.",
+            node_count
+        );
         w!("Problem must be downstream. Continue with H2/H3 tests.");
     }
     w!();
@@ -384,7 +412,11 @@ fn main() -> Result<()> {
     w!("|---|---|---|---|");
     let total_header = audit.item_count as f64;
     for (t, c) in &type_vec {
-        let pct = if total_header > 0.0 { *c as f64 * 100.0 / total_header } else { 0.0 };
+        let pct = if total_header > 0.0 {
+            *c as f64 * 100.0 / total_header
+        } else {
+            0.0
+        };
         w!("| {} | {} | {} | {:.1}% |", t, item_type_name(*t), c, pct);
     }
     w!();
@@ -411,14 +443,27 @@ fn main() -> Result<()> {
     w!();
     w!("| Metric | Value |");
     w!("|---|---|");
-    w!("| Unique road node UIDs (node_a ∪ node_b) | {} |", road_node_uids.len());
-    w!("| Unique prefab connected_node_uids | {} |", prefab_node_uids.len());
-    w!("| Intersection (road refs in prefab UIDs) | {} ({:.1}%) |", h7_overlap_count, h7_overlap_pct);
+    w!(
+        "| Unique road node UIDs (node_a ∪ node_b) | {} |",
+        road_node_uids.len()
+    );
+    w!(
+        "| Unique prefab connected_node_uids | {} |",
+        prefab_node_uids.len()
+    );
+    w!(
+        "| Intersection (road refs in prefab UIDs) | {} ({:.1}%) |",
+        h7_overlap_count,
+        h7_overlap_pct
+    );
     w!();
 
     if node_count == 0 {
         if h7_overlap_pct > 30.0 {
-            w!("**H7 SUPPORTED**: {:.1}% of road node refs appear in prefab UID lists.", h7_overlap_pct);
+            w!(
+                "**H7 SUPPORTED**: {:.1}% of road node refs appear in prefab UID lists.",
+                h7_overlap_pct
+            );
             w!("Road endpoints are NOT standalone nodes — they are referenced via prefab connections.");
             w!("This is a structural cross-sector issue: roads in this sector reference nodes defined");
             w!("elsewhere (another sector's node trailer or a prefab item in another sector).");
@@ -427,11 +472,17 @@ fn main() -> Result<()> {
             w!("Road node UIDs with no matching nodes and no local prefabs = pure node_count=0 sector.");
             w!("The sector simply has no trailing nodes (H1). Roads reference nodes in OTHER sectors.");
         } else {
-            w!("**H7 WEAK**: Only {:.1}% overlap between road refs and prefab UIDs.", h7_overlap_pct);
+            w!(
+                "**H7 WEAK**: Only {:.1}% overlap between road refs and prefab UIDs.",
+                h7_overlap_pct
+            );
             w!("Road node refs are not primarily from prefabs — they reference nodes in other sectors.");
         }
     } else {
-        w!("(H7 analysis only meaningful when nodes.len()==0; sector has {} nodes.)", node_count);
+        w!(
+            "(H7 analysis only meaningful when nodes.len()==0; sector has {} nodes.)",
+            node_count
+        );
     }
     w!();
 
@@ -442,7 +493,10 @@ fn main() -> Result<()> {
         w!("### Root Cause: H1 Confirmed — Empty Node Trailer");
         w!();
         w!("The sector parses completely (0 UnknownItemType, clean item dispatch),");
-        w!("but its trailing `node_count` is 0. All {} roads reference endpoint UIDs", road_count);
+        w!(
+            "but its trailing `node_count` is 0. All {} roads reference endpoint UIDs",
+            road_count
+        );
         w!("that exist only as 8-byte values in Road body bytes (offsets +245/+253),");
         w!("never as `RawNode` entries. The brute-force forensic scan's 230 BothFound");
         w!("events are explained: UIDs found in road bodies, not node definitions.");
@@ -453,7 +507,11 @@ fn main() -> Result<()> {
         w!("- 0 nodes contributed to the global node map.");
         if let Some((wx, wz)) = world_pos {
             let (city, dist_m) = nearest_city(wx, wz);
-            w!("- Sector is near {} ({:.0}m) — check whether any test-set route passes through.", city, dist_m);
+            w!(
+                "- Sector is near {} ({:.0}m) — check whether any test-set route passes through.",
+                city,
+                dist_m
+            );
         }
         w!();
         w!("### Decision Gate");
@@ -466,10 +524,16 @@ fn main() -> Result<()> {
         w!("| Are road node UIDs defined as standalone nodes in ADJACENT sectors? | Cross-sector issue scope |");
         w!();
         w!("**Recommendation: DEFER to Phase 6.4 (Cross-Sector-Edge-Generation)**");
-        w!("unless a cities.toml route is blocked. Impact is {} / 1,063,231 nodes = 0.02%.", road_count);
+        w!(
+            "unless a cities.toml route is blocked. Impact is {} / 1,063,231 nodes = 0.02%.",
+            road_count
+        );
         w!("A proper fix requires cross-sector node resolution, not a local patch.");
     } else {
-        w!("H1 falsified — sector has {} nodes. Continue with H2/H3 tests.", node_count);
+        w!(
+            "H1 falsified — sector has {} nodes. Continue with H2/H3 tests.",
+            node_count
+        );
         w!("Run `sec-single-inspect` with `--verbose` flag after adding sized-gate instrumentation.");
     }
     w!();

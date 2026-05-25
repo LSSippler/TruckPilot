@@ -1,0 +1,86 @@
+# Cities Validation Report — Phase 6.5c
+
+Generated: 2026-05-19  
+Graph: `graph.json`  
+Cities: `crates/map-parser/tests/fixtures/test_cities.toml`  
+
+**Graph:** 1153648 nodes / 1303542 edges
+
+## Section 1: Nearest Graph Node per City
+
+| City | Nearest UID | Distance | Position (x, z) | Outgoing Edges | Note |
+|------|-------------|----------|-----------------|----------------|------|
+| Berlin           | `6919855103841468416` | 42 m | (-16440, -3213) | 3 ||
+| Hamburg          | `6526933291294064640` | 62 m | (-22327, -7144) | 0 ||
+| Muenchen         | `6972029165941424128` | 15 m | (-16186, 2696) | 0 ||
+| Wien             | `7164828206179905841` | 56 m | (-8443, 3465) | 0 ||
+| Prag             | `6054870934110617351` | 13 m | (-11808, 411) | 4 ||
+| Warschau         | `6219844824041607977` | 60 m | (-2981, -3257) | 2 ||
+| Amsterdam        | `511341911874732032` | 287 m | (-29434, -3567) | 0 ||
+| Bruessel         | `437485961594863618` | 324 m | (-30068, 18) | 0 ||
+| Paris            | `358087285684699136` | 242 m | (-33723, 1994) | 1 ||
+| Mailand          | `11599704834989049` | 232 m | (-22707, 8306) | 2 ||
+| Madrid           | `5616765011398492172` | 10210 m | (-58027, 6542) | 1 |  ⚠ >5km|
+| Barcelona        | `340240176744890368` | 637 m | (-50637, 7483) | 0 ||
+| Sevilla          | `3474532028983869440` | 2056 m | (-77785, 25900) | 1 ||
+| Valencia         | `367699086200471552` | 6733 m | (-51640, 11788) | 0 |  ⚠ >5km|
+| Lissabon         | `3869659156576534528` | 16959 m | (-84664, 26446) | 0 |  ⚠ >5km|
+| Porto            | `3869659156576534528` | 24711 m | (-84664, 26446) | 0 |  ⚠ >5km|
+| Rom              | `5638809273708251869` | 500 m | (-13297, 18043) | 0 ||
+| Venedig          | `7122087662525098421` | 176 m | (-15502, 7824) | 1 ||
+| Neapel           | `5638809254120877035` | 63 m | (-9458, 21547) | 2 ||
+| Genua            | `367702008359157762` | 282 m | (-21725, 11561) | 0 ||
+| Marseille        | `3384404907402272269` | 86 m | (-32496, 10914) | 0 ||
+| Lyon             | `425473086242226176` | 98 m | (-30592, 7034) | 2 ||
+| Stockholm        | `137837484578245493` | 896 m | (-8105, -41955) | 0 ||
+| Oslo             | `6445172487082147841` | 13620 m | (-5880, -33416) | 0 |  ⚠ >5km|
+| Goeteborg        | `6393693561438601218` | 7451 m | (-16997, -15983) | 0 |  ⚠ >5km|
+| Bergen           | `231967513640173568` | 10765 m | (-34901, -29946) | 0 |  ⚠ >5km|
+| Helsinki         | `236442477454688258` | 2691 m | (1973, -39309) | 1 ||
+| Bukarest         | `4809609004064950816` | 22 m | (19983, 14486) | 1 ||
+| Sofia            | `4809609004245254663` | 205 m | (12941, 16197) | 1 ||
+| Istanbul         | `307179060578484224` | 80 m | (27930, 21962) | 2 ||
+| Konstanza        | `11599705663390297` | 77 m | (24926, 13021) | 0 ||
+| Zagreb           | `4096968979838010780` | 98 m | (-2916, 8549) | 0 ||
+| Belgrad          | `4328500494390527701` | 1122 m | (4738, 13323) | 2 ||
+| Ljubljana        | `4229118664441988414` | 52 m | (-7493, 7949) | 2 ||
+| Riga             | `5657244115898544942` | 269 m | (8253, -18896) | 1 ||
+| Vilnius          | `6302930001291771904` | 275 m | (8275, -9991) | 0 ||
+| Tallinn          | `6804060420532011009` | 5 m | (7503, -26997) | 0 ||
+| Krakau           | `3523795922494426004` | 118 m | (-1113, -1466) | 2 ||
+| Bratislava       | `5463961135592842905` | 102 m | (-6899, 3509) | 0 ||
+| Budapest         | `7101282311152336898` | 74 m | (-1457, 5440) | 2 ||
+
+## Section 2: UI Preset UID Validation
+
+| Preset | UID | Status |
+|--------|-----|--------|
+| Berlin | `282353445640339601` | NOT FOUND |
+| Hamburg | `6526933291294064640` | FOUND at (-22327, -7144), 0 edges |
+| München | `12090290263537061888` | NOT FOUND |
+| Köln | `4789015231856640000` | NOT FOUND |
+| Frankfurt | `7891234567890123456` | NOT FOUND |
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Graph nodes | 1153648 |
+| Graph edges | 1303542 |
+| Cities checked | 40 |
+| UI presets | 5 |
+| UI presets missing | **4** |
+
+## ⚠ Root Cause Hypothesis
+
+**4/5 UI preset UIDs are NOT in graph.json.**
+
+This is the likely root cause of the Live-Test failure:
+
+1. The IPC wire type is correct (string, no precision loss)
+2. The router receives the correct UID
+3. But the UID does not exist in the loaded graph
+4. A* cannot run → `uid_not_in_graph` result
+
+**Resolution:** Use the nearest-node UIDs from Section 1 for testing,
+or regenerate the UI preset UIDs from the current graph.json.

@@ -14,7 +14,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "compare-with-ets2la", about = "Compare TruckPilot graph vs ETS2LA reference")]
+#[command(
+    name = "compare-with-ets2la",
+    about = "Compare TruckPilot graph vs ETS2LA reference"
+)]
 struct Args {
     #[arg(long, default_value = "outputs/2026-05-22/diag/graph_stats.json")]
     stats_file: PathBuf,
@@ -70,7 +73,10 @@ struct StatsData {
 
 fn load_stats(path: &PathBuf) -> Option<StatsData> {
     if !path.exists() {
-        eprintln!("[compare-with-ets2la] stats-file not found: {} — skipping", path.display());
+        eprintln!(
+            "[compare-with-ets2la] stats-file not found: {} — skipping",
+            path.display()
+        );
         return None;
     }
     let text = std::fs::read_to_string(path).ok()?;
@@ -84,7 +90,8 @@ fn load_stats(path: &PathBuf) -> Option<StatsData> {
         HashMap::new()
     };
 
-    let raw_direction_distribution = if let Some(obj) = v["raw_direction_distribution"].as_object() {
+    let raw_direction_distribution = if let Some(obj) = v["raw_direction_distribution"].as_object()
+    {
         obj.iter()
             .filter_map(|(k, val)| val.as_u64().map(|n| (k.clone(), n)))
             .collect()
@@ -117,7 +124,10 @@ struct AuditData {
 
 fn load_audit(path: &PathBuf) -> Option<AuditData> {
     if !path.exists() {
-        eprintln!("[compare-with-ets2la] audit-csv not found: {} — skipping", path.display());
+        eprintln!(
+            "[compare-with-ets2la] audit-csv not found: {} — skipping",
+            path.display()
+        );
         return None;
     }
     let text = std::fs::read_to_string(path).ok()?;
@@ -143,7 +153,12 @@ fn load_audit(path: &PathBuf) -> Option<AuditData> {
         }
     }
 
-    Some(AuditData { total_pairs, cat4_success, cat3_no_path, cat1_snap })
+    Some(AuditData {
+        total_pairs,
+        cat4_success,
+        cat3_no_path,
+        cat1_snap,
+    })
 }
 
 fn ratio_str(tp: Option<u64>, ets: u64) -> String {
@@ -154,7 +169,8 @@ fn ratio_str(tp: Option<u64>, ets: u64) -> String {
 }
 
 fn fmt_opt_u64(v: Option<u64>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "N/A".to_string())
+    v.map(|n| n.to_string())
+        .unwrap_or_else(|| "N/A".to_string())
 }
 
 fn hypothesis_status(confirmed: Option<bool>) -> &'static str {
@@ -175,8 +191,8 @@ fn main() -> Result<()> {
         .with_context(|| format!("create out-dir: {}", args.out_dir.display()))?;
 
     let md_path = args.out_dir.join("ets2la_comparison.md");
-    let mut md = std::fs::File::create(&md_path)
-        .with_context(|| format!("create {}", md_path.display()))?;
+    let mut md =
+        std::fs::File::create(&md_path).with_context(|| format!("create {}", md_path.display()))?;
 
     writeln!(md, "# ETS2LA vs TruckPilot Comparison")?;
     writeln!(md)?;
@@ -228,7 +244,11 @@ fn main() -> Result<()> {
 
     // item resolution rate vs route success rate
     let tp_success_rate = audit.as_ref().map(|a| {
-        if a.total_pairs > 0 { a.cat4_success as f64 / a.total_pairs as f64 } else { 0.0 }
+        if a.total_pairs > 0 {
+            a.cat4_success as f64 / a.total_pairs as f64
+        } else {
+            0.0
+        }
     });
     let tp_rate_str = tp_success_rate
         .map(|r| format!("{:.4} ({:.2}%)", r, r * 100.0))
@@ -258,7 +278,11 @@ fn main() -> Result<()> {
         writeln!(md, "| Metric | Value |")?;
         writeln!(md, "|--------|-------|")?;
         writeln!(md, "| Total city pairs | {} |", a.total_pairs)?;
-        writeln!(md, "| CAT4_SUCCESS | {} ({success_pct:.2}%) |", a.cat4_success)?;
+        writeln!(
+            md,
+            "| CAT4_SUCCESS | {} ({success_pct:.2}%) |",
+            a.cat4_success
+        )?;
         writeln!(md, "| CAT3_NO_PATH | {} |", a.cat3_no_path)?;
         writeln!(md, "| CAT1_SNAP_* | {} |", a.cat1_snap)?;
         writeln!(md)?;
@@ -268,7 +292,10 @@ fn main() -> Result<()> {
             ETS2LA_ITEM_RESOLUTION_RATE * 100.0
         )?;
     } else {
-        writeln!(md, "_audit-csv not available — no routing comparison possible._")?;
+        writeln!(
+            md,
+            "_audit-csv not available — no routing comparison possible._"
+        )?;
     }
     writeln!(md)?;
 
@@ -306,7 +333,10 @@ fn main() -> Result<()> {
                 )
             }
         } else {
-            (None, "graph_stats.json nicht verfügbar — kein Vergleich möglich.".to_string())
+            (
+                None,
+                "graph_stats.json nicht verfügbar — kein Vergleich möglich.".to_string(),
+            )
         };
         writeln!(md, "### H1: Fehlende Edges")?;
         writeln!(md)?;
@@ -319,8 +349,16 @@ fn main() -> Result<()> {
     // H2: Edge-Direction falsch (expect ~50:50 forward/backward)
     {
         let (status, reason) = if let Some(s) = &stats {
-            let fwd = s.edge_type_distribution.get("forward").copied().unwrap_or(0);
-            let bwd = s.edge_type_distribution.get("backward").copied().unwrap_or(0);
+            let fwd = s
+                .edge_type_distribution
+                .get("forward")
+                .copied()
+                .unwrap_or(0);
+            let bwd = s
+                .edge_type_distribution
+                .get("backward")
+                .copied()
+                .unwrap_or(0);
             let total_dir = fwd + bwd;
             if total_dir == 0 {
                 (None, "Keine forward/backward Edges gefunden.".to_string())
@@ -410,8 +448,14 @@ fn main() -> Result<()> {
             } else {
                 0.0
             };
-            let prefab_coverage = if let (Some(pt), Some(pe)) = (s.prefab_nodes_total, s.prefab_nodes_also_in_edges) {
-                if pt > 0 { Some(pe as f64 / pt as f64) } else { None }
+            let prefab_coverage = if let (Some(pt), Some(pe)) =
+                (s.prefab_nodes_total, s.prefab_nodes_also_in_edges)
+            {
+                if pt > 0 {
+                    Some(pe as f64 / pt as f64)
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -448,7 +492,8 @@ fn main() -> Result<()> {
     // H5: Sektor-Grenzen (cross_sector edges)
     {
         let (status, reason) = if let Some(s) = &stats {
-            let cross_sector_total: u64 = s.raw_direction_distribution
+            let cross_sector_total: u64 = s
+                .raw_direction_distribution
                 .iter()
                 .filter(|(k, _)| k.contains("cross_sector") || k.contains("crosssector"))
                 .map(|(_, v)| v)
@@ -476,7 +521,9 @@ fn main() -> Result<()> {
                     )
                 }
             } else {
-                let direction_values: Vec<String> = s.raw_direction_distribution.keys()
+                let direction_values: Vec<String> = s
+                    .raw_direction_distribution
+                    .keys()
                     .take(10)
                     .map(|k| format!("`{k}`"))
                     .collect();
@@ -513,19 +560,28 @@ fn main() -> Result<()> {
 
 fn generate_recommendation(stats: &Option<StatsData>, audit: &Option<AuditData>) -> String {
     let cat3_rate = audit.as_ref().map(|a| {
-        if a.total_pairs > 0 { a.cat3_no_path as f64 / a.total_pairs as f64 } else { 0.0 }
+        if a.total_pairs > 0 {
+            a.cat3_no_path as f64 / a.total_pairs as f64
+        } else {
+            0.0
+        }
     });
     let cat1_rate = audit.as_ref().map(|a| {
-        if a.total_pairs > 0 { a.cat1_snap as f64 / a.total_pairs as f64 } else { 0.0 }
+        if a.total_pairs > 0 {
+            a.cat1_snap as f64 / a.total_pairs as f64
+        } else {
+            0.0
+        }
     });
     let prefab_edge_pct = stats.as_ref().map(|s| {
         let pe = s.edge_type_distribution.get("prefab").copied().unwrap_or(0);
         let te = s.total_edges.unwrap_or(1);
         pe as f64 / te as f64
     });
-    let edge_ratio = stats.as_ref().and_then(|s| s.total_edges).map(|e| {
-        e as f64 / ETS2LA_ESTIMATED_EDGES as f64
-    });
+    let edge_ratio = stats
+        .as_ref()
+        .and_then(|s| s.total_edges)
+        .map(|e| e as f64 / ETS2LA_ESTIMATED_EDGES as f64);
 
     let mut reasons: Vec<&str> = Vec::new();
 
@@ -545,7 +601,8 @@ fn generate_recommendation(stats: &Option<StatsData>, audit: &Option<AuditData>)
     if reasons.is_empty() {
         "Kein dominantes Problem aus den Metriken erkennbar. Empfehlung: \
          ProMods-Support (Phase 6.4) und Routing-Feintuning (A*-Kostenfunktion, \
-         Speed-Limit-Gewichtung). Rohdaten liefern keine Anomalie-Schwerpunkte.".to_string()
+         Speed-Limit-Gewichtung). Rohdaten liefern keine Anomalie-Schwerpunkte."
+            .to_string()
     } else {
         format!(
             "Stärkste Problemhypothesen nach Metriken: **{}**.\n\n\

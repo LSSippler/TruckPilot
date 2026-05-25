@@ -96,8 +96,12 @@ impl HeadingHoldState {
 #[inline]
 pub fn wrap_angle(mut a: f64) -> f64 {
     use std::f64::consts::PI;
-    while a > PI { a -= 2.0 * PI; }
-    while a <= -PI { a += 2.0 * PI; }
+    while a > PI {
+        a -= 2.0 * PI;
+    }
+    while a <= -PI {
+        a += 2.0 * PI;
+    }
     a
 }
 
@@ -149,9 +153,9 @@ mod tests {
     fn heading_error_produces_steering() {
         let mut h = HeadingHoldState::new();
         h.enter(0.0, 0, 0.0); // hold heading 0 rad
-        // After blend period; current heading = +0.5 rad (truck drifted right)
-        // heading_err = 0.0 - 0.5 = -0.5 → pid raw = -0.5 * gain
-        // steering = clamp(-0.5 * 1.0 * 0.5, -1, 1) = -0.25 (steer left)
+                              // After blend period; current heading = +0.5 rad (truck drifted right)
+                              // heading_err = 0.0 - 0.5 = -0.5 → pid raw = -0.5 * gain
+                              // steering = clamp(-0.5 * 1.0 * 0.5, -1, 1) = -0.25 (steer left)
         let s = h.compute_steering(0.5, BLEND_TICKS, &mut dummy_pid(1.0), 0.02);
         assert!(s < 0.0, "expected steer left, got {s}");
         assert!((s - (-0.25)).abs() < 1e-9, "s={s}");
@@ -161,7 +165,7 @@ mod tests {
     fn blending_at_entry() {
         let mut h = HeadingHoldState::new();
         h.enter(0.0, 0, 0.6); // entry steering = 0.6
-        // At tick 0 (elapsed=0) → pure entry steering
+                              // At tick 0 (elapsed=0) → pure entry steering
         let s = h.compute_steering(0.0, 0, &mut dummy_pid(0.0), 0.02);
         assert!((s - 0.6).abs() < 1e-9, "s={s}");
     }

@@ -147,7 +147,7 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard.remove("vjoy.last_error");
         ctx.blackboard.set("vjoy.last_write_tick", "0");
         ctx.blackboard.set("vjoy.idle_centered", "false");
-        ctx.blackboard.set("vjoy.last_raw_x",   "0");
+        ctx.blackboard.set("vjoy.last_raw_x", "0");
         ctx.blackboard.set("vjoy.last_raw_sl0", "0");
         ctx.blackboard.set("vjoy.last_raw_sl1", "0");
         ctx.blackboard.set("vjoy.last_raw_source", "none");
@@ -165,7 +165,7 @@ impl Plugin for VJoyOutputPlugin {
                         Ok((rx, rsl0, rsl1)) => {
                             self.idle_centered = true;
                             ctx.blackboard.set("vjoy.idle_centered", "true");
-                            ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                            ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
                             ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
                             ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                             ctx.blackboard.set("vjoy.last_raw_source", "on_load");
@@ -282,7 +282,7 @@ impl Plugin for VJoyOutputPlugin {
                         ctx.blackboard.set("vjoy.idle_centered", "true");
                         ctx.blackboard
                             .set("vjoy.last_write_tick", ctx.tick_count.to_string());
-                        ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                        ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
                         ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
                         ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                         ctx.blackboard.set("vjoy.last_raw_source", "watchdog");
@@ -346,7 +346,7 @@ impl VJoyOutputPlugin {
                     .set("vjoy.idle_centered", if idle { "true" } else { "false" });
                 ctx.blackboard
                     .set("vjoy.last_write_tick", ctx.tick_count.to_string());
-                ctx.blackboard.set("vjoy.last_raw_x",   rx.to_string());
+                ctx.blackboard.set("vjoy.last_raw_x", rx.to_string());
                 ctx.blackboard.set("vjoy.last_raw_sl0", rsl0.to_string());
                 ctx.blackboard.set("vjoy.last_raw_sl1", rsl1.to_string());
                 ctx.blackboard.set("vjoy.last_raw_source", "tick");
@@ -458,7 +458,10 @@ mod tests {
         for state in ["Engaging", "Active", "Paused", "Fault"] {
             let ctx = PluginContext::test();
             ctx.blackboard.set("autopilot.state", state);
-            assert!(!is_autopilot_off(&ctx), "expected not-off for state={state}");
+            assert!(
+                !is_autopilot_off(&ctx),
+                "expected not-off for state={state}"
+            );
         }
     }
 

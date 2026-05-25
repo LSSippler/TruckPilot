@@ -210,7 +210,10 @@ const _: () = {
     assert!(mem::offset_of!(ShmLayout, roll) - mem::offset_of!(ShmLayout, pitch) == 8);
     assert!(mem::offset_of!(ShmLayout, speed_ms) - mem::offset_of!(ShmLayout, roll) == 8);
     assert!(mem::offset_of!(ShmLayout, engine_rpm) - mem::offset_of!(ShmLayout, speed_ms) == 8);
-    assert!(mem::offset_of!(ShmLayout, nav_speed_limit_kmh) - mem::offset_of!(ShmLayout, engine_rpm) == 8);
+    assert!(
+        mem::offset_of!(ShmLayout, nav_speed_limit_kmh) - mem::offset_of!(ShmLayout, engine_rpm)
+            == 8
+    );
 };
 
 // ---------------------------------------------------------------------------
@@ -502,24 +505,9 @@ pub unsafe extern "system" fn scs_telemetry_init(
     );
 
     // --- Lights & state ---
-    reg_channel(
-        p,
-        "truck.lblinker",
-        SCS_VALUE_TYPE_bool,
-        cb_blinker_l,
-    );
-    reg_channel(
-        p,
-        "truck.rblinker",
-        SCS_VALUE_TYPE_bool,
-        cb_blinker_r,
-    );
-    reg_channel(
-        p,
-        "truck.hazard.warning",
-        SCS_VALUE_TYPE_bool,
-        cb_hazard,
-    );
+    reg_channel(p, "truck.lblinker", SCS_VALUE_TYPE_bool, cb_blinker_l);
+    reg_channel(p, "truck.rblinker", SCS_VALUE_TYPE_bool, cb_blinker_r);
+    reg_channel(p, "truck.hazard.warning", SCS_VALUE_TYPE_bool, cb_hazard);
     reg_channel(
         p,
         "truck.brake.parking",
@@ -528,8 +516,18 @@ pub unsafe extern "system" fn scs_telemetry_init(
     );
 
     // --- Navigation ETA ---
-    reg_channel(p, "truck.navigation.distance", SCS_VALUE_TYPE_float, cb_nav_distance);
-    reg_channel(p, "truck.navigation.time", SCS_VALUE_TYPE_float, cb_nav_time);
+    reg_channel(
+        p,
+        "truck.navigation.distance",
+        SCS_VALUE_TYPE_float,
+        cb_nav_distance,
+    );
+    reg_channel(
+        p,
+        "truck.navigation.time",
+        SCS_VALUE_TYPE_float,
+        cb_nav_time,
+    );
 
     debug_log("scs_telemetry_init done — all channels registered");
     SCS_RESULT_OK
@@ -797,26 +795,26 @@ const SCS_INPUT_EVENT_CALLBACK_FLAG_FIRST_IN_FRAME: scs_u32_t = 0x0000_0001;
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ShmControlLayout {
-    pub magic:    u32,
-    pub version:  u32,
+    pub magic: u32,
+    pub version: u32,
     pub sequence: u32,
-    pub active:   u32,   // 1 = valid control output, 0 = passthrough/idle
-    pub steering: f32,   // [-1.0, +1.0]
-    pub throttle: f32,   // [0.0, 1.0]
-    pub brake:    f32,   // [0.0, 1.0]
-    pub clutch:   f32,   // [0.0, 1.0]
+    pub active: u32,   // 1 = valid control output, 0 = passthrough/idle
+    pub steering: f32, // [-1.0, +1.0]
+    pub throttle: f32, // [0.0, 1.0]
+    pub brake: f32,    // [0.0, 1.0]
+    pub clutch: f32,   // [0.0, 1.0]
 }
 
 const _CTRL_LAYOUT_GUARDS: () = {
-    assert!(mem::offset_of!(ShmControlLayout, magic)    ==  0);
-    assert!(mem::offset_of!(ShmControlLayout, version)  ==  4);
-    assert!(mem::offset_of!(ShmControlLayout, sequence) ==  8);
-    assert!(mem::offset_of!(ShmControlLayout, active)   == 12);
+    assert!(mem::offset_of!(ShmControlLayout, magic) == 0);
+    assert!(mem::offset_of!(ShmControlLayout, version) == 4);
+    assert!(mem::offset_of!(ShmControlLayout, sequence) == 8);
+    assert!(mem::offset_of!(ShmControlLayout, active) == 12);
     assert!(mem::offset_of!(ShmControlLayout, steering) == 16);
     assert!(mem::offset_of!(ShmControlLayout, throttle) == 20);
-    assert!(mem::offset_of!(ShmControlLayout, brake)    == 24);
-    assert!(mem::offset_of!(ShmControlLayout, clutch)   == 28);
-    assert!(mem::size_of::<ShmControlLayout>()          == 32);
+    assert!(mem::offset_of!(ShmControlLayout, brake) == 24);
+    assert!(mem::offset_of!(ShmControlLayout, clutch) == 28);
+    assert!(mem::size_of::<ShmControlLayout>() == 32);
 };
 
 /// Per-frame event yielded to the game. Game allocates; we write input_index
@@ -831,25 +829,23 @@ struct ScsInputEvent {
 /// One logical axis on our semantical device.
 #[repr(C)]
 struct ScsInputDeviceInput {
-    name:         scs_string_t,
+    name: scs_string_t,
     display_name: scs_string_t,
-    value_type:   scs_u32_t,
-    _pad:         scs_u32_t,
+    value_type: scs_u32_t,
+    _pad: scs_u32_t,
 }
 
 // scs_input_event_callback_t(event_info, flags, context) — flags must be present even if ignored.
 type ScsInputEventCb = unsafe extern "system" fn(
     *mut ScsInputEvent,
-    scs_u32_t,       // flags (SCS_INPUT_EVENT_CALLBACK_FLAG_*)
+    scs_u32_t, // flags (SCS_INPUT_EVENT_CALLBACK_FLAG_*)
     scs_context_t,
 ) -> scs_result_t;
 
 // scs_input_active_callback_t — optional, called when device becomes active/inactive.
 type ScsInputActiveCb = unsafe extern "system" fn(u8, scs_context_t);
 
-type ScsRegisterDeviceFn = unsafe extern "system" fn(
-    *const ScsInputDevice,
-) -> scs_result_t;
+type ScsRegisterDeviceFn = unsafe extern "system" fn(*const ScsInputDevice) -> scs_result_t;
 
 /// Device descriptor passed to register_device.
 /// Layout must match scs_input_device_t exactly (56 bytes on x64).
@@ -857,14 +853,14 @@ type ScsRegisterDeviceFn = unsafe extern "system" fn(
 ///              callback_context, input_active_callback (optional), input_event_callback.
 #[repr(C)]
 struct ScsInputDevice {
-    name:                  scs_string_t,
-    display_name:          scs_string_t,
-    device_type:           scs_u32_t,
-    input_count:           scs_u32_t,
-    inputs:                *const ScsInputDeviceInput,
-    callback_context:      scs_context_t,
+    name: scs_string_t,
+    display_name: scs_string_t,
+    device_type: scs_u32_t,
+    input_count: scs_u32_t,
+    inputs: *const ScsInputDeviceInput,
+    callback_context: scs_context_t,
     input_active_callback: Option<ScsInputActiveCb>,
-    input_event_callback:  ScsInputEventCb,
+    input_event_callback: ScsInputEventCb,
 }
 
 const _INPUT_DEVICE_SIZE: () = {
@@ -876,7 +872,7 @@ const _INPUT_DEVICE_SIZE: () = {
 /// (mirrors telemetry init params structure).
 #[repr(C)]
 struct ScsInputInitParamsV100 {
-    common:          ScsSdkInitParamsV100,
+    common: ScsSdkInitParamsV100,
     register_device: ScsRegisterDeviceFn,
 }
 
@@ -935,8 +931,8 @@ pub unsafe extern "system" fn scs_input_init(
         debug_log("scs_input_init: CreateFileMappingW failed");
         return -7;
     }
-    CTRL_SHM_PTR = MapViewOfFile(CTRL_SHM_HANDLE, FILE_MAP_WRITE, 0, 0, shm_size)
-        as *mut ShmControlLayout;
+    CTRL_SHM_PTR =
+        MapViewOfFile(CTRL_SHM_HANDLE, FILE_MAP_WRITE, 0, 0, shm_size) as *mut ShmControlLayout;
     if CTRL_SHM_PTR.is_null() {
         debug_log("scs_input_init: MapViewOfFile failed");
         CloseHandle(CTRL_SHM_HANDLE);
@@ -944,51 +940,51 @@ pub unsafe extern "system" fn scs_input_init(
         return -7;
     }
 
-    (*CTRL_SHM_PTR).magic    = CTRL_SHM_MAGIC;
-    (*CTRL_SHM_PTR).version  = CTRL_SHM_VERSION;
+    (*CTRL_SHM_PTR).magic = CTRL_SHM_MAGIC;
+    (*CTRL_SHM_PTR).version = CTRL_SHM_VERSION;
     (*CTRL_SHM_PTR).sequence = 0;
-    (*CTRL_SHM_PTR).active   = 0;
+    (*CTRL_SHM_PTR).active = 0;
     (*CTRL_SHM_PTR).steering = 0.0;
     (*CTRL_SHM_PTR).throttle = 0.0;
-    (*CTRL_SHM_PTR).brake    = 0.0;
-    (*CTRL_SHM_PTR).clutch   = 0.0;
+    (*CTRL_SHM_PTR).brake = 0.0;
+    (*CTRL_SHM_PTR).clutch = 0.0;
 
     let inputs: [ScsInputDeviceInput; 4] = [
         ScsInputDeviceInput {
-            name:         c"steering".as_ptr(),
+            name: c"steering".as_ptr(),
             display_name: c"Steering".as_ptr(),
-            value_type:   SCS_VALUE_TYPE_float,
-            _pad:         0,
+            value_type: SCS_VALUE_TYPE_float,
+            _pad: 0,
         },
         ScsInputDeviceInput {
-            name:         c"aforward".as_ptr(),
+            name: c"aforward".as_ptr(),
             display_name: c"Throttle".as_ptr(),
-            value_type:   SCS_VALUE_TYPE_float,
-            _pad:         0,
+            value_type: SCS_VALUE_TYPE_float,
+            _pad: 0,
         },
         ScsInputDeviceInput {
-            name:         c"abackward".as_ptr(),
+            name: c"abackward".as_ptr(),
             display_name: c"Brake".as_ptr(),
-            value_type:   SCS_VALUE_TYPE_float,
-            _pad:         0,
+            value_type: SCS_VALUE_TYPE_float,
+            _pad: 0,
         },
         ScsInputDeviceInput {
-            name:         c"clutch".as_ptr(),
+            name: c"clutch".as_ptr(),
             display_name: c"Clutch".as_ptr(),
-            value_type:   SCS_VALUE_TYPE_float,
-            _pad:         0,
+            value_type: SCS_VALUE_TYPE_float,
+            _pad: 0,
         },
     ];
 
     let device = ScsInputDevice {
-        name:                  c"truckpilot".as_ptr(),
-        display_name:          c"TruckPilot Autopilot".as_ptr(),
-        device_type:           SCS_INPUT_DEVICE_TYPE_SEMANTICAL,
-        input_count:           4,
-        inputs:                inputs.as_ptr(),
-        callback_context:      ptr::null_mut(),
+        name: c"truckpilot".as_ptr(),
+        display_name: c"TruckPilot Autopilot".as_ptr(),
+        device_type: SCS_INPUT_DEVICE_TYPE_SEMANTICAL,
+        input_count: 4,
+        inputs: inputs.as_ptr(),
+        callback_context: ptr::null_mut(),
         input_active_callback: None,
-        input_event_callback:  input_event_cb,
+        input_event_callback: input_event_cb,
     };
 
     let _ = ((*params).register_device)(&device);
@@ -1034,7 +1030,9 @@ unsafe extern "system" fn input_event_cb(
     let cb_total = CTRL_CB_TOTAL;
 
     if event.is_null() || CTRL_SHM_PTR.is_null() {
-        debug_log(&format!("input_event_cb cb#{cb_total}: null ptr -> NOT_FOUND"));
+        debug_log(&format!(
+            "input_event_cb cb#{cb_total}: null ptr -> NOT_FOUND"
+        ));
         return SCS_RESULT_NOT_FOUND;
     }
 
@@ -1065,21 +1063,43 @@ unsafe extern "system" fn input_event_cb(
 
     let active = (*CTRL_SHM_PTR).active != 0;
     let (s, t, b, c) = if active {
-        ((*CTRL_SHM_PTR).steering, (*CTRL_SHM_PTR).throttle,
-         (*CTRL_SHM_PTR).brake,   (*CTRL_SHM_PTR).clutch)
+        (
+            (*CTRL_SHM_PTR).steering,
+            (*CTRL_SHM_PTR).throttle,
+            (*CTRL_SHM_PTR).brake,
+            (*CTRL_SHM_PTR).clutch,
+        )
     } else {
         (0.0_f32, 0.0, 0.0, 0.0)
     };
 
     let idx = CTRL_EVENT_IDX;
     let (written_idx, written_val) = match idx {
-        0 => { (*event).input_index = 0; (*event).value_float = s; (0u32, s) }
-        1 => { (*event).input_index = 1; (*event).value_float = t; (1, t) }
-        2 => { (*event).input_index = 2; (*event).value_float = b; (2, b) }
-        3 => { (*event).input_index = 3; (*event).value_float = c; (3, c) }
+        0 => {
+            (*event).input_index = 0;
+            (*event).value_float = s;
+            (0u32, s)
+        }
+        1 => {
+            (*event).input_index = 1;
+            (*event).value_float = t;
+            (1, t)
+        }
+        2 => {
+            (*event).input_index = 2;
+            (*event).value_float = b;
+            (2, b)
+        }
+        3 => {
+            (*event).input_index = 3;
+            (*event).value_float = c;
+            (3, c)
+        }
         _ => {
             if diag {
-                debug_log(&format!("  [done] idx_overflow={idx} -> NOT_FOUND (end of frame)"));
+                debug_log(&format!(
+                    "  [done] idx_overflow={idx} -> NOT_FOUND (end of frame)"
+                ));
             }
             CTRL_EVENT_IDX = 0;
             return SCS_RESULT_NOT_FOUND;
@@ -1087,7 +1107,9 @@ unsafe extern "system" fn input_event_cb(
     };
 
     if diag {
-        debug_log(&format!("  event idx={written_idx} val={written_val:.4} -> OK"));
+        debug_log(&format!(
+            "  event idx={written_idx} val={written_val:.4} -> OK"
+        ));
     }
 
     CTRL_EVENT_IDX += 1;
@@ -1184,17 +1206,30 @@ mod tests {
     fn event_iteration_four_ok_then_not_found() {
         // Use a local ShmControlLayout value to represent the SHM data.
         let shm = ShmControlLayout {
-            magic: CTRL_SHM_MAGIC, version: CTRL_SHM_VERSION,
-            sequence: 0, active: 1,
-            steering: 0.5, throttle: 0.3, brake: 0.0, clutch: 0.0,
+            magic: CTRL_SHM_MAGIC,
+            version: CTRL_SHM_VERSION,
+            sequence: 0,
+            active: 1,
+            steering: 0.5,
+            throttle: 0.3,
+            brake: 0.0,
+            clutch: 0.0,
         };
         let mut shm_copy = shm;
-        let mut event = ScsInputEvent { input_index: 99, value_float: 99.0 };
+        let mut event = ScsInputEvent {
+            input_index: 99,
+            value_float: 99.0,
+        };
 
         // Manually replicate the callback logic (no unsafe statics in tests).
         let active = shm_copy.active != 0;
         let (s, t, b, c) = if active {
-            (shm_copy.steering, shm_copy.throttle, shm_copy.brake, shm_copy.clutch)
+            (
+                shm_copy.steering,
+                shm_copy.throttle,
+                shm_copy.brake,
+                shm_copy.clutch,
+            )
         } else {
             (0.0_f32, 0.0, 0.0, 0.0)
         };
@@ -1210,7 +1245,12 @@ mod tests {
         // Verify inactive path yields neutral values.
         shm_copy.active = 0;
         let (s2, t2, b2, c2) = if shm_copy.active != 0 {
-            (shm_copy.steering, shm_copy.throttle, shm_copy.brake, shm_copy.clutch)
+            (
+                shm_copy.steering,
+                shm_copy.throttle,
+                shm_copy.brake,
+                shm_copy.clutch,
+            )
         } else {
             (0.0_f32, 0.0, 0.0, 0.0)
         };

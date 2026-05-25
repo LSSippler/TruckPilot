@@ -20,7 +20,7 @@ use std::fmt;
 const AXIS_MIN: i32 = 0;
 const AXIS_MAX: i32 = 32_767;
 
-pub const HID_USAGE_X:   u32 = 0x30; // Steering (bipolar, center = 16384)
+pub const HID_USAGE_X: u32 = 0x30; // Steering (bipolar, center = 16384)
 pub const HID_USAGE_SL0: u32 = 0x36; // Slider       — Throttle (unipolar)
 pub const HID_USAGE_SL1: u32 = 0x37; // Dial/Slider2 — Brake    (unipolar)
 
@@ -129,12 +129,12 @@ pub fn map_unsigned_to_raw(value: f64) -> i32 {
 
 // All vJoyInterface exports use the Windows stdcall convention; on x64
 // stdcall == fastcall == "system" so `extern "system"` is correct.
-type FnVJoyEnabled       = unsafe extern "system" fn() -> i32;
-type FnAcquireVJD        = unsafe extern "system" fn(u32) -> i32;
-type FnRelinquishVJD     = unsafe extern "system" fn(u32);
-type FnGetVJDStatus      = unsafe extern "system" fn(u32) -> i32;
-type FnSetAxis           = unsafe extern "system" fn(i32, u32, u32) -> i32;
-type FnGetVJDAxisExist   = unsafe extern "system" fn(u32, u32) -> i32;
+type FnVJoyEnabled = unsafe extern "system" fn() -> i32;
+type FnAcquireVJD = unsafe extern "system" fn(u32) -> i32;
+type FnRelinquishVJD = unsafe extern "system" fn(u32);
+type FnGetVJDStatus = unsafe extern "system" fn(u32) -> i32;
+type FnSetAxis = unsafe extern "system" fn(i32, u32, u32) -> i32;
+type FnGetVJDAxisExist = unsafe extern "system" fn(u32, u32) -> i32;
 
 // ---------------------------------------------------------------------------
 // VJoyHandle (Windows only)
@@ -231,8 +231,7 @@ impl VJoyHandle {
         // Optional axis-existence pre-check: warn if SL0/SL1 are not
         // configured in vJoyConf. Non-fatal — the acquire already succeeded
         // and SetAxis will simply return FALSE on missing axes.
-        if let Ok(axis_exists_fn) =
-            unsafe { load_sym::<FnGetVJDAxisExist>(dll, "GetVJDAxisExist") }
+        if let Ok(axis_exists_fn) = unsafe { load_sym::<FnGetVJDAxisExist>(dll, "GetVJDAxisExist") }
         {
             for (hid, name) in [
                 (HID_USAGE_SL0, "Slider (Throttle)"),

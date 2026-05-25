@@ -148,7 +148,10 @@ struct Grid {
 
 impl Grid {
     fn new(cell_size: f64) -> Self {
-        Self { cells: HashMap::new(), cell_size }
+        Self {
+            cells: HashMap::new(),
+            cell_size,
+        }
     }
 
     fn insert(&mut self, uid: u64, x: f64, z: f64) {
@@ -157,7 +160,10 @@ impl Grid {
     }
 
     fn key(&self, x: f64, z: f64) -> (i32, i32) {
-        ((x / self.cell_size).floor() as i32, (z / self.cell_size).floor() as i32)
+        (
+            (x / self.cell_size).floor() as i32,
+            (z / self.cell_size).floor() as i32,
+        )
     }
 
     /// Nearest node within `radius`. Returns (uid, dist).
@@ -190,7 +196,10 @@ impl Grid {
 // ---------------------------------------------------------------------------
 
 fn vsector(x: f64, z: f64) -> (i32, i32) {
-    ((x / SECTOR_STEP).floor() as i32, (z / SECTOR_STEP).floor() as i32)
+    (
+        (x / SECTOR_STEP).floor() as i32,
+        (z / SECTOR_STEP).floor() as i32,
+    )
 }
 
 fn near_boundary(x: f64, z: f64) -> bool {
@@ -203,9 +212,14 @@ fn near_boundary(x: f64, z: f64) -> bool {
 
 fn neighbor_sectors(sx: i32, sz: i32) -> [(i32, i32); 8] {
     [
-        (sx - 1, sz - 1), (sx, sz - 1), (sx + 1, sz - 1),
-        (sx - 1, sz),                    (sx + 1, sz),
-        (sx - 1, sz + 1), (sx, sz + 1), (sx + 1, sz + 1),
+        (sx - 1, sz - 1),
+        (sx, sz - 1),
+        (sx + 1, sz - 1),
+        (sx - 1, sz),
+        (sx + 1, sz),
+        (sx - 1, sz + 1),
+        (sx, sz + 1),
+        (sx + 1, sz + 1),
     ]
 }
 
@@ -227,9 +241,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let t0 = std::time::Instant::now();
 
-    eprintln!("[cross-sector-audit] loading graph: {}", args.graph.display());
-    let graph_bytes = std::fs::read(&args.graph)
-        .with_context(|| format!("open {}", args.graph.display()))?;
+    eprintln!(
+        "[cross-sector-audit] loading graph: {}",
+        args.graph.display()
+    );
+    let graph_bytes =
+        std::fs::read(&args.graph).with_context(|| format!("open {}", args.graph.display()))?;
     let graph: Value = serde_json::from_slice(&graph_bytes).context("parse graph.json")?;
     drop(graph_bytes);
 
@@ -237,7 +254,9 @@ fn main() -> Result<()> {
     let edge_arr = graph["edges"].as_array().context("graph.edges")?;
     eprintln!(
         "[cross-sector-audit] {} nodes, {} edges — loaded in {:.1}s",
-        node_arr.len(), edge_arr.len(), t0.elapsed().as_secs_f64()
+        node_arr.len(),
+        edge_arr.len(),
+        t0.elapsed().as_secs_f64()
     );
 
     // ── 1. Parse nodes ──────────────────────────────────────────────────────
@@ -250,7 +269,13 @@ fn main() -> Result<()> {
         let x = n["x"].as_f64().unwrap_or(0.0);
         let z = n["z"].as_f64().unwrap_or(0.0);
         uid_to_idx.insert(uid, i);
-        nodes.push(NodeInfo { uid, x, z, out_degree: 0, in_degree: 0 });
+        nodes.push(NodeInfo {
+            uid,
+            x,
+            z,
+            out_degree: 0,
+            in_degree: 0,
+        });
     }
 
     // ── 2. Parse edges, compute degrees, classify cross-sector ─────────────
@@ -275,16 +300,25 @@ fn main() -> Result<()> {
             let fi = uid_to_idx.get(&from_uid).copied();
             let ti = uid_to_idx.get(&to_uid).copied();
             let same_vsector = match (fi, ti) {
-                (Some(fi), Some(ti)) => vsector(nodes[fi].x, nodes[fi].z) == vsector(nodes[ti].x, nodes[ti].z),
+                (Some(fi), Some(ti)) => {
+                    vsector(nodes[fi].x, nodes[fi].z) == vsector(nodes[ti].x, nodes[ti].z)
+                }
                 _ => false,
             };
-            cross_sector_edges.push(CrossSectorEdgeInfo { direction: dir, dist_m: dist, from_uid, to_uid, same_vsector });
+            cross_sector_edges.push(CrossSectorEdgeInfo {
+                direction: dir,
+                dist_m: dist,
+                from_uid,
+                to_uid,
+                same_vsector,
+            });
         }
     }
 
     eprintln!(
         "[cross-sector-audit] degrees + cross-sector edges ({}) computed in {:.1}s",
-        cross_sector_edges.len(), t1.elapsed().as_secs_f64()
+        cross_sector_edges.len(),
+        t1.elapsed().as_secs_f64()
     );
 
     // ── 3. Classify nodes ───────────────────────────────────────────────────
@@ -316,7 +350,10 @@ fn main() -> Result<()> {
             connected_grid.insert(n.uid, n.x, n.z);
         }
     }
-    eprintln!("[cross-sector-audit] grids built in {:.1}s", t2.elapsed().as_secs_f64());
+    eprintln!(
+        "[cross-sector-audit] grids built in {:.1}s",
+        t2.elapsed().as_secs_f64()
+    );
 
     // ── 5. Virtual sector analysis ──────────────────────────────────────────
     let t3 = std::time::Instant::now();
@@ -331,7 +368,9 @@ fn main() -> Result<()> {
         e.0 += 1;
         if n.in_degree == 0 && n.out_degree == 0 {
             e.1 += 1;
-            if near_boundary(n.x, n.z) { e.3 += 1; }
+            if near_boundary(n.x, n.z) {
+                e.3 += 1;
+            }
         } else {
             e.2 += 1;
         }
@@ -358,10 +397,25 @@ fn main() -> Result<()> {
 
     // ── 6. Distance buckets for isolated nodes ──────────────────────────────
     let t4 = std::time::Instant::now();
-    let mut conn_buckets = DistBuckets { lt_50m: 0, m50_200m: 0, m200_500m: 0, gt_500m: 0, no_neighbor_at_all: 0 };
-    let mut any_buckets = DistBuckets { lt_50m: 0, m50_200m: 0, m200_500m: 0, gt_500m: 0, no_neighbor_at_all: 0 };
+    let mut conn_buckets = DistBuckets {
+        lt_50m: 0,
+        m50_200m: 0,
+        m200_500m: 0,
+        gt_500m: 0,
+        no_neighbor_at_all: 0,
+    };
+    let mut any_buckets = DistBuckets {
+        lt_50m: 0,
+        m50_200m: 0,
+        m200_500m: 0,
+        gt_500m: 0,
+        no_neighbor_at_all: 0,
+    };
 
-    let isolated_nodes: Vec<&NodeInfo> = nodes.iter().filter(|n| n.in_degree == 0 && n.out_degree == 0).collect();
+    let isolated_nodes: Vec<&NodeInfo> = nodes
+        .iter()
+        .filter(|n| n.in_degree == 0 && n.out_degree == 0)
+        .collect();
     let isolated_count = isolated_nodes.len();
 
     for n in &isolated_nodes {
@@ -381,11 +435,15 @@ fn main() -> Result<()> {
                 for diz in -cr..=cr {
                     if let Some(cell) = all_grid.cells.get(&(cx + dix, cz + diz)) {
                         for &(uid2, nx, nz) in cell {
-                            if uid2 == n.uid { continue; }
+                            if uid2 == n.uid {
+                                continue;
+                            }
                             let d2 = (nx - n.x).powi(2) + (nz - n.z).powi(2);
                             if d2 <= BUCKET_3 * BUCKET_3 {
                                 let d = d2.sqrt();
-                                if best.is_none() || d < best.unwrap() { best = Some(d); }
+                                if best.is_none() || d < best.unwrap() {
+                                    best = Some(d);
+                                }
                             }
                         }
                     }
@@ -422,7 +480,15 @@ fn main() -> Result<()> {
     let top_orphan_sectors = sector_stats.into_iter().take(20).collect::<Vec<_>>();
 
     // ── 8. City focus traces ────────────────────────────────────────────────
-    let city_traces = build_city_traces(&args, &nodes, &uid_to_idx, &connected_grid, &all_grid, &sector_map, &sector_cross_out);
+    let city_traces = build_city_traces(
+        &args,
+        &nodes,
+        &uid_to_idx,
+        &connected_grid,
+        &all_grid,
+        &sector_map,
+        &sector_cross_out,
+    );
 
     // ── 9. Write outputs ────────────────────────────────────────────────────
     std::fs::create_dir_all(&args.out_dir)
@@ -460,19 +526,25 @@ fn main() -> Result<()> {
 
     // Focus-city trace file
     if let Some(city_name) = &args.focus_city {
-        let focus: Vec<&CityTrace> = city_traces.iter().filter(|c| {
-            c.name.to_lowercase() == city_name.to_lowercase()
-        }).collect();
+        let focus: Vec<&CityTrace> = city_traces
+            .iter()
+            .filter(|c| c.name.to_lowercase() == city_name.to_lowercase())
+            .collect();
         if focus.is_empty() {
             eprintln!("[cross-sector-audit] WARNING: focus city '{city_name}' not found in routing_islands.json");
         } else {
-            let stub_path = args.out_dir.join(format!("{}_stub_trace.md", city_name.to_lowercase()));
+            let stub_path = args
+                .out_dir
+                .join(format!("{}_stub_trace.md", city_name.to_lowercase()));
             write_city_trace_md(&stub_path, focus[0])?;
             eprintln!("[cross-sector-audit] wrote {}", stub_path.display());
         }
     }
 
-    eprintln!("[cross-sector-audit] total time: {:.1}s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[cross-sector-audit] total time: {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -509,7 +581,9 @@ fn build_city_traces(
                 None => continue, // no-snap city
             };
 
-            let Some(&ni) = uid_to_idx.get(&node_uid) else { continue };
+            let Some(&ni) = uid_to_idx.get(&node_uid) else {
+                continue;
+            };
             let n = &nodes[ni];
             let vs = vsector(n.x, n.z);
             let is_near = near_boundary(n.x, n.z);
@@ -524,7 +598,9 @@ fn build_city_traces(
                     for diz in -cr..=cr {
                         if let Some(cell) = all_grid.cells.get(&(cx + dix, cz + diz)) {
                             for &(uid2, nx, nz) in cell {
-                                if uid2 == node_uid { continue; }
+                                if uid2 == node_uid {
+                                    continue;
+                                }
                                 let d2 = (nx - n.x).powi(2) + (nz - n.z).powi(2);
                                 if d2 <= BUCKET_3 * BUCKET_3 {
                                     let d = d2.sqrt();
@@ -542,9 +618,15 @@ fn build_city_traces(
             // Neighbor sectors: which ones are loaded? which have connected nodes?
             let neighbors = neighbor_sectors(vs.0, vs.1);
             let neighbor_sectors_loaded: Vec<(i32, i32)> = neighbors
-                .iter().filter(|&&s| sector_map.contains_key(&s)).copied().collect();
+                .iter()
+                .filter(|&&s| sector_map.contains_key(&s))
+                .copied()
+                .collect();
             let neighbor_sectors_with_connected: Vec<(i32, i32)> = neighbors
-                .iter().filter(|&&s| sector_map.get(&s).map(|v| v.2 > 0).unwrap_or(false)).copied().collect();
+                .iter()
+                .filter(|&&s| sector_map.get(&s).map(|v| v.2 > 0).unwrap_or(false))
+                .copied()
+                .collect();
 
             let _ = sector_cross_out; // suppress unused warning
 
@@ -579,14 +661,18 @@ fn write_markdown(
     cross_edges: &[CrossSectorEdgeInfo],
     city_traces: &[CityTrace],
 ) -> Result<()> {
-    let mut f = std::fs::File::create(path)
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut f =
+        std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
 
     let now = simple_timestamp();
     writeln!(f, "# Cross-Sector-Edge-Audit")?;
     writeln!(f)?;
     writeln!(f, "Generated: {now}")?;
-    writeln!(f, "Graph: `{}`, {} nodes, {} edges", r.graph_path, r.node_count, r.edge_count)?;
+    writeln!(
+        f,
+        "Graph: `{}`, {} nodes, {} edges",
+        r.graph_path, r.node_count, r.edge_count
+    )?;
     writeln!(f)?;
 
     writeln!(f, "## Node Connectivity Summary")?;
@@ -594,15 +680,39 @@ fn write_markdown(
     writeln!(f, "| Class | Count | % |")?;
     writeln!(f, "|-------|-------|---|")?;
     let n = r.node_count as f64;
-    writeln!(f, "| Isolated (in=0, out=0) | {} | {:.1}% |", r.isolated_nodes, r.isolated_nodes as f64/n*100.0)?;
-    writeln!(f, "| Dead-end source (in=0, out>0) | {} | {:.1}% |", r.dead_end_source, r.dead_end_source as f64/n*100.0)?;
-    writeln!(f, "| Dead-end sink (in>0, out=0) | {} | {:.1}% |", r.dead_end_sink, r.dead_end_sink as f64/n*100.0)?;
-    writeln!(f, "| Connected (in>0, out>0) | {} | {:.1}% |", r.connected, r.connected as f64/n*100.0)?;
+    writeln!(
+        f,
+        "| Isolated (in=0, out=0) | {} | {:.1}% |",
+        r.isolated_nodes,
+        r.isolated_nodes as f64 / n * 100.0
+    )?;
+    writeln!(
+        f,
+        "| Dead-end source (in=0, out>0) | {} | {:.1}% |",
+        r.dead_end_source,
+        r.dead_end_source as f64 / n * 100.0
+    )?;
+    writeln!(
+        f,
+        "| Dead-end sink (in>0, out=0) | {} | {:.1}% |",
+        r.dead_end_sink,
+        r.dead_end_sink as f64 / n * 100.0
+    )?;
+    writeln!(
+        f,
+        "| Connected (in>0, out>0) | {} | {:.1}% |",
+        r.connected,
+        r.connected as f64 / n * 100.0
+    )?;
     writeln!(f)?;
 
     writeln!(f, "## Cross-Sector Edges (already in graph)")?;
     writeln!(f)?;
-    writeln!(f, "Total cross-sector edges: **{}**", r.cross_sector_edge_count)?;
+    writeln!(
+        f,
+        "Total cross-sector edges: **{}**",
+        r.cross_sector_edge_count
+    )?;
     writeln!(f)?;
     writeln!(f, "| Direction type | Count |")?;
     writeln!(f, "|----------------|-------|")?;
@@ -618,10 +728,15 @@ fn write_markdown(
     let mut ce_200_500 = 0usize;
     let mut ce_gt500 = 0usize;
     for ce in cross_edges {
-        if ce.dist_m < 50.0 { ce_lt50 += 1; }
-        else if ce.dist_m < 200.0 { ce_50_200 += 1; }
-        else if ce.dist_m < 500.0 { ce_200_500 += 1; }
-        else { ce_gt500 += 1; }
+        if ce.dist_m < 50.0 {
+            ce_lt50 += 1;
+        } else if ce.dist_m < 200.0 {
+            ce_50_200 += 1;
+        } else if ce.dist_m < 500.0 {
+            ce_200_500 += 1;
+        } else {
+            ce_gt500 += 1;
+        }
     }
     writeln!(f)?;
     writeln!(f, "Cross-sector edge distance histogram:")?;
@@ -638,14 +753,29 @@ fn write_markdown(
     writeln!(f)?;
     writeln!(f, "| Metric | Value |")?;
     writeln!(f, "|--------|-------|")?;
-    writeln!(f, "| Total virtual sectors with any nodes | {} |", r.virtual_sectors_total)?;
-    writeln!(f, "| Virtual sectors with connected nodes | {} |", r.virtual_sectors_with_connected)?;
-    writeln!(f, "| Virtual sectors with isolated nodes only | {} |", r.virtual_sectors_isolated_only)?;
+    writeln!(
+        f,
+        "| Total virtual sectors with any nodes | {} |",
+        r.virtual_sectors_total
+    )?;
+    writeln!(
+        f,
+        "| Virtual sectors with connected nodes | {} |",
+        r.virtual_sectors_with_connected
+    )?;
+    writeln!(
+        f,
+        "| Virtual sectors with isolated nodes only | {} |",
+        r.virtual_sectors_isolated_only
+    )?;
     writeln!(f)?;
 
     writeln!(f, "## Isolated-Node Nearest-Neighbour Distance Buckets")?;
     writeln!(f)?;
-    writeln!(f, "**To nearest connected node** (in=0, out=0 → nearest node with in>0 AND out>0):")?;
+    writeln!(
+        f,
+        "**To nearest connected node** (in=0, out=0 → nearest node with in>0 AND out>0):"
+    )?;
     writeln!(f)?;
     write_bucket_table(&mut f, &r.isolated_to_connected_buckets)?;
     writeln!(f)?;
@@ -656,14 +786,25 @@ fn write_markdown(
 
     writeln!(f, "## Top-20 Virtual Sectors by Isolated-Node Count")?;
     writeln!(f)?;
-    writeln!(f, "| Sector (sx,sz) | Total | Isolated | Connected | Cross-Sect-Out | Stubs@boundary |")?;
-    writeln!(f, "|---------------|-------|----------|-----------|----------------|----------------|")?;
+    writeln!(
+        f,
+        "| Sector (sx,sz) | Total | Isolated | Connected | Cross-Sect-Out | Stubs@boundary |"
+    )?;
+    writeln!(
+        f,
+        "|---------------|-------|----------|-----------|----------------|----------------|"
+    )?;
     for s in &r.top_orphan_sectors {
         writeln!(
             f,
             "| ({},{}) | {} | {} | {} | {} | {} |",
-            s.sx, s.sz, s.total_nodes, s.isolated_nodes, s.connected_nodes,
-            s.cross_sector_edges_out, s.orphan_stubs
+            s.sx,
+            s.sz,
+            s.total_nodes,
+            s.isolated_nodes,
+            s.connected_nodes,
+            s.cross_sector_edges_out,
+            s.orphan_stubs
         )?;
     }
     writeln!(f)?;
@@ -686,7 +827,9 @@ fn write_markdown(
                 ct.virtual_sector.0,
                 ct.virtual_sector.1,
                 ct.near_boundary,
-                ct.nearest_connected_dist_m.map(|d| format!("{d:.0}m")).unwrap_or("-".to_string()),
+                ct.nearest_connected_dist_m
+                    .map(|d| format!("{d:.0}m"))
+                    .unwrap_or("-".to_string()),
                 ct.bucket,
                 ct.neighbor_sectors_loaded.len(),
                 ct.neighbor_sectors_with_connected.len(),
@@ -700,7 +843,11 @@ fn write_markdown(
     writeln!(f)?;
 
     let conn_b = &r.isolated_to_connected_buckets;
-    let total_iso = (conn_b.lt_50m + conn_b.m50_200m + conn_b.m200_500m + conn_b.gt_500m + conn_b.no_neighbor_at_all) as f64;
+    let total_iso = (conn_b.lt_50m
+        + conn_b.m50_200m
+        + conn_b.m200_500m
+        + conn_b.gt_500m
+        + conn_b.no_neighbor_at_all) as f64;
 
     if conn_b.lt_50m > 0 {
         let pct = conn_b.lt_50m as f64 / total_iso * 100.0;
@@ -736,14 +883,30 @@ fn write_markdown(
 
 fn write_bucket_table(f: &mut std::fs::File, b: &DistBuckets) -> Result<()> {
     let total = b.lt_50m + b.m50_200m + b.m200_500m + b.gt_500m + b.no_neighbor_at_all;
-    let pct = |n: usize| if total > 0 { n as f64 / total as f64 * 100.0 } else { 0.0 };
+    let pct = |n: usize| {
+        if total > 0 {
+            n as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        }
+    };
     writeln!(f, "| Distance bucket | Count | % |")?;
     writeln!(f, "|-----------------|-------|---|")?;
     writeln!(f, "| <50m | {} | {:.1}% |", b.lt_50m, pct(b.lt_50m))?;
     writeln!(f, "| 50-200m | {} | {:.1}% |", b.m50_200m, pct(b.m50_200m))?;
-    writeln!(f, "| 200-500m | {} | {:.1}% |", b.m200_500m, pct(b.m200_500m))?;
+    writeln!(
+        f,
+        "| 200-500m | {} | {:.1}% |",
+        b.m200_500m,
+        pct(b.m200_500m)
+    )?;
     writeln!(f, "| >500m | {} | {:.1}% |", b.gt_500m, pct(b.gt_500m))?;
-    writeln!(f, "| no neighbour at all | {} | {:.1}% |", b.no_neighbor_at_all, pct(b.no_neighbor_at_all))?;
+    writeln!(
+        f,
+        "| no neighbour at all | {} | {:.1}% |",
+        b.no_neighbor_at_all,
+        pct(b.no_neighbor_at_all)
+    )?;
     Ok(())
 }
 
@@ -752,8 +915,8 @@ fn write_bucket_table(f: &mut std::fs::File, b: &DistBuckets) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn write_city_trace_md(path: &PathBuf, ct: &CityTrace) -> Result<()> {
-    let mut f = std::fs::File::create(path)
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut f =
+        std::fs::File::create(path).with_context(|| format!("create {}", path.display()))?;
     let now = simple_timestamp();
     writeln!(f, "# Stub-Trace: {}", ct.name)?;
     writeln!(f)?;
@@ -767,16 +930,38 @@ fn write_city_trace_md(path: &PathBuf, ct: &CityTrace) -> Result<()> {
     writeln!(f, "| Position | ({:.1}, {:.1}) |", ct.x, ct.z)?;
     writeln!(f, "| in_degree | {} |", ct.in_degree)?;
     writeln!(f, "| out_degree | {} |", ct.out_degree)?;
-    writeln!(f, "| Virtual sector | ({}, {}) |", ct.virtual_sector.0, ct.virtual_sector.1)?;
+    writeln!(
+        f,
+        "| Virtual sector | ({}, {}) |",
+        ct.virtual_sector.0, ct.virtual_sector.1
+    )?;
     writeln!(f, "| Near sector boundary (<500m) | {} |", ct.near_boundary)?;
     writeln!(f)?;
     writeln!(f, "## Connectivity")?;
     writeln!(f)?;
     writeln!(f, "| Metric | Value |")?;
     writeln!(f, "|--------|-------|")?;
-    writeln!(f, "| Nearest connected node dist | {} |", ct.nearest_connected_dist_m.map(|d| format!("{d:.1}m")).unwrap_or(">500m".to_string()))?;
-    writeln!(f, "| Nearest connected node UID | {} |", ct.nearest_connected_uid.map(|u| u.to_string()).unwrap_or("-".to_string()))?;
-    writeln!(f, "| Nearest any node dist | {} |", ct.nearest_any_dist_m.map(|d| format!("{d:.1}m")).unwrap_or(">500m".to_string()))?;
+    writeln!(
+        f,
+        "| Nearest connected node dist | {} |",
+        ct.nearest_connected_dist_m
+            .map(|d| format!("{d:.1}m"))
+            .unwrap_or(">500m".to_string())
+    )?;
+    writeln!(
+        f,
+        "| Nearest connected node UID | {} |",
+        ct.nearest_connected_uid
+            .map(|u| u.to_string())
+            .unwrap_or("-".to_string())
+    )?;
+    writeln!(
+        f,
+        "| Nearest any node dist | {} |",
+        ct.nearest_any_dist_m
+            .map(|d| format!("{d:.1}m"))
+            .unwrap_or(">500m".to_string())
+    )?;
     writeln!(f, "| Distance bucket | {} |", ct.bucket)?;
     writeln!(f)?;
     writeln!(f, "## Neighbour Sector Analysis")?;
@@ -793,7 +978,11 @@ fn write_city_trace_md(path: &PathBuf, ct: &CityTrace) -> Result<()> {
     writeln!(f, "## Diagnosis")?;
     writeln!(f)?;
     if ct.in_degree == 0 && ct.out_degree == 0 {
-        writeln!(f, "Node `{}` is **completely isolated** (degree=0).", ct.name)?;
+        writeln!(
+            f,
+            "Node `{}` is **completely isolated** (degree=0).",
+            ct.name
+        )?;
         writeln!(f)?;
         match ct.nearest_connected_dist_m {
             None => writeln!(f, "No connected node within 500m. This node is in a sector with no road coverage — likely a DLC region or unparsed road type.")?,
@@ -804,7 +993,10 @@ fn write_city_trace_md(path: &PathBuf, ct: &CityTrace) -> Result<()> {
         }
     } else {
         writeln!(f, "Node has edges (in={}, out={}). It's not fully isolated — it's in a tiny SCC that can't reach the main network.", ct.in_degree, ct.out_degree)?;
-        writeln!(f, "This is a directional connectivity issue, not a missing-node issue.")?;
+        writeln!(
+            f,
+            "This is a directional connectivity issue, not a missing-node issue."
+        )?;
     }
     Ok(())
 }
@@ -825,7 +1017,10 @@ fn increment_bucket(b: &mut DistBuckets, dist: Option<f64>) {
 
 fn simple_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;

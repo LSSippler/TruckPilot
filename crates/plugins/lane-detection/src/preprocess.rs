@@ -1,14 +1,14 @@
 //! UFLD v2 model input normalisation.
 
 const IMAGENET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const IMAGENET_STD:  [f32; 3] = [0.229, 0.224, 0.225];
+const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Metadata needed to map model-space coordinates back to original-image space.
 #[derive(Clone)]
 pub struct LetterboxMeta {
     pub scale: f32,
-    pub pad_x: f32,    // pixels from the left edge of the canvas
-    pub pad_y: f32,    // pixels from the top  edge of the canvas
+    pub pad_x: f32, // pixels from the left edge of the canvas
+    pub pad_y: f32, // pixels from the top  edge of the canvas
     pub orig_w: u32,
     pub orig_h: u32,
     pub canvas_w: u32, // letterbox canvas width  (= model input W)
@@ -39,7 +39,9 @@ pub fn letterbox_and_normalize(
     if rgb.len() != (src_w as usize) * (src_h as usize) * 3 {
         return Err(format!(
             "rgb buffer len mismatch: {} != {}*{}*3",
-            rgb.len(), src_w, src_h
+            rgb.len(),
+            src_w,
+            src_h
         ));
     }
 
@@ -69,7 +71,9 @@ pub fn letterbox_and_normalize(
 
     for row in 0..scaled_h as usize {
         let dst_row = py + row;
-        if dst_row >= target_h { break; }
+        if dst_row >= target_h {
+            break;
+        }
         let src_off = row * scaled_w as usize * 3;
         let dst_off = (dst_row * target_w + px) * 3;
         let copy_pixels = (scaled_w as usize).min(target_w - px);

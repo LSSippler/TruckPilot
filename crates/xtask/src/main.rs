@@ -26,7 +26,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  copy-plugins [--debug]       Copy plugin DLLs from target/ to plugins/");
-    eprintln!("  build-release                cargo build --workspace --release, then copy-plugins");
+    eprintln!(
+        "  build-release                cargo build --workspace --release, then copy-plugins"
+    );
     eprintln!("  deploy-ets2-telemetry [DIR]  Copy truckpilot_telemetry.dll to ETS2 plugins dir");
     eprintln!();
     eprintln!("Flags for copy-plugins:");
@@ -78,16 +80,16 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
 
     let dst_dir = PathBuf::from(&dst_dir);
     if !dst_dir.exists() {
-        eprintln!("Destination directory does not exist: {}", dst_dir.display());
+        eprintln!(
+            "Destination directory does not exist: {}",
+            dst_dir.display()
+        );
         std::process::exit(1);
     }
 
     let dst = dst_dir.join("truckpilot_telemetry.dll");
     match fs::copy(&src, &dst) {
-        Ok(_) => println!(
-            "Deployed truckpilot_telemetry.dll -> {}",
-            dst.display()
-        ),
+        Ok(_) => println!("Deployed truckpilot_telemetry.dll -> {}", dst.display()),
         Err(e) => {
             eprintln!("Copy failed: {e}");
             eprintln!("Is ETS2 running? Close it first.");
@@ -126,7 +128,11 @@ fn copy_plugins_impl(profile: &str) {
     if errors.is_empty() {
         println!("{} plugin(s) deployed to plugins/", copied);
     } else {
-        eprintln!("Deploy FAILED: {} plugin(s) deployed, {} ERROR(s):", copied, errors.len());
+        eprintln!(
+            "Deploy FAILED: {} plugin(s) deployed, {} ERROR(s):",
+            copied,
+            errors.len()
+        );
         for err in &errors {
             eprintln!("  - {}", err);
         }
@@ -143,7 +149,10 @@ fn deploy_plugins_to_dir(src: &Path, dst: &Path) -> (usize, Vec<String>) {
 
     let mut stale_errors: Vec<String> = Vec::new();
     if let Ok(rd) = fs::read_dir(dst) {
-        let stale: Vec<_> = rd.flatten().filter(|e| is_plugin_file(e.path().as_path())).collect();
+        let stale: Vec<_> = rd
+            .flatten()
+            .filter(|e| is_plugin_file(e.path().as_path()))
+            .collect();
         for entry in &stale {
             let path = entry.path();
             match fs::remove_file(&path) {

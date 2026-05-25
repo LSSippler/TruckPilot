@@ -50,23 +50,64 @@ const CRASH_SECTORS: &[&str] = &[
 // item body start = right after the 4-byte item_type=36 field).
 const RAW_HEX: &[[u8; 64]] = &[
     // sec+0029+0024
-    [30,0,5,59,144,228,224,58,19,197,231,71,0,168,115,66,180,81,192,71,102,11,212,71,196,204,29,70,61,199,231,71,0,48,127,66,250,82,192,71,26,13,212,71,192,209,29,70,0,0,0,2,95,176,133,162,143,89,112,13,1,69,0,197],
+    [
+        30, 0, 5, 59, 144, 228, 224, 58, 19, 197, 231, 71, 0, 168, 115, 66, 180, 81, 192, 71, 102,
+        11, 212, 71, 196, 204, 29, 70, 61, 199, 231, 71, 0, 48, 127, 66, 250, 82, 192, 71, 26, 13,
+        212, 71, 192, 209, 29, 70, 0, 0, 0, 2, 95, 176, 133, 162, 143, 89, 112, 13, 1, 69, 0, 197,
+    ],
     // sec+0029+0025
-    [110,1,5,27,44,109,25,54,158,100,228,71,0,160,51,66,104,203,200,71,4,152,214,71,72,200,220,69,232,102,228,71,0,40,63,66,105,204,200,71,166,153,214,71,96,213,220,69,0,0,0,2,95,176,133,162,143,89,112,13,1,47,3,197],
+    [
+        110, 1, 5, 27, 44, 109, 25, 54, 158, 100, 228, 71, 0, 160, 51, 66, 104, 203, 200, 71, 4,
+        152, 214, 71, 72, 200, 220, 69, 232, 102, 228, 71, 0, 40, 63, 66, 105, 204, 200, 71, 166,
+        153, 214, 71, 96, 213, 220, 69, 0, 0, 0, 2, 95, 176, 133, 162, 143, 89, 112, 13, 1, 47, 3,
+        197,
+    ],
     // sec+0027+0025
-    [126,0,197,67,8,120,25,54,218,26,212,71,0,0,151,65,126,131,197,71,47,207,204,71,160,110,105,69,47,28,212,71,0,176,195,65,30,133,197,71,164,208,204,71,64,120,105,69,0,0,0,6,95,240,27,198,131,148,172,228,73,109,1,197],
+    [
+        126, 0, 197, 67, 8, 120, 25, 54, 218, 26, 212, 71, 0, 0, 151, 65, 126, 131, 197, 71, 47,
+        207, 204, 71, 160, 110, 105, 69, 47, 28, 212, 71, 0, 176, 195, 65, 30, 133, 197, 71, 164,
+        208, 204, 71, 64, 120, 105, 69, 0, 0, 0, 6, 95, 240, 27, 198, 131, 148, 172, 228, 73, 109,
+        1, 197,
+    ],
     // sec+0014-0009
-    [1,5,0,44,252,110,243,44,90,191,93,71,0,0,174,64,132,87,0,199,180,207,58,70,76,10,47,71,210,192,93,71,0,112,15,65,16,84,0,199,124,217,58,70,146,11,47,71,0,0,0,2,95,112,123,9,148,40,1,184,8,91,12,192],
+    [
+        1, 5, 0, 44, 252, 110, 243, 44, 90, 191, 93, 71, 0, 0, 174, 64, 132, 87, 0, 199, 180, 207,
+        58, 70, 76, 10, 47, 71, 210, 192, 93, 71, 0, 112, 15, 65, 16, 84, 0, 199, 124, 217, 58, 70,
+        146, 11, 47, 71, 0, 0, 0, 2, 95, 112, 123, 9, 148, 40, 1, 184, 8, 91, 12, 192,
+    ],
     // sec+0028+0024
-    [19,0,197,193,216,62,202,53,139,28,220,71,0,8,138,65,210,151,188,71,47,90,204,71,136,36,252,69,100,31,220,71,0,32,208,65,94,152,188,71,176,91,204,71,152,60,252,69,0,0,0,3,95,240,191,180,153,138,85,127,1,107,0,69],
+    [
+        19, 0, 197, 193, 216, 62, 202, 53, 139, 28, 220, 71, 0, 8, 138, 65, 210, 151, 188, 71, 47,
+        90, 204, 71, 136, 36, 252, 69, 100, 31, 220, 71, 0, 32, 208, 65, 94, 152, 188, 71, 176, 91,
+        204, 71, 152, 60, 252, 69, 0, 0, 0, 3, 95, 240, 191, 180, 153, 138, 85, 127, 1, 107, 0, 69,
+    ],
     // sec+0028+0015
-    [233,4,5,8,76,188,125,70,65,14,221,71,0,176,62,65,242,37,117,71,158,208,171,71,72,246,196,70,162,15,221,71,0,96,131,65,80,39,117,71,164,209,171,71,62,248,196,70,0,0,0,2,40,30,183,174,115,36,193,253,33,130,11,5],
+    [
+        233, 4, 5, 8, 76, 188, 125, 70, 65, 14, 221, 71, 0, 176, 62, 65, 242, 37, 117, 71, 158,
+        208, 171, 71, 72, 246, 196, 70, 162, 15, 221, 71, 0, 96, 131, 65, 80, 39, 117, 71, 164,
+        209, 171, 71, 62, 248, 196, 70, 0, 0, 0, 2, 40, 30, 183, 174, 115, 36, 193, 253, 33, 130,
+        11, 5,
+    ],
     // sec+0027+0022
-    [152,0,197,34,48,178,200,53,20,176,218,71,0,32,137,65,145,59,172,71,210,117,195,71,108,209,57,70,52,179,218,71,0,80,166,65,238,59,172,71,140,119,195,71,220,221,57,70,0,0,0,2,95,176,29,190,11,103,201,15,1,28,2,69],
+    [
+        152, 0, 197, 34, 48, 178, 200, 53, 20, 176, 218, 71, 0, 32, 137, 65, 145, 59, 172, 71, 210,
+        117, 195, 71, 108, 209, 57, 70, 52, 179, 218, 71, 0, 80, 166, 65, 238, 59, 172, 71, 140,
+        119, 195, 71, 220, 221, 57, 70, 0, 0, 0, 2, 95, 176, 29, 190, 11, 103, 201, 15, 1, 28, 2,
+        69,
+    ],
     // sec+0026+0024
-    [0,0,133,208,168,21,213,56,15,195,210,71,0,128,119,192,114,168,189,71,192,53,200,71,192,204,168,69,179,195,210,71,0,0,100,63,200,169,189,71,165,54,200,71,80,215,168,69,0,0,0,6,95,68,207,103,0,0,0,0,0,1,0,69],
+    [
+        0, 0, 133, 208, 168, 21, 213, 56, 15, 195, 210, 71, 0, 128, 119, 192, 114, 168, 189, 71,
+        192, 53, 200, 71, 192, 204, 168, 69, 179, 195, 210, 71, 0, 0, 100, 63, 200, 169, 189, 71,
+        165, 54, 200, 71, 80, 215, 168, 69, 0, 0, 0, 6, 95, 68, 207, 103, 0, 0, 0, 0, 0, 1, 0, 69,
+    ],
     // sec+0027+0016
-    [0,0,0,122,216,254,204,61,147,46,218,71,0,128,48,64,63,81,131,71,88,192,174,71,116,184,173,70,168,47,218,71,0,192,231,64,93,82,131,71,138,192,174,71,204,188,173,70,0,0,0,2,40,30,109,167,45,99,239,40,30,2,0,64],
+    [
+        0, 0, 0, 122, 216, 254, 204, 61, 147, 46, 218, 71, 0, 128, 48, 64, 63, 81, 131, 71, 88,
+        192, 174, 71, 116, 184, 173, 70, 168, 47, 218, 71, 0, 192, 231, 64, 93, 82, 131, 71, 138,
+        192, 174, 71, 204, 188, 173, 70, 0, 0, 0, 2, 40, 30, 109, 167, 45, 99, 239, 40, 30, 2, 0,
+        64,
+    ],
 ];
 
 // ---------------------------------------------------------------------------
@@ -75,22 +116,22 @@ const RAW_HEX: &[[u8; 64]] = &[
 
 fn known_cities() -> Vec<(&'static str, f32, f32)> {
     vec![
-        ("Berlin",      -16400.0,  -3200.0),
-        ("Hamburg",     -22300.0,  -7200.0),
-        ("Wien",          -8400.0,   3500.0),
-        ("Paris",       -33500.0,   1900.0),
-        ("Amsterdam",   -29200.0,  -3400.0),
-        ("Köln",        -23600.0,  -5000.0),
-        ("Frankfurt",   -20700.0,  -2200.0),
-        ("München",     -16200.0,   2700.0),
-        ("Prag",        -11800.0,    400.0),
-        ("Warschau",     -3000.0,  -3200.0),
-        ("Wien",          -8400.0,   3500.0),
-        ("Budapest",      -1500.0,   5500.0),
-        ("Bratislava",    -7000.0,   3500.0),
-        ("Krakau",        -1000.0,  -1500.0),
-        ("Riga",           8500.0, -19000.0),
-        ("Vilnius",        8000.0, -10000.0),
+        ("Berlin", -16400.0, -3200.0),
+        ("Hamburg", -22300.0, -7200.0),
+        ("Wien", -8400.0, 3500.0),
+        ("Paris", -33500.0, 1900.0),
+        ("Amsterdam", -29200.0, -3400.0),
+        ("Köln", -23600.0, -5000.0),
+        ("Frankfurt", -20700.0, -2200.0),
+        ("München", -16200.0, 2700.0),
+        ("Prag", -11800.0, 400.0),
+        ("Warschau", -3000.0, -3200.0),
+        ("Wien", -8400.0, 3500.0),
+        ("Budapest", -1500.0, 5500.0),
+        ("Bratislava", -7000.0, 3500.0),
+        ("Krakau", -1000.0, -1500.0),
+        ("Riga", 8500.0, -19000.0),
+        ("Vilnius", 8000.0, -10000.0),
     ]
 }
 
@@ -160,13 +201,19 @@ struct SectorAnalysis {
 
 #[derive(Clone)]
 struct NodeBounds {
-    min_x: f32, max_x: f32,
-    min_z: f32, max_z: f32,
+    min_x: f32,
+    max_x: f32,
+    min_z: f32,
+    max_z: f32,
 }
 
 impl NodeBounds {
-    fn center_x(&self) -> f32 { (self.min_x + self.max_x) / 2.0 }
-    fn center_z(&self) -> f32 { (self.min_z + self.max_z) / 2.0 }
+    fn center_x(&self) -> f32 {
+        (self.min_x + self.max_x) / 2.0
+    }
+    fn center_z(&self) -> f32 {
+        (self.min_z + self.max_z) / 2.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,26 +234,44 @@ fn main() -> Result<()> {
 
     // ── 1. Open archives ────────────────────────────────────────────────────
     let t0 = std::time::Instant::now();
-    eprintln!("[1/3] Discovering archives in {} ...", args.ets2_dir.display());
+    eprintln!(
+        "[1/3] Discovering archives in {} ...",
+        args.ets2_dir.display()
+    );
     let order = ModLoadOrder::from_directories(&args.ets2_dir, &mods_dir)
         .context("build mod load order")?;
-    eprintln!("      {} archive(s) found — opening (this is the slow step)...", order.entries.len());
+    eprintln!(
+        "      {} archive(s) found — opening (this is the slow step)...",
+        order.entries.len()
+    );
 
     let mut archives: Vec<Box<dyn Archive>> = Vec::new();
     for (i, entry) in order.entries.iter().enumerate() {
-        eprint!("      [{}/{}] {} ... ", i + 1, order.entries.len(), entry.name);
+        eprint!(
+            "      [{}/{}] {} ... ",
+            i + 1,
+            order.entries.len(),
+            entry.name
+        );
         let t = std::time::Instant::now();
         let arc: Box<dyn Archive> = match HashFsArchive::open(&entry.path) {
             Ok(a) => Box::new(a),
             Err(_) => match ZipArchive::open(&entry.path) {
                 Ok(a) => Box::new(a),
-                Err(_) => { eprintln!("skip"); continue; },
+                Err(_) => {
+                    eprintln!("skip");
+                    continue;
+                }
             },
         };
         eprintln!("ok ({:.1}s)", t.elapsed().as_secs_f32());
         archives.push(arc);
     }
-    eprintln!("      {} archive(s) ready. ({:.1}s total)", archives.len(), t0.elapsed().as_secs_f32());
+    eprintln!(
+        "      {} archive(s) ready. ({:.1}s total)",
+        archives.len(),
+        t0.elapsed().as_secs_f32()
+    );
 
     // ── 2. Analyse each of the 9 crash sectors ──────────────────────────────
     eprintln!("[2/3] Analysing {} crash sectors ...", CRASH_SECTORS.len());
@@ -214,7 +279,12 @@ fn main() -> Result<()> {
     let mut results: Vec<SectorAnalysis> = Vec::new();
 
     for (si, &sector_path) in CRASH_SECTORS.iter().enumerate() {
-        eprint!("      [{}/{}] {} ... ", si + 1, CRASH_SECTORS.len(), short_sector_display(sector_path));
+        eprint!(
+            "      [{}/{}] {} ... ",
+            si + 1,
+            CRASH_SECTORS.len(),
+            short_sector_display(sector_path)
+        );
 
         let data_opt: Option<Vec<u8>> = archives
             .iter_mut()
@@ -267,8 +337,13 @@ fn main() -> Result<()> {
         let last_item_start_offset = last_item.map(|i| i.start_offset);
         let last_item_end_offset = last_item.map(|i| i.end_offset);
 
-        let (crash_error_offset, crash_error_msg, crash_raw_type) = if let Some(f) = &report.failure {
-            (Some(f.error_offset), Some(f.error_msg.clone()), Some(f.raw_type))
+        let (crash_error_offset, crash_error_msg, crash_raw_type) = if let Some(f) = &report.failure
+        {
+            (
+                Some(f.error_offset),
+                Some(f.error_msg.clone()),
+                Some(f.raw_type),
+            )
         } else {
             (None, None, None)
         };
@@ -283,8 +358,8 @@ fn main() -> Result<()> {
 
         // -- parse_sector_with_tracer(): nodes + raw_hex ---------------------
         let tracer = DropTracer::new(256);
-        let parsed_sector = parse_sector_with_tracer(&data, sector_path, &tracer)
-            .unwrap_or_default();
+        let parsed_sector =
+            parse_sector_with_tracer(&data, sector_path, &tracer).unwrap_or_default();
         let tracer_events = tracer.take_events();
 
         let tracer_raw_hex = tracer_events
@@ -297,27 +372,44 @@ fn main() -> Result<()> {
         let recovered_nodes_count = parsed_sector.recovered_nodes_count;
 
         let node_bounds = if !parsed_sector.nodes.is_empty() {
-            let mut min_x = f32::MAX; let mut max_x = f32::MIN;
-            let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+            let mut min_x = f32::MAX;
+            let mut max_x = f32::MIN;
+            let mut min_z = f32::MAX;
+            let mut max_z = f32::MIN;
             for n in &parsed_sector.nodes {
-                if n.x < min_x { min_x = n.x; }
-                if n.x > max_x { max_x = n.x; }
-                if n.z < min_z { min_z = n.z; }
-                if n.z > max_z { max_z = n.z; }
+                if n.x < min_x {
+                    min_x = n.x;
+                }
+                if n.x > max_x {
+                    max_x = n.x;
+                }
+                if n.z < min_z {
+                    min_z = n.z;
+                }
+                if n.z > max_z {
+                    max_z = n.z;
+                }
             }
-            Some(NodeBounds { min_x, max_x, min_z, max_z })
+            Some(NodeBounds {
+                min_x,
+                max_x,
+                min_z,
+                max_z,
+            })
         } else {
             None
         };
 
-        let (world_center_x, world_center_z) = node_bounds.as_ref()
+        let (world_center_x, world_center_z) = node_bounds
+            .as_ref()
             .map(|b| (Some(b.center_x()), Some(b.center_z())))
             .unwrap_or((None, None));
 
         // nearest city
         let nearest_city = world_center_x.and_then(|cx| {
             world_center_z.and_then(|cz| {
-                cities.iter()
+                cities
+                    .iter()
                     .map(|&(name, cx2, cz2)| {
                         let d = dist_xz(cx, cz, cx2, cz2);
                         (name, d)
@@ -327,10 +419,14 @@ fn main() -> Result<()> {
             })
         });
 
-        let city_str = nearest_city.map(|(n, d)| format!(" → near {n} ({d:.1} km)")).unwrap_or_default();
-        eprintln!("ok | last={} | crash={} | {} nodes{}",
+        let city_str = nearest_city
+            .map(|(n, d)| format!(" → near {n} ({d:.1} km)"))
+            .unwrap_or_default();
+        eprintln!(
+            "ok | last={} | crash={} | {} nodes{}",
             last_item_kind.as_deref().unwrap_or("?"),
-            crash_error_msg.as_deref()
+            crash_error_msg
+                .as_deref()
                 .and_then(|s| s.split(':').next())
                 .unwrap_or("?"),
             nodes_count,
@@ -386,10 +482,10 @@ fn write_json(path: &std::path::Path, results: &[SectorAnalysis]) -> Result<()> 
     let mut sectors: Vec<Value> = Vec::new();
     for (i, r) in results.iter().enumerate() {
         let raw_hex_json: Vec<u8> = if !r.tracer_raw_hex.is_empty() {
-                r.tracer_raw_hex.clone()
-            } else {
-                RAW_HEX[i].to_vec()
-            };
+            r.tracer_raw_hex.clone()
+        } else {
+            RAW_HEX[i].to_vec()
+        };
         let raw_decoded = decode_kdop_header(&RAW_HEX[i]);
 
         sectors.push(json!({
@@ -461,14 +557,19 @@ fn write_markdown(path: &std::path::Path, results: &[SectorAnalysis]) -> Result<
         let short_name = short_sector(r.sector_path);
         let found = if r.found_in_archive { "✓" } else { "✗" };
         let last_kind = r.last_item_kind.as_deref().unwrap_or("-");
-        let crash_short = r.crash_error_msg.as_deref()
+        let crash_short = r
+            .crash_error_msg
+            .as_deref()
             .map(|s| s.split(':').next().unwrap_or(s))
             .unwrap_or("-");
-        let city = r.nearest_city
+        let city = r
+            .nearest_city
             .map(|(name, d)| format!("{name} ({:.1} km)", d))
             .unwrap_or_else(|| "-".to_string());
-        w!("| `{short_name}` | {found} | {} | {last_kind} | {crash_short} | {city} |",
-            r.items_before_crash);
+        w!(
+            "| `{short_name}` | {found} | {} | {last_kind} | {crash_short} | {city} |",
+            r.items_before_crash
+        );
     }
     w!();
 
@@ -491,12 +592,19 @@ fn write_markdown(path: &std::path::Path, results: &[SectorAnalysis]) -> Result<
         if let Some(b) = &r.node_bounds {
             w!("| Node x-range | {:.1} … {:.1} m |", b.min_x, b.max_x);
             w!("| Node z-range | {:.1} … {:.1} m |", b.min_z, b.max_z);
-            w!("| World centre (approx) | ({:.0}, {:.0}) |", b.center_x(), b.center_z());
+            w!(
+                "| World centre (approx) | ({:.0}, {:.0}) |",
+                b.center_x(),
+                b.center_z()
+            );
         } else {
             w!("| Node bounds | no nodes recovered |");
         }
-        w!("| Nodes total | {} ({} recovered from tail) |",
-            r.nodes_count, r.recovered_nodes_count);
+        w!(
+            "| Nodes total | {} ({} recovered from tail) |",
+            r.nodes_count,
+            r.recovered_nodes_count
+        );
         if let Some((name, d)) = r.nearest_city {
             w!("| Nearest city | **{name}** at {:.1} km |", d);
         }
@@ -542,16 +650,45 @@ fn write_markdown(path: &std::path::Path, results: &[SectorAnalysis]) -> Result<
         w!("| Field | Value |");
         w!("|---|---|");
         w!("| uid (u64 LE) | `{}` |", dec.uid_hex);
-        w!("| uid plausible ETS2? | {} |", if dec.uid_is_plausible { "✓ yes" } else { "✗ no" });
-        w!("| uid bytes[0..4] as f32 | `{:.6}` — {} |",
+        w!(
+            "| uid plausible ETS2? | {} |",
+            if dec.uid_is_plausible {
+                "✓ yes"
+            } else {
+                "✗ no"
+            }
+        );
+        w!(
+            "| uid bytes[0..4] as f32 | `{:.6}` — {} |",
             dec.uid_as_f32_pair[0],
-            if dec.uid_as_f32_pair[0].abs() < 0.01 { "⚠ near-zero" } else { "ok" });
-        w!("| uid bytes[4..8] as f32 | `{:.6}` — {} |",
+            if dec.uid_as_f32_pair[0].abs() < 0.01 {
+                "⚠ near-zero"
+            } else {
+                "ok"
+            }
+        );
+        w!(
+            "| uid bytes[4..8] as f32 | `{:.6}` — {} |",
             dec.uid_as_f32_pair[1],
-            if dec.uid_as_f32_pair[1].abs() < 0.01 { "⚠ near-zero" } else { "ok" });
-        w!("| kdop_bounds (10×f32) | `{}` |",
-            dec.bounds.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(", "));
-        w!("| kdop_flags (u32 LE) | `0x{:08x}` = {} |", dec.flags, dec.flags);
+            if dec.uid_as_f32_pair[1].abs() < 0.01 {
+                "⚠ near-zero"
+            } else {
+                "ok"
+            }
+        );
+        w!(
+            "| kdop_bounds (10×f32) | `{}` |",
+            dec.bounds
+                .iter()
+                .map(|v| format!("{v:.1}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        w!(
+            "| kdop_flags (u32 LE) | `0x{:08x}` = {} |",
+            dec.flags,
+            dec.flags
+        );
         w!("| view_dist (u8) | {} |", dec.view_dist);
         w!("| model_token (u64 LE) | `{}` |", dec.model_token_hex);
         w!();
@@ -566,9 +703,15 @@ fn write_markdown(path: &std::path::Path, results: &[SectorAnalysis]) -> Result<
         let short = short_sector(r.sector_path);
         let lt = r.last_item_type.map_or("-".to_string(), |t| t.to_string());
         let lk = r.last_item_kind.as_deref().unwrap_or("-");
-        let le = r.last_item_end_offset.map_or("-".to_string(), |o| o.to_string());
-        let co = r.crash_error_offset.map_or("-".to_string(), |o| o.to_string());
-        let bd = r.bytes_crash_item_body.map_or("-".to_string(), |b| b.to_string());
+        let le = r
+            .last_item_end_offset
+            .map_or("-".to_string(), |o| o.to_string());
+        let co = r
+            .crash_error_offset
+            .map_or("-".to_string(), |o| o.to_string());
+        let bd = r
+            .bytes_crash_item_body
+            .map_or("-".to_string(), |b| b.to_string());
         w!("| `{short}` | {lt} | {lk} | {le} | {co} | {bd} |");
     }
     w!();
@@ -650,7 +793,8 @@ fn write_auto_diagnosis(f: &mut std::fs::File, results: &[SectorAnalysis]) -> Re
         .count();
 
     // Pattern 2: last-item variety
-    let mut last_kinds: Vec<String> = results.iter()
+    let mut last_kinds: Vec<String> = results
+        .iter()
         .filter_map(|r| r.last_item_kind.clone())
         .collect();
     last_kinds.sort();
@@ -658,12 +802,15 @@ fn write_auto_diagnosis(f: &mut std::fs::File, results: &[SectorAnalysis]) -> Re
     let unique_last_kinds = last_kinds.len();
 
     // Pattern 3: crash message variety
-    let crash_msgs: std::collections::HashSet<String> = results.iter()
-        .filter_map(|r| r.crash_error_msg.as_ref().map(|m| {
-            // normalise: strip the number to compare message patterns
-            let idx = m.find(|c: char| c.is_ascii_digit()).unwrap_or(m.len());
-            m[..idx].trim().to_string()
-        }))
+    let crash_msgs: std::collections::HashSet<String> = results
+        .iter()
+        .filter_map(|r| {
+            r.crash_error_msg.as_ref().map(|m| {
+                // normalise: strip the number to compare message patterns
+                let idx = m.find(|c: char| c.is_ascii_digit()).unwrap_or(m.len());
+                m[..idx].trim().to_string()
+            })
+        })
         .collect();
 
     w!("### Evidence Summary");
@@ -671,9 +818,15 @@ fn write_auto_diagnosis(f: &mut std::fs::File, results: &[SectorAnalysis]) -> Re
     w!("| Evidence | Value |");
     w!("|---|---|");
     w!("| Sectors found in archive | {}/{} |", found, results.len());
-    w!("| uid bytes[0..8] plausible ETS2 UID (not float) | {}/{} |",
-        uid_plausible_count, found);
-    w!("| Unique last-item kinds across all 9 sectors | {} |", unique_last_kinds);
+    w!(
+        "| uid bytes[0..8] plausible ETS2 UID (not float) | {}/{} |",
+        uid_plausible_count,
+        found
+    );
+    w!(
+        "| Unique last-item kinds across all 9 sectors | {} |",
+        unique_last_kinds
+    );
     w!("| Unique crash-message prefixes | {} |", crash_msgs.len());
     w!();
     for msg in &crash_msgs {
@@ -686,7 +839,10 @@ fn write_auto_diagnosis(f: &mut std::fs::File, results: &[SectorAnalysis]) -> Re
 
     if uid_plausible_count == found {
         w!("**Cursor was at sign body start** when the item was dispatched.");
-        w!("All {} UID values look like valid ETS2 UIDs (not float garbage).", found);
+        w!(
+            "All {} UID values look like valid ETS2 UIDs (not float garbage).",
+            found
+        );
         w!("→ The cursor was NOT desynced by the previous item.");
         w!();
     } else {
@@ -835,7 +991,11 @@ fn decode_sign_body(raw: &[u8]) -> String {
     rows.push(format!(
         "| {pos} | uid | `{}` | `0x{uid:016x}` | {} |",
         hex_bytes!(pos, pos + 8),
-        if uid_ok { "ETS2 UID ✓" } else { "⚠ implausible" }
+        if uid_ok {
+            "ETS2 UID ✓"
+        } else {
+            "⚠ implausible"
+        }
     ));
     pos += 8;
 
@@ -905,7 +1065,11 @@ fn decode_sign_body(raw: &[u8]) -> String {
     let board_count = raw[pos];
     rows.push(format!(
         "| {pos} | **board_count** | `{board_count:02x}` | **{board_count}** | {} |",
-        if board_count > 20 { "⚠ suspiciously large" } else { "ok" }
+        if board_count > 20 {
+            "⚠ suspiciously large"
+        } else {
+            "ok"
+        }
     ));
     pos += 1;
 
@@ -955,7 +1119,9 @@ fn decode_sign_body(raw: &[u8]) -> String {
     // board_override_count (first field after template payload)
     if pos_after_template + 4 <= n {
         let boc = u32::from_le_bytes(
-            raw[pos_after_template..pos_after_template + 4].try_into().unwrap()
+            raw[pos_after_template..pos_after_template + 4]
+                .try_into()
+                .unwrap(),
         );
         rows.push(format!(
             "| {pos_after_template} | **board_override_count** | `{}` | **{boc}** | {} |",
@@ -971,7 +1137,11 @@ fn decode_sign_body(raw: &[u8]) -> String {
                 rows.push(format!(
                     "| {pos_soc} | **sign_override_count** | `{}` | **{soc}** | {} |",
                     hex_bytes!(pos_soc, pos_soc + 4),
-                    if soc > 2_000_000 { "⚠ GARBAGE — this is the crash!" } else { "ok" }
+                    if soc > 2_000_000 {
+                        "⚠ GARBAGE — this is the crash!"
+                    } else {
+                        "ok"
+                    }
                 ));
             } else {
                 rows.push(format!(
@@ -999,7 +1169,9 @@ fn dist_xz(ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
 }
 
 fn short_sector(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
         .trim_end_matches(".base")
 }
 
@@ -1009,14 +1181,14 @@ fn short_sector_display(path: &str) -> &str {
 
 fn item_type_name(t: u32) -> &'static str {
     match t {
-        1  => "terrain",
-        2  => "buildings",
-        3  => "road",
-        4  => "prefab",
-        5  => "model",
-        6  => "company",
-        7  => "service",
-        8  => "cut_plane",
+        1 => "terrain",
+        2 => "buildings",
+        3 => "road",
+        4 => "prefab",
+        5 => "model",
+        6 => "company",
+        7 => "service",
+        8 => "cut_plane",
         12 => "city",
         18 => "map_overlay",
         19 => "ferry",
@@ -1033,7 +1205,7 @@ fn item_type_name(t: u32) -> &'static str {
         44 => "curve",
         46 => "cutscene",
         48 => "visibility_area",
-        _  => "unknown",
+        _ => "unknown",
     }
 }
 
@@ -1042,11 +1214,13 @@ fn hex_dump_16(data: &[u8]) -> String {
     let mut out = String::new();
     for (i, chunk) in data.chunks(16).enumerate() {
         let offset = i * 16;
-        let hex: String = chunk.iter()
+        let hex: String = chunk
+            .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<Vec<_>>()
             .join(" ");
-        let ascii: String = chunk.iter()
+        let ascii: String = chunk
+            .iter()
             .map(|&b| if b.is_ascii_graphic() { b as char } else { '.' })
             .collect();
         let padding = "   ".repeat(16 - chunk.len());

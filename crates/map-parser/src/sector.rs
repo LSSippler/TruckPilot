@@ -40,6 +40,9 @@ pub struct RawNode {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    /// Rotation quaternion `[qw, qx, qy, qz]` from the 56-byte legacy node record.
+    /// Set to `[0.0; 4]` for sized-format nodes (only 1×f32 is stored there).
+    pub rotation: [f32; 4],
     /// UID of the item attached in the "forward" direction (0 = none / sized-format).
     pub forward_item_uid: u64,
     /// UID of the item attached in the "backward" direction (0 = none / sized-format).
@@ -438,9 +441,7 @@ fn try_extract_road_uids(body: &[u8]) -> (Option<u64>, Option<u64>, Option<u64>)
 fn read_u64_at(data: &[u8], offset: usize) -> Option<u64> {
     let end = offset + 8;
     if end <= data.len() {
-        Some(u64::from_le_bytes(
-            data[offset..end].try_into().unwrap(),
-        ))
+        Some(u64::from_le_bytes(data[offset..end].try_into().unwrap()))
     } else {
         None
     }
@@ -797,32 +798,30 @@ fn try_parse_sized_sector(
         }
 
         match item_type {
-            ITEM_TYPE_ROAD => {
-                match parse_sized_road(&mut cur) {
-                    Ok(road) => sector.roads.push(road),
-                    Err(_) => {
-                        if let Some((tracer, sector_path)) = tracer_ctx {
-                            let hex_cap = tracer.hex_limit.min(item_size as usize);
-                            let body = data
-                                .get(item_start as usize..item_start as usize + hex_cap)
-                                .unwrap_or(&[]);
-                            tracer.record(DropEvent {
-                                category: DropCategory::SizedRoadParseFailed,
-                                sector_path: sector_path.to_string(),
-                                item_type: ITEM_TYPE_ROAD,
-                                item_uid: None,
-                                node_a: None,
-                                node_b: None,
-                                node_a_resolved: None,
-                                node_b_resolved: None,
-                                x: None,
-                                z: None,
-                                raw_hex: body.to_vec(),
-                            });
-                        }
+            ITEM_TYPE_ROAD => match parse_sized_road(&mut cur) {
+                Ok(road) => sector.roads.push(road),
+                Err(_) => {
+                    if let Some((tracer, sector_path)) = tracer_ctx {
+                        let hex_cap = tracer.hex_limit.min(item_size as usize);
+                        let body = data
+                            .get(item_start as usize..item_start as usize + hex_cap)
+                            .unwrap_or(&[]);
+                        tracer.record(DropEvent {
+                            category: DropCategory::SizedRoadParseFailed,
+                            sector_path: sector_path.to_string(),
+                            item_type: ITEM_TYPE_ROAD,
+                            item_uid: None,
+                            node_a: None,
+                            node_b: None,
+                            node_a_resolved: None,
+                            node_b_resolved: None,
+                            x: None,
+                            z: None,
+                            raw_hex: body.to_vec(),
+                        });
                     }
                 }
-            }
+            },
             ITEM_TYPE_PREFAB => {
                 if let Ok(prefab) = parse_sized_prefab(&mut cur) {
                     sector.prefabs.push(prefab);
@@ -906,9 +905,7 @@ fn sized_sector_plausible(item_count: u32, sector: &ParsedSector, data: &[u8]) -
     const MAX_WORLD_Y: f32 = 10_000.0;
 
     // Stage 1 — Item-count heuristic
-    if item_count < MIN_SIZED_ITEMS_FOR_LARGE_SECTOR
-        && data.len() > LARGE_SECTOR_THRESHOLD_BYTES
-    {
+    if item_count < MIN_SIZED_ITEMS_FOR_LARGE_SECTOR && data.len() > LARGE_SECTOR_THRESHOLD_BYTES {
         tracing::debug!(
             target: "map_parser::sector",
             "try_parse_sized_sector rejected: item_count={} too small for {}-byte sector",
@@ -920,9 +917,7 @@ fn sized_sector_plausible(item_count: u32, sector: &ParsedSector, data: &[u8]) -
     // Stage 2 — Node coordinate plausibility
     if !sector.nodes.is_empty()
         && !sector.nodes.iter().any(|n| {
-            n.x.abs() < MAX_WORLD_X_Z
-                && n.y.abs() < MAX_WORLD_Y
-                && n.z.abs() < MAX_WORLD_X_Z
+            n.x.abs() < MAX_WORLD_X_Z && n.y.abs() < MAX_WORLD_Y && n.z.abs() < MAX_WORLD_X_Z
         })
     {
         tracing::debug!(
@@ -1004,6 +999,7 @@ fn parse_node_f64(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
         x: x as f32,
         y: y as f32,
         z: z as f32,
+        rotation: [0.0; 4],
         forward_item_uid: 0,
         backward_item_uid: 0,
     })
@@ -1102,7 +1098,10 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
     let x_raw = read_i32(cur)?;
     let y_raw = read_i32(cur)?;
     let z_raw = read_i32(cur)?;
-    skip(cur, 16)?; // rotation quaternion (4×f32)
+    let qw = read_f32(cur)?;
+    let qx = read_f32(cur)?;
+    let qy = read_f32(cur)?;
+    let qz = read_f32(cur)?;
     let backward_item_uid = read_u64(cur)?;
     let forward_item_uid = read_u64(cur)?;
     skip(cur, 4)?; // flags(u32)
@@ -1113,6 +1112,7 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<RawNode, ParseError> {
         x: x_raw as f32 / 256.0,
         y: y_raw as f32 / 256.0,
         z: z_raw as f32 / 256.0,
+        rotation: [qw, qx, qy, qz],
         forward_item_uid,
         backward_item_uid,
     })
@@ -1501,17 +1501,17 @@ fn skip_traffic_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 ///          quad_count×4, off_count×16, norm_count×16
 /// Empty-patch fixed overhead: 318 bytes (all list counts = 0).
 fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
-    let _ = read_kdop_item(cur)?;                   // 53
+    let _ = read_kdop_item(cur)?; // 53
     for _ in 0..16 {
-        skip_vector3(cur)?;                         // 16×12 = 192
+        skip_vector3(cur)?; // 16×12 = 192
     }
-    let _ = read_u16(cur)?;                         // tess_x u16
-    let _ = read_u16(cur)?;                         // tess_z u16
-    let _ = read_u64(cur)?;                         // node uid
-    let _ = read_u32(cur)?;                         // random seed
-    // Vegetation[0..3]: each entry = u64 token + u16 density + u8 type = 11 bytes
-    skip(cur, 3 * 11)?;                             // 33 bytes
-    // VegetationSpheres: u32 count + count × 20 bytes (vec3 + f32 radius + u32 type)
+    let _ = read_u16(cur)?; // tess_x u16
+    let _ = read_u16(cur)?; // tess_z u16
+    let _ = read_u64(cur)?; // node uid
+    let _ = read_u32(cur)?; // random seed
+                            // Vegetation[0..3]: each entry = u64 token + u16 density + u8 type = 11 bytes
+    skip(cur, 3 * 11)?; // 33 bytes
+                        // VegetationSpheres: u32 count + count × 20 bytes (vec3 + f32 radius + u32 type)
     let sphere_count = read_u32(cur)? as usize;
     ensure_count(sphere_count as u32, "bezier_patch vegetation spheres")?;
     skip(cur, sphere_count * 20)?;
@@ -1524,9 +1524,9 @@ fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let col_count = read_u16(cur)? as usize;
     ensure_count(col_count as u32, "bezier_patch colors")?;
     skip(cur, col_count * 4)?;
-    let _ = read_u16(cur)?;                         // rows
-    let _ = read_u16(cur)?;                         // cols
-    // Quads: u32 count + count × 4 bytes (u32 index)
+    let _ = read_u16(cur)?; // rows
+    let _ = read_u16(cur)?; // cols
+                            // Quads: u32 count + count × 4 bytes (u32 index)
     let quad_count = read_u32(cur)? as usize;
     ensure_count(quad_count as u32, "bezier_patch quads")?;
     skip(cur, quad_count * 4)?;
@@ -1701,7 +1701,7 @@ fn skip_no_weather(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_f32(cur)?; // width
     let _ = read_f32(cur)?; // height
     let _ = read_i32(cur)?; // fogMaskPresetId
-    skip(cur, 16)?;          // reserved (new in v901)
+    skip(cur, 16)?; // reserved (new in v901)
     let _ = read_u64(cur)?; // nodeUid
     Ok(())
 }
@@ -1710,8 +1710,8 @@ fn skip_no_weather(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 /// nodeUid(u64) + minRot(f32) + maxRot(f32).
 fn skip_hinge(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    skip_token(cur)?;    // token
-    skip_token(cur)?;    // look
+    skip_token(cur)?; // token
+    skip_token(cur)?; // look
     let _ = read_u64(cur)?; // nodeUid
     let _ = read_f32(cur)?; // minRot
     let _ = read_f32(cur)?; // maxRot
@@ -1740,9 +1740,8 @@ fn parse_compound(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<
     let child_item_count = read_u32(cur)?;
     ensure_count(child_item_count, "compound child items")?;
     for i in 0..child_item_count {
-        skip_child_simple_item(cur).map_err(|e| {
-            ParseError::Binary(format!("compound child item #{i}: {e}"))
-        })?;
+        skip_child_simple_item(cur)
+            .map_err(|e| ParseError::Binary(format!("compound child item #{i}: {e}")))?;
     }
     let child_node_count = read_u32(cur)?;
     ensure_count(child_node_count, "compound child nodes")?;
@@ -1820,7 +1819,7 @@ fn skip_camera_path(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 fn skip_hookup(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
     skip_pascal_string(cur)?; // name
-    let _ = read_u64(cur)?;   // nodeUid
+    let _ = read_u64(cur)?; // nodeUid
     Ok(())
 }
 
@@ -1829,11 +1828,11 @@ fn skip_hookup(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
 /// i32). The activation count is always exactly 2 (fixed per binary spec).
 fn skip_gate(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?;
-    skip_token(cur)?;               // model
+    skip_token(cur)?; // model
     let _ = skip_node_ref_list(cur)?; // nodeUids
     for _ in 0..2 {
-        skip_pascal_string(cur)?;   // triggerUnitName
-        let _ = read_i32(cur)?;     // triggerNodeIndex
+        skip_pascal_string(cur)?; // triggerUnitName
+        let _ = read_i32(cur)?; // triggerNodeIndex
     }
     Ok(())
 }
@@ -2398,7 +2397,12 @@ mod tests {
 
     /// Append a compound item (type tag + body) with zero child items
     /// and `nodes` child nodes.
-    fn append_compound(buf: &mut Vec<u8>, uid: u64, node_uid: u64, child_nodes: &[(u64, i32, i32, i32)]) {
+    fn append_compound(
+        buf: &mut Vec<u8>,
+        uid: u64,
+        node_uid: u64,
+        child_nodes: &[(u64, i32, i32, i32)],
+    ) {
         write_u32(buf, ITEM_TYPE_COMPOUND);
         append_kdop_item(buf, uid);
         write_u64(buf, node_uid); // nodeUid
@@ -2427,10 +2431,15 @@ mod tests {
         // Compound with 2 child nodes — both must appear in sector.nodes.
         let mut data = header(895);
         write_u32(&mut data, 1); // item_count
-        append_compound(&mut data, 0x01, 0x00, &[
-            (10, 256, 0, 0),   // uid=10, x=1.0 m
-            (20, 0, 512, 0),   // uid=20, y=2.0 m
-        ]);
+        append_compound(
+            &mut data,
+            0x01,
+            0x00,
+            &[
+                (10, 256, 0, 0), // uid=10, x=1.0 m
+                (20, 0, 512, 0), // uid=20, y=2.0 m
+            ],
+        );
         write_u32(&mut data, 0); // trailing node_count
 
         let s = parse_sector(&data).unwrap();
@@ -2446,9 +2455,14 @@ mod tests {
         // Compound child nodes plus trailing section nodes must all appear.
         let mut data = header(895);
         write_u32(&mut data, 1); // item_count
-        append_compound(&mut data, 0x01, 0x00, &[
-            (100, 25600, 0, 0), // uid=100, x=100.0 m
-        ]);
+        append_compound(
+            &mut data,
+            0x01,
+            0x00,
+            &[
+                (100, 25600, 0, 0), // uid=100, x=100.0 m
+            ],
+        );
         write_u32(&mut data, 1); // trailing node_count
         append_node(&mut data, 200, 0, 25600, 0); // uid=200, y=100.0 m
 
@@ -2464,10 +2478,12 @@ mod tests {
         // resolvable in the same sector (both items in same sector payload).
         let mut data = header(895);
         write_u32(&mut data, 2); // item_count: 1 compound + 1 road
-        append_compound(&mut data, 0x10, 0x00, &[
-            (1001, 0, 0, 0),
-            (1002, 25600, 0, 0),
-        ]);
+        append_compound(
+            &mut data,
+            0x10,
+            0x00,
+            &[(1001, 0, 0, 0), (1002, 25600, 0, 0)],
+        );
         append_road(&mut data, 0x42, 1001, 1002);
         write_u32(&mut data, 0); // no trailing nodes
 
@@ -2485,9 +2501,8 @@ mod tests {
     #[test]
     fn compound_with_five_child_nodes() {
         let mut data = header(895);
-        let child_nodes: Vec<(u64, i32, i32, i32)> = (1..=5)
-            .map(|i| (i as u64, i * 256, 0, 0))
-            .collect();
+        let child_nodes: Vec<(u64, i32, i32, i32)> =
+            (1..=5).map(|i| (i as u64, i * 256, 0, 0)).collect();
         write_u32(&mut data, 1); // item_count
         append_compound(&mut data, 0xFF, 0x00, &child_nodes);
         write_u32(&mut data, 0);

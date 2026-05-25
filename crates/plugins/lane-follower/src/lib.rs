@@ -37,6 +37,12 @@
 //! | `lane_follower.lookahead_distance_m` | f32 metres | effective lookahead distance this tick |
 //! | `lane_follower.wheelbase_m` | f64 metres | truck wheelbase (diagnostic constant) |
 //! | `lane_follower.rate_limited` | `"true"/"false"` | rate-limiter was active this tick |
+//! | `lane_follower.lane_offset_m` | f32 metres | effective lane offset this tick (right = positive) |
+//! | `lane_follower.lane_normal_x` | f32 | right-normal X at nearest spline point |
+//! | `lane_follower.lane_normal_z` | f32 | right-normal Z at nearest spline point |
+//! | `lane_follower.lateral_dist_signed` | f32 metres | signed lateral dist (+ = truck right of centreline) |
+//! | `lane_follower.lookahead_offset_x` | f32 metres | lane-offset lookahead X (input to Pure-Pursuit) |
+//! | `lane_follower.lookahead_offset_z` | f32 metres | lane-offset lookahead Z (input to Pure-Pursuit) |
 
 mod junction;
 mod pure_pursuit;
@@ -48,8 +54,7 @@ use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
     arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
     graph::MapGraph,
-    spline::build_splines,
-    spline::Vec3,
+    spline::{build_splines, evaluate_tangent, Vec3},
     spline_index::{build_index, SplineIndex},
 };
 use truckpilot_plugin_api::{
@@ -87,6 +92,11 @@ const STEERING_EMA_ALPHA: f64 = 0.15;
 
 /// Rate limiter: max steering change per tick (50 Hz → 2.5/s max slew rate).
 const STEERING_RATE_LIMIT: f64 = 0.05;
+
+/// Standard ETS2 lane width in metres (2-lane road).
+const LANE_WIDTH_M: f32 = 3.75;
+/// Default right-lane offset from road centreline: half a lane width.
+const LANE_OFFSET_RIGHT_M: f32 = LANE_WIDTH_M / 2.0;
 
 // ---------------------------------------------------------------------------
 // Mode
@@ -306,6 +316,29 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.heading_diff_deg", format!("{heading_diff:.2}"));
 
+        // Lane offset: BB-key override → code constant.
+        let lane_offset_m = ctx
+            .blackboard
+            .get("plugin.lane-follower.lane_offset_m")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(LANE_OFFSET_RIGHT_M);
+
+        // Task 4 — Diagnostic: right-normal and signed lateral distance at nearest spline point.
+        // Right-normal at heading h (CW degrees): n = (cos h, sin h) in XZ.
+        // Forward at heading h: f = (sin h, -cos h) in XZ.
+        // Signed lateral = f × (truck − spline) = fx*(tz_diff) − fz*(tx_diff). Positive = truck right.
+        let road_h_rad = (hit.heading_deg as f32).to_radians();
+        let near_n_x = road_h_rad.cos();
+        let near_n_z = road_h_rad.sin();
+        let fwd_x = road_h_rad.sin();
+        let fwd_z = -road_h_rad.cos();
+        let lateral_dist_signed = fwd_x * (truck_z as f32 - hit.point_on_curve.z)
+            - fwd_z * (truck_x as f32 - hit.point_on_curve.x);
+        ctx.blackboard.set("lane_follower.lane_offset_m", format!("{lane_offset_m:.3}"));
+        ctx.blackboard.set("lane_follower.lane_normal_x", format!("{near_n_x:.4}"));
+        ctx.blackboard.set("lane_follower.lane_normal_z", format!("{near_n_z:.4}"));
+        ctx.blackboard.set("lane_follower.lateral_dist_signed", format!("{lateral_dist_signed:.3}"));
+
         // Per-tick counter — never resets, monotonic. Catches telemetry stalls.
         self.tick_count += 1;
         ctx.blackboard
@@ -335,6 +368,23 @@ impl Plugin for LaneFollowerPlugin {
                     .set("lane_follower.lookahead_x", format!("{:.3}", la.point.x));
                 ctx.blackboard
                     .set("lane_follower.lookahead_z", format!("{:.3}", la.point.z));
+
+                // Task 3 — Offset lookahead right by lane_offset_m.
+                // Tangent at lookahead point → right-normal in XZ: n = (-tz, tx) (normalised).
+                let la_tan = evaluate_tangent(&index.segments[la.seg_idx], la.t);
+                let la_len_xz = (la_tan.x * la_tan.x + la_tan.z * la_tan.z).sqrt();
+                let (la_n_x, la_n_z) = if la_len_xz > 1e-6 {
+                    (-la_tan.z / la_len_xz, la_tan.x / la_len_xz)
+                } else {
+                    (0.0_f32, 0.0_f32)
+                };
+                let offset_lx = la.point.x + la_n_x * lane_offset_m;
+                let offset_lz = la.point.z + la_n_z * lane_offset_m;
+                ctx.blackboard
+                    .set("lane_follower.lookahead_offset_x", format!("{offset_lx:.3}"));
+                ctx.blackboard
+                    .set("lane_follower.lookahead_offset_z", format!("{offset_lz:.3}"));
+
                 ctx.blackboard
                     .set("lane_follower.lookahead_seg_idx", la.seg_idx.to_string());
                 ctx.blackboard
@@ -417,10 +467,10 @@ impl Plugin for LaneFollowerPlugin {
 
         ctx.blackboard.set("lane_follower.status", "ok");
 
-        // Pure-Pursuit steering — only computed when a valid lookahead point exists.
+        // Pure-Pursuit steering — uses the lane-offset lookahead point (not raw centreline).
         if let (Some(lx), Some(lz)) = (
-            ctx.blackboard.get_f64("lane_follower.lookahead_x"),
-            ctx.blackboard.get_f64("lane_follower.lookahead_z"),
+            ctx.blackboard.get_f64("lane_follower.lookahead_offset_x"),
+            ctx.blackboard.get_f64("lane_follower.lookahead_offset_z"),
         ) {
             let cmd = pure_pursuit::compute_steering(
                 (truck_x, truck_z),
@@ -861,11 +911,12 @@ mod tests {
 
     #[test]
     fn tick_request_steering_near_zero_when_on_road() {
-        // Road directly at truck x, truck aligned → steering ≈ 0
+        // Road directly at truck x, truck aligned → steering ≈ 0 (with offset=0 to test raw steering).
         let mut plugin = make_chain_plugin(); // road at x=0, truck at x=0
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
         ctx.blackboard.set("autopilot.engage_mode", "route");
+        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
@@ -1142,8 +1193,10 @@ mod tests {
     fn test_steering_at_small_offset() {
         // Road at x=0.5m, truck at x=0 heading North: dist≈0.5m, heading_diff≈0°.
         // With L=4.0m, cmd = 2*y/L² = 2*0.5/16 ≈ 0.0625 — well under 0.15.
+        // Use lane_offset_m=0 to test raw wheelbase-correctness independent of QW1 offset.
         let mut plugin = make_chain_plugin_at_x(0.5);
         let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
@@ -1243,6 +1296,90 @@ mod tests {
             (raw_final - filtered_final).abs() < 0.005,
             "after 60 ticks EMA must converge: raw={raw_final:.4}, filtered={filtered_final:.4}"
         );
+    }
+
+    // ── QW1: Lane-Offset tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_lane_offset_perpendicular_on_north_road() {
+        // North-going chain (heading 0°). Right-normal = East = (+x, 0).
+        // With default offset 1.875 m: offset_x ≈ la_x + 1.875, offset_z ≈ la_z.
+        let mut plugin = make_chain_plugin();
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
+        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
+        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
+        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert!(
+            (off_x - la_x - LANE_OFFSET_RIGHT_M).abs() < 0.05,
+            "North road: offset_x must be la_x + {}, got delta {:.4}", LANE_OFFSET_RIGHT_M, off_x - la_x
+        );
+        assert!(
+            (off_z - la_z).abs() < 0.05,
+            "North road: offset_z must be unchanged, got delta {:.4}", off_z - la_z
+        );
+    }
+
+    #[test]
+    fn test_lane_offset_perpendicular_on_east_road() {
+        // East-going segment (heading 90°). Right-normal = South = (0, +z).
+        // With default offset 1.875 m: offset_z ≈ la_z + 1.875, offset_x ≈ la_x.
+        let p0 = Vec3::new(-20.0, 0.0, 0.0);
+        let p1 = Vec3::new(20.0, 0.0, 0.0);
+        let seg = make_seg(p0, p1, 10);
+        let segs = vec![seg];
+        let luts = build_all_luts(&segs);
+        let forward_adj = build_forward_adjacency(&segs);
+        let index = build_index(segs);
+        let mut plugin = LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() };
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // ETS2 heading 0.75 → truck_heading_deg = (-0.75 * 360).rem_euclid(360) = 90° = East.
+        let tel = make_telemetry(0.0, 0.0, 0.0, 0.75);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
+        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
+        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
+        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert!(
+            (off_z - la_z - LANE_OFFSET_RIGHT_M).abs() < 0.05,
+            "East road: offset_z must be la_z + {}, got delta {:.4}", LANE_OFFSET_RIGHT_M, off_z - la_z
+        );
+        assert!(
+            (off_x - la_x).abs() < 0.05,
+            "East road: offset_x must be unchanged, got delta {:.4}", off_x - la_x
+        );
+    }
+
+    #[test]
+    fn test_lane_offset_zero_bb_key_matches_centreline() {
+        // STOP condition: lane_offset_m=0 → lookahead_offset == lookahead_raw (no lateral shift).
+        let mut plugin = make_chain_plugin();
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
+        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
+        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
+        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert!(
+            (off_x - la_x).abs() < 1e-3,
+            "offset=0: lookahead_offset_x must equal lookahead_x, delta={:.6}", off_x - la_x
+        );
+        assert!(
+            (off_z - la_z).abs() < 1e-3,
+            "offset=0: lookahead_offset_z must equal lookahead_z, delta={:.6}", off_z - la_z
+        );
+        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        assert!(cmd.abs() < 0.05, "offset=0 on centreline: steering near 0, got {cmd:.4}");
     }
 
     // ── Stability: stable after repeated same-position ticks ────────────────

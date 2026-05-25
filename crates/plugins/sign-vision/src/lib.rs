@@ -242,7 +242,16 @@ impl InferenceWorker {
 
         let handle = std::thread::Builder::new()
             .name("sign-vision-inference".into())
-            .spawn(move || worker_loop(session, speed_mapper, conf_threshold, nms_iou, job_rx, result_tx))
+            .spawn(move || {
+                worker_loop(
+                    session,
+                    speed_mapper,
+                    conf_threshold,
+                    nms_iou,
+                    job_rx,
+                    result_tx,
+                )
+            })
             .expect("spawn sign-vision-inference thread");
 
         Self {
@@ -534,21 +543,57 @@ fn conf_bucket_key(idx: usize) -> String {
 fn publish_diag(p: &SignVisionPlugin, ctx: &PluginContext, last_skip_reason: &str) {
     let bb = &ctx.blackboard;
     bb.set("sign.diag.tick_count", p.diag_tick_count.to_string());
-    bb.set("sign.diag.skip_map_source", p.diag_skip_map_source.to_string());
+    bb.set(
+        "sign.diag.skip_map_source",
+        p.diag_skip_map_source.to_string(),
+    );
     bb.set("sign.diag.skip_map_only", p.diag_skip_map_only.to_string());
     bb.set("sign.diag.skip_interval", p.diag_skip_interval.to_string());
-    bb.set("sign.diag.frame_fetch_attempts", p.diag_frame_fetch_attempts.to_string());
-    bb.set("sign.diag.frame_no_store", p.diag_frame_no_store.to_string());
-    bb.set("sign.diag.frame_stale_skips", p.diag_frame_stale_skips.to_string());
-    bb.set("sign.diag.frame_fetch_misses", p.diag_frame_fetch_misses.to_string());
-    bb.set("sign.diag.frame_already_processed", p.diag_frame_already_processed.to_string());
+    bb.set(
+        "sign.diag.frame_fetch_attempts",
+        p.diag_frame_fetch_attempts.to_string(),
+    );
+    bb.set(
+        "sign.diag.frame_no_store",
+        p.diag_frame_no_store.to_string(),
+    );
+    bb.set(
+        "sign.diag.frame_stale_skips",
+        p.diag_frame_stale_skips.to_string(),
+    );
+    bb.set(
+        "sign.diag.frame_fetch_misses",
+        p.diag_frame_fetch_misses.to_string(),
+    );
+    bb.set(
+        "sign.diag.frame_already_processed",
+        p.diag_frame_already_processed.to_string(),
+    );
     bb.set("sign.diag.skip_budget", p.diag_skip_budget.to_string());
-    bb.set("sign.diag.decode_failures", p.diag_decode_failures.to_string());
-    bb.set("sign.diag.inference_calls", p.diag_inference_calls.to_string());
-    bb.set("sign.diag.inference_returns_empty", p.diag_inference_returns_empty.to_string());
-    bb.set("sign.diag.detections_published", p.diag_detections_published.to_string());
-    bb.set("sign.tick_blocking_ms", format!("{:.2}", p.last_tick_blocking_ms));
-    bb.set("sign.frames_dropped_full", p.frames_dropped_full.to_string());
+    bb.set(
+        "sign.diag.decode_failures",
+        p.diag_decode_failures.to_string(),
+    );
+    bb.set(
+        "sign.diag.inference_calls",
+        p.diag_inference_calls.to_string(),
+    );
+    bb.set(
+        "sign.diag.inference_returns_empty",
+        p.diag_inference_returns_empty.to_string(),
+    );
+    bb.set(
+        "sign.diag.detections_published",
+        p.diag_detections_published.to_string(),
+    );
+    bb.set(
+        "sign.tick_blocking_ms",
+        format!("{:.2}", p.last_tick_blocking_ms),
+    );
+    bb.set(
+        "sign.frames_dropped_full",
+        p.frames_dropped_full.to_string(),
+    );
     bb.set("sign.diag.last_skip_reason", last_skip_reason);
     bb.set("sign.diag.mode", format!("{:?}", p.mode));
     bb.set("sign.diag.model_available", p.model_available.to_string());
@@ -584,9 +629,7 @@ fn load_onnx_session(
         {
             use ort::ep::DirectML;
             let ep = DirectML::default().build().error_on_failure();
-            let result = Session::builder().and_then(|b| {
-                Ok(b.with_execution_providers([ep])?)
-            });
+            let result = Session::builder().and_then(|b| Ok(b.with_execution_providers([ep])?));
             match result.and_then(|mut b| b.commit_from_file(model_path)) {
                 Ok(sess) => return Some((sess, "DirectML", None)),
                 Err(e) => Some(format!("DirectML init failed ({e}), falling back to CPU")),
@@ -884,8 +927,8 @@ impl SignVisionPlugin {
         for det in &result.detections {
             // Per-class total
             if (det.class_id as usize) < NUM_CLASSES {
-                self.class_totals[det.class_id as usize] = self.class_totals[det.class_id as usize]
-                    .saturating_add(1);
+                self.class_totals[det.class_id as usize] =
+                    self.class_totals[det.class_id as usize].saturating_add(1);
             }
             // Speed-limit km/h sub-bucket
             if det.class_id as usize == SPEED_LIMIT_CLASS_ID {
@@ -966,14 +1009,26 @@ impl SignVisionPlugin {
         let entry = match det.value {
             Some(km) => format!(
                 r#"{{"f":{},"c":{},"n":"{}","p":{:.3},"b":[{:.1},{:.1},{:.1},{:.1}],"k":{}}}"#,
-                frame_id, det.class_id, det.label, det.confidence,
-                det.bbox_xyxy[0], det.bbox_xyxy[1], det.bbox_xyxy[2], det.bbox_xyxy[3],
+                frame_id,
+                det.class_id,
+                det.label,
+                det.confidence,
+                det.bbox_xyxy[0],
+                det.bbox_xyxy[1],
+                det.bbox_xyxy[2],
+                det.bbox_xyxy[3],
                 km as u32,
             ),
             None => format!(
                 r#"{{"f":{},"c":{},"n":"{}","p":{:.3},"b":[{:.1},{:.1},{:.1},{:.1}]}}"#,
-                frame_id, det.class_id, det.label, det.confidence,
-                det.bbox_xyxy[0], det.bbox_xyxy[1], det.bbox_xyxy[2], det.bbox_xyxy[3],
+                frame_id,
+                det.class_id,
+                det.label,
+                det.confidence,
+                det.bbox_xyxy[0],
+                det.bbox_xyxy[1],
+                det.bbox_xyxy[2],
+                det.bbox_xyxy[3],
             ),
         };
         if self.detection_log.len() == DETECTION_LOG_CAPACITY {
@@ -1017,18 +1072,30 @@ impl SignVisionPlugin {
         // --- Class counters ---
         for (idx, name) in CLASS_NAMES.iter().enumerate() {
             let snake = snake_case_class(name);
-            bb.set(format!("sign.class.{snake}.total"), self.class_totals[idx].to_string());
-            bb.set(format!("sign.class.{snake}.last60s"), class_60s[idx].to_string());
+            bb.set(
+                format!("sign.class.{snake}.total"),
+                self.class_totals[idx].to_string(),
+            );
+            bb.set(
+                format!("sign.class.{snake}.last60s"),
+                class_60s[idx].to_string(),
+            );
         }
         for &km in speed_mapper::SPEED_LIMITS {
             let total = self.speed_limit_totals.get(&km).copied().unwrap_or(0);
-            bb.set(format!("sign.class.SpeedLimitSign.km_{km}.total"), total.to_string());
+            bb.set(
+                format!("sign.class.SpeedLimitSign.km_{km}.total"),
+                total.to_string(),
+            );
             let last60 = self
                 .quality_window
                 .iter()
                 .filter(|e| e.speed_limit_kmh == Some(km))
                 .count() as u64;
-            bb.set(format!("sign.class.SpeedLimitSign.km_{km}.last60s"), last60.to_string());
+            bb.set(
+                format!("sign.class.SpeedLimitSign.km_{km}.last60s"),
+                last60.to_string(),
+            );
         }
         bb.set(
             "sign.class.SpeedLimitSign.km_unmapped.total",
@@ -1039,16 +1106,37 @@ impl SignVisionPlugin {
         #[allow(clippy::needless_range_loop)]
         for i in 0..NUM_CONF_BUCKETS {
             let key = conf_bucket_key(i);
-            bb.set(format!("sign.conf.bucket_{key}.total"), self.conf_bucket_totals[i].to_string());
-            bb.set(format!("sign.conf.bucket_{key}.last60s"), conf_buckets_60s[i].to_string());
+            bb.set(
+                format!("sign.conf.bucket_{key}.total"),
+                self.conf_bucket_totals[i].to_string(),
+            );
+            bb.set(
+                format!("sign.conf.bucket_{key}.last60s"),
+                conf_buckets_60s[i].to_string(),
+            );
         }
-        bb.set("sign.conf.below_min.total", self.conf_below_min_total.to_string());
-        bb.set("sign.conf.above_min.total", self.conf_above_min_total.to_string());
+        bb.set(
+            "sign.conf.below_min.total",
+            self.conf_below_min_total.to_string(),
+        );
+        bb.set(
+            "sign.conf.above_min.total",
+            self.conf_above_min_total.to_string(),
+        );
 
         // --- Frame cardinality + FP windowed counters ---
-        bb.set("sign.frame.zero_detections.total", self.frame_zero_detections_total.to_string());
-        bb.set("sign.fp.contradicting_speed_limits_60s", contradicting.to_string());
-        bb.set("sign.fp.implausible_class_total", self.fp_implausible_class_total.to_string());
+        bb.set(
+            "sign.frame.zero_detections.total",
+            self.frame_zero_detections_total.to_string(),
+        );
+        bb.set(
+            "sign.fp.contradicting_speed_limits_60s",
+            contradicting.to_string(),
+        );
+        bb.set(
+            "sign.fp.implausible_class_total",
+            self.fp_implausible_class_total.to_string(),
+        );
         bb.set("sign.fp.bbox_size_outlier_60s", bbox_outlier.to_string());
         bb.set("sign.fp.low_conf_publish_60s", low_conf_publish.to_string());
 
@@ -1081,7 +1169,11 @@ impl SignVisionPlugin {
             conf_sum += e.confidence;
             conf_count += 1;
         }
-        let conf_mean = if conf_count > 0 { conf_sum / (conf_count as f32) } else { 0.0 };
+        let conf_mean = if conf_count > 0 {
+            conf_sum / (conf_count as f32)
+        } else {
+            0.0
+        };
         bb.set("sign.conf.mean_60s", format!("{:.3}", conf_mean));
 
         // Group window entries by 100-ms bucket as a proxy for
@@ -1102,8 +1194,14 @@ impl SignVisionPlugin {
         } else {
             (conf_count as f32) / (frame_counts.len() as f32)
         };
-        bb.set("sign.frame.detection_count_max_60s", max_in_frame.to_string());
-        bb.set("sign.frame.detection_count_avg_60s", format!("{:.2}", avg_in_frame));
+        bb.set(
+            "sign.frame.detection_count_max_60s",
+            max_in_frame.to_string(),
+        );
+        bb.set(
+            "sign.frame.detection_count_avg_60s",
+            format!("{:.2}", avg_in_frame),
+        );
     }
 }
 

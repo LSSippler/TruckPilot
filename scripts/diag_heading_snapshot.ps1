@@ -1,4 +1,4 @@
-# Heading Diagnostic Snapshot — Phase 1a Blocker
+﻿# Heading Diagnostic Snapshot -- Phase 1a Blocker
 # Takes N snapshots every 500ms and dumps all lane_follower BB keys
 # to help distinguish Hypothesis A (position/dist problem) vs B/C (heading convention).
 # Compatible with Windows PowerShell 5.1+.
@@ -49,7 +49,7 @@ $keys = (
 ) -join ","
 
 $lines = @()
-$lines += "# Heading Diagnostic Snapshot — Phase 1a"
+$lines += "# Heading Diagnostic Snapshot -- Phase 1a"
 $lines += "# Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 $lines += "# Expected: telemetry 0.8091681599617004 rad = 46.36 deg (if bug active)"
 $lines += "# STOP-check: dist_m > 50 -> Hypothesis A (position), < 5 -> Hypothesis B/C (heading)"
@@ -101,23 +101,23 @@ $lines += "## Diagnosis hint"
 if ($dist -ne "?" -and [double]::TryParse($dist, [ref]$null)) {
     $dval = [double]$dist
     if ($dval -gt 50.0) {
-        $lines += "# -> HYPOTHESIS A likely: dist_m=$dist > 50m. SplineIndex miss or position error."
+        $lines += ("# -> HYPOTHESIS A likely: dist_m=" + $dist + " (above 50m). SplineIndex miss or position error.")
         $lines += "#    Check truck_x/truck_z vs known road coordinates."
         Write-Host ""
-        Write-Host "DIAGNOSIS: Hypothesis A — dist_m=$dist > 50m (position problem)"
+        Write-Host ("DIAGNOSIS: Hypothesis A -- dist_m=" + $dist + " (above 50m, position problem)")
     } elseif ($dval -lt 5.0) {
-        $lines += "# -> HYPOTHESIS B/C likely: dist_m=$dist < 5m. Heading convention mismatch or tangent error."
+        $lines += ("# -> HYPOTHESIS B/C likely: dist_m=" + $dist + " (below 5m). Heading convention mismatch or tangent error.")
         $lines += "#    Check road_hdg vs truck_hdg convention (SCS euler vs North-0-CW)."
         Write-Host ""
-        Write-Host "DIAGNOSIS: Hypothesis B/C — dist_m=$dist < 5m (heading convention problem)"
+        Write-Host ("DIAGNOSIS: Hypothesis B/C -- dist_m=" + $dist + " (below 5m, heading convention problem)")
     } else {
-        $lines += "# -> AMBIGUOUS: dist_m=$dist in (5,50) range. Run live-compare for full diagnosis."
+        $lines += ("# -> AMBIGUOUS: dist_m=" + $dist + " in (5,50) range. Run live-compare for full diagnosis.")
         Write-Host ""
-        Write-Host "DIAGNOSIS: AMBIGUOUS — dist_m=$dist in (5,50) range"
+        Write-Host ("DIAGNOSIS: AMBIGUOUS -- dist_m=" + $dist + " in (5,50) range")
     }
 } else {
     $lines += "# -> Could not parse dist_m. Daemon not running or plugin not loaded."
-    Write-Host "DIAGNOSIS: No data — check daemon is running and lane-follower plugin is active."
+    Write-Host "DIAGNOSIS: No data -- check daemon is running and lane-follower plugin is active."
 }
 
 $lines | Out-File -Encoding utf8 -FilePath $OutFile

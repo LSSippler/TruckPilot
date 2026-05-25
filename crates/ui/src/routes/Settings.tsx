@@ -22,8 +22,108 @@ import {
   daemonStart,
   daemonStop,
   daemonRestart,
+  hotkeyGetConfig,
+  hotkeySetConfig,
   type DaemonStatus,
+  type HotkeyConfig,
 } from "@/lib/tauri-bridge";
+
+function codeToAccelerator(code: string): string | null {
+  const modifiers = [
+    "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight",
+    "AltLeft", "AltRight", "MetaLeft", "MetaRight",
+  ];
+  if (modifiers.includes(code)) return null;
+  if (code === "Escape") return null;
+  return code;
+}
+
+function HotkeyCapture({
+  label,
+  value,
+  onCapture,
+}: {
+  label: string;
+  value: string;
+  onCapture: (acc: string) => void;
+}) {
+  const [capturing, setCapturing] = useState(false);
+
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-sm">{label}</Label>
+      <Button
+        variant={capturing ? "default" : "outline"}
+        className="w-full font-mono text-sm"
+        onClick={() => setCapturing(true)}
+        onKeyDown={(e) => {
+          if (!capturing) return;
+          e.preventDefault();
+          if (e.code === "Escape") { setCapturing(false); return; }
+          const acc = codeToAccelerator(e.code);
+          if (acc) { onCapture(acc); setCapturing(false); }
+        }}
+        onBlur={() => setCapturing(false)}
+      >
+        {capturing ? "Taste drücken…" : value}
+      </Button>
+    </div>
+  );
+}
+
+function GlobalHotkeyCard() {
+  const [engage, setEngage] = useState("NumpadEnter");
+  const [disengage, setDisengage] = useState("NumpadDecimal");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void hotkeyGetConfig()
+      .then((cfg: HotkeyConfig) => {
+        setEngage(cfg.engage);
+        setDisengage(cfg.disengage);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const apply = async () => {
+    setSaving(true);
+    try {
+      await hotkeySetConfig(engage, disengage);
+      toast.success("Global hotkeys updated");
+    } catch (err) {
+      toast.error("Hotkey registration failed", { description: String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Global Hotkeys</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Works system-wide — even when ETS2 is in the foreground.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <HotkeyCapture label="Engage autopilot" value={engage} onCapture={setEngage} />
+          <HotkeyCapture label="Disengage autopilot" value={disengage} onCapture={setDisengage} />
+        </div>
+        <Button
+          size="sm"
+          disabled={saving || engage === disengage}
+          onClick={() => void apply()}
+        >
+          {saving ? "Applying…" : "Apply"}
+        </Button>
+        {engage === disengage && (
+          <p className="text-xs text-destructive">Engage and disengage must be different keys.</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function DaemonCard() {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
@@ -214,9 +314,12 @@ export function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Hotkeys</CardTitle>
+          <CardTitle>Hotkeys (in-app)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Active only when the TruckPilot window is focused (F5 / F6).
+          </p>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label className="text-sm">Engage autopilot</Label>
@@ -237,6 +340,8 @@ export function Settings() {
           </div>
         </CardContent>
       </Card>
+
+      <GlobalHotkeyCard />
 
       <Card>
         <CardHeader>

@@ -56,7 +56,10 @@ pub mod u64_string {
             }
             fn visit_str<E: Error>(self, v: &str) -> Result<u64, E> {
                 let trimmed = v.trim();
-                if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+                if let Some(hex) = trimmed
+                    .strip_prefix("0x")
+                    .or_else(|| trimmed.strip_prefix("0X"))
+                {
                     u64::from_str_radix(hex, 16).map_err(E::custom)
                 } else {
                     trimmed.parse::<u64>().map_err(E::custom)
@@ -81,7 +84,9 @@ pub mod option_u64_string {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<u64>, D::Error> {
         use serde::de::{Error, Visitor};
         use std::fmt;
 
@@ -506,7 +511,9 @@ mod tests {
     #[test]
     fn ui_command_set_router_start_preserves_high_u64() {
         const HAMBURG_UID: u64 = 6_526_933_291_294_064_640;
-        let cmd = UiCommand::SetRouterStart { uid: Some(HAMBURG_UID) };
+        let cmd = UiCommand::SetRouterStart {
+            uid: Some(HAMBURG_UID),
+        };
         let s = serde_json::to_string(&cmd).unwrap();
         let back: UiCommand = serde_json::from_str(&s).unwrap();
         match back {
@@ -534,7 +541,10 @@ mod tests {
             value: "vision".into(),
         };
         let s = serde_json::to_string(&cmd).unwrap();
-        assert!(s.contains(r#""type":"set_blackboard_key""#), "wire form: {s}");
+        assert!(
+            s.contains(r#""type":"set_blackboard_key""#),
+            "wire form: {s}"
+        );
         assert!(s.contains(r#""key":"lane_keeper.mode""#), "wire form: {s}");
         assert!(s.contains(r#""value":"vision""#), "wire form: {s}");
         let back: UiCommand = serde_json::from_str(&s).unwrap();

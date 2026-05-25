@@ -258,9 +258,7 @@ impl PluginManager {
     /// Returns whether the named plugin is currently enabled.
     /// Returns `false` if the plugin is not loaded.
     pub fn is_plugin_enabled(&self, name: &str) -> bool {
-        self.plugins
-            .iter()
-            .any(|p| p.name == name && p.enabled)
+        self.plugins.iter().any(|p| p.name == name && p.enabled)
     }
 
     /// Publish the comma-joined list of currently enabled plugin names to
@@ -1112,18 +1110,30 @@ mod frame_store_tests {
         val: f64,
     }
     impl Plugin for SteeringWriterPlugin {
-        fn name(&self) -> &str { "steering-writer" }
-        fn version(&self) -> &str { "0.0.0" }
-        fn settings_schema(&self) -> &str { "{}" }
+        fn name(&self) -> &str {
+            "steering-writer"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn settings_schema(&self) -> &str {
+            "{}"
+        }
         fn on_load(&mut self, _ctx: &PluginContext) {}
         fn on_unload(&mut self) {}
         fn tick(&mut self, _t: Option<&Telemetry>, out: &mut ControlOutput, _ctx: &PluginContext) {
             out.steering = self.val;
         }
-        fn tick_request(&mut self, _t: Option<&Telemetry>, _ctx: &PluginContext) -> Option<ControlRequest> {
+        fn tick_request(
+            &mut self,
+            _t: Option<&Telemetry>,
+            _ctx: &PluginContext,
+        ) -> Option<ControlRequest> {
             None
         }
-        fn default_phase(&self) -> TickPhase { TickPhase::PhaseC }
+        fn default_phase(&self) -> TickPhase {
+            TickPhase::PhaseC
+        }
     }
 
     /// Captures the steering value passed to its `tick()` call (PostPhase).
@@ -1134,22 +1144,40 @@ mod frame_store_tests {
     impl SteeringCapturePlugin {
         fn new(name: &str) -> (Self, Arc<StdMutex<Option<f64>>>) {
             let cell = Arc::new(StdMutex::new(None));
-            (Self { plugin_name: name.into(), captured: Arc::clone(&cell) }, cell)
+            (
+                Self {
+                    plugin_name: name.into(),
+                    captured: Arc::clone(&cell),
+                },
+                cell,
+            )
         }
     }
     impl Plugin for SteeringCapturePlugin {
-        fn name(&self) -> &str { &self.plugin_name }
-        fn version(&self) -> &str { "0.0.0" }
-        fn settings_schema(&self) -> &str { "{}" }
+        fn name(&self) -> &str {
+            &self.plugin_name
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn settings_schema(&self) -> &str {
+            "{}"
+        }
         fn on_load(&mut self, _ctx: &PluginContext) {}
         fn on_unload(&mut self) {}
         fn tick(&mut self, _t: Option<&Telemetry>, out: &mut ControlOutput, _ctx: &PluginContext) {
             *self.captured.lock().unwrap() = Some(out.steering);
         }
-        fn tick_request(&mut self, _t: Option<&Telemetry>, _ctx: &PluginContext) -> Option<ControlRequest> {
+        fn tick_request(
+            &mut self,
+            _t: Option<&Telemetry>,
+            _ctx: &PluginContext,
+        ) -> Option<ControlRequest> {
             None
         }
-        fn default_phase(&self) -> TickPhase { TickPhase::PostPhase }
+        fn default_phase(&self) -> TickPhase {
+            TickPhase::PostPhase
+        }
     }
 
     #[test]
@@ -1162,7 +1190,10 @@ mod frame_store_tests {
         let mut out = ControlOutput::default();
         mgr.tick_all(None, &mut out, 0.02);
 
-        let seen = cell.lock().unwrap().expect("PostPhase plugin must be called");
+        let seen = cell
+            .lock()
+            .unwrap()
+            .expect("PostPhase plugin must be called");
         assert!(
             (seen - 0.5).abs() < 1e-9,
             "PostPhase plugin should see arbitrated steering 0.5, got {seen}"
@@ -1257,7 +1288,8 @@ mod on_load_skip_tests {
 
     #[test]
     fn disabled_plugin_skips_on_load_at_inject() {
-        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let mut mgr =
+            PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
         let plugin = OnLoadCounterPlugin::new("probe-disabled");
         let count = Arc::clone(&plugin.on_load_count);
         super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));
@@ -1267,7 +1299,8 @@ mod on_load_skip_tests {
 
     #[test]
     fn disabled_plugin_does_not_tick() {
-        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let mut mgr =
+            PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
         let plugin = OnLoadCounterPlugin::new("probe-disabled");
         let count = Arc::clone(&plugin.on_load_count);
         super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));
@@ -1278,7 +1311,8 @@ mod on_load_skip_tests {
 
     #[test]
     fn set_enabled_triggers_on_load() {
-        let mut mgr = PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
+        let mut mgr =
+            PluginManager::new(PathBuf::from("./does-not-exist-test-dir"), HashMap::new());
         let plugin = OnLoadCounterPlugin::new("probe-toggle");
         let count = Arc::clone(&plugin.on_load_count);
         super::frame_store_tests::inject_disabled(&mut mgr, Box::new(plugin));

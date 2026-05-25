@@ -414,7 +414,10 @@ mod ipc_command_tests {
     fn manager_for_test() -> SharedManager {
         let dir = std::env::temp_dir().join("truckpilot-ipc-test-plugins");
         let _ = std::fs::create_dir_all(&dir);
-        Arc::new(Mutex::new(PluginManager::new(dir, std::collections::HashMap::new())))
+        Arc::new(Mutex::new(PluginManager::new(
+            dir,
+            std::collections::HashMap::new(),
+        )))
     }
 
     #[tokio::test]
@@ -428,7 +431,10 @@ mod ipc_command_tests {
             &mgr,
         )
         .await;
-        assert!(response.is_empty(), "set_blackboard_key produces no immediate reply");
+        assert!(
+            response.is_empty(),
+            "set_blackboard_key produces no immediate reply"
+        );
         let value = mgr.lock().await.blackboard.get("foo.bar");
         assert_eq!(value.as_deref(), Some("hello"));
     }

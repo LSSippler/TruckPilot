@@ -39,7 +39,7 @@ pub struct ShmTelemetryLayout {
     pub y: f64,
     /// World position (m).
     pub z: f64,
-    /// Heading (rad).
+    /// Heading (0..1, CCW from North — raw SCS SDK euler value).
     pub heading: f64,
     /// Pitch (rad).
     pub pitch: f64,
@@ -147,17 +147,35 @@ const _: () = {
     // even when the next field's offset happens to coincide due to
     // padding. Both writer and reader must agree on these widths.
     use std::mem::size_of;
-    assert!(size_of::<u32>() == 4);  // magic, version, sequence, _pad,
-                                     //   nav_speed_limit_valid
-    // Doubles in the orientation/motion block.
+    assert!(size_of::<u32>() == 4); // magic, version, sequence, _pad,
+                                    //   nav_speed_limit_valid
+                                    // Doubles in the orientation/motion block.
     assert!(mem::offset_of!(ShmTelemetryLayout, y) - mem::offset_of!(ShmTelemetryLayout, x) == 8);
     assert!(mem::offset_of!(ShmTelemetryLayout, z) - mem::offset_of!(ShmTelemetryLayout, y) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, heading) - mem::offset_of!(ShmTelemetryLayout, z) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, pitch) - mem::offset_of!(ShmTelemetryLayout, heading) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, roll) - mem::offset_of!(ShmTelemetryLayout, pitch) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, speed_ms) - mem::offset_of!(ShmTelemetryLayout, roll) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, engine_rpm) - mem::offset_of!(ShmTelemetryLayout, speed_ms) == 8);
-    assert!(mem::offset_of!(ShmTelemetryLayout, nav_speed_limit_kmh) - mem::offset_of!(ShmTelemetryLayout, engine_rpm) == 8);
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, heading) - mem::offset_of!(ShmTelemetryLayout, z) == 8
+    );
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, pitch) - mem::offset_of!(ShmTelemetryLayout, heading)
+            == 8
+    );
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, roll) - mem::offset_of!(ShmTelemetryLayout, pitch) == 8
+    );
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, speed_ms) - mem::offset_of!(ShmTelemetryLayout, roll)
+            == 8
+    );
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, engine_rpm)
+            - mem::offset_of!(ShmTelemetryLayout, speed_ms)
+            == 8
+    );
+    assert!(
+        mem::offset_of!(ShmTelemetryLayout, nav_speed_limit_kmh)
+            - mem::offset_of!(ShmTelemetryLayout, engine_rpm)
+            == 8
+    );
 };
 
 /// Persistent shared-memory reader.
@@ -278,8 +296,16 @@ fn layout_to_telemetry(l: ShmTelemetryLayout) -> Telemetry {
         // always present in the layout. Plain copy.
         fuel_liters: l.fuel_liters,
         odometer_km: l.odometer_km,
-        nav_distance_m: if l.nav_distance_m >= 0.0 { l.nav_distance_m } else { -1.0 },
-        nav_time_s: if l.nav_time_s >= 0.0 { l.nav_time_s } else { -1.0 },
+        nav_distance_m: if l.nav_distance_m >= 0.0 {
+            l.nav_distance_m
+        } else {
+            -1.0
+        },
+        nav_time_s: if l.nav_time_s >= 0.0 {
+            l.nav_time_s
+        } else {
+            -1.0
+        },
     }
 }
 
@@ -346,8 +372,9 @@ impl ShmInner {
             return None;
         }
         Some(unsafe {
-            std::ptr::read_unaligned(self.view.add(mem::offset_of!(ShmTelemetryLayout, sequence))
-                as *const u32)
+            std::ptr::read_unaligned(
+                self.view.add(mem::offset_of!(ShmTelemetryLayout, sequence)) as *const u32
+            )
         })
     }
 

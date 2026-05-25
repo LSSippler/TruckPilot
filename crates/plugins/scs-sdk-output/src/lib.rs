@@ -42,26 +42,26 @@ const CTRL_SHM_NAME: &str = "Local\\TruckPilotControls";
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ShmControlLayout {
-    pub magic:    u32,
-    pub version:  u32,
+    pub magic: u32,
+    pub version: u32,
     pub sequence: u32,
-    pub active:   u32,
+    pub active: u32,
     pub steering: f32,
     pub throttle: f32,
-    pub brake:    f32,
-    pub clutch:   f32,
+    pub brake: f32,
+    pub clutch: f32,
 }
 
 const _: () = {
-    assert!(mem::offset_of!(ShmControlLayout, magic)    ==  0);
-    assert!(mem::offset_of!(ShmControlLayout, version)  ==  4);
-    assert!(mem::offset_of!(ShmControlLayout, sequence) ==  8);
-    assert!(mem::offset_of!(ShmControlLayout, active)   == 12);
+    assert!(mem::offset_of!(ShmControlLayout, magic) == 0);
+    assert!(mem::offset_of!(ShmControlLayout, version) == 4);
+    assert!(mem::offset_of!(ShmControlLayout, sequence) == 8);
+    assert!(mem::offset_of!(ShmControlLayout, active) == 12);
     assert!(mem::offset_of!(ShmControlLayout, steering) == 16);
     assert!(mem::offset_of!(ShmControlLayout, throttle) == 20);
-    assert!(mem::offset_of!(ShmControlLayout, brake)    == 24);
-    assert!(mem::offset_of!(ShmControlLayout, clutch)   == 28);
-    assert!(mem::size_of::<ShmControlLayout>()          == 32);
+    assert!(mem::offset_of!(ShmControlLayout, brake) == 24);
+    assert!(mem::offset_of!(ShmControlLayout, clutch) == 28);
+    assert!(mem::size_of::<ShmControlLayout>() == 32);
 };
 
 // ---------------------------------------------------------------------------
@@ -112,8 +112,8 @@ fn wide_str(s: &str) -> Vec<u16> {
 #[cfg(windows)]
 pub struct ShmCtrlWriter {
     handle: HANDLE,
-    ptr:    *mut ShmControlLayout,
-    seq:    u32,
+    ptr: *mut ShmControlLayout,
+    seq: u32,
 }
 
 #[cfg(windows)]
@@ -139,7 +139,7 @@ impl ShmCtrlWriter {
             }
             // Read magic/version via read_unaligned (packed struct — direct field refs are UB).
             let raw = v as *const ShmControlLayout;
-            let magic   = std::ptr::read_unaligned(std::ptr::addr_of!((*raw).magic));
+            let magic = std::ptr::read_unaligned(std::ptr::addr_of!((*raw).magic));
             let version = std::ptr::read_unaligned(std::ptr::addr_of!((*raw).version));
             if magic != CTRL_SHM_MAGIC || version != CTRL_SHM_VERSION {
                 UnmapViewOfFile(v);
@@ -151,7 +151,11 @@ impl ShmCtrlWriter {
             }
             (h, v as *mut ShmControlLayout)
         };
-        Ok(Self { handle: shm_handle, ptr: shm_view, seq: 0 })
+        Ok(Self {
+            handle: shm_handle,
+            ptr: shm_view,
+            seq: 0,
+        })
     }
 
     /// Write a complete control frame. Increments the sequence counter.
@@ -160,10 +164,10 @@ impl ShmCtrlWriter {
         unsafe {
             (*self.ptr).steering = steering;
             (*self.ptr).throttle = throttle;
-            (*self.ptr).brake    = brake;
-            (*self.ptr).clutch   = 0.0;
+            (*self.ptr).brake = brake;
+            (*self.ptr).clutch = 0.0;
             (*self.ptr).sequence = self.seq;
-            (*self.ptr).active   = if active { 1 } else { 0 };
+            (*self.ptr).active = if active { 1 } else { 0 };
         }
     }
 
@@ -334,10 +338,12 @@ impl Plugin for ScsSdkOutputPlugin {
         }
 
         // Watchdog
-        if is_watchdog_expired(self.last_tick_count, ctx.tick_count, self.failsafe_timeout_ms) {
-            tracing::warn!(
-                "[scs-sdk-output] watchdog expired — idling"
-            );
+        if is_watchdog_expired(
+            self.last_tick_count,
+            ctx.tick_count,
+            self.failsafe_timeout_ms,
+        ) {
+            tracing::warn!("[scs-sdk-output] watchdog expired — idling");
             self.write_idle(ctx);
             self.last_tick_count = ctx.tick_count;
             return;
@@ -431,10 +437,10 @@ mod tests {
 
     #[test]
     fn ctrl_layout_offsets() {
-        assert_eq!(mem::offset_of!(ShmControlLayout, magic),    0);
-        assert_eq!(mem::offset_of!(ShmControlLayout, active),   12);
+        assert_eq!(mem::offset_of!(ShmControlLayout, magic), 0);
+        assert_eq!(mem::offset_of!(ShmControlLayout, active), 12);
         assert_eq!(mem::offset_of!(ShmControlLayout, steering), 16);
-        assert_eq!(mem::offset_of!(ShmControlLayout, clutch),   28);
+        assert_eq!(mem::offset_of!(ShmControlLayout, clutch), 28);
     }
 
     #[test]
@@ -461,7 +467,10 @@ mod tests {
         for state in ["Engaging", "Active", "Paused", "Fault"] {
             let ctx = PluginContext::test();
             ctx.blackboard.set("autopilot.state", state);
-            assert!(!is_autopilot_off(&ctx), "expected not-off for state={state}");
+            assert!(
+                !is_autopilot_off(&ctx),
+                "expected not-off for state={state}"
+            );
         }
     }
 

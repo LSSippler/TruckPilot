@@ -67,7 +67,7 @@ use serde::{Deserialize, Serialize};
 pub struct Telemetry {
     /// Truck position (x, y, z) in meters.
     pub position: [f64; 3],
-    /// Heading in radians (0 = North, positive = clockwise).
+    /// Heading (0..1, CCW from North — raw SCS SDK euler value; 0=N, 0.25=W, 0.5=S, 0.75=E).
     pub heading: f64,
     /// Pitch in radians.
     pub pitch: f64,

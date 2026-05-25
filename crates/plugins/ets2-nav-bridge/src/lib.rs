@@ -63,7 +63,12 @@ impl Plugin for Ets2NavBridgePlugin {
         tracing::info!("[ets2-nav-bridge] unloaded");
     }
 
-    fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
+    fn tick(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        _output: &mut ControlOutput,
+        ctx: &PluginContext,
+    ) {
         // Clear one-shot flag from previous tick.
         if self.waypoint_set_last_tick {
             ctx.blackboard.set("nav.waypoint_passed", "false");
@@ -82,7 +87,10 @@ impl Plugin for Ets2NavBridgePlugin {
 
         // Sentinel (-1.0) or zero means no active route.
         let route_active = dist > 0.0 && (dist - (-1.0_f32)).abs() > 0.01;
-        ctx.blackboard.set("nav.gps_route_set", if route_active { "true" } else { "false" });
+        ctx.blackboard.set(
+            "nav.gps_route_set",
+            if route_active { "true" } else { "false" },
+        );
 
         if !route_active {
             ctx.blackboard.remove("nav.distance_to_turn");
@@ -116,11 +124,10 @@ impl Plugin for Ets2NavBridgePlugin {
                     .unwrap_or_default()
                     .as_millis() as i64;
                 ctx.blackboard.set("nav.waypoint_passed", "true");
-                ctx.blackboard.set("nav.last_waypoint_passed_ts", ts_ms.to_string());
+                ctx.blackboard
+                    .set("nav.last_waypoint_passed_ts", ts_ms.to_string());
                 self.waypoint_set_last_tick = true;
-                tracing::info!(
-                    "[ets2-nav-bridge] waypoint_passed: {prev:.0} m → {dist:.0} m"
-                );
+                tracing::info!("[ets2-nav-bridge] waypoint_passed: {prev:.0} m → {dist:.0} m");
             }
         }
 
@@ -165,7 +172,10 @@ mod tests {
 
     #[test]
     fn default_phase_is_phase_a() {
-        assert_eq!(Ets2NavBridgePlugin::default().default_phase(), TickPhase::PhaseA);
+        assert_eq!(
+            Ets2NavBridgePlugin::default().default_phase(),
+            TickPhase::PhaseA
+        );
     }
 
     #[test]
@@ -173,9 +183,18 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         plugin.on_load(&ctx);
-        assert_eq!(ctx.blackboard.get("nav.gps_route_set").as_deref(), Some("false"));
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("false"));
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.gps_route_set").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("false")
+        );
         assert!(ctx.blackboard.get("nav.distance_to_turn").is_none());
         assert!(ctx.blackboard.get("nav.time_to_turn").is_none());
     }
@@ -185,7 +204,10 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         tick(&mut plugin, None, &ctx);
-        assert_eq!(ctx.blackboard.get("nav.gps_route_set").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.gps_route_set").as_deref(),
+            Some("false")
+        );
         assert!(ctx.blackboard.get("nav.distance_to_turn").is_none());
     }
 
@@ -194,7 +216,10 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         tick(&mut plugin, Some(&mock_tel(-1.0, -1.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.gps_route_set").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.gps_route_set").as_deref(),
+            Some("false")
+        );
         assert!(ctx.blackboard.get("nav.distance_to_turn").is_none());
     }
 
@@ -203,7 +228,10 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         tick(&mut plugin, Some(&mock_tel(0.0, 0.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.gps_route_set").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.gps_route_set").as_deref(),
+            Some("false")
+        );
     }
 
     #[test]
@@ -211,7 +239,10 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         tick(&mut plugin, Some(&mock_tel(500.0, 60.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.gps_route_set").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.gps_route_set").as_deref(),
+            Some("true")
+        );
         assert!(ctx.blackboard.get("nav.distance_to_turn").is_some());
         assert!(ctx.blackboard.get("nav.time_to_turn").is_some());
     }
@@ -221,7 +252,10 @@ mod tests {
         let mut plugin = Ets2NavBridgePlugin::default();
         let ctx = PluginContext::test();
         tick(&mut plugin, Some(&mock_tel(100.0, 10.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("true")
+        );
     }
 
     #[test]
@@ -231,23 +265,38 @@ mod tests {
 
         // Cross the on-threshold (< 150 m)
         tick(&mut plugin, Some(&mock_tel(100.0, 10.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("true")
+        );
 
         // Between thresholds — stays on
         tick(&mut plugin, Some(&mock_tel(175.0, 20.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("true")
+        );
 
         // Cross the off-threshold (> 200 m)
         tick(&mut plugin, Some(&mock_tel(210.0, 25.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("false")
+        );
 
         // Between thresholds from off-side — stays off
         tick(&mut plugin, Some(&mock_tel(180.0, 22.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("false")
+        );
 
         // Re-enters below lower threshold
         tick(&mut plugin, Some(&mock_tel(130.0, 14.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.approaching_junction").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.approaching_junction").as_deref(),
+            Some("true")
+        );
     }
 
     #[test]
@@ -257,11 +306,17 @@ mod tests {
         plugin.on_load(&ctx);
 
         tick(&mut plugin, Some(&mock_tel(200.0, 25.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("false")
+        );
 
         // Jump of > 100 m
         tick(&mut plugin, Some(&mock_tel(350.0, 45.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("true")
+        );
         assert!(ctx.blackboard.get("nav.last_waypoint_passed_ts").is_some());
     }
 
@@ -272,10 +327,16 @@ mod tests {
 
         tick(&mut plugin, Some(&mock_tel(200.0, 25.0)), &ctx);
         tick(&mut plugin, Some(&mock_tel(350.0, 45.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("true"));
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("true")
+        );
 
         tick(&mut plugin, Some(&mock_tel(340.0, 42.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("false")
+        );
     }
 
     #[test]
@@ -287,6 +348,9 @@ mod tests {
         tick(&mut plugin, Some(&mock_tel(200.0, 25.0)), &ctx);
         // 99 m jump — below threshold
         tick(&mut plugin, Some(&mock_tel(299.0, 35.0)), &ctx);
-        assert_eq!(ctx.blackboard.get("nav.waypoint_passed").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("nav.waypoint_passed").as_deref(),
+            Some("false")
+        );
     }
 }

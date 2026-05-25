@@ -59,7 +59,11 @@ impl LaneWidthState {
         let extra = (ticks_since - DECAY_START_TICKS) as f64;
         let decay = (extra / DECAY_HALF_LIFE_TICKS as f64).exp2().recip(); // 2^(-extra/half_life)
         let decayed = w * decay;
-        if decayed < MIN_VALID_WIDTH { None } else { Some(decayed) }
+        if decayed < MIN_VALID_WIDTH {
+            None
+        } else {
+            Some(decayed)
+        }
     }
 }
 
@@ -186,7 +190,7 @@ mod tests {
     fn lane_width_discarded_after_long_decay() {
         let mut s = make_state();
         s.update_lane_width(0.12); // just above MIN_VALID_WIDTH
-        // Advance far enough that decay collapses below MIN_VALID_WIDTH.
+                                   // Advance far enough that decay collapses below MIN_VALID_WIDTH.
         s.tick_count = DECAY_START_TICKS + DECAY_HALF_LIFE_TICKS * 4;
         // 0.12 / 2^4 = 0.12/16 = 0.0075 < 0.10 → None
         assert!(s.lane_width_estimate().is_none());

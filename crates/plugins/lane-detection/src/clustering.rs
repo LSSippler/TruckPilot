@@ -147,7 +147,14 @@ mod tests {
 
     fn lane(xs: &[f32]) -> DecodedLane {
         DecodedLane {
-            points: xs.iter().map(|&x| LanePoint { x, y: 100.0, col_prob: 0.8 }).collect(),
+            points: xs
+                .iter()
+                .map(|&x| LanePoint {
+                    x,
+                    y: 100.0,
+                    col_prob: 0.8,
+                })
+                .collect(),
         }
     }
 
@@ -161,11 +168,18 @@ mod tests {
     #[test]
     fn symmetric_lanes_offset_near_zero() {
         // Left lane at 760, right lane at 1160, frame centre 960 → lane cx = 960.
-        let lanes = [lane(&[760.0, 760.0, 760.0]), lane(&[1160.0, 1160.0, 1160.0])];
+        let lanes = [
+            lane(&[760.0, 760.0, 760.0]),
+            lane(&[1160.0, 1160.0, 1160.0]),
+        ];
         let r = compute_lane_result(&lanes, 1920);
         assert!(r.left_visible);
         assert!(r.right_visible);
-        assert!(r.center_offset_norm.abs() < 0.05, "offset={}", r.center_offset_norm);
+        assert!(
+            r.center_offset_norm.abs() < 0.05,
+            "offset={}",
+            r.center_offset_norm
+        );
     }
 
     #[test]
@@ -174,7 +188,11 @@ mod tests {
         // Frame centre = 500. frame_cx - lane_cx = 500 - 350 = 150 → positive.
         let lanes = [lane(&[200.0, 200.0, 200.0]), lane(&[500.0, 500.0, 500.0])];
         let r = compute_lane_result(&lanes, 1000);
-        assert!(r.center_offset_norm > 0.0, "expected positive, got {}", r.center_offset_norm);
+        assert!(
+            r.center_offset_norm > 0.0,
+            "expected positive, got {}",
+            r.center_offset_norm
+        );
     }
 
     #[test]
@@ -183,14 +201,22 @@ mod tests {
         // offset = (500-650)/500 = -0.3 → negative (truck left of lane centre)
         let lanes = [lane(&[400.0, 400.0, 400.0]), lane(&[900.0, 900.0, 900.0])];
         let r = compute_lane_result(&lanes, 1000);
-        assert!(r.center_offset_norm < 0.0, "expected negative, got {}", r.center_offset_norm);
+        assert!(
+            r.center_offset_norm < 0.0,
+            "expected negative, got {}",
+            r.center_offset_norm
+        );
     }
 
     #[test]
     fn single_point_lane_filtered_out() {
         // Only one point → below MIN_POINTS (2).
         let short = DecodedLane {
-            points: vec![LanePoint { x: 400.0, y: 100.0, col_prob: 0.9 }],
+            points: vec![LanePoint {
+                x: 400.0,
+                y: 100.0,
+                col_prob: 0.9,
+            }],
         };
         let r = compute_lane_result(&[short], 1920);
         assert_eq!(r.detection_count, 0);

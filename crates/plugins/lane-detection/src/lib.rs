@@ -6,15 +6,17 @@
 //!
 //! ## Blackboard outputs (SCHEMA-LOCK)
 //!
-//! | Key                    | Type  | Range      | Notes                                      |
-//! |------------------------|-------|------------|--------------------------------------------|
-//! | `lane.center_offset`   | f64   | [-1, +1]   | +1 = truck far right                       |
-//! | `lane.confidence`      | f64   | [0, 1]     | <0.3 unreliable                            |
-//! | `lane.detection_count` | u32   | 0–4        |                                            |
-//! | `lane.left_visible`    | bool  |            |                                            |
-//! | `lane.right_visible`   | bool  |            |                                            |
-//! | `lane.left_x`          | f64   | [-1, +1]   | Ego-left lane x in frame coords; NaN=absent |
-//! | `lane.right_x`         | f64   | [-1, +1]   | Ego-right lane x in frame coords; NaN=absent|
+//! | Key                      | Type  | Range      | Notes                                        |
+//! |--------------------------|-------|------------|----------------------------------------------|
+//! | `lane.center_offset`     | f64   | [-1, +1]   | **Bias-corrected** offset; +1 = truck far right |
+//! | `lane.center_offset_raw` | f64   | [-1, +1]   | Raw offset before bias subtraction           |
+//! | `lane.center_offset_bias`| f64   | [-1, +1]   | Current median bias estimate                 |
+//! | `lane.confidence`        | f64   | [0, 1]     | <0.3 unreliable                              |
+//! | `lane.detection_count`   | u32   | 0–4        |                                              |
+//! | `lane.left_visible`      | bool  |            |                                              |
+//! | `lane.right_visible`     | bool  |            |                                              |
+//! | `lane.left_x`            | f64   | [-1, +1]   | Ego-left lane x in frame coords; NaN=absent  |
+//! | `lane.right_x`           | f64   | [-1, +1]   | Ego-right lane x in frame coords; NaN=absent |
 //!
 //! ## Default state
 //!
@@ -33,6 +35,7 @@
 //! | `onnx-directml` | no      | GPU via DirectML (86 ms, too slow) |
 //! | (neither)       | —       | Stub mode — inference returns nothing |
 
+mod bias;
 mod clustering;
 mod postprocess;
 mod preprocess;
@@ -56,6 +59,10 @@ const DEFAULT_MODEL_PATH: &str = "tools/ufld-test/models/ufldv2_tusimple_res18_3
 const FRAME_KEY: &str = "camera.front";
 const WORKER_STALE_FRAME_US: u64 = 200_000;
 const DEFAULT_EXIST_THRESH: f32 = 0.5;
+/// Number of frames in the moving-median window for bias estimation.
+const DEFAULT_BIAS_WINDOW_SIZE: usize = 100;
+/// Frames to collect before bias correction activates.
+const DEFAULT_BIAS_WARMUP_FRAMES: usize = 50;
 
 // ---------------------------------------------------------------------------
 // Async inference types (only when an onnx feature is active)
@@ -119,7 +126,12 @@ impl InferenceWorker {
             .spawn(move || worker_loop(session, cfg, exist_thresh, job_rx, result_tx))
             .expect("spawn lane-detection-inference thread");
 
-        Self { job_tx: Some(job_tx), job_drain_rx, result_rx, handle: Some(handle) }
+        Self {
+            job_tx: Some(job_tx),
+            job_drain_rx,
+            result_rx,
+            handle: Some(handle),
+        }
     }
 }
 
@@ -148,7 +160,13 @@ fn worker_loop(
 
         let t0 = Instant::now();
 
-        let lb = match preprocess::letterbox_and_normalize(&job.rgb, job.orig_w, job.orig_h, cfg.input_w, cfg.input_h) {
+        let lb = match preprocess::letterbox_and_normalize(
+            &job.rgb,
+            job.orig_w,
+            job.orig_h,
+            cfg.input_w,
+            cfg.input_h,
+        ) {
             Ok(r) => r,
             Err(e) => {
                 let _ = result_tx.send(InferenceResult {
@@ -158,8 +176,11 @@ fn worker_loop(
                     row_anchors: cfg.row_anchors,
                     num_lanes: cfg.num_lanes,
                     letterbox_meta: preprocess::LetterboxMeta {
-                        scale: 1.0, pad_x: 0.0, pad_y: 0.0,
-                        orig_w: job.orig_w, orig_h: job.orig_h,
+                        scale: 1.0,
+                        pad_x: 0.0,
+                        pad_y: 0.0,
+                        orig_w: job.orig_w,
+                        orig_h: job.orig_h,
                         canvas_w: cfg.input_w as u32,
                         canvas_h: cfg.input_h as u32,
                     },
@@ -184,7 +205,8 @@ fn worker_loop(
         let outputs = match session.run(ort::inputs![cfg.input_name.as_str() => tensor]) {
             Ok(o) => o,
             Err(e) => {
-                let _ = result_tx.send(make_error_result(&cfg, &lb.meta, format!("inference: {e}")));
+                let _ =
+                    result_tx.send(make_error_result(&cfg, &lb.meta, format!("inference: {e}")));
                 continue;
             }
         };
@@ -200,7 +222,8 @@ fn worker_loop(
         let exist_row = match extract_flat_f32(&outputs, &cfg.exist_row_name) {
             Ok(v) => v,
             Err(e) => {
-                let _ = result_tx.send(make_error_result(&cfg, &lb.meta, format!("exist_row: {e}")));
+                let _ =
+                    result_tx.send(make_error_result(&cfg, &lb.meta, format!("exist_row: {e}")));
                 continue;
             }
         };
@@ -303,19 +326,22 @@ fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig,
         ));
     }
 
-    let input_name     = session.inputs().first().ok_or("no model inputs")?.name().to_string();
-    let loc_row_name   = session.outputs()[0].name().to_string();
+    let input_name = session
+        .inputs()
+        .first()
+        .ok_or("no model inputs")?
+        .name()
+        .to_string();
+    let loc_row_name = session.outputs()[0].name().to_string();
     let exist_row_name = session.outputs()[2].name().to_string();
 
     for (input_h, input_w) in [(320usize, 800usize), (320usize, 1600usize)] {
         let n = 3 * input_h * input_w;
-        let probe_tensor = match Tensor::<f32>::from_array((
-            [1usize, 3, input_h, input_w],
-            vec![0.0f32; n],
-        )) {
-            Ok(t) => t,
-            Err(e) => return Err(format!("probe tensor: {e}")),
-        };
+        let probe_tensor =
+            match Tensor::<f32>::from_array(([1usize, 3, input_h, input_w], vec![0.0f32; n])) {
+                Ok(t) => t,
+                Err(e) => return Err(format!("probe tensor: {e}")),
+            };
 
         let outputs = match session.run(ort::inputs![input_name.as_str() => probe_tensor]) {
             Ok(o) => o,
@@ -330,13 +356,14 @@ fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig,
         if loc_shape.len() != 4 {
             return Err(format!(
                 "UFLD v2: loc_row expected 4D, got {}D: {:?}",
-                loc_shape.len(), loc_shape
+                loc_shape.len(),
+                loc_shape
             ));
         }
 
-        let col_grids   = loc_shape[1] as usize;
+        let col_grids = loc_shape[1] as usize;
         let row_anchors = loc_shape[2] as usize;
-        let num_lanes   = loc_shape[3] as usize;
+        let num_lanes = loc_shape[3] as usize;
 
         if col_grids == 0 || row_anchors == 0 || num_lanes == 0 {
             return Err(format!(
@@ -360,9 +387,14 @@ fn probe_model_shape(session: &mut ort::session::Session) -> Result<ModelConfig,
         }
 
         return Ok(ModelConfig {
-            col_grids, row_anchors, num_lanes,
-            input_h, input_w,
-            input_name, loc_row_name, exist_row_name,
+            col_grids,
+            row_anchors,
+            num_lanes,
+            input_h,
+            input_w,
+            input_name,
+            loc_row_name,
+            exist_row_name,
         });
     }
 
@@ -394,6 +426,9 @@ pub struct LaneDetectionPlugin {
     diag_last_latency_ms: f64,
     diag_frames_dropped_full: u64,
 
+    /// Moving-median bias estimator for cockpit-view offset correction.
+    bias: bias::BiasEstimator,
+
     #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
     worker: Option<InferenceWorker>,
 }
@@ -414,6 +449,7 @@ impl Default for LaneDetectionPlugin {
             diag_inference_errors: 0,
             diag_last_latency_ms: 0.0,
             diag_frames_dropped_full: 0,
+            bias: bias::BiasEstimator::new(DEFAULT_BIAS_WINDOW_SIZE, DEFAULT_BIAS_WARMUP_FRAMES),
             #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
             worker: None,
         }
@@ -429,10 +465,8 @@ impl LaneDetectionPlugin {
             return Err(format!("model not found: {:?}", self.model_path));
         }
 
-        let (mut session, ep_label, warn) =
-            load_onnx_session(&self.model_path).ok_or_else(|| {
-                format!("ONNX session init failed for {:?}", self.model_path)
-            })?;
+        let (mut session, ep_label, warn) = load_onnx_session(&self.model_path)
+            .ok_or_else(|| format!("ONNX session init failed for {:?}", self.model_path))?;
 
         if let Some(ref w) = warn {
             ctx_warn!(ctx, target: LOG_TARGET, "{w}");
@@ -448,9 +482,9 @@ impl LaneDetectionPlugin {
         );
         ctx.blackboard.set("lane.onnx.provider", ep_label);
 
-        self.col_grids   = cfg.col_grids;
+        self.col_grids = cfg.col_grids;
         self.row_anchors = cfg.row_anchors;
-        self.num_lanes   = cfg.num_lanes;
+        self.num_lanes = cfg.num_lanes;
 
         self.worker = Some(InferenceWorker::spawn(session, cfg, self.exist_thresh));
         Ok(())
@@ -459,8 +493,12 @@ impl LaneDetectionPlugin {
     /// Submit an inference job with drop-oldest backpressure.
     #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
     fn submit_frame(&mut self, job: InferenceJob) {
-        let Some(worker) = self.worker.as_ref() else { return };
-        let Some(tx) = worker.job_tx.as_ref() else { return };
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        let Some(tx) = worker.job_tx.as_ref() else {
+            return;
+        };
         match tx.try_send(job) {
             Ok(()) => {
                 self.diag_frames_submitted += 1;
@@ -515,20 +553,33 @@ impl LaneDetectionPlugin {
 
         let lane_result = clustering::compute_lane_result(&lanes, result.letterbox_meta.orig_w);
 
+        // Bias compensation: push raw offset, compute corrected value.
+        let raw_offset = lane_result.center_offset_norm;
+        self.bias.push(raw_offset);
+        let bias_val = self.bias.bias();
+        let corrected_offset = self.bias.corrected(raw_offset);
+
         let bb = &ctx.blackboard;
-        bb.set("lane.center_offset",   format!("{:.6}", lane_result.center_offset_norm));
-        bb.set("lane.confidence",       format!("{:.6}", lane_result.confidence));
-        bb.set("lane.detection_count",  lane_result.detection_count.to_string());
-        bb.set("lane.left_visible",     lane_result.left_visible.to_string());
-        bb.set("lane.right_visible",    lane_result.right_visible.to_string());
-        bb.set("lane.left_x",           format!("{:.6}", lane_result.left_x_norm));
-        bb.set("lane.right_x",          format!("{:.6}", lane_result.right_x_norm));
+        bb.set("lane.center_offset", format!("{:.6}", corrected_offset));
+        bb.set("lane.center_offset_raw", format!("{:.6}", raw_offset));
+        bb.set("lane.center_offset_bias", format!("{:.6}", bias_val));
+        bb.set("lane.confidence", format!("{:.6}", lane_result.confidence));
+        bb.set(
+            "lane.detection_count",
+            lane_result.detection_count.to_string(),
+        );
+        bb.set("lane.left_visible", lane_result.left_visible.to_string());
+        bb.set("lane.right_visible", lane_result.right_visible.to_string());
+        bb.set("lane.left_x", format!("{:.6}", lane_result.left_x_norm));
+        bb.set("lane.right_x", format!("{:.6}", lane_result.right_x_norm));
 
         ctx_debug!(
             ctx, target: LOG_TARGET,
-            "lanes={} offset={:.3} conf={:.2} latency={:.1}ms",
+            "lanes={} offset_raw={:.3} bias={:.3} offset={:.3} conf={:.2} latency={:.1}ms",
             lane_result.detection_count,
-            lane_result.center_offset_norm,
+            raw_offset,
+            bias_val,
+            corrected_offset,
             lane_result.confidence,
             self.diag_last_latency_ms,
         );
@@ -536,14 +587,29 @@ impl LaneDetectionPlugin {
 
     fn publish_diag(&self, ctx: &PluginContext) {
         let bb = &ctx.blackboard;
-        bb.set("lane.diag.tick_count",          self.diag_tick_count.to_string());
-        bb.set("lane.diag.frames_submitted",     self.diag_frames_submitted.to_string());
-        bb.set("lane.diag.frames_decoded",       self.diag_frames_decoded.to_string());
-        bb.set("lane.diag.inference_errors",     self.diag_inference_errors.to_string());
-        bb.set("lane.diag.last_latency_ms",      format!("{:.1}", self.diag_last_latency_ms));
-        bb.set("lane.diag.frames_dropped_full",  self.diag_frames_dropped_full.to_string());
-        bb.set("lane.diag.load_ok",              self.load_ok.to_string());
-        bb.set("lane.diag.enabled",              self.load_ok.to_string()); // backwards-compat alias
+        bb.set("lane.diag.tick_count", self.diag_tick_count.to_string());
+        bb.set(
+            "lane.diag.frames_submitted",
+            self.diag_frames_submitted.to_string(),
+        );
+        bb.set(
+            "lane.diag.frames_decoded",
+            self.diag_frames_decoded.to_string(),
+        );
+        bb.set(
+            "lane.diag.inference_errors",
+            self.diag_inference_errors.to_string(),
+        );
+        bb.set(
+            "lane.diag.last_latency_ms",
+            format!("{:.1}", self.diag_last_latency_ms),
+        );
+        bb.set(
+            "lane.diag.frames_dropped_full",
+            self.diag_frames_dropped_full.to_string(),
+        );
+        bb.set("lane.diag.load_ok", self.load_ok.to_string());
+        bb.set("lane.diag.enabled", self.load_ok.to_string()); // backwards-compat alias
     }
 }
 
@@ -552,8 +618,12 @@ impl LaneDetectionPlugin {
 // ---------------------------------------------------------------------------
 
 impl Plugin for LaneDetectionPlugin {
-    fn name(&self) -> &str { "lane-detection" }
-    fn version(&self) -> &str { "0.1.0" }
+    fn name(&self) -> &str {
+        "lane-detection"
+    }
+    fn version(&self) -> &str {
+        "0.1.0"
+    }
 
     fn settings_schema(&self) -> &str {
         r#"{
@@ -568,6 +638,16 @@ impl Plugin for LaneDetectionPlugin {
       "minimum": 0.1,
       "maximum": 1.0,
       "description": "Existence softmax threshold (default 0.5)."
+    },
+    "bias_window_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Frames in the moving-median bias window (default 100 = ~10 s at 10 Hz)."
+    },
+    "bias_warmup_frames": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Frames to collect before bias correction activates (default 50)."
     }
   }
 }"#
@@ -580,6 +660,19 @@ impl Plugin for LaneDetectionPlugin {
         }
         if let Some(t) = ctx.blackboard.get_f64("lane_detection.exist_thresh") {
             self.exist_thresh = (t as f32).clamp(0.1, 1.0);
+        }
+
+        // Bias estimator config — rebuild with new params if overridden.
+        let mut window = self.bias.window_size;
+        let mut warmup = self.bias.warmup_frames;
+        if let Some(v) = ctx.blackboard.get_f64("lane_detection.bias_window_size") {
+            window = (v as usize).max(1);
+        }
+        if let Some(v) = ctx.blackboard.get_f64("lane_detection.bias_warmup_frames") {
+            warmup = v as usize;
+        }
+        if window != self.bias.window_size || warmup != self.bias.warmup_frames {
+            self.bias = bias::BiasEstimator::new(window, warmup);
         }
 
         #[cfg(any(feature = "onnx-cpu", feature = "onnx-directml"))]
@@ -604,8 +697,10 @@ impl Plugin for LaneDetectionPlugin {
                 "lane-detection: no onnx feature compiled — build with --features onnx-cpu");
         }
 
-        ctx.blackboard.set("lane.diag.load_ok", self.load_ok.to_string());
-        ctx.blackboard.set("lane.diag.enabled", self.load_ok.to_string()); // backwards-compat alias
+        ctx.blackboard
+            .set("lane.diag.load_ok", self.load_ok.to_string());
+        ctx.blackboard
+            .set("lane.diag.enabled", self.load_ok.to_string()); // backwards-compat alias
     }
 
     fn on_unload(&mut self) {
@@ -705,7 +800,8 @@ mod tests {
     fn one_px_jpeg() -> Vec<u8> {
         let img = image::RgbImage::from_pixel(1, 1, image::Rgb([200u8, 150, 100]));
         let mut buf = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buf, image::ImageFormat::Jpeg).expect("encode");
+        img.write_to(&mut buf, image::ImageFormat::Jpeg)
+            .expect("encode");
         buf.into_inner()
     }
 
@@ -740,9 +836,15 @@ mod tests {
         let ctx = ctx_no_store();
         p.on_load(&ctx);
         // Without a valid model file load_ok stays false; diag reflects that.
-        assert_eq!(ctx.blackboard.get("lane.diag.load_ok").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("lane.diag.load_ok").as_deref(),
+            Some("false")
+        );
         // backwards-compat alias matches load_ok
-        assert_eq!(ctx.blackboard.get("lane.diag.enabled").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("lane.diag.enabled").as_deref(),
+            Some("false")
+        );
         assert!(!p.load_ok);
     }
 
@@ -794,7 +896,10 @@ mod tests {
         let dup = make_frame(7, one_px_jpeg());
         store.set(FRAME_KEY, Arc::clone(&dup));
         p.tick(None, &mut out, &ctx);
-        assert!(dup.decoded_rgb8().is_none(), "duplicate frame must not be decoded");
+        assert!(
+            dup.decoded_rgb8().is_none(),
+            "duplicate frame must not be decoded"
+        );
     }
 
     #[test]

@@ -42,7 +42,8 @@ fn parse_uid(s: &str) -> u64 {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16).unwrap_or_else(|_| panic!("invalid hex UID: {s}"))
     } else {
-        s.parse::<u64>().unwrap_or_else(|_| panic!("invalid UID: {s}"))
+        s.parse::<u64>()
+            .unwrap_or_else(|_| panic!("invalid UID: {s}"))
     }
 }
 
@@ -137,7 +138,11 @@ fn main() {
         .into_iter()
         .filter(|p| p.ends_with(".base"))
         .collect();
-    eprintln!("scanning {} sectors for {} UID(s) ...", sector_paths.len(), target_uids.len());
+    eprintln!(
+        "scanning {} sectors for {} UID(s) ...",
+        sector_paths.len(),
+        target_uids.len()
+    );
 
     let mut node_map: HashMap<u64, (RawNode, String)> = HashMap::new();
 
@@ -194,7 +199,10 @@ fn main() {
 
         if let Some((node, sector_path)) = node_map.get(uid) {
             println!("  sector           : {sector_path}");
-            println!("  position         : x={:.3}  y={:.3}  z={:.3}  (meters)", node.x, node.y, node.z);
+            println!(
+                "  position         : x={:.3}  y={:.3}  z={:.3}  (meters)",
+                node.x, node.y, node.z
+            );
             if node.forward_item_uid == 0 {
                 println!("  forward_item_uid : 0  (none / sized-format)");
             } else {

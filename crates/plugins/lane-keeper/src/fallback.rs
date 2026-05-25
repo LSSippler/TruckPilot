@@ -155,7 +155,12 @@ impl FallbackState {
         }
         let n = self.offset_history.len() as f64;
         let mean = self.offset_history.iter().sum::<f64>() / n;
-        let var = self.offset_history.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
+        let var = self
+            .offset_history
+            .iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>()
+            / n;
         var.sqrt()
     }
 
@@ -183,7 +188,11 @@ impl FallbackState {
         }
 
         // ── Compute raw candidate level (descending severity) ───────────────
-        let l3_required = if trend < DEGRADING_TREND { L3_BLIND_RAPID } else { L3_BLIND_NORMAL };
+        let l3_required = if trend < DEGRADING_TREND {
+            L3_BLIND_RAPID
+        } else {
+            L3_BLIND_NORMAL
+        };
         let both_visible = left_vis && right_vis;
 
         let raw = if self.blind_tick_count >= L4_BLIND_TICKS {
@@ -218,7 +227,11 @@ impl FallbackState {
             let effective = if raw == 4 {
                 raw
             } else if let Some(&until) = self.reentry_cooldown_map.get(&raw) {
-                if self.tick_count < until { self.level } else { raw }
+                if self.tick_count < until {
+                    self.level
+                } else {
+                    raw
+                }
             } else {
                 raw
             };
@@ -252,15 +265,28 @@ impl FallbackState {
         let rapid_improving = trend > IMPROVING_TREND;
         match (from, to) {
             // Level 3 recovery always uses the longer hold, halved if improving fast.
-            (3, _) => if rapid_improving { HOLD_L3_RECOVERY / 2 } else { HOLD_L3_RECOVERY },
+            (3, _) => {
+                if rapid_improving {
+                    HOLD_L3_RECOVERY / 2
+                } else {
+                    HOLD_L3_RECOVERY
+                }
+            }
             // Level 1→0 or Level 2→1.
-            _ => if rapid_improving { HOLD_L1_TO_L0 / 2 } else { HOLD_L1_TO_L0 },
+            _ => {
+                if rapid_improving {
+                    HOLD_L1_TO_L0 / 2
+                } else {
+                    HOLD_L1_TO_L0
+                }
+            }
         }
     }
 
     fn do_transition(&mut self, new_level: u8) {
         let cooldown_duration: u64 = if self.level == 3 { 30 } else { 20 };
-        self.reentry_cooldown_map.insert(self.level, self.tick_count + cooldown_duration);
+        self.reentry_cooldown_map
+            .insert(self.level, self.tick_count + cooldown_duration);
         self.previous_level = self.level;
         self.level_entered_at_tick = self.tick_count;
         self.level = new_level;
@@ -366,7 +392,10 @@ mod tests {
         // 7 ticks at conf >= 0.70 + both lanes → not yet at L0
         for i in 0..7 {
             let l = tick(&mut s, 0.85, true, true);
-            assert!(l > 0, "tick {i}: should not have recovered to L0 yet, got {l}");
+            assert!(
+                l > 0,
+                "tick {i}: should not have recovered to L0 yet, got {l}"
+            );
         }
         // 8th tick → should transition to L0
         let l = tick(&mut s, 0.85, true, true);
@@ -385,11 +414,17 @@ mod tests {
         // 13 ticks: rolling avg hasn't fully stabilised and/or hold not yet reached
         for _ in 0..13 {
             let l = tick(&mut s, 0.35, true, true);
-            assert_eq!(l, 3, "should not recover from L3 before 14 ticks of conf=0.35");
+            assert_eq!(
+                l, 3,
+                "should not recover from L3 before 14 ticks of conf=0.35"
+            );
         }
         // 14th tick → rolling avg fully above thresholds, hold counter saturated → transition
         let l = tick(&mut s, 0.35, true, true);
-        assert!(l < 3, "should have recovered from L3 after 14 sustained ticks: got {l}");
+        assert!(
+            l < 3,
+            "should have recovered from L3 after 14 sustained ticks: got {l}"
+        );
     }
 
     // ── Anti-flapping ────────────────────────────────────────────────────
@@ -398,7 +433,7 @@ mod tests {
     fn no_oscillation_at_confidence_boundary() {
         let mut s = state();
         tick_n(&mut s, 10, 0.85, true, true); // settle at L0
-        // Alternate 0.69 and 0.71 for 30 ticks
+                                              // Alternate 0.69 and 0.71 for 30 ticks
         let mut transitions = 0u32;
         let mut prev = s.level;
         for i in 0..30 {
@@ -409,7 +444,10 @@ mod tests {
                 prev = l;
             }
         }
-        assert!(transitions <= 2, "too many transitions at boundary: {transitions}");
+        assert!(
+            transitions <= 2,
+            "too many transitions at boundary: {transitions}"
+        );
     }
 
     #[test]
@@ -435,7 +473,10 @@ mod tests {
             s.push_confidence(v);
         }
         let trend = s.compute_confidence_trend();
-        assert!(trend < DEGRADING_TREND, "expected falling trend, got {trend:.4}");
+        assert!(
+            trend < DEGRADING_TREND,
+            "expected falling trend, got {trend:.4}"
+        );
     }
 
     #[test]
@@ -473,7 +514,10 @@ mod tests {
             s.push_offset(0.05);
         }
         let stab = s.compute_detection_stability();
-        assert!(stab < 0.01, "expected low stability for steady offset, got {stab:.4}");
+        assert!(
+            stab < 0.01,
+            "expected low stability for steady offset, got {stab:.4}"
+        );
     }
 
     #[test]
@@ -483,6 +527,9 @@ mod tests {
             s.push_offset(v);
         }
         let stab = s.compute_detection_stability();
-        assert!(stab > 0.20, "expected high stability for jittery offset, got {stab:.4}");
+        assert!(
+            stab > 0.20,
+            "expected high stability for jittery offset, got {stab:.4}"
+        );
     }
 }

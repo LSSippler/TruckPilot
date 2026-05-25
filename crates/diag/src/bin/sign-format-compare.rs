@@ -199,7 +199,10 @@ fn main() -> Result<()> {
 }
 
 fn short_sector(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path).trim_end_matches(".base")
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".base")
 }
 
 fn analyze_sector(data: &[u8], sector_path: &str, per_tier_cap: usize) -> Vec<SignSample> {
@@ -226,7 +229,14 @@ fn analyze_sector(data: &[u8], sector_path: &str, per_tier_cap: usize) -> Vec<Si
 
     if let Some(f) = &report.failure {
         if f.raw_type == 36 {
-            crash = decode_sign(data, f.error_offset + 4, None, sector_path, f.item_index, true);
+            crash = decode_sign(
+                data,
+                f.error_offset + 4,
+                None,
+                sector_path,
+                f.item_index,
+                true,
+            );
         }
     }
 
@@ -277,7 +287,9 @@ fn decode_sign(
         return None;
     }
     let template_len = u64::from_le_bytes(
-        data[template_len_offset..template_len_offset + 8].try_into().unwrap(),
+        data[template_len_offset..template_len_offset + 8]
+            .try_into()
+            .unwrap(),
     );
     if template_len > 256 {
         return None;
@@ -294,7 +306,11 @@ fn decode_sign(
 
     // Window we are allowed to look at (capped by body_end for working items,
     // or by data.len() for crash items where end_offset is unknown).
-    let window_end = if let Some(be) = body_end { be } else { data.len() };
+    let window_end = if let Some(be) = body_end {
+        be
+    } else {
+        data.len()
+    };
 
     // ── First 128 bytes of override region (full snapshot) ─────────────────
     let override_capture_end = (override_start_abs + 128).min(data.len()).min(window_end);
@@ -361,8 +377,7 @@ fn decode_sign(
             boundary_bytes = data[abs..take_end].to_vec();
         }
         if boundary_bytes.len() >= 4 {
-            so_count_naive =
-                Some(u32::from_le_bytes(boundary_bytes[0..4].try_into().unwrap()));
+            so_count_naive = Some(u32::from_le_bytes(boundary_bytes[0..4].try_into().unwrap()));
         }
         // First override item starts at abs + 4
         let foi = abs + 4;
@@ -432,13 +447,32 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
     w!();
     w!("| Tier | Definition | Working count |");
     w!("|---|---|---|");
-    w!("| 4 | bo>0 AND so>0 (full override section) | **{}** |", tier_counts[4]);
-    w!("| 3 | so>0 only (no board overrides) | {} |", tier_counts[3]);
-    w!("| 2 | bo>0 only (board overrides but no sign overrides) | {} |", tier_counts[2]);
-    w!("| 1 | template_len>0 but no overrides | {} |", tier_counts[1]);
-    w!("| 0 | template_len==0 (no override section) | {} |", tier_counts[0]);
+    w!(
+        "| 4 | bo>0 AND so>0 (full override section) | **{}** |",
+        tier_counts[4]
+    );
+    w!(
+        "| 3 | so>0 only (no board overrides) | {} |",
+        tier_counts[3]
+    );
+    w!(
+        "| 2 | bo>0 only (board overrides but no sign overrides) | {} |",
+        tier_counts[2]
+    );
+    w!(
+        "| 1 | template_len>0 but no overrides | {} |",
+        tier_counts[1]
+    );
+    w!(
+        "| 0 | template_len==0 (no override section) | {} |",
+        tier_counts[0]
+    );
     w!();
-    w!("**Totals**: {} working / {} crash", working.len(), crashing.len());
+    w!(
+        "**Totals**: {} working / {} crash",
+        working.len(),
+        crashing.len()
+    );
     w!();
 
     // ── Tier 4 — full hex dumps ─────────────────────────────────────────────
@@ -461,20 +495,31 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
                 continue;
             }
             shown += 1;
-            w!("### T4.{}: `{}` Item #{}", shown, short_sector(&s.sector_path), s.item_index);
+            w!(
+                "### T4.{}: `{}` Item #{}",
+                shown,
+                short_sector(&s.sector_path),
+                s.item_index
+            );
             w!();
             w!(
                 "- board_count={}, template_len={}, template=`{}`",
-                s.board_count, s.template_len, s.template_str
+                s.board_count,
+                s.template_len,
+                s.template_str
             );
             w!(
                 "- override_start_rel={}, bo_count={}, bo_end_rel={:?}, so_count={:?}",
-                s.override_start_rel, s.bo_count_naive, s.bo_end_rel, s.so_count_naive
+                s.override_start_rel,
+                s.bo_count_naive,
+                s.bo_end_rel,
+                s.so_count_naive
             );
             if let Some(be) = s.body_end {
                 w!(
                     "- body_end={}, override region size = {} bytes",
-                    be, be.saturating_sub(s.body_start + s.override_start_rel)
+                    be,
+                    be.saturating_sub(s.body_start + s.override_start_rel)
                 );
             }
             w!();
@@ -506,8 +551,7 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
     // ── Tier 3 — first override item per sample ─────────────────────────────
     w!("## 3. Tier 3 Working Signs (so>0, bo==0) — Per-Override Bytes");
     w!();
-    w!(
-        "These have `bo_count_naive==0` (cursor reaches `so_count` at override_start+4)");
+    w!("These have `bo_count_naive==0` (cursor reaches `so_count` at override_start+4)");
     w!("but `so_count_naive>0`, so the bytes of the first sign-override item are visible.");
     w!();
     let mut tier3_shown = 0usize;
@@ -538,8 +582,7 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
     // ── Tier 2 — boundary bytes (no so, but bo>0) ──────────────────────────
     w!("## 4. Tier 2 Working Signs (bo>0, so==0/garbage) — Boundary Bytes");
     w!();
-    w!(
-        "These have `bo_count_naive>0` (the alleged board-override section)");
+    w!("These have `bo_count_naive>0` (the alleged board-override section)");
     w!("but the cursor after replay produces `so_count_naive==0/garbage`.");
     w!("Either the per-bo-item layout is wrong (cursor lands at wrong place)");
     w!("or there's an extra field, or the bo field isn't really a count.");
@@ -601,11 +644,16 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
         w!();
         w!(
             "- board_count={}, template_len={}, template=`{}`",
-            s.board_count, s.template_len, s.template_str
+            s.board_count,
+            s.template_len,
+            s.template_str
         );
         w!(
             "- override_start_rel={}, bo_count={}, bo_end_rel={:?}, so_count={:?}",
-            s.override_start_rel, s.bo_count_naive, s.bo_end_rel, s.so_count_naive
+            s.override_start_rel,
+            s.bo_count_naive,
+            s.bo_end_rel,
+            s.so_count_naive
         );
         w!();
         w!("**Override region:**");
@@ -636,9 +684,10 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
     let t4_sample = working.iter().find(|s| s.tier == 4).copied();
     let t3_sample = working.iter().find(|s| s.tier == 3).copied();
 
-    let class_a_crash = crashing.iter().find(|s| {
-        s.bo_count_naive > 0 || !matches!(s.so_count_naive, Some(v) if v < 1000)
-    }).copied();
+    let class_a_crash = crashing
+        .iter()
+        .find(|s| s.bo_count_naive > 0 || !matches!(s.so_count_naive, Some(v) if v < 1000))
+        .copied();
     let class_b_crash = crashing
         .iter()
         .find(|s| s.bo_count_naive == 0 && matches!(s.so_count_naive, Some(v) if v < 1000))
@@ -647,17 +696,31 @@ fn write_report(path: &std::path::Path, samples: &[SignSample]) -> Result<()> {
     w!("## 6. Side-by-Side Comparisons");
     w!();
 
-    write_side_by_side(&mut f, "Tier 4 working vs Class A crash", t4_sample, class_a_crash)?;
-    write_side_by_side(&mut f, "Tier 3 working vs Class B crash", t3_sample, class_b_crash)?;
+    write_side_by_side(
+        &mut f,
+        "Tier 4 working vs Class A crash",
+        t4_sample,
+        class_a_crash,
+    )?;
+    write_side_by_side(
+        &mut f,
+        "Tier 3 working vs Class B crash",
+        t3_sample,
+        class_b_crash,
+    )?;
 
     // ── Hypotheses ─────────────────────────────────────────────────────────
     w!("## 7. Hypotheses (to discuss after review)");
     w!();
     w!("### Class A (`so_count` garbage at boundary)");
     w!();
-    w!("Crash sectors: {}", crashing.iter()
-        .filter(|s| s.bo_count_naive > 0 || !matches!(s.so_count_naive, Some(v) if v < 1000))
-        .count());
+    w!(
+        "Crash sectors: {}",
+        crashing
+            .iter()
+            .filter(|s| s.bo_count_naive > 0 || !matches!(s.so_count_naive, Some(v) if v < 1000))
+            .count()
+    );
     w!();
     w!("If Tier 4 working samples exist: their `bo_count_naive` is a real count");
     w!("and the per-bo-item layout in `skip_sign_board_override_list` works for");
@@ -704,15 +767,23 @@ fn write_side_by_side(
         w!();
         return Ok(());
     };
-    w!("| Field | A: `{}` #{} | B: `{}` #{} |",
-        short_sector(&a.sector_path), a.item_index,
-        short_sector(&b.sector_path), b.item_index);
+    w!(
+        "| Field | A: `{}` #{} | B: `{}` #{} |",
+        short_sector(&a.sector_path),
+        a.item_index,
+        short_sector(&b.sector_path),
+        b.item_index
+    );
     w!("|---|---|---|");
     w!("| board_count | {} | {} |", a.board_count, b.board_count);
     w!("| template_len | {} | {} |", a.template_len, b.template_len);
     w!("| bo_count | {} | {} |", a.bo_count_naive, b.bo_count_naive);
     w!("| bo_end_rel | {:?} | {:?} |", a.bo_end_rel, b.bo_end_rel);
-    w!("| so_count | {:?} | {:?} |", a.so_count_naive, b.so_count_naive);
+    w!(
+        "| so_count | {:?} | {:?} |",
+        a.so_count_naive,
+        b.so_count_naive
+    );
     w!();
     let na = a.first_override_bytes.len().min(32);
     let nb = b.first_override_bytes.len().min(32);
@@ -729,11 +800,23 @@ fn write_side_by_side(
     for row in 0..rows {
         let off = row * 8;
         let ah = (off..off + 8)
-            .map(|i| if i < na { format!("{:02x}", a.first_override_bytes[i]) } else { "  ".into() })
+            .map(|i| {
+                if i < na {
+                    format!("{:02x}", a.first_override_bytes[i])
+                } else {
+                    "  ".into()
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ");
         let bh = (off..off + 8)
-            .map(|i| if i < nb { format!("{:02x}", b.first_override_bytes[i]) } else { "  ".into() })
+            .map(|i| {
+                if i < nb {
+                    format!("{:02x}", b.first_override_bytes[i])
+                } else {
+                    "  ".into()
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ");
         w!("+{:03}    {}    {}", off, ah, bh);
@@ -747,9 +830,20 @@ fn hex_dump(data: &[u8], start_offset: usize) -> String {
     let mut out = String::new();
     for (i, chunk) in data.chunks(16).enumerate() {
         let offset = start_offset + i * 16;
-        let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-        let ascii: String = chunk.iter()
-            .map(|&b| if (32..127).contains(&b) { b as char } else { '.' })
+        let hex: String = chunk
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ascii: String = chunk
+            .iter()
+            .map(|&b| {
+                if (32..127).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         let pad = "   ".repeat(16 - chunk.len());
         out.push_str(&format!("+{offset:04}  {hex}{pad}  |{ascii}|\n"));

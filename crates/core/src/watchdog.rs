@@ -187,7 +187,9 @@ pub async fn watchdog_loop(
 
         if heartbeat_stale && ap_active && !heartbeat_failsafe {
             if output_active {
-                tracing::warn!("[watchdog] heartbeat stall — autopilot active, activating failsafe");
+                tracing::warn!(
+                    "[watchdog] heartbeat stall — autopilot active, activating failsafe"
+                );
                 heartbeat_failsafe = true;
                 apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
             } else {
@@ -198,7 +200,9 @@ pub async fn watchdog_loop(
             }
         } else if heartbeat_stale && !ap_active && heartbeat_failsafe {
             // Autopilot disengaged while stall was active — release brake.
-            tracing::info!("[watchdog] heartbeat stall but autopilot Off — clearing failsafe, writing neutral");
+            tracing::info!(
+                "[watchdog] heartbeat stall but autopilot Off — clearing failsafe, writing neutral"
+            );
             clear_vjoy_failsafe(&bb);
             heartbeat_failsafe = false;
         } else if !heartbeat_stale && heartbeat_failsafe {
@@ -216,7 +220,9 @@ pub async fn watchdog_loop(
                 }
                 if ap_active && !telem_failsafe {
                     if output_active {
-                        tracing::warn!("[watchdog] telemetry stale — autopilot active, activating failsafe");
+                        tracing::warn!(
+                            "[watchdog] telemetry stale — autopilot active, activating failsafe"
+                        );
                         telem_failsafe = true;
                         apply_vjoy_failsafe(&bb, &config, "telemetry_stale");
                     } else {
@@ -226,7 +232,9 @@ pub async fn watchdog_loop(
                         );
                     }
                 } else if !ap_active && telem_failsafe {
-                    tracing::info!("[watchdog] telemetry stale but autopilot Off — clearing failsafe");
+                    tracing::info!(
+                        "[watchdog] telemetry stale but autopilot Off — clearing failsafe"
+                    );
                     clear_vjoy_failsafe(&bb);
                     telem_failsafe = false;
                 }
@@ -338,7 +346,10 @@ mod tests {
         for state in ["Engaging", "Active", "Paused", "Fault"] {
             let bb = SharedBlackboard::new();
             bb.set("autopilot.state", state);
-            assert!(is_autopilot_active(&bb), "expected active for state={state}");
+            assert!(
+                is_autopilot_active(&bb),
+                "expected active for state={state}"
+            );
         }
     }
 
@@ -349,7 +360,10 @@ mod tests {
         apply_vjoy_failsafe(&bb, &config, "heartbeat_stall");
         assert_eq!(bb.get("safety.emergency_brake").as_deref(), Some("true"));
         assert_eq!(bb.get("safety.failsafe_active").as_deref(), Some("true"));
-        assert_eq!(bb.get("safety.failsafe_reason").as_deref(), Some("heartbeat_stall"));
+        assert_eq!(
+            bb.get("safety.failsafe_reason").as_deref(),
+            Some("heartbeat_stall")
+        );
         assert!(bb.get("safety.last_failsafe_at").is_some());
     }
 

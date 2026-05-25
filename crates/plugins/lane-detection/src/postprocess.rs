@@ -12,7 +12,7 @@ use crate::preprocess::LetterboxMeta;
 #[derive(Debug, Clone)]
 pub struct LanePoint {
     pub x: f32,
-    pub y: f32,  // retained for lane-keeper steering geometry
+    pub y: f32, // retained for lane-keeper steering geometry
     /// Softmax probability of the winning column class.
     pub col_prob: f32,
 }
@@ -96,7 +96,15 @@ mod tests {
     use crate::preprocess::LetterboxMeta;
 
     fn identity_meta() -> LetterboxMeta {
-        LetterboxMeta { scale: 1.0, pad_x: 0.0, pad_y: 0.0, orig_w: 1600, orig_h: 320, canvas_w: 1600, canvas_h: 320 }
+        LetterboxMeta {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            orig_w: 1600,
+            orig_h: 320,
+            canvas_w: 1600,
+            canvas_h: 320,
+        }
     }
 
     #[test]
@@ -126,7 +134,15 @@ mod tests {
         // e1 >> e0 → class-1 prob ≈ 1.0
         exist[row_anchors * num_lanes + 0 * num_lanes + 0] = 10.0;
 
-        let lanes = decode_ufld_v2(&loc, &exist, col_grids, row_anchors, num_lanes, &identity_meta(), 0.5);
+        let lanes = decode_ufld_v2(
+            &loc,
+            &exist,
+            col_grids,
+            row_anchors,
+            num_lanes,
+            &identity_meta(),
+            0.5,
+        );
         assert_eq!(lanes.len(), 1);
         assert_eq!(lanes[0].points.len(), 1);
         // x = col_idx/C * INPUT_W = 2/4 * 1600 = 800
@@ -156,18 +172,28 @@ mod tests {
         // class-0 high for all other (r, l) → no-lane
         for r in 0..row_anchors {
             for l in 0..num_lanes {
-                if r == 0 && l == 0 { continue; }
+                if r == 0 && l == 0 {
+                    continue;
+                }
                 exist[r * num_lanes + l] = 10.0;
             }
         }
         let meta = LetterboxMeta {
-            scale: 1.0, pad_x: 0.0, pad_y: 0.0,
-            orig_w: 800, orig_h: 320,
-            canvas_w: 800, canvas_h: 320,
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            orig_w: 800,
+            orig_h: 320,
+            canvas_w: 800,
+            canvas_h: 320,
         };
         let lanes = decode_ufld_v2(&loc, &exist, col_grids, row_anchors, num_lanes, &meta, 0.5);
         // Lane 0 should have one point at col 50/100 * 800 = 400
         assert_eq!(lanes[0].points.len(), 1);
-        assert!((lanes[0].points[0].x - 400.0).abs() < 1.0, "x={}", lanes[0].points[0].x);
+        assert!(
+            (lanes[0].points[0].x - 400.0).abs() < 1.0,
+            "x={}",
+            lanes[0].points[0].x
+        );
     }
 }

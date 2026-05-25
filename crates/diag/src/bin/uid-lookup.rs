@@ -149,7 +149,11 @@ fn main() {
         graph.nodes.len()
     );
     for &n_uid in nearby {
-        let marker = if n_uid == uid { " ← REQUESTED (missing)" } else { "" };
+        let marker = if n_uid == uid {
+            " ← REQUESTED (missing)"
+        } else {
+            ""
+        };
         let (nx, _ny, nz) = positions[&n_uid];
         let out = outgoing.get(&n_uid).copied().unwrap_or(0);
         println!("  uid={n_uid:>22}  pos=({nx:.0}, {nz:.0})  edges_out={out}{marker}");

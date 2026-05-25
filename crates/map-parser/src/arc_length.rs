@@ -276,10 +276,12 @@ pub struct LookaheadResult {
     pub point: Vec3,
     /// Verbleibende Distanz die nicht mehr konsumiert wurde (nur bei Dead-End > 0).
     pub remaining_dist_m: f32,
+    /// Anzahl traversierter Segment-Hops. >= [`LOOKAHEAD_MAX_HOPS`] → Iteration-Limit getriggert.
+    pub iteration_count: usize,
 }
 
 /// Maximale Segmente die lookahead traversiert (schützt vor Endlos-Loops in Kreisstraßen).
-const LOOKAHEAD_MAX_HOPS: usize = 100;
+pub const LOOKAHEAD_MAX_HOPS: usize = 100;
 
 /// Dot-Produkt zweier 3D-Vektoren (für Heading-Vergleich).
 #[inline]
@@ -297,8 +299,11 @@ const HEADING_DOT_THRESHOLD: f32 = 0.5;
 /// konsumiert ist. An Junctions: wählt den Nachfolger mit dem höchsten
 /// Heading-Dot-Produkt (≥ [`HEADING_DOT_THRESHOLD`]).
 ///
-/// Gibt `None` bei Dead-End (kein gültiger Nachfolger).
-/// Gibt `Some` auch wenn Iteration-Limit erreicht (mit remaining_dist_m > 0).
+/// Gibt immer `Some` zurück. Status-Diskriminierung über `remaining_dist_m` und
+/// `iteration_count`:
+/// - `remaining_dist_m == 0` → Ziel erreicht (ok)
+/// - `iteration_count >= LOOKAHEAD_MAX_HOPS` → Iteration-Limit (Bug-Indikator)
+/// - sonst → Dead-End (kein gültiger Nachfolger)
 pub fn lookahead(
     seg_idx: usize,
     t: f32,
@@ -310,8 +315,9 @@ pub fn lookahead(
     let mut current_seg = seg_idx;
     let mut current_t = t.clamp(0.0, 1.0);
     let mut remaining = dist_m;
+    let mut hop = 0usize;
 
-    for _hop in 0..LOOKAHEAD_MAX_HOPS {
+    loop {
         let seg = &segs[current_seg];
         let lut = &luts[current_seg];
 
@@ -329,6 +335,7 @@ pub fn lookahead(
                 t: t_target,
                 point,
                 remaining_dist_m: 0.0,
+                iteration_count: hop,
             });
         }
 
@@ -342,20 +349,21 @@ pub fn lookahead(
         let candidates = match forward_adj.get(&seg.to_uid) {
             Some(c) if !c.is_empty() => c,
             _ => {
-                // Dead-End
+                // Dead-End: kein Nachfolger
                 let point = evaluate(seg, 1.0);
                 return Some(LookaheadResult {
                     seg_idx: current_seg,
                     t: 1.0,
                     point,
                     remaining_dist_m: remaining,
+                    iteration_count: hop,
                 });
             }
         };
 
         // Bestes Kandidat-Segment via Heading-Dot-Produkt
         let mut best_idx = None;
-        let mut best_dot = HEADING_DOT_THRESHOLD - 1e-6; // Muss mindestens Threshold erreichen
+        let mut best_dot = HEADING_DOT_THRESHOLD - 1e-6;
 
         for &cand_idx in candidates {
             if cand_idx == current_seg {
@@ -374,29 +382,32 @@ pub fn lookahead(
             Some(next_idx) => {
                 current_seg = next_idx;
                 current_t = 0.0;
+                hop += 1;
+                if hop >= LOOKAHEAD_MAX_HOPS {
+                    // Iteration-Limit: Kreis-Straße oder Adjacency-Bug
+                    let point = evaluate(&segs[current_seg], 0.0);
+                    return Some(LookaheadResult {
+                        seg_idx: current_seg,
+                        t: 0.0,
+                        point,
+                        remaining_dist_m: remaining,
+                        iteration_count: hop,
+                    });
+                }
             }
             None => {
-                // Kein kompatibler Nachfolger
+                // Kein kompatibler Nachfolger (Heading-Filter)
                 let point = evaluate(seg, 1.0);
                 return Some(LookaheadResult {
                     seg_idx: current_seg,
                     t: 1.0,
                     point,
                     remaining_dist_m: remaining,
+                    iteration_count: hop,
                 });
             }
         }
     }
-
-    // Iteration-Limit erreicht (Kreis-Straße?)
-    let seg = &segs[current_seg];
-    let point = evaluate(seg, current_t);
-    Some(LookaheadResult {
-        seg_idx: current_seg,
-        t: current_t,
-        point,
-        remaining_dist_m: remaining,
-    })
 }
 
 // ---------------------------------------------------------------------------

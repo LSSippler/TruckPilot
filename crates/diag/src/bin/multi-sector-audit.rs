@@ -58,7 +58,13 @@ fn hex_dump_line(data: &[u8], base_offset: usize) -> String {
     let hex: Vec<String> = data.iter().map(|b| format!("{b:02X}")).collect();
     let ascii: String = data
         .iter()
-        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
         .collect();
     format!("{base_offset:08X}  {:<48}  |{ascii}|", hex.join(" "))
 }
@@ -196,7 +202,10 @@ fn main() -> Result<()> {
             r.items_parsed, r.last_ok_index, r.last_ok_type, r.last_ok_kind
         );
         if r.failure_offset > 0 {
-            eprintln!("  FAILURE at 0x{:X}: raw_type=0x{:X}", r.failure_offset, r.failure_raw_type);
+            eprintln!(
+                "  FAILURE at 0x{:X}: raw_type=0x{:X}",
+                r.failure_offset, r.failure_raw_type
+            );
         }
         results.push(r);
     }
@@ -256,7 +265,10 @@ fn main() -> Result<()> {
     println!("\n## Failure-Point Hex Dump (context={} bytes)\n", context);
     for r in &results {
         println!("### `{}`\n", r.sector_path);
-        println!("Failure at offset 0x{:X}, raw_type=0x{:X}, error: {}", r.failure_offset, r.failure_raw_type, r.failure_msg);
+        println!(
+            "Failure at offset 0x{:X}, raw_type=0x{:X}, error: {}",
+            r.failure_offset, r.failure_raw_type, r.failure_msg
+        );
         println!();
         if r.failure_offset > 0 && r.failure_offset < 1_000_000 && !r.sector_data.is_empty() {
             let hd = hex_dump(&r.sector_data, r.failure_offset, context);
@@ -287,7 +299,7 @@ fn main() -> Result<()> {
         }
     }
     let mut inv_sorted: Vec<_> = type_inventory.into_iter().collect();
-    inv_sorted.sort_by_key(|b| std::cmp::Reverse(b.1.0));
+    inv_sorted.sort_by_key(|b| std::cmp::Reverse(b.1 .0));
     for ((it, kind), (total, sectors)) in &inv_sorted {
         println!("| 0x{:X} | {} | {} | {} |", it, kind, total, sectors);
     }
@@ -296,21 +308,15 @@ fn main() -> Result<()> {
     println!("\n## Diagnosis\n");
 
     // Check if bezier_patch is the dominant last-OK type
-    let bezier_as_last = results
-        .iter()
-        .filter(|r| r.last_ok_type == 39)
-        .count();
-    let road_as_last = results
-        .iter()
-        .filter(|r| r.last_ok_type == 3)
-        .count();
-    let prefab_as_last = results
-        .iter()
-        .filter(|r| r.last_ok_type == 4)
-        .count();
+    let bezier_as_last = results.iter().filter(|r| r.last_ok_type == 39).count();
+    let road_as_last = results.iter().filter(|r| r.last_ok_type == 3).count();
+    let prefab_as_last = results.iter().filter(|r| r.last_ok_type == 4).count();
     let total = results.len();
 
-    println!("- bezier_patch (0x27) as last-OK: {}/{}", bezier_as_last, total);
+    println!(
+        "- bezier_patch (0x27) as last-OK: {}/{}",
+        bezier_as_last, total
+    );
     println!("- road (0x03) as last-OK: {}/{}", road_as_last, total);
     println!("- prefab (0x04) as last-OK: {}/{}", prefab_as_last, total);
     println!();

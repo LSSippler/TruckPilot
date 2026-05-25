@@ -1,19 +1,10 @@
-# BB Monitor — Phase 1a Live-Test
+﻿# BB Monitor -- Phase 1a Live-Test
 # Polls lane_follower.* Blackboard keys at 1 Hz and writes a timestamped log.
 # Compatible with Windows PowerShell 5.1+.
 #
 # Usage:
 #   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-25\phase_1a_livetest_highway.txt -Duration 30
 #   .\scripts\bb_monitor.ps1 -OutFile outputs\2026-05-25\phase_1a_livetest_junctions.txt -Duration 120
-
-# Helper: null-safe hashtable lookup (PS 5.1 has no ?? operator)
-function Get-OrDefault {
-    param($Hash, $Key, $Default = "?")
-    if ($Hash.ContainsKey($Key) -and $null -ne $Hash[$Key] -and $Hash[$Key] -ne '') {
-        return $Hash[$Key]
-    }
-    return $Default
-}
 
 param(
     [Parameter(Mandatory=$true)]
@@ -26,9 +17,18 @@ param(
     [string]$DaemonUrl = "ws://127.0.0.1:8765"
 )
 
+# Helper: null-safe hashtable lookup (PS 5.1 has no ?? operator)
+function Get-OrDefault {
+    param($Hash, $Key, $Default = "?")
+    if ($Hash.ContainsKey($Key) -and $null -ne $Hash[$Key] -and $Hash[$Key] -ne '') {
+        return $Hash[$Key]
+    }
+    return $Default
+}
+
 $bbQuery = Join-Path $PSScriptRoot "..\target\release\blackboard-query.exe"
 if (-not (Test-Path $bbQuery)) {
-    Write-Error "blackboard-query.exe not found at $bbQuery — run 'cargo build-release' first."
+        Write-Error ("blackboard-query.exe not found at " + $bbQuery + " -- run 'cargo build-release' first.")
     exit 1
 }
 
@@ -47,7 +47,7 @@ if ($dir -and -not (Test-Path $dir)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
 }
 
-$header = "# BB Monitor — Phase 1a lane_follower — $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+$header = "# BB Monitor -- Phase 1a lane_follower -- $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 $header | Out-File -Encoding utf8 -FilePath $OutFile
 "# Duration: $($Duration)s | Keys: $keys" | Out-File -Encoding utf8 -Append -FilePath $OutFile
 "" | Out-File -Encoding utf8 -Append -FilePath $OutFile
@@ -95,6 +95,6 @@ while ($infinite -or (([datetime]::Now - $start).TotalSeconds -lt $Duration)) {
 }
 
 "" | Out-File -Encoding utf8 -Append -FilePath $OutFile
-"# Done — $tick snapshots captured." | Out-File -Encoding utf8 -Append -FilePath $OutFile
+"# Done -- $tick snapshots captured." | Out-File -Encoding utf8 -Append -FilePath $OutFile
 Write-Host ""
 Write-Host "Done. $tick snapshot(s) written to $OutFile"

@@ -90,7 +90,10 @@ impl LaneDataCollectorPlugin {
                 true
             }
             Err(e) => {
-                tracing::warn!("[lane-data-collector] cannot create session dir {:?}: {e}", dir);
+                tracing::warn!(
+                    "[lane-data-collector] cannot create session dir {:?}: {e}",
+                    dir
+                );
                 false
             }
         }
@@ -159,8 +162,12 @@ impl LaneDataCollectorPlugin {
         let (pos_x, pos_z) = match telemetry {
             Some(t) => (t.position[0], t.position[2]),
             None => (
-                ctx.blackboard.get_f64("telemetry.position_x").unwrap_or(-1.0),
-                ctx.blackboard.get_f64("telemetry.position_z").unwrap_or(-1.0),
+                ctx.blackboard
+                    .get_f64("telemetry.position_x")
+                    .unwrap_or(-1.0),
+                ctx.blackboard
+                    .get_f64("telemetry.position_z")
+                    .unwrap_or(-1.0),
             ),
         };
         let heading = match telemetry {
@@ -205,8 +212,10 @@ impl LaneDataCollectorPlugin {
         self.frame_count += 1;
         self.no_frame_warned = false;
 
-        ctx.blackboard
-            .set("lane_data_collector.frames_saved", self.frame_count.to_string());
+        ctx.blackboard.set(
+            "lane_data_collector.frames_saved",
+            self.frame_count.to_string(),
+        );
 
         tracing::info!(
             "[lane-data-collector] saved frame_{idx:04} (total {}, pos=({pos_x:.1},{pos_z:.1}))",
@@ -250,7 +259,10 @@ impl Plugin for LaneDataCollectorPlugin {
         if let Some(dir) = ctx.blackboard.get("lane_data_collector.output_dir") {
             self.output_dir = PathBuf::from(dir);
         }
-        if let Some(n) = ctx.blackboard.get_f64("lane_data_collector.capture_interval_ticks") {
+        if let Some(n) = ctx
+            .blackboard
+            .get_f64("lane_data_collector.capture_interval_ticks")
+        {
             self.capture_interval_ticks = n as u32;
         }
         if let Some(n) = ctx.blackboard.get_f64("lane_data_collector.max_frames") {
@@ -295,7 +307,10 @@ impl Plugin for LaneDataCollectorPlugin {
 
         self.tick_count += 1;
 
-        if self.tick_count.is_multiple_of(u64::from(self.capture_interval_ticks)) {
+        if self
+            .tick_count
+            .is_multiple_of(u64::from(self.capture_interval_ticks))
+        {
             self.try_capture(telemetry, ctx);
         }
     }
@@ -330,9 +345,11 @@ truckpilot_plugin_api::export_plugin!(LaneDataCollectorPlugin);
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use truckpilot_plugin_api::{ControlOutput, PluginContext, SharedFrame, SharedFrameStore, Telemetry, TickPhase};
     use super::*;
+    use std::sync::Arc;
+    use truckpilot_plugin_api::{
+        ControlOutput, PluginContext, SharedFrame, SharedFrameStore, Telemetry, TickPhase,
+    };
 
     fn mock_telemetry() -> Telemetry {
         Telemetry {
@@ -394,8 +411,16 @@ mod tests {
         let mut plugin = LaneDataCollectorPlugin::default();
         let ctx = PluginContext::test();
         plugin.on_load(&ctx);
-        assert_eq!(ctx.blackboard.get("lane_data_collector.active").as_deref(), Some("true"));
-        assert_eq!(ctx.blackboard.get("lane_data_collector.frames_saved").as_deref(), Some("0"));
+        assert_eq!(
+            ctx.blackboard.get("lane_data_collector.active").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_data_collector.frames_saved")
+                .as_deref(),
+            Some("0")
+        );
     }
 
     #[test]
@@ -451,7 +476,9 @@ mod tests {
         assert!((sidecar.speed_ms - 13.88).abs() < 0.01);
 
         assert_eq!(
-            ctx.blackboard.get("lane_data_collector.frames_saved").as_deref(),
+            ctx.blackboard
+                .get("lane_data_collector.frames_saved")
+                .as_deref(),
             Some("1")
         );
 
@@ -498,7 +525,10 @@ mod tests {
 
         assert!(plugin.stopped);
         assert_eq!(plugin.frame_count, 0);
-        assert_eq!(ctx.blackboard.get("lane_data_collector.active").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("lane_data_collector.active").as_deref(),
+            Some("false")
+        );
     }
 
     #[test]
@@ -528,7 +558,10 @@ mod tests {
 
         assert_eq!(plugin.frame_count, 3, "expected 3 frames then stop");
         assert!(plugin.stopped, "plugin should be stopped after max_frames");
-        assert_eq!(ctx.blackboard.get("lane_data_collector.active").as_deref(), Some("false"));
+        assert_eq!(
+            ctx.blackboard.get("lane_data_collector.active").as_deref(),
+            Some("false")
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -560,7 +593,10 @@ mod tests {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
 
-        assert_eq!(plugin.frame_count, 3, "3 captures expected at ticks 3, 6, 9");
+        assert_eq!(
+            plugin.frame_count, 3,
+            "3 captures expected at ticks 3, 6, 9"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

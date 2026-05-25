@@ -1,6 +1,8 @@
 mod commands;
 mod daemon;
 mod daemon_config;
+mod hotkey_config;
+mod hotkey_manager;
 mod ipc_bridge;
 mod steam_detect;
 mod window_manager;
@@ -29,6 +31,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .manage(daemon.clone())
         .setup({
@@ -46,6 +49,11 @@ pub fn run() {
                 } else {
                     info!("daemon auto-start disabled by config");
                 }
+
+                let hk = hotkey_config::load(app.handle());
+                if let Err(e) = hotkey_manager::apply(app.handle(), &hk.engage, &hk.disengage) {
+                    warn!("global hotkey registration failed: {e}");
+                }
                 Ok(())
             }
         })
@@ -62,6 +70,8 @@ pub fn run() {
             commands::daemon_restart,
             commands::daemon_get_auto_start,
             commands::daemon_set_auto_start,
+            commands::hotkey_get_config,
+            commands::hotkey_set_config,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

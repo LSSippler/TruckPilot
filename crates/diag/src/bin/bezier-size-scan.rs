@@ -39,7 +39,6 @@ fn default_mods_dir() -> PathBuf {
         .join("Euro Truck Simulator 2/mod")
 }
 
-
 // ── Attempt to parse the sector items starting from `cursor_pos` ─────────────
 // Returns (items_parsed, items_needed) using audit_sector on a patched sector
 // copy where bytes [bezier_start..cursor_pos] are zero-padded so the real
@@ -55,7 +54,7 @@ fn default_mods_dir() -> PathBuf {
 
 fn try_skip_and_parse(
     data: &[u8],
-    _sector_header: &[u8],   // 20 bytes: version(4) + game_id(8) + map_version(4) + item_count(4)
+    _sector_header: &[u8], // 20 bytes: version(4) + game_id(8) + map_version(4) + item_count(4)
     items_before_bezier: usize,
     bezier_item_start: usize, // offset of bezier item_type u32 in data
     body_size: usize,         // how many bytes to skip after item_type u32
@@ -78,9 +77,9 @@ fn try_skip_and_parse(
 
     let remaining_count = remaining_items as u32;
     let mut mini = Vec::with_capacity(20 + data.len() - resume_offset);
-    mini.extend_from_slice(&1u32.to_le_bytes());      // version
-    mini.extend_from_slice(&0u64.to_le_bytes());      // game_id
-    mini.extend_from_slice(&0u32.to_le_bytes());      // map_version
+    mini.extend_from_slice(&1u32.to_le_bytes()); // version
+    mini.extend_from_slice(&0u64.to_le_bytes()); // game_id
+    mini.extend_from_slice(&0u32.to_le_bytes()); // map_version
     mini.extend_from_slice(&remaining_count.to_le_bytes()); // item_count
     mini.extend_from_slice(&data[resume_offset..]);
 
@@ -97,10 +96,19 @@ fn hex_dump_range(data: &[u8], start: usize, len: usize) -> String {
     let mut i = 0;
     while i < slice.len() {
         let line_end = (i + 16).min(slice.len());
-        let hex: Vec<String> = slice[i..line_end].iter().map(|b| format!("{b:02X}")).collect();
+        let hex: Vec<String> = slice[i..line_end]
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect();
         let asc: String = slice[i..line_end]
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         lines.push(format!("{:08X}  {:<48}  |{asc}|", start + i, hex.join(" ")));
         i += 16;
@@ -115,9 +123,16 @@ fn analyze_sector(data: &[u8], _sp: &str, max_bytes: usize, dump_bytes: usize) {
     // Find the last bezier_patch item
     let bezier = report.items.iter().rev().find(|it| it.item_type == 39);
     let Some(bezier) = bezier else {
-        println!("  No bezier_patch found — sector parsed {}/{} items cleanly.", report.items.len(), item_count);
+        println!(
+            "  No bezier_patch found — sector parsed {}/{} items cleanly.",
+            report.items.len(),
+            item_count
+        );
         if let Some(f) = &report.failure {
-            println!("  failure at item #{}: offset=0x{:X}, raw_type=0x{:08X}", f.item_index, f.error_offset, f.raw_type);
+            println!(
+                "  failure at item #{}: offset=0x{:X}, raw_type=0x{:08X}",
+                f.item_index, f.error_offset, f.raw_type
+            );
             println!("  error: {}", f.error_msg);
             // Show 64 bytes around failure
             let ctx_start = f.error_offset.saturating_sub(16);
@@ -139,14 +154,24 @@ fn analyze_sector(data: &[u8], _sp: &str, max_bytes: usize, dump_bytes: usize) {
     let current_body = bezier.end_offset - bezier_start - 4;
 
     println!("  bezier_patch item #{items_before}: start=0x{bezier_start:X}, current_body={current_body} bytes");
-    println!("  item_count={item_count}, items_parsed={} (gap={})", report.items.len(), item_count as usize - report.items.len());
+    println!(
+        "  item_count={item_count}, items_parsed={} (gap={})",
+        report.items.len(),
+        item_count as usize - report.items.len()
+    );
     if let Some(f) = &report.failure {
-        println!("  failure: offset=0x{:X}, raw_type=0x{:08X}, msg={}", f.error_offset, f.raw_type, f.error_msg);
+        println!(
+            "  failure: offset=0x{:X}, raw_type=0x{:08X}, msg={}",
+            f.error_offset, f.raw_type, f.error_msg
+        );
     }
 
     // Hex dump: from bezier body start, dump_bytes ahead
     let body_start = bezier_start + 4;
-    println!("\n  --- Hex dump from bezier body start (first {} bytes) ---", dump_bytes);
+    println!(
+        "\n  --- Hex dump from bezier body start (first {} bytes) ---",
+        dump_bytes
+    );
     println!("{}", hex_dump_range(data, body_start, dump_bytes));
     println!();
 
@@ -163,7 +188,8 @@ fn analyze_sector(data: &[u8], _sp: &str, max_bytes: usize, dump_bytes: usize) {
     let candidates: Vec<usize> = (scan_min..=scan_max).collect();
 
     for &body_size in &candidates {
-        let parsed = try_skip_and_parse(data, &[], items_before, bezier_start, body_size, item_count);
+        let parsed =
+            try_skip_and_parse(data, &[], items_before, bezier_start, body_size, item_count);
         if parsed > best_parsed || (parsed == best_parsed && best_size.is_none()) {
             best_parsed = parsed;
             best_size = Some(body_size);
@@ -177,17 +203,28 @@ fn analyze_sector(data: &[u8], _sp: &str, max_bytes: usize, dump_bytes: usize) {
     match best_size {
         Some(sz) => {
             let delta = sz as isize - current_body as isize;
-            println!("  RESULT: best body_size={sz} bytes (current={current_body}, delta=+{delta})");
-            println!("          items parsed with best_size: {}/{}", best_parsed, item_count);
+            println!(
+                "  RESULT: best body_size={sz} bytes (current={current_body}, delta=+{delta})"
+            );
+            println!(
+                "          items parsed with best_size: {}/{}",
+                best_parsed, item_count
+            );
             if best_parsed >= item_count as usize {
                 println!("  STATUS: PERFECT — all items parse cleanly with body_size={sz}");
             } else {
-                println!("  STATUS: PARTIAL — best guess only, still {} items unparsed", item_count as usize - best_parsed);
+                println!(
+                    "  STATUS: PARTIAL — best guess only, still {} items unparsed",
+                    item_count as usize - best_parsed
+                );
             }
             // Hex dump around the correct end
             let correct_end = bezier_start + 4 + sz;
             println!("\n  --- 64 bytes at correct bezier end (offset 0x{correct_end:X}) ---");
-            println!("{}", hex_dump_range(data, correct_end.saturating_sub(32), 96));
+            println!(
+                "{}",
+                hex_dump_range(data, correct_end.saturating_sub(32), 96)
+            );
         }
         None => {
             println!("  RESULT: No improvement found in range {scan_min}..={scan_max}");
@@ -217,7 +254,10 @@ fn main() -> Result<()> {
 
     for sp in &args.sector {
         println!("\n## Sector: `{sp}`\n");
-        let data = archives.iter_mut().rev().find_map(|arc| arc.read_path(sp).ok());
+        let data = archives
+            .iter_mut()
+            .rev()
+            .find_map(|arc| arc.read_path(sp).ok());
         let Some(data) = data else {
             println!("  SKIP: not found in archives");
             continue;

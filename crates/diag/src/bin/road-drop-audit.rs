@@ -30,9 +30,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use truckpilot_map_parser::{
     drop_tracer::{DropCategory, DropEvent},
-    DropTracer, HashFsArchive, ModLoadOrder, ZipArchive,
-    Archive,
-    parse_sectors_with_drop_tracer,
+    parse_sectors_with_drop_tracer, Archive, DropTracer, HashFsArchive, ModLoadOrder, ZipArchive,
 };
 
 // ---------------------------------------------------------------------------
@@ -76,16 +74,16 @@ struct Args {
 
 fn known_cities() -> Vec<(&'static str, f32, f32)> {
     vec![
-        ("Berlin",   -16400.0, -3200.0),
-        ("Hamburg",  -22300.0, -7200.0),
-        ("Wien",      -8400.0,  3500.0),
-        ("Paris",    -29000.0,  -500.0),
-        ("Amsterdam",-25400.0, -9900.0),
-        ("Köln",     -23600.0, -5000.0),
-        ("Frankfurt",-20700.0, -2200.0),
-        ("München",  -16800.0,  2000.0),
-        ("Prag",     -12600.0,   400.0),
-        ("Warschau",  -4200.0, -5800.0),
+        ("Berlin", -16400.0, -3200.0),
+        ("Hamburg", -22300.0, -7200.0),
+        ("Wien", -8400.0, 3500.0),
+        ("Paris", -29000.0, -500.0),
+        ("Amsterdam", -25400.0, -9900.0),
+        ("Köln", -23600.0, -5000.0),
+        ("Frankfurt", -20700.0, -2200.0),
+        ("München", -16800.0, 2000.0),
+        ("Prag", -12600.0, 400.0),
+        ("Warschau", -4200.0, -5800.0),
     ]
 }
 
@@ -102,17 +100,21 @@ fn default_mods_dir() -> PathBuf {
 
 fn category_label(cat: &DropCategory) -> &'static str {
     match cat {
-        DropCategory::RoadParseFailed       => "RoadParseFailed",
-        DropCategory::SectorHandlerError    => "SectorHandlerError",
-        DropCategory::UnknownItemType       => "UnknownItemType",
-        DropCategory::BothUnresolved        => "BothUnresolved",
-        DropCategory::OneUnresolved         => "OneUnresolved",
-        DropCategory::SizedRoadParseFailed  => "SizedRoadParseFailed",
+        DropCategory::RoadParseFailed => "RoadParseFailed",
+        DropCategory::SectorHandlerError => "SectorHandlerError",
+        DropCategory::UnknownItemType => "UnknownItemType",
+        DropCategory::BothUnresolved => "BothUnresolved",
+        DropCategory::OneUnresolved => "OneUnresolved",
+        DropCategory::SizedRoadParseFailed => "SizedRoadParseFailed",
     }
 }
 
 fn hex_dump(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// XZ distance (metres) between two points.
@@ -157,17 +159,16 @@ fn main() -> Result<()> {
     eprintln!("Opened {} archives.", archives.len());
 
     // ── 2. Parse with drop tracer (sector-level instrumentation) ────────────
-    eprintln!("Parsing sectors with drop tracer (hex_limit={}) ...", args.hex_dump_limit);
+    eprintln!(
+        "Parsing sectors with drop tracer (hex_limit={}) ...",
+        args.hex_dump_limit
+    );
     let tracer = DropTracer::new(args.hex_dump_limit);
-    let (builder, _parsed_paths) =
-        parse_sectors_with_drop_tracer(&mut archives, &tracer)
-            .context("parse_sectors_with_drop_tracer")?;
+    let (builder, _parsed_paths) = parse_sectors_with_drop_tracer(&mut archives, &tracer)
+        .context("parse_sectors_with_drop_tracer")?;
 
     let sector_events = tracer.take_events();
-    eprintln!(
-        "Sector-level drops recorded: {}",
-        sector_events.len()
-    );
+    eprintln!("Sector-level drops recorded: {}", sector_events.len());
 
     // ── 3. Graph-level drops ─────────────────────────────────────────────────
     eprintln!(
@@ -223,7 +224,9 @@ fn main() -> Result<()> {
     let mut by_sector: HashMap<&str, usize> = HashMap::new();
     let mut by_item_type: HashMap<u32, usize> = HashMap::new();
     for ev in &all_events {
-        *by_category.entry(category_label(&ev.category).to_string()).or_default() += 1;
+        *by_category
+            .entry(category_label(&ev.category).to_string())
+            .or_default() += 1;
         *by_sector.entry(ev.sector_path.as_str()).or_default() += 1;
         if matches!(
             ev.category,
@@ -233,20 +236,29 @@ fn main() -> Result<()> {
         }
     }
 
-    let road_parse_failed   = *by_category.get("RoadParseFailed").unwrap_or(&0);
-    let handler_error       = *by_category.get("SectorHandlerError").unwrap_or(&0);
-    let unknown_type        = *by_category.get("UnknownItemType").unwrap_or(&0);
-    let both_unresolved     = audit.both_unresolved.len();
-    let one_unresolved      = audit.one_unresolved.len();
-    let total_roads         = builder.roads().len();
-    let total_nodes         = builder.raw_nodes().len();
-    let fully_resolved      = total_roads - both_unresolved - one_unresolved;
+    let road_parse_failed = *by_category.get("RoadParseFailed").unwrap_or(&0);
+    let handler_error = *by_category.get("SectorHandlerError").unwrap_or(&0);
+    let unknown_type = *by_category.get("UnknownItemType").unwrap_or(&0);
+    let both_unresolved = audit.both_unresolved.len();
+    let one_unresolved = audit.one_unresolved.len();
+    let total_roads = builder.roads().len();
+    let total_nodes = builder.raw_nodes().len();
+    let fully_resolved = total_roads - both_unresolved - one_unresolved;
 
     // ── 5. Focus-city analysis ───────────────────────────────────────────────
     let cities = known_cities();
     let focus_result: Option<FocusResult> = args.focus_city.as_ref().and_then(|name| {
-        let city = cities.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name))?;
-        compute_focus(city.0, city.1, city.2, &builder, &sector_events, &graph_events)
+        let city = cities
+            .iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))?;
+        compute_focus(
+            city.0,
+            city.1,
+            city.2,
+            &builder,
+            &sector_events,
+            &graph_events,
+        )
     });
 
     // ── 6. Write JSON (all events) ───────────────────────────────────────────
@@ -419,22 +431,33 @@ fn write_markdown(
     w!("|---|---|");
     w!("| Total roads in parsed graph | {} |", total_roads);
     w!("| Total nodes in merged node map | {} |", total_nodes);
-    w!("| Fully resolved roads (both endpoints in node map) | {} ({:.1}%) |",
+    w!(
+        "| Fully resolved roads (both endpoints in node map) | {} ({:.1}%) |",
         fully_resolved,
-        pct(fully_resolved, total_roads));
+        pct(fully_resolved, total_roads)
+    );
     w!();
     w!("## Drop Summary by Category");
     w!();
     w!("| Category | Layer | Count | % of roads |");
     w!("|---|---|---|---|");
-    w!("| RoadParseFailed | Sector | {} | {:.2}% |",
-        road_parse_failed, pct(road_parse_failed, total_roads));
+    w!(
+        "| RoadParseFailed | Sector | {} | {:.2}% |",
+        road_parse_failed,
+        pct(road_parse_failed, total_roads)
+    );
     w!("| SectorHandlerError | Sector | {} | — |", handler_error);
     w!("| UnknownItemType | Sector | {} | — |", unknown_type);
-    w!("| BothUnresolved | Graph | {} | {:.2}% |",
-        both_unresolved, pct(both_unresolved, total_roads));
-    w!("| OneUnresolved | Graph | {} | {:.2}% |",
-        one_unresolved, pct(one_unresolved, total_roads));
+    w!(
+        "| BothUnresolved | Graph | {} | {:.2}% |",
+        both_unresolved,
+        pct(both_unresolved, total_roads)
+    );
+    w!(
+        "| OneUnresolved | Graph | {} | {:.2}% |",
+        one_unresolved,
+        pct(one_unresolved, total_roads)
+    );
     w!();
     w!("> **Note:** SectorHandlerError/UnknownItemType drop *all subsequent items* in that sector,");
     w!("> not just roads. Their count is sectors aborted, not roads dropped directly.");
@@ -480,11 +503,21 @@ fn write_markdown(
         for (i, ev) in road_fails.iter().enumerate() {
             w!("### Sample {}", i + 1);
             w!("- **Sector:** `{}`", ev.sector_path);
-            if let Some(uid) = ev.item_uid { w!("- **Road UID:** {uid:#018x}"); }
-            if let Some(a) = ev.node_a { w!("- **node_a:** {a:#018x}"); }
-            if let Some(b) = ev.node_b { w!("- **node_b:** {b:#018x}"); }
+            if let Some(uid) = ev.item_uid {
+                w!("- **Road UID:** {uid:#018x}");
+            }
+            if let Some(a) = ev.node_a {
+                w!("- **node_a:** {a:#018x}");
+            }
+            if let Some(b) = ev.node_b {
+                w!("- **node_b:** {b:#018x}");
+            }
             if !ev.raw_hex.is_empty() {
-                w!("- **Raw bytes ({}B):** `{}`", ev.raw_hex.len(), hex_dump(&ev.raw_hex));
+                w!(
+                    "- **Raw bytes ({}B):** `{}`",
+                    ev.raw_hex.len(),
+                    hex_dump(&ev.raw_hex)
+                );
             }
             w!();
         }
@@ -497,15 +530,21 @@ fn write_markdown(
             .filter(|e| e.sector_path.contains(fsec))
             .collect();
         if !fsec_events.is_empty() {
-            w!("## Focus-Sector `{}` — {} drop events", fsec, fsec_events.len());
+            w!(
+                "## Focus-Sector `{}` — {} drop events",
+                fsec,
+                fsec_events.len()
+            );
             w!();
             for ev in &fsec_events {
-                w!("- `{}` item_type={} uid={:?} node_a={:?} node_b={:?}",
+                w!(
+                    "- `{}` item_type={} uid={:?} node_a={:?} node_b={:?}",
                     category_label(&ev.category),
                     ev.item_type,
                     ev.item_uid.map(|u| format!("{u:#018x}")),
                     ev.node_a.map(|u| format!("{u:#018x}")),
-                    ev.node_b.map(|u| format!("{u:#018x}")));
+                    ev.node_b.map(|u| format!("{u:#018x}"))
+                );
             }
             w!();
         }
@@ -523,11 +562,22 @@ fn write_markdown(
                 w!("| Snap node UID | {uid:#018x} |");
                 w!("| Snap distance | {d:.1} m |");
             }
-            _ => { w!("| Snap node | NOT FOUND within 5000 m |"); }
+            _ => {
+                w!("| Snap node | NOT FOUND within 5000 m |");
+            }
         }
-        w!("| Roads referencing snap node | {} |", fr.roads_referencing_snap);
-        w!("| Sector-level drops within 5 km | {} |", fr.sector_drops_within_5km);
-        w!("| Graph-level drops within 5 km | {} |", fr.graph_drops_within_5km);
+        w!(
+            "| Roads referencing snap node | {} |",
+            fr.roads_referencing_snap
+        );
+        w!(
+            "| Sector-level drops within 5 km | {} |",
+            fr.sector_drops_within_5km
+        );
+        w!(
+            "| Graph-level drops within 5 km | {} |",
+            fr.graph_drops_within_5km
+        );
         w!();
         w!("### Positive-Check Result");
         w!();
@@ -538,7 +588,15 @@ fn write_markdown(
     // Auto-diagnosis
     w!("## Auto-Diagnosis");
     w!();
-    write_auto_diagnosis(&mut f, road_parse_failed, handler_error, unknown_type, both_unresolved, one_unresolved, total_roads)?;
+    write_auto_diagnosis(
+        &mut f,
+        road_parse_failed,
+        handler_error,
+        unknown_type,
+        both_unresolved,
+        one_unresolved,
+        total_roads,
+    )?;
 
     Ok(())
 }
@@ -576,14 +634,20 @@ fn write_auto_diagnosis(
     }
 
     if one_unresolved > 0 {
-        w!("**[INFO]** {} OneUnresolved roads (one node found, one missing).", one_unresolved);
+        w!(
+            "**[INFO]** {} OneUnresolved roads (one node found, one missing).",
+            one_unresolved
+        );
         w!("These are candidates for spatial matching — if nodes cluster within 50 m they");
         w!("should resolve via Pass-1 strict spatial match in the production graph builder.");
         w!();
     }
 
     if road_parse_failed > 0 {
-        w!("**[WARN]** {} RoadParseFailed events — roads dropped at binrw parse time.", road_parse_failed);
+        w!(
+            "**[WARN]** {} RoadParseFailed events — roads dropped at binrw parse time.",
+            road_parse_failed
+        );
         w!("Check the RoadParseFailed sample section above for raw bytes and cursor position.");
         w!("Possible causes: wrong RoadFixedHeader layout assumption, v907 variation, partial sector.");
         w!();
@@ -621,7 +685,10 @@ fn write_city_trace(
         (Some(uid), Some(d)) => {
             w!("- Snap node UID: `{uid:#018x}`");
             w!("- Snap distance: {d:.1} m");
-            w!("- Roads referencing snap node in parsed graph: **{}**", fr.roads_referencing_snap);
+            w!(
+                "- Roads referencing snap node in parsed graph: **{}**",
+                fr.roads_referencing_snap
+            );
         }
         _ => {
             w!("- **No snap-node found** within 5000 m of city centre.");
@@ -652,17 +719,22 @@ fn write_city_trace(
         w!("(Events without position data — e.g. SectorHandlerError from cursor desync — are not");
         w!("included here because their XZ is unknown.)");
     } else {
-        w!("## Sector-Level Events Near City ({} events within 5 km)", nearby_sector.len());
+        w!(
+            "## Sector-Level Events Near City ({} events within 5 km)",
+            nearby_sector.len()
+        );
         w!();
         w!("| Category | Sector | UID | node_a | node_b |");
         w!("|---|---|---|---|---|");
         for ev in nearby_sector.iter().take(50) {
-            w!("| {} | `{}` | {} | {} | {} |",
+            w!(
+                "| {} | `{}` | {} | {} | {} |",
                 category_label(&ev.category),
                 short_sector(&ev.sector_path),
                 opt_hex(ev.item_uid),
                 opt_hex(ev.node_a),
-                opt_hex(ev.node_b));
+                opt_hex(ev.node_b)
+            );
         }
         if nearby_sector.len() > 50 {
             w!();
@@ -689,20 +761,27 @@ fn write_city_trace(
         w!("No OneUnresolved events with position data within 5 km.");
         w!("BothUnresolved events have no position (both nodes missing) and are not shown here.");
     } else {
-        w!("## Graph-Level Events Near City ({} OneUnresolved within 5 km)", nearby_graph.len());
+        w!(
+            "## Graph-Level Events Near City ({} OneUnresolved within 5 km)",
+            nearby_graph.len()
+        );
         w!();
         w!("| Category | Road UID | node_a | node_b | a_resolved | b_resolved | x | z |");
         w!("|---|---|---|---|---|---|---|---|");
         for ev in nearby_graph.iter().take(50) {
-            w!("| {} | {} | {} | {} | {} | {} | {:.0} | {:.0} |",
+            w!(
+                "| {} | {} | {} | {} | {} | {} | {:.0} | {:.0} |",
                 category_label(&ev.category),
                 opt_hex(ev.item_uid),
                 opt_hex(ev.node_a),
                 opt_hex(ev.node_b),
-                ev.node_a_resolved.map_or("-", |v| if v { "yes" } else { "no" }),
-                ev.node_b_resolved.map_or("-", |v| if v { "yes" } else { "no" }),
+                ev.node_a_resolved
+                    .map_or("-", |v| if v { "yes" } else { "no" }),
+                ev.node_b_resolved
+                    .map_or("-", |v| if v { "yes" } else { "no" }),
                 ev.x.unwrap_or(0.0),
-                ev.z.unwrap_or(0.0));
+                ev.z.unwrap_or(0.0)
+            );
         }
         if nearby_graph.len() > 50 {
             w!();
@@ -719,7 +798,11 @@ fn write_city_trace(
 // ---------------------------------------------------------------------------
 
 fn pct(n: usize, total: usize) -> f64 {
-    if total == 0 { 0.0 } else { 100.0 * n as f64 / total as f64 }
+    if total == 0 {
+        0.0
+    } else {
+        100.0 * n as f64 / total as f64
+    }
 }
 
 fn opt_hex(v: Option<u64>) -> String {
@@ -729,4 +812,3 @@ fn opt_hex(v: Option<u64>) -> String {
 fn short_sector(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
-

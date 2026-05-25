@@ -9,10 +9,10 @@ use std::collections::HashMap;
 
 use crate::archive::Archive;
 use crate::cache::{compute_cache_key, load_cache, save_cache};
+use crate::drop_tracer::DropTracer;
 use crate::error::ParseError;
 use crate::graph::{GraphBuilder, MapGraph};
 use crate::hashfs::HashFsArchive;
-use crate::drop_tracer::DropTracer;
 use crate::road_look::{load_road_look, RoadLookEntry};
 use crate::sector::{parse_sector, parse_sector_with_tracer};
 use crate::zip_archive::ZipArchive;

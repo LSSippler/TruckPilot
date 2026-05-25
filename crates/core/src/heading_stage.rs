@@ -88,10 +88,19 @@ impl HeadingStageManager {
 
         bb.set("state.heading_stage", self.stage.as_str());
         bb.set("state.heading_diff_rad", format!("{:.6}", error_rad));
-        bb.set("state.heading_diff_deg", format!("{:.1}", error_rad.to_degrees()));
-        bb.set("state.heading_stage_transition_count", self.transition_count.to_string());
+        bb.set(
+            "state.heading_diff_deg",
+            format!("{:.1}", error_rad.to_degrees()),
+        );
+        bb.set(
+            "state.heading_stage_transition_count",
+            self.transition_count.to_string(),
+        );
         if let Some(t) = self.stage_entered_at {
-            bb.set("state.heading_stage_entered_at_ms", t.elapsed().as_millis().to_string());
+            bb.set(
+                "state.heading_stage_entered_at_ms",
+                t.elapsed().as_millis().to_string(),
+            );
         }
     }
 

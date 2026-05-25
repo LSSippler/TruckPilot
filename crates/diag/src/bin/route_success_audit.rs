@@ -15,11 +15,17 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "route-success-audit", about = "Route success/failure audit over all city pairs")]
+#[command(
+    name = "route-success-audit",
+    about = "Route success/failure audit over all city pairs"
+)]
 struct Args {
     #[arg(long, default_value = "graph.json")]
     graph: PathBuf,
-    #[arg(long, default_value = "crates/map-parser/tests/fixtures/test_cities.toml")]
+    #[arg(
+        long,
+        default_value = "crates/map-parser/tests/fixtures/test_cities.toml"
+    )]
     cities: PathBuf,
     #[arg(long, default_value_t = 5000.0)]
     snap_radius: f64,
@@ -46,7 +52,11 @@ fn read_cities(path: &PathBuf) -> Result<Vec<City>> {
                  x: &mut Option<f64>,
                  z: &mut Option<f64>| {
         if let (Some(n), Some(xv), Some(zv)) = (name.take(), x.take(), z.take()) {
-            list.push(City { name: n, x: xv, z: zv });
+            list.push(City {
+                name: n,
+                x: xv,
+                z: zv,
+            });
         }
     };
 
@@ -192,7 +202,10 @@ struct PairResult {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    eprintln!("[route-success-audit] loading graph: {}", args.graph.display());
+    eprintln!(
+        "[route-success-audit] loading graph: {}",
+        args.graph.display()
+    );
     let t0 = std::time::Instant::now();
 
     let graph_bytes = std::fs::read(&args.graph)
@@ -260,7 +273,11 @@ fn main() -> Result<()> {
     eprintln!("[route-success-audit] adjacency built in {build_elapsed:.1}s");
 
     // Positions for heuristic
-    let positions: Vec<(f64, f64)> = node_x.iter().zip(node_z.iter()).map(|(&x, &z)| (x, z)).collect();
+    let positions: Vec<(f64, f64)> = node_x
+        .iter()
+        .zip(node_z.iter())
+        .map(|(&x, &z)| (x, z))
+        .collect();
 
     // Pre-allocate A* buffers
     let mut g_score: Vec<f32> = vec![f32::MAX; n];
@@ -274,7 +291,16 @@ fn main() -> Result<()> {
     // Snap all cities once
     let city_snaps: Vec<Option<(usize, f64)>> = cities
         .iter()
-        .map(|c| snap_nearest(&node_x, &node_z, &nodes_with_edges, c.x, c.z, args.snap_radius))
+        .map(|c| {
+            snap_nearest(
+                &node_x,
+                &node_z,
+                &nodes_with_edges,
+                c.x,
+                c.z,
+                args.snap_radius,
+            )
+        })
         .collect();
 
     let total_pairs = cities.len() * (cities.len() - 1);
@@ -294,27 +320,28 @@ fn main() -> Result<()> {
             let snap_src = city_snaps[si];
             let snap_dst = city_snaps[di];
 
-            let (result, snap_dist_source, snap_dist_dest, route_dist_m) = match (snap_src, snap_dst) {
-                (None, None) => (RouteResult::SnapBoth, None, None, None),
-                (None, Some((_, dd))) => (RouteResult::SnapSource, None, Some(dd), None),
-                (Some((_, sd)), None) => (RouteResult::SnapDest, Some(sd), None, None),
-                (Some((s_idx, sd)), Some((d_idx, dd))) => {
-                    current_gen = current_gen.wrapping_add(1);
-                    let route = astar(
-                        &adj,
-                        &positions,
-                        s_idx,
-                        d_idx,
-                        &mut g_score,
-                        &mut gen,
-                        current_gen,
-                    );
-                    match route {
-                        None => (RouteResult::NoPath, Some(sd), Some(dd), None),
-                        Some(dist) => (RouteResult::Success, Some(sd), Some(dd), Some(dist)),
+            let (result, snap_dist_source, snap_dist_dest, route_dist_m) =
+                match (snap_src, snap_dst) {
+                    (None, None) => (RouteResult::SnapBoth, None, None, None),
+                    (None, Some((_, dd))) => (RouteResult::SnapSource, None, Some(dd), None),
+                    (Some((_, sd)), None) => (RouteResult::SnapDest, Some(sd), None, None),
+                    (Some((s_idx, sd)), Some((d_idx, dd))) => {
+                        current_gen = current_gen.wrapping_add(1);
+                        let route = astar(
+                            &adj,
+                            &positions,
+                            s_idx,
+                            d_idx,
+                            &mut g_score,
+                            &mut gen,
+                            current_gen,
+                        );
+                        match route {
+                            None => (RouteResult::NoPath, Some(sd), Some(dd), None),
+                            Some(dist) => (RouteResult::Success, Some(sd), Some(dd), Some(dist)),
+                        }
                     }
-                }
-            };
+                };
 
             let duration_ms = tp.elapsed().as_millis() as u64;
 
@@ -330,12 +357,18 @@ fn main() -> Result<()> {
 
             done += 1;
             if done.is_multiple_of(100) {
-                eprintln!("[route-success-audit] {}/{} pairs done ...", done, total_pairs);
+                eprintln!(
+                    "[route-success-audit] {}/{} pairs done ...",
+                    done, total_pairs
+                );
             }
         }
     }
 
-    eprintln!("[route-success-audit] all {total_pairs} pairs done in {:.1}s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[route-success-audit] all {total_pairs} pairs done in {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
 
     // Write outputs
     std::fs::create_dir_all(&args.out_dir)
@@ -352,9 +385,18 @@ fn main() -> Result<()> {
     )?;
 
     for r in &results {
-        let sds = r.snap_dist_source.map(|v| format!("{v:.1}")).unwrap_or_default();
-        let sdd = r.snap_dist_dest.map(|v| format!("{v:.1}")).unwrap_or_default();
-        let rd = r.route_dist_m.map(|v| format!("{v:.1}")).unwrap_or_default();
+        let sds = r
+            .snap_dist_source
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_default();
+        let sdd = r
+            .snap_dist_dest
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_default();
+        let rd = r
+            .route_dist_m
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_default();
         writeln!(
             csv_file,
             "{},{},{},{},{},{},{}",
@@ -371,10 +413,13 @@ fn main() -> Result<()> {
 
     // --- Markdown summary ---
     let md_path = args.out_dir.join("route_audit_summary.md");
-    let mut md = std::fs::File::create(&md_path)
-        .with_context(|| format!("create {}", md_path.display()))?;
+    let mut md =
+        std::fs::File::create(&md_path).with_context(|| format!("create {}", md_path.display()))?;
 
-    let success_count = results.iter().filter(|r| r.result == RouteResult::Success).count();
+    let success_count = results
+        .iter()
+        .filter(|r| r.result == RouteResult::Success)
+        .count();
     let success_rate = success_count as f64 / results.len() as f64 * 100.0;
 
     writeln!(md, "# Route Success Audit")?;
@@ -384,23 +429,58 @@ fn main() -> Result<()> {
     writeln!(md, "## Summary")?;
     writeln!(md)?;
     writeln!(md, "- Total pairs: {}", results.len())?;
-    writeln!(md, "- Successful (CAT4): {} ({success_rate:.1}%)", success_count)?;
+    writeln!(
+        md,
+        "- Successful (CAT4): {} ({success_rate:.1}%)",
+        success_count
+    )?;
     writeln!(md)?;
 
     // Counts per category
-    let snap_both = results.iter().filter(|r| r.result == RouteResult::SnapBoth).count();
-    let snap_src = results.iter().filter(|r| r.result == RouteResult::SnapSource).count();
-    let snap_dst = results.iter().filter(|r| r.result == RouteResult::SnapDest).count();
-    let no_path = results.iter().filter(|r| r.result == RouteResult::NoPath).count();
+    let snap_both = results
+        .iter()
+        .filter(|r| r.result == RouteResult::SnapBoth)
+        .count();
+    let snap_src = results
+        .iter()
+        .filter(|r| r.result == RouteResult::SnapSource)
+        .count();
+    let snap_dst = results
+        .iter()
+        .filter(|r| r.result == RouteResult::SnapDest)
+        .count();
+    let no_path = results
+        .iter()
+        .filter(|r| r.result == RouteResult::NoPath)
+        .count();
     let cat1_total = snap_both + snap_src + snap_dst;
 
     writeln!(md, "| Category | Count | % |")?;
     writeln!(md, "|----------|-------|---|")?;
-    writeln!(md, "| CAT4_SUCCESS | {success_count} | {success_rate:.1}% |")?;
-    writeln!(md, "| CAT3_NO_PATH | {no_path} | {:.1}% |", no_path as f64 / results.len() as f64 * 100.0)?;
-    writeln!(md, "| CAT1_SNAP_SOURCE | {snap_src} | {:.1}% |", snap_src as f64 / results.len() as f64 * 100.0)?;
-    writeln!(md, "| CAT1_SNAP_DEST | {snap_dst} | {:.1}% |", snap_dst as f64 / results.len() as f64 * 100.0)?;
-    writeln!(md, "| CAT1_SNAP_BOTH | {snap_both} | {:.1}% |", snap_both as f64 / results.len() as f64 * 100.0)?;
+    writeln!(
+        md,
+        "| CAT4_SUCCESS | {success_count} | {success_rate:.1}% |"
+    )?;
+    writeln!(
+        md,
+        "| CAT3_NO_PATH | {no_path} | {:.1}% |",
+        no_path as f64 / results.len() as f64 * 100.0
+    )?;
+    writeln!(
+        md,
+        "| CAT1_SNAP_SOURCE | {snap_src} | {:.1}% |",
+        snap_src as f64 / results.len() as f64 * 100.0
+    )?;
+    writeln!(
+        md,
+        "| CAT1_SNAP_DEST | {snap_dst} | {:.1}% |",
+        snap_dst as f64 / results.len() as f64 * 100.0
+    )?;
+    writeln!(
+        md,
+        "| CAT1_SNAP_BOTH | {snap_both} | {:.1}% |",
+        snap_both as f64 / results.len() as f64 * 100.0
+    )?;
     writeln!(md)?;
     writeln!(md, "**CAT1 total** (snap failures): {cat1_total}")?;
     writeln!(md, "**CAT3 total** (A* failures): {no_path}")?;
@@ -412,11 +492,23 @@ fn main() -> Result<()> {
     writeln!(md, "| City | Success | Total | Rate |")?;
     writeln!(md, "|------|---------|-------|------|")?;
     for city in &cities {
-        let city_results: Vec<&PairResult> = results.iter().filter(|r| r.source == city.name).collect();
-        let city_success = city_results.iter().filter(|r| r.result == RouteResult::Success).count();
+        let city_results: Vec<&PairResult> =
+            results.iter().filter(|r| r.source == city.name).collect();
+        let city_success = city_results
+            .iter()
+            .filter(|r| r.result == RouteResult::Success)
+            .count();
         let city_total = city_results.len();
-        let rate = if city_total > 0 { city_success as f64 / city_total as f64 * 100.0 } else { 0.0 };
-        writeln!(md, "| {} | {city_success} | {city_total} | {rate:.1}% |", city.name)?;
+        let rate = if city_total > 0 {
+            city_success as f64 / city_total as f64 * 100.0
+        } else {
+            0.0
+        };
+        writeln!(
+            md,
+            "| {} | {city_success} | {city_total} | {rate:.1}% |",
+            city.name
+        )?;
     }
     writeln!(md)?;
 
@@ -428,7 +520,10 @@ fn main() -> Result<()> {
         let cat1_pairs: Vec<&PairResult> = results
             .iter()
             .filter(|r| {
-                matches!(r.result, RouteResult::SnapBoth | RouteResult::SnapSource | RouteResult::SnapDest)
+                matches!(
+                    r.result,
+                    RouteResult::SnapBoth | RouteResult::SnapSource | RouteResult::SnapDest
+                )
             })
             .collect();
 
@@ -438,20 +533,35 @@ fn main() -> Result<()> {
             writeln!(md, "| Source | Target | Category |")?;
             writeln!(md, "|--------|--------|----------|")?;
             for r in &cat1_pairs {
-                writeln!(md, "| {} | {} | {} |", r.source, r.target, r.result.as_str())?;
+                writeln!(
+                    md,
+                    "| {} | {} | {} |",
+                    r.source,
+                    r.target,
+                    r.result.as_str()
+                )?;
             }
             writeln!(md)?;
         }
 
-        let cat3_pairs: Vec<&PairResult> = results.iter().filter(|r| r.result == RouteResult::NoPath).collect();
+        let cat3_pairs: Vec<&PairResult> = results
+            .iter()
+            .filter(|r| r.result == RouteResult::NoPath)
+            .collect();
         if !cat3_pairs.is_empty() {
             writeln!(md, "### CAT3 — No Path Found")?;
             writeln!(md)?;
             writeln!(md, "| Source | Target | Snap-Src (m) | Snap-Dst (m) |")?;
             writeln!(md, "|--------|--------|-------------|-------------|")?;
             for r in &cat3_pairs {
-                let ss = r.snap_dist_source.map(|v| format!("{v:.0}")).unwrap_or_default();
-                let sd = r.snap_dist_dest.map(|v| format!("{v:.0}")).unwrap_or_default();
+                let ss = r
+                    .snap_dist_source
+                    .map(|v| format!("{v:.0}"))
+                    .unwrap_or_default();
+                let sd = r
+                    .snap_dist_dest
+                    .map(|v| format!("{v:.0}"))
+                    .unwrap_or_default();
                 writeln!(md, "| {} | {} | {ss} | {sd} |", r.source, r.target)?;
             }
             writeln!(md)?;
@@ -460,8 +570,14 @@ fn main() -> Result<()> {
 
     writeln!(md, "## CAT1 vs CAT3 Split")?;
     writeln!(md)?;
-    writeln!(md, "- H4 hypothesis (missing snap coverage = CAT1): {cat1_total} pairs")?;
-    writeln!(md, "- H5 hypothesis (graph connectivity = CAT3): {no_path} pairs")?;
+    writeln!(
+        md,
+        "- H4 hypothesis (missing snap coverage = CAT1): {cat1_total} pairs"
+    )?;
+    writeln!(
+        md,
+        "- H5 hypothesis (graph connectivity = CAT3): {no_path} pairs"
+    )?;
 
     eprintln!("[route-success-audit] wrote {}", md_path.display());
 

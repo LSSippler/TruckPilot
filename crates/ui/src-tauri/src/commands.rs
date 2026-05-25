@@ -6,6 +6,8 @@ use truckpilot_ipc_protocol::UiCommand;
 
 use crate::daemon::{DaemonManager, DaemonStatus};
 use crate::daemon_config::{self, DaemonConfig};
+use crate::hotkey_config::{self, HotkeyConfig};
+use crate::hotkey_manager;
 use crate::ipc_bridge::{ConnectionStatusEvent, IpcBridge};
 use crate::steam_detect::detect_ets2_install;
 use crate::window_manager;
@@ -82,5 +84,29 @@ pub async fn daemon_get_auto_start(app: AppHandle) -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn daemon_set_auto_start(app: AppHandle, enabled: bool) -> Result<(), String> {
-    daemon_config::save(&app, &DaemonConfig { auto_start: enabled })
+    daemon_config::save(
+        &app,
+        &DaemonConfig {
+            auto_start: enabled,
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn hotkey_get_config(app: AppHandle) -> Result<HotkeyConfig, String> {
+    Ok(hotkey_config::load(&app))
+}
+
+#[tauri::command]
+pub async fn hotkey_set_config(
+    app: AppHandle,
+    engage: String,
+    disengage: String,
+) -> Result<(), String> {
+    let cfg = HotkeyConfig {
+        engage: engage.clone(),
+        disengage: disengage.clone(),
+    };
+    hotkey_config::save(&app, &cfg)?;
+    hotkey_manager::apply(&app, &engage, &disengage)
 }

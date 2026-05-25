@@ -59,6 +59,19 @@ export async function daemonSetAutoStart(enabled: boolean): Promise<void> {
   return invokeCommand("daemon_set_auto_start", { enabled });
 }
 
+export interface HotkeyConfig {
+  engage: string;
+  disengage: string;
+}
+
+export async function hotkeyGetConfig(): Promise<HotkeyConfig> {
+  return invokeCommand<HotkeyConfig>("hotkey_get_config");
+}
+
+export async function hotkeySetConfig(engage: string, disengage: string): Promise<void> {
+  return invokeCommand("hotkey_set_config", { engage, disengage });
+}
+
 export async function listenCoreEvent(handler: (msg: CoreMessage) => void): Promise<UnlistenFn> {
   return listen<CoreMessage>("core-event", (event) => handler(event.payload));
 }
