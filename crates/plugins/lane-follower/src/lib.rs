@@ -46,6 +46,9 @@
 //! | `lane_follower.segment_lanes` | u8 | lanes in this direction (DS8; absent on prefab/ferry hits) |
 //! | `lane_follower.segment_lane_width` | f32 metres | lane width from road_look (DS8) |
 //! | `lane_follower.segment_offset` | f32 metres | computed lane offset = (lanes−0.5)×width (DS8) |
+//! | `lane_follower.safety_disengage_reason` | string | `""` or `lateral_excursion` / `steering_saturated` / `spline_lost` |
+//! | `lane_follower.safety_disengage_count` | u32 | monotonic safety-disengage count since daemon start |
+//! | `lane_follower.rate_limit_active` | `"true"/"false"` | tightened rate-limit (`|lateral| > 3m`) |
 
 mod junction;
 mod pure_pursuit;
@@ -104,6 +107,24 @@ const LANE_WIDTH_M: f32 = 3.75;
 /// Default right-lane offset from road centreline: half a lane width.
 const LANE_OFFSET_RIGHT_M: f32 = LANE_WIDTH_M / 2.0;
 
+// ── Safety-Fallback (Task 1-3) ──────────────────────────────────────────────
+/// |lateral_dist_signed| above this → hard-disengage with reason="lateral_excursion".
+const SAFETY_LATERAL_HARD_M: f32 = 8.0;
+/// |lateral_dist_signed| above this → tightened rate-limit + dampened gain.
+const SAFETY_LATERAL_SOFT_M: f32 = 3.0;
+/// |raw Pure-Pursuit cmd| above this counts toward saturation timer.
+const SAFETY_SATURATION_THRESHOLD: f64 = 0.95;
+/// Saturation must persist this many consecutive ticks (0.6s @ 50 Hz).
+const SAFETY_SATURATION_TICKS: u32 = 30;
+/// nearest_seg_dist_m above this counts toward spline-lost timer.
+const SAFETY_SPLINE_LOST_M: f32 = 20.0;
+/// Spline-lost must persist this many consecutive ticks (1.0s @ 50 Hz).
+const SAFETY_SPLINE_LOST_TICKS: u32 = 50;
+/// Tightened steering rate limit (active when |lateral| > SAFETY_LATERAL_SOFT_M).
+const STEERING_RATE_LIMIT_HIGH: f64 = 0.02;
+/// Pure-Pursuit gain dampening factor under soft excursion.
+const SAFETY_GAIN_DAMPEN: f64 = 0.5;
+
 // ---------------------------------------------------------------------------
 // Mode
 // ---------------------------------------------------------------------------
@@ -159,6 +180,13 @@ pub struct LaneFollowerPlugin {
     last_minimap_ts: u64,
     /// minimap.confidence last read from blackboard.
     minimap_confidence: f32,
+    // ── Safety-Fallback state (Task 1) ───────────────────────────────────
+    /// Consecutive ticks where |raw_cmd| ≥ SAFETY_SATURATION_THRESHOLD.
+    saturated_ticks: u32,
+    /// Consecutive ticks where hit.dist_m > SAFETY_SPLINE_LOST_M.
+    spline_lost_ticks: u32,
+    /// Monotonic safety-disengage count since daemon start.
+    safety_disengage_count: u32,
 }
 
 /// VMM-6: simple forward-walk lookahead over minimap segments (no LUT required).
@@ -213,13 +241,25 @@ impl LaneFollowerPlugin {
                 return;
             }
         };
-        let (segments, metadata, stats) = build_splines_ex(&graph);
+        let (mut segments, mut metadata, stats) = build_splines_ex(&graph);
+        let road_seg_count = segments.len();
         ctx_info!(
             ctx,
-            "lane-follower: {} segments built, {} skipped (missing node)",
+            "lane-follower: {} road segments built, {} skipped (missing node)",
             stats.total_segments,
             stats.skipped_missing_node
         );
+
+        // DS7: append PrefabAiPath NavCurve segments so the R*-tree covers junctions.
+        // Metadata: is_prefab=true, lane_offset_right_m=0.0 (NavCurves sit at lane-centre).
+        let (prefab_segs, prefab_meta) = graph.prefab_hermite_segments_with_metadata();
+        let prefab_seg_count = prefab_segs.len();
+        segments.extend(prefab_segs);
+        metadata.extend(prefab_meta);
+        let total_seg_count = segments.len();
+
+        // LUTs are built from ALL segments (road + prefab) so arc-length lookahead
+        // traverses junction NavCurves when from/to UIDs connect road→prefab→road.
         let t0 = std::time::Instant::now();
         let luts = build_all_luts(&segments);
         let forward_adj = build_forward_adjacency(&segments);
@@ -227,11 +267,16 @@ impl LaneFollowerPlugin {
         let lut_kb = (luts.len() * std::mem::size_of::<ArcLengthLUT>()) as f32 / 1024.0;
         ctx_info!(
             ctx,
-            "lane-follower: LUT built in {}ms, {:.1}KB ({} entries)",
-            lut_ms,
-            lut_kb,
-            luts.len()
+            "lane-follower: SplineIndex {} segs total ({} road + {} prefab NavCurves); LUT {}ms {:.1}KB",
+            total_seg_count, road_seg_count, prefab_seg_count, lut_ms, lut_kb
         );
+
+        // Map/spline diagnostic BB keys (written once at load time).
+        ctx.blackboard.set("map.prefab.instances_count", graph.prefab_instances.len().to_string());
+        ctx.blackboard.set("map.prefab.ai_paths_count", graph.prefab_ai_paths.len().to_string());
+        ctx.blackboard.set("map.spline.total_segments", total_seg_count.to_string());
+        ctx.blackboard.set("map.spline.prefab_segments", prefab_seg_count.to_string());
+
         self.luts = luts;
         self.forward_adj = forward_adj;
         self.index = Some(build_index_with_metadata(segments, metadata));
@@ -285,6 +330,65 @@ impl LaneFollowerPlugin {
             }
         }
     }
+
+    // ── Safety-Fallback helpers (Task 1-3) ───────────────────────────────
+    // Note: spline-lost is inlined in `tick()` because the live `index` borrow
+    // forbids `&mut self` method calls between the index select and last use.
+
+    /// Update the consecutive-ticks counter for steering saturation.
+    fn update_saturation(&mut self, cmd: f64) {
+        if cmd.abs() >= SAFETY_SATURATION_THRESHOLD {
+            self.saturated_ticks = self.saturated_ticks.saturating_add(1);
+        } else {
+            self.saturated_ticks = 0;
+        }
+    }
+
+    /// Reset transient safety counters (used on early-return paths).
+    fn reset_safety_counters(&mut self) {
+        self.saturated_ticks = 0;
+        self.spline_lost_ticks = 0;
+    }
+
+    /// Evaluate the three hard-disengage trip conditions and, if any fire while
+    /// the plugin is in `Active` mode, request a state-machine disengage via
+    /// `autopilot.disengage_requested` and zero out the per-tick steering cmd.
+    fn check_safety_trip(&mut self, lateral_dist_signed: f32, ctx: &PluginContext) {
+        if self.mode != LaneFollowerMode::Active {
+            ctx.blackboard.set("lane_follower.safety_disengage_reason", "");
+            ctx.blackboard.set(
+                "lane_follower.safety_disengage_count",
+                self.safety_disengage_count.to_string(),
+            );
+            return;
+        }
+        let reason: Option<&'static str> = if lateral_dist_signed.abs() > SAFETY_LATERAL_HARD_M {
+            Some("lateral_excursion")
+        } else if self.saturated_ticks > SAFETY_SATURATION_TICKS {
+            Some("steering_saturated")
+        } else if self.spline_lost_ticks > SAFETY_SPLINE_LOST_TICKS {
+            Some("spline_lost")
+        } else {
+            None
+        };
+        if let Some(r) = reason {
+            self.safety_disengage_count = self.safety_disengage_count.saturating_add(1);
+            // Immediate steering suppression — tick_request() returns None when this is None.
+            self.last_steering_cmd = None;
+            // Reset transient counters so we don't trip again the next tick on stale state.
+            self.saturated_ticks = 0;
+            self.spline_lost_ticks = 0;
+            ctx.blackboard.set("autopilot.disengage_requested", "true");
+            ctx.blackboard.set("lane_follower.safety_disengage_reason", r);
+            ctx_warn!(ctx, "lane-follower: SAFETY DISENGAGE — {}", r);
+        } else {
+            ctx.blackboard.set("lane_follower.safety_disengage_reason", "");
+        }
+        ctx.blackboard.set(
+            "lane_follower.safety_disengage_count",
+            self.safety_disengage_count.to_string(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +437,10 @@ impl Plugin for LaneFollowerPlugin {
         self.minimap_index = None;
         self.last_minimap_ts = 0;
         self.minimap_confidence = 0.0;
+        // Reset transient safety counters; keep safety_disengage_count
+        // (spec: monotonic since daemon start).
+        self.saturated_ticks = 0;
+        self.spline_lost_ticks = 0;
     }
 
     fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
@@ -352,6 +460,7 @@ impl Plugin for LaneFollowerPlugin {
 
         let Some(tel) = telemetry else {
             ctx.blackboard.set("lane_follower.status", "no_telemetry");
+            self.reset_safety_counters();
             return;
         };
 
@@ -388,6 +497,7 @@ impl Plugin for LaneFollowerPlugin {
             _ => {
                 ctx.blackboard.set("lane_follower.status", "no_index");
                 ctx.blackboard.set("lane_follower.spline_source", "none");
+                self.reset_safety_counters();
                 return;
             }
         };
@@ -402,6 +512,7 @@ impl Plugin for LaneFollowerPlugin {
         let query = Vec3::new(truck_x as f32, tel.position[1] as f32, truck_z as f32);
         let Some(hit) = index.nearest_with_heading_filter(query, truck_heading_deg, CANDIDATES) else {
             ctx.blackboard.set("lane_follower.status", "no_hit");
+            self.reset_safety_counters();
             return;
         };
 
@@ -430,12 +541,15 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.heading_diff_deg", format!("{heading_diff:.2}"));
 
-        // Lane offset: BB-key override → DS8 dynamic metadata → QW1 fallback constant.
+        // Lane offset: BB-key override → DS8/DS7 metadata → QW1 fallback constant.
+        // NavCurve (prefab) segments already sit at lane-centre: offset = 0.
         let lane_offset_m = ctx
             .blackboard
             .get("plugin.lane-follower.lane_offset_m")
             .and_then(|v| v.parse::<f32>().ok())
-            .or_else(|| seg_meta.map(|m| m.lane_offset_right_m))
+            .or_else(|| {
+                seg_meta.map(|m| if m.is_prefab { 0.0 } else { m.lane_offset_right_m })
+            })
             .unwrap_or(LANE_OFFSET_RIGHT_M);
 
         // DS8: publish per-segment lane metadata keys.
@@ -463,6 +577,21 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard.set("lane_follower.lane_normal_x", format!("{near_n_x:.4}"));
         ctx.blackboard.set("lane_follower.lane_normal_z", format!("{near_n_z:.4}"));
         ctx.blackboard.set("lane_follower.lateral_dist_signed", format!("{lateral_dist_signed:.3}"));
+
+        // ── Safety-Fallback (Task 2) ─────────────────────────────────────
+        // Rate-limit tightening + gain dampening active when |lateral| > soft threshold.
+        let rate_limit_active = lateral_dist_signed.abs() > SAFETY_LATERAL_SOFT_M;
+        ctx.blackboard.set(
+            "lane_follower.rate_limit_active",
+            if rate_limit_active { "true" } else { "false" },
+        );
+        // Spline-lost ticker runs in all post-hit branches (inline to avoid
+        // method-call borrow conflicting with the live `index` borrow above).
+        if hit.dist_m > SAFETY_SPLINE_LOST_M {
+            self.spline_lost_ticks = self.spline_lost_ticks.saturating_add(1);
+        } else {
+            self.spline_lost_ticks = 0;
+        }
 
         // Per-tick counter — never resets, monotonic. Catches telemetry stalls.
         self.tick_count += 1;
@@ -585,6 +714,8 @@ impl Plugin for LaneFollowerPlugin {
             ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
             ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
             ctx.blackboard.set("lane_follower.rate_limited", "false");
+            self.saturated_ticks = 0;
+            self.check_safety_trip(lateral_dist_signed, ctx);
             return;
         }
 
@@ -606,6 +737,8 @@ impl Plugin for LaneFollowerPlugin {
             ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
             ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
             ctx.blackboard.set("lane_follower.rate_limited", "false");
+            self.saturated_ticks = 0;
+            self.check_safety_trip(lateral_dist_signed, ctx);
             return;
         }
 
@@ -631,11 +764,18 @@ impl Plugin for LaneFollowerPlugin {
             let d2 = vx * vx + vz * vz;
             let curvature = if d2 > 1e-6 { 2.0 * y_local / d2 } else { 0.0 };
 
+            // ── Safety-Fallback (Task 2): tightened rate + gain dampening ─
+            let (effective_rate_limit, cmd_for_ema) = if rate_limit_active {
+                (STEERING_RATE_LIMIT_HIGH, cmd * SAFETY_GAIN_DAMPEN)
+            } else {
+                (STEERING_RATE_LIMIT, cmd)
+            };
+
             self.steering_ema =
-                STEERING_EMA_ALPHA * cmd + (1.0 - STEERING_EMA_ALPHA) * self.steering_ema;
+                STEERING_EMA_ALPHA * cmd_for_ema + (1.0 - STEERING_EMA_ALPHA) * self.steering_ema;
             let rl = self.steering_ema.clamp(
-                self.steering_rate_limited_prev - STEERING_RATE_LIMIT,
-                self.steering_rate_limited_prev + STEERING_RATE_LIMIT,
+                self.steering_rate_limited_prev - effective_rate_limit,
+                self.steering_rate_limited_prev + effective_rate_limit,
             );
             let is_rate_limited = (self.steering_ema - rl).abs() > 1e-9;
             self.steering_rate_limited_prev = rl;
@@ -647,6 +787,15 @@ impl Plugin for LaneFollowerPlugin {
 
             self.last_steering_cmd = Some(cmd);
         }
+
+        // ── Safety-Fallback (Task 1): saturation tracking + trip evaluation ─
+        // Uses the raw Pure-Pursuit cmd captured this tick (None ⇒ no steering emitted ⇒ no saturation).
+        if let Some(cmd) = self.last_steering_cmd {
+            self.update_saturation(cmd);
+        } else {
+            self.saturated_ticks = 0;
+        }
+        self.check_safety_trip(lateral_dist_signed, ctx);
     }
 
     fn tick_request(
@@ -1112,13 +1261,15 @@ mod tests {
     #[test]
     fn steering_ema_converges_after_repeated_ticks() {
         // After enough identical ticks, filtered should converge toward raw cmd.
-        let mut plugin = make_chain_plugin_at_x(5.0);
+        // Keep |lateral| < SAFETY_LATERAL_SOFT_M (3 m) so the rate-limit-tightening
+        // path doesn't fire and the test measures pure EMA convergence.
+        let mut plugin = make_chain_plugin_at_x(2.0);
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
-        // With α=0.15, rate-limiter disengages at ~tick 11; by tick 30 both EMA and
-        // rate-limited output are >99% converged to raw cmd (0.85^30 ≈ 0.008 residual).
+        // With α=0.15 and the standard rate-limit (0.05/tick), 30 ticks suffice
+        // for the EMA to converge within 0.01 of the raw cmd.
         for _ in 0..30 {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
@@ -1524,6 +1675,209 @@ mod tests {
         );
         let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
         assert!(cmd.abs() < 0.05, "offset=0 on centreline: steering near 0, got {cmd:.4}");
+    }
+
+    // ── Safety-Fallback tests (Task 4) ───────────────────────────────────────
+
+    /// Build a chain plugin where the road runs north (heading 0°) but is
+    /// shifted +`offset_z_forward` ahead of the truck on the z-axis, so the
+    /// nearest-segment distance is roughly `offset_z_forward` while lateral
+    /// stays at 0. Used to test `spline_lost` in isolation from `lateral_excursion`.
+    fn make_chain_plugin_forward(offset_z_forward: f32) -> LaneFollowerPlugin {
+        let z0 = -offset_z_forward;
+        let p0 = Vec3::new(0.0, 0.0, z0);
+        let p1 = Vec3::new(0.0, 0.0, z0 - 10.0);
+        let p2 = Vec3::new(0.0, 0.0, z0 - 20.0);
+        let p3 = Vec3::new(0.0, 0.0, z0 - 30.0);
+        let seg0 = make_seg(p0, p1, 1);
+        let seg1 = make_seg(p1, p2, 2);
+        let seg2 = make_seg(p2, p3, 3);
+        let segs = vec![seg0, seg1, seg2];
+        let luts = build_all_luts(&segs);
+        let forward_adj = build_forward_adjacency(&segs);
+        let index = build_index(segs);
+        LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() }
+    }
+
+    #[test]
+    fn test_disengage_on_lateral_excursion() {
+        // Road at x=+10, truck at x=0 → |lateral|=10 > SAFETY_LATERAL_HARD_M (8 m).
+        // Single tick must trigger lateral_excursion trip.
+        let mut plugin = make_chain_plugin_at_x(10.0);
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            Some("true"),
+            "lateral=10m must request state-machine disengage"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            Some("lateral_excursion"),
+            "trip reason must be lateral_excursion"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.safety_disengage_count").as_deref(),
+            Some("1"),
+            "safety_disengage_count must increment on trip"
+        );
+        // last_steering_cmd must be suppressed → tick_request returns None.
+        ctx.blackboard.set("autopilot.engage_mode", "route");
+        assert!(plugin.tick_request(Some(&tel), &ctx).is_none(),
+            "after safety trip, no ControlRequest must be emitted");
+    }
+
+    #[test]
+    fn test_disengage_on_saturation() {
+        // Road at x=+7 → |lateral|=7 (< 8, no excursion) but Pure-Pursuit cmd
+        // saturates near 1.0 → after >30 ticks of saturation, steering_saturated fires.
+        let mut plugin = make_chain_plugin_at_x(7.0);
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        for _ in 0..35 {
+            plugin.tick(Some(&tel), &mut out, &ctx);
+        }
+        let count: u32 = ctx
+            .blackboard
+            .get("lane_follower.safety_disengage_count")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(count >= 1, "saturation for 35 ticks must trip at least once, got count={count}");
+        assert_eq!(
+            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            Some("true"),
+            "saturation trip must request disengage"
+        );
+        // The trip happens once at tick 31; subsequent ticks count fresh, so the
+        // reason BB key may be cleared by tick 35. The monotonic count is the
+        // authoritative trip signal.
+    }
+
+    #[test]
+    fn test_disengage_on_spline_lost() {
+        // Spline 25 m forward of the truck (same heading) → hit.dist_m ≈ 25 > 20,
+        // but |lateral|=0 < 8 (no excursion) and cmd is small (no saturation).
+        // After > 50 ticks: spline_lost fires.
+        let mut plugin = make_chain_plugin_forward(25.0);
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, 0.0, 0.0);
+        // First sanity tick: confirm distance and lateral preconditions.
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let dist: f32 = ctx
+            .blackboard
+            .get("lane_follower.nearest_seg_dist_m")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let lateral: f32 = ctx
+            .blackboard
+            .get("lane_follower.lateral_dist_signed")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(dist > SAFETY_SPLINE_LOST_M, "precondition dist > {}: got {}", SAFETY_SPLINE_LOST_M, dist);
+        assert!(lateral.abs() < SAFETY_LATERAL_HARD_M, "precondition |lateral| < {}: got {}", SAFETY_LATERAL_HARD_M, lateral);
+        // Now run 60 more ticks → counter reaches >50 → trip.
+        for _ in 0..60 {
+            plugin.tick(Some(&tel), &mut out, &ctx);
+        }
+        let count: u32 = ctx
+            .blackboard
+            .get("lane_follower.safety_disengage_count")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(count >= 1, "dist > 20m for 60 ticks must trip spline_lost, got count={count}");
+        assert_eq!(
+            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            Some("true"),
+            "spline_lost must request disengage"
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_at_high_lateral() {
+        // Road at x=+4 → |lateral|=4 > SAFETY_LATERAL_SOFT_M (3 m) but
+        // < SAFETY_LATERAL_HARD_M (8 m). Single tick: rate_limit_active=true,
+        // no disengage triggered.
+        let mut plugin = make_chain_plugin_at_x(4.0);
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            Some("true"),
+            "lateral=4m must engage tightened rate-limit"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            Some(""),
+            "lateral=4m alone must NOT trigger any disengage"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.safety_disengage_count").as_deref(),
+            Some("0"),
+            "no trip → count stays at 0"
+        );
+        // Also: existing engage flow must still emit a ControlRequest.
+        ctx.blackboard.set("autopilot.engage_mode", "route");
+        assert!(
+            plugin.tick_request(Some(&tel), &ctx).is_some(),
+            "lateral=4m must still allow steering (no safety trip)"
+        );
+    }
+
+    // ── DS7: Prefab-Segment Offset-Override ──────────────────────────────────
+
+    #[test]
+    fn ds7_prefab_metadata_offset_zero() {
+        // A segment with is_prefab=true and lane_offset_right_m=3.5 (non-zero).
+        // tick() must produce lane_offset_m=0.0 because NavCurves sit at lane-centre.
+        let seg = make_seg(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -10.0), 1);
+        let meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            lane_offset_right_m: 3.5, // non-zero; would be applied for road edges
+            road_look_token: 0,
+            is_prefab: true,
+        });
+        let luts = build_all_luts(&[seg.clone()]);
+        let forward_adj = build_forward_adjacency(&[seg.clone()]);
+        let index = build_index_with_metadata(vec![seg], vec![meta]);
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            ..Default::default()
+        };
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok"),
+            "prefab segment must reach status=ok"
+        );
+        let offset: f32 = ctx
+            .blackboard
+            .get("lane_follower.lane_offset_m")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(offset, 0.0, "is_prefab=true must give lane_offset_m=0, got {offset}");
     }
 
     // ── Stability: stable after repeated same-position ticks ────────────────

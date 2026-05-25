@@ -235,24 +235,25 @@ fn node_tangent(adj: &NodeAdjacency, magnitude: f32) -> Vec3 {
 // Hauptfunktion
 // ---------------------------------------------------------------------------
 
-/// Per-Segment metadata derived from the originating GraphEdge (DS8).
+/// Per-Segment metadata derived from a GraphEdge (DS8) or PrefabAiPath NavCurve (DS7).
 ///
-/// Present only for road edges (`"forward"`, `"backward"`, `"bidirectional_unknown"`).
-/// `None` for prefab, building, ferry, and cross-sector edges.
+/// Road edges (`"forward"`, `"backward"`, `"bidirectional_unknown"`) have `is_prefab=false`.
+/// NavCurve segments have `is_prefab=true` and `lane_offset_right_m=0.0`
+/// (NavCurves sit at lane-centre; no additional lateral offset).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SegmentMetadata {
-    /// Number of lanes travelling in this direction.
     pub lanes_in_direction: u8,
-    /// Number of lanes in the opposite direction on the same road.
     pub lanes_opposite: u8,
-    /// Total lanes on the road cross-section.
     pub lanes_total: u8,
-    /// Lane width in metres from the road-look definition.
     pub lane_width_m: f32,
-    /// Right-of-centreline offset: `(lanes_in_direction − 0.5) × lane_width_m`.
+    /// Right-of-centreline offset in metres. Always `0.0` for prefab NavCurve segments.
     pub lane_offset_right_m: f32,
-    /// Road-look token64 for this direction (0 = unknown).
+    /// Road-look token64 (0 for prefab NavCurves).
     pub road_look_token: u64,
+    /// `true` for PrefabAiPath NavCurve segments; `false` for road edges.
+    /// `#[serde(default)]` ensures old graph.json without this field reads as `false`.
+    #[serde(default)]
+    pub is_prefab: bool,
 }
 
 /// Baut alle Hermite-Segmente aus dem MapGraph und liefert pro Segment optionale Metadaten.
@@ -360,6 +361,7 @@ pub fn build_splines_ex(
                     lane_width_m: edge.lane_width_m,
                     lane_offset_right_m: (lanes as f32 - 0.5) * edge.lane_width_m,
                     road_look_token: edge.road_look_token,
+                    is_prefab: false,
                 })
             }
             _ => None,

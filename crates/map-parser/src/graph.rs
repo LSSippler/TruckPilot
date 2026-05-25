@@ -1272,8 +1272,16 @@ impl MapGraph {
     /// Generate HermiteSegments from all PrefabAiPaths for SplineIndex
     /// consumption. Each path's spline_points are decomposed into consecutive
     /// segments usable by the lane-follower's nearest/heading queries.
-    pub fn prefab_hermite_segments(&self) -> Vec<crate::spline::HermiteSegment> {
+    /// Build HermiteSegments and per-segment DS7 metadata from all PrefabAiPath NavCurves.
+    ///
+    /// Each segment gets `SegmentMetadata { is_prefab: true, lane_offset_right_m: 0.0, … }`
+    /// so the lane-follower applies no lateral offset on NavCurve segments (they already
+    /// sit at lane-centre).
+    pub fn prefab_hermite_segments_with_metadata(
+        &self,
+    ) -> (Vec<crate::spline::HermiteSegment>, Vec<Option<crate::spline::SegmentMetadata>>) {
         let mut segments = Vec::new();
+        let mut metadata = Vec::new();
         for path in &self.prefab_ai_paths {
             let pts = &path.spline_points;
             if pts.len() < 2 {
@@ -1301,9 +1309,23 @@ impl MapGraph {
                     to_uid: path.to_node_uid,
                     edge_uid: 0,
                 });
+                metadata.push(Some(crate::spline::SegmentMetadata {
+                    lanes_in_direction: 1,
+                    lanes_opposite: 0,
+                    lanes_total: 1,
+                    lane_width_m: 3.75,
+                    lane_offset_right_m: 0.0,
+                    road_look_token: 0,
+                    is_prefab: true,
+                }));
             }
         }
-        segments
+        (segments, metadata)
+    }
+
+    /// Convenience wrapper — returns segments only (drops metadata).
+    pub fn prefab_hermite_segments(&self) -> Vec<crate::spline::HermiteSegment> {
+        self.prefab_hermite_segments_with_metadata().0
     }
 }
 
