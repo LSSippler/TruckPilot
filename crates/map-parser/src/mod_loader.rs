@@ -12,8 +12,9 @@ use crate::cache::{compute_cache_key, load_cache, save_cache};
 use crate::drop_tracer::DropTracer;
 use crate::error::ParseError;
 use crate::graph::{GraphBuilder, MapGraph};
-use crate::hashfs::HashFsArchive;
-use crate::road_look::{load_road_look, RoadLookEntry};
+use crate::hashfs::{parse_directory_listing, scs_path_hash, HashFsArchive};
+use crate::ppd::PrefabDescriptor;
+use crate::road_look::{load_road_look, scs_token_hash, RoadLookEntry};
 use crate::sector::{parse_sector, parse_sector_with_tracer};
 use crate::zip_archive::ZipArchive;
 
@@ -379,6 +380,11 @@ fn parse_sectors_from_archives(
         t_sectors.elapsed().as_secs_f64() * 1000.0
     );
 
+    // Load PPD descriptors for prefabs
+    let (ppd_descriptors, ppd_stats) = load_ppd_descriptors(archives, &builder);
+    builder.set_ppd_descriptors(ppd_descriptors);
+    builder.set_ppd_stats(ppd_stats.0, ppd_stats.1, ppd_stats.2, ppd_stats.3);
+
     Ok(builder.build())
 }
 
@@ -388,6 +394,139 @@ fn hashfs_probe_len(arc: &dyn Archive) -> usize {
     } else {
         0
     }
+}
+
+/// Walk all `.ppd` files under the `prefab/` and `prefab2/` directory trees
+/// of a HashFS archive using directory listings.
+fn walk_ppd_paths(arc: &HashFsArchive) -> Vec<String> {
+    use std::collections::HashSet;
+    let mut hits = Vec::new();
+    // Seed from known PPD roots; avoids scanning the whole archive.
+    let mut stack: Vec<String> = vec!["prefab2".into(), "prefab".into()];
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(dir) = stack.pop() {
+        if !seen.insert(dir.clone()) {
+            continue;
+        }
+        let bytes = match arc.read_hash(scs_path_hash(0, &dir.to_ascii_lowercase())) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let items = match parse_directory_listing(&bytes) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for it in items {
+            let child = format!("{dir}/{}", it.name);
+            if it.is_dir {
+                stack.push(child);
+            } else if child.to_ascii_lowercase().ends_with(".ppd") {
+                hits.push(child);
+            }
+        }
+    }
+    hits
+}
+
+/// Load PPD (Prefab Descriptor) files referenced by prefab template tokens.
+///
+/// Walks the `prefab/` and `prefab2/` trees in HashFS archives via directory
+/// listings, builds a `scs_token_hash(stem) → path` map, then reads and
+/// parses each PPD whose token appears in the accumulated raw prefabs.
+///
+/// Returns `(token→descriptor map, (attempted, loaded, failed, total_nav_curves))`.
+fn load_ppd_descriptors(
+    archives: &mut [Box<dyn Archive>],
+    builder: &GraphBuilder,
+) -> (HashMap<u64, PrefabDescriptor>, (usize, usize, usize, usize)) {
+    use crate::ppd::parse_ppd;
+    use std::collections::{HashMap, HashSet};
+
+    let t0 = std::time::Instant::now();
+
+    // Collect unique template tokens from all accumulated raw prefabs
+    let tokens: HashSet<u64> = builder
+        .raw_prefabs()
+        .iter()
+        .map(|p| p.template_token)
+        .filter(|&t| t != 0)
+        .collect();
+
+    if tokens.is_empty() {
+        return (HashMap::new(), (0, 0, 0, 0));
+    }
+
+    // Build token→path map by walking PPD directories.
+    // HashFS: walk directory listings. ZIP: list_files() returns strings.
+    let mut token_to_path: HashMap<u64, String> = HashMap::new();
+
+    for arc in archives.iter() {
+        if let Some(hashfs_arc) = arc.as_any().downcast_ref::<HashFsArchive>() {
+            for path in walk_ppd_paths(hashfs_arc) {
+                if let Some(stem) = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    let tok = scs_token_hash(&stem.to_ascii_lowercase());
+                    token_to_path.entry(tok).or_insert(path);
+                }
+            }
+        }
+        for path in arc.list_files() {
+            if path.to_ascii_lowercase().ends_with(".ppd") {
+                if let Some(stem) = std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                {
+                    let tok = scs_token_hash(&stem.to_ascii_lowercase());
+                    token_to_path.entry(tok).or_insert(path);
+                }
+            }
+        }
+    }
+
+    info!(
+        "PPD discovery: {} paths indexed for {} unique tokens",
+        token_to_path.len(),
+        tokens.len()
+    );
+
+    let mut descriptors: HashMap<u64, PrefabDescriptor> = HashMap::new();
+    let attempted = tokens.len();
+    let mut loaded = 0usize;
+    let mut failed = 0usize;
+    let mut total_nav_curves = 0usize;
+
+    for token in &tokens {
+        let data = token_to_path
+            .get(token)
+            .and_then(|path| archives.iter_mut().rev().find_map(|arc| arc.read_path(path).ok()));
+
+        if let Some(raw) = data {
+            match parse_ppd(&raw) {
+                Ok(desc) => {
+                    total_nav_curves += desc.nav_curves.len();
+                    descriptors.insert(*token, desc);
+                    loaded += 1;
+                }
+                Err(e) => {
+                    debug!("Failed to parse PPD for token 0x{token:016X}: {e}");
+                    failed += 1;
+                }
+            }
+        } else {
+            debug!("No PPD path found for token 0x{token:016X}");
+            failed += 1;
+        }
+    }
+
+    let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+    info!(
+        "PPD load: {}/{} loaded, {} failed, {} nav_curves in {:.1} ms",
+        loaded, attempted, failed, total_nav_curves, elapsed
+    );
+
+    (descriptors, (attempted, loaded, failed, total_nav_curves))
 }
 
 #[cfg(test)]

@@ -145,6 +145,14 @@ pub struct BuildStats {
     pub prefab_count: usize,
     pub sectors_merged: usize,
     pub build_time_ms: f64,
+    #[serde(default)]
+    pub ppd_files_attempted: usize,
+    #[serde(default)]
+    pub ppd_files_loaded: usize,
+    #[serde(default)]
+    pub ppd_files_failed: usize,
+    #[serde(default)]
+    pub ppd_total_nav_curves: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +180,10 @@ pub struct GraphBuilder {
     road_look: HashMap<u64, RoadLookEntry>,
     /// PPD descriptor cache: template_token -> PrefabDescriptor.
     ppd_descriptors: HashMap<u64, PrefabDescriptor>,
+    ppd_files_attempted: usize,
+    ppd_files_loaded: usize,
+    ppd_files_failed: usize,
+    ppd_total_nav_curves: usize,
 }
 
 impl GraphBuilder {
@@ -189,6 +201,14 @@ impl GraphBuilder {
     /// Must be called before [`GraphBuilder::build`].
     pub fn set_ppd_descriptors(&mut self, map: HashMap<u64, PrefabDescriptor>) {
         self.ppd_descriptors = map;
+    }
+
+    /// Record PPD load statistics for inclusion in [`BuildStats`].
+    pub fn set_ppd_stats(&mut self, attempted: usize, loaded: usize, failed: usize, nav_curves: usize) {
+        self.ppd_files_attempted = attempted;
+        self.ppd_files_loaded = loaded;
+        self.ppd_files_failed = failed;
+        self.ppd_total_nav_curves = nav_curves;
     }
 
     /// Merge one parsed sector into the builder.
@@ -901,6 +921,10 @@ impl GraphBuilder {
                 prefab_count: prefabs.len(),
                 sectors_merged: self.sectors_merged,
                 build_time_ms: elapsed_ms,
+                ppd_files_attempted: self.ppd_files_attempted,
+                ppd_files_loaded: self.ppd_files_loaded,
+                ppd_files_failed: self.ppd_files_failed,
+                ppd_total_nav_curves: self.ppd_total_nav_curves,
             },
             nodes,
             edges,

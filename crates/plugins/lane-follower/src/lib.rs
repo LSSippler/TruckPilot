@@ -276,6 +276,10 @@ impl LaneFollowerPlugin {
         ctx.blackboard.set("map.prefab.ai_paths_count", graph.prefab_ai_paths.len().to_string());
         ctx.blackboard.set("map.spline.total_segments", total_seg_count.to_string());
         ctx.blackboard.set("map.spline.prefab_segments", prefab_seg_count.to_string());
+        ctx.blackboard.set("map.ppd.files_attempted", graph.stats.ppd_files_attempted.to_string());
+        ctx.blackboard.set("map.ppd.files_loaded", graph.stats.ppd_files_loaded.to_string());
+        ctx.blackboard.set("map.ppd.files_failed", graph.stats.ppd_files_failed.to_string());
+        ctx.blackboard.set("map.ppd.total_nav_curves_parsed", graph.stats.ppd_total_nav_curves.to_string());
 
         self.luts = luts;
         self.forward_adj = forward_adj;
