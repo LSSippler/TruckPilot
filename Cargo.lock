@@ -5142,6 +5142,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "truckpilot-plugin-minimap-vision"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "truckpilot-plugin-api",
+ "windows 0.52.0",
+]
+
+[[package]]
 name = "truckpilot-plugin-router"
 version = "0.1.0"
 dependencies = [

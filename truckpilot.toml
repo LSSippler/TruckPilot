@@ -97,3 +97,15 @@ exist_thresh = 0.5
 [plugins.router]
 enabled = true
 
+[plugins.minimap-vision]
+# VMM-3/4/5: reads TruckPilotMinimapLine SHM from Python minimap sidecar.
+# Requires: python -m minimap_sidecar running with ETS2 open.
+enabled = false
+# ETS2 minimap scale: world meters per minimap pixel. Calibrate empirically.
+meters_per_pixel = 10.0
+# ROI dimensions in pixels (must match [vision.minimap] set by minimap_calibration).
+roi_w = 200
+roi_h = 200
+# Frames older than this (ms) are ignored.
+stale_after_ms = 500
+

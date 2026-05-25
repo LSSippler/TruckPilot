@@ -1,0 +1,23 @@
+[package]
+name = "truckpilot-plugin-minimap-vision"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimap vision plugin — reads minimap SHM, publishes route-line spline to blackboard (VMM-3..5)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+truckpilot-plugin-api = { path = "../../plugin-api" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }

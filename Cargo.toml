@@ -27,6 +27,7 @@ members = [
     "crates/plugins/scs-sdk-output",
     "crates/plugins/lane-detection",
     "crates/plugins/lane-follower",
+    "crates/plugins/minimap-vision",
 ]
 resolver = "2"
 
