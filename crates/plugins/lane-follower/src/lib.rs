@@ -385,9 +385,22 @@ impl Plugin for LaneFollowerPlugin {
     fn tick_request(
         &mut self,
         _telemetry: Option<&Telemetry>,
-        _ctx: &PluginContext,
+        ctx: &PluginContext,
     ) -> Option<ControlRequest> {
         if self.mode != LaneFollowerMode::Active {
+            ctx.blackboard.set("lane_follower.engage_source", "none");
+            return None;
+        }
+        let engage_mode = ctx.blackboard.get("autopilot.engage_mode");
+        let engage_source = match engage_mode.as_deref() {
+            Some("route") => "route",
+            Some("lane") => "lane",
+            Some("degraded") => "degraded",
+            _ => "none",
+        };
+        ctx.blackboard.set("lane_follower.engage_source", engage_source);
+        // DEGRADED is advisory only — no ControlRequest emitted
+        if !matches!(engage_source, "route" | "lane") {
             return None;
         }
         let cmd = self.last_steering_cmd?;
@@ -669,6 +682,7 @@ mod tests {
         let mut plugin = make_chain_plugin();
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        ctx.blackboard.set("autopilot.engage_mode", "route");
         let mut out = ControlOutput::default();
         // Truck 2m into chain, facing North — status ok, lookahead exists.
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
@@ -748,6 +762,7 @@ mod tests {
         let mut plugin = make_chain_plugin_at_x(5.0);
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        ctx.blackboard.set("autopilot.engage_mode", "route");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
@@ -762,6 +777,7 @@ mod tests {
         let mut plugin = make_chain_plugin_at_x(-5.0);
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        ctx.blackboard.set("autopilot.engage_mode", "route");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
@@ -776,6 +792,7 @@ mod tests {
         let mut plugin = make_chain_plugin(); // road at x=0, truck at x=0
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        ctx.blackboard.set("autopilot.engage_mode", "route");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
@@ -976,6 +993,73 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(seg_idx, 1, "heading filter must pick North seg (1), not East branch (2)");
+    }
+
+    // ── P0.3: engage_mode gate + engage_source BB key ────────────────────────
+
+    fn make_active_plugin_with_request() -> (LaneFollowerPlugin, PluginContext) {
+        let mut plugin = make_chain_plugin();
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        (plugin, ctx)
+    }
+
+    #[test]
+    fn p03_engage_mode_route_emits_control_request() {
+        let (mut plugin, ctx) = make_active_plugin_with_request();
+        ctx.blackboard.set("autopilot.engage_mode", "route");
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        let req = plugin.tick_request(Some(&tel), &ctx);
+        assert!(req.is_some(), "engage_mode=route + status=ok → Some(ControlRequest)");
+        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("route"));
+    }
+
+    #[test]
+    fn p03_engage_mode_lane_emits_control_request() {
+        let (mut plugin, ctx) = make_active_plugin_with_request();
+        ctx.blackboard.set("autopilot.engage_mode", "lane");
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        let req = plugin.tick_request(Some(&tel), &ctx);
+        assert!(req.is_some(), "engage_mode=lane + status=ok → Some(ControlRequest)");
+        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("lane"));
+    }
+
+    #[test]
+    fn p03_engage_mode_degraded_suppresses_control_request() {
+        let (mut plugin, ctx) = make_active_plugin_with_request();
+        ctx.blackboard.set("autopilot.engage_mode", "degraded");
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        let req = plugin.tick_request(Some(&tel), &ctx);
+        assert!(req.is_none(), "engage_mode=degraded must NOT emit ControlRequest (advisory only)");
+        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("degraded"));
+    }
+
+    #[test]
+    fn p03_engage_mode_missing_suppresses_control_request() {
+        let (mut plugin, ctx) = make_active_plugin_with_request();
+        // No autopilot.engage_mode key set
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        let req = plugin.tick_request(Some(&tel), &ctx);
+        assert!(req.is_none(), "missing engage_mode must NOT emit ControlRequest");
+        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn p03_observer_mode_suppresses_regardless_of_engage_mode() {
+        let mut plugin = make_chain_plugin();
+        let ctx = PluginContext::test();
+        // mode stays Observer (default), set engage_mode to route
+        ctx.blackboard.set("autopilot.engage_mode", "route");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let req = plugin.tick_request(Some(&tel), &ctx);
+        assert!(req.is_none(), "Observer mode must never emit ControlRequest regardless of engage_mode");
+        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("none"));
     }
 
     // ── Stability: stable after repeated same-position ticks ────────────────

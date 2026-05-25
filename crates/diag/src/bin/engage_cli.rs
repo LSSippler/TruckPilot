@@ -43,7 +43,11 @@ enum Cmd {
     /// Set cruise.target_kmh
     SetCruise { kmh: f32 },
     /// Request autopilot engage
-    Engage,
+    Engage {
+        /// Engage in lane-only mode (no route required; steering only)
+        #[arg(long, default_value_t = false)]
+        lane_only: bool,
+    },
     /// Request autopilot disengage
     Disengage,
     /// Request autopilot reset (from Fault back to Off)
@@ -159,7 +163,23 @@ fn main() {
             &UiCommand::SetCruiseTarget { kmh },
             &format!("cruise.target_kmh = {kmh}"),
         ),
-        Cmd::Engage => fire_and_forget(&mut ws, &UiCommand::AutopilotEngage, "engage requested"),
+        Cmd::Engage { lane_only } => {
+            let pre = if lane_only {
+                fire_and_forget(
+                    &mut ws,
+                    &UiCommand::SetBlackboardKey {
+                        key: "autopilot.requested_mode".to_string(),
+                        value: "lane_only".to_string(),
+                    },
+                    "autopilot.requested_mode = lane_only",
+                )
+            } else {
+                Ok(())
+            };
+            pre.and_then(|_| {
+                fire_and_forget(&mut ws, &UiCommand::AutopilotEngage, "engage requested")
+            })
+        }
         Cmd::Disengage => fire_and_forget(
             &mut ws,
             &UiCommand::AutopilotDisengage,

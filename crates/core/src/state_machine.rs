@@ -280,6 +280,9 @@ pub struct AutopilotStateMachine {
     /// Lane-keeper mode captured at engage time ("vision" | "route_following").
     /// Clean Off disengage fires if mode changes while Active.
     mode_at_engage: String,
+    /// Set when the user engages via `--lane-only`. Bypasses route preconditions
+    /// and locks engage_mode to Lane for the session.
+    lane_only_engage: bool,
     engage_mode: EngageMode,
     route_to_lane_ticks: u64,
     lane_to_route_ticks: u64,
@@ -316,6 +319,7 @@ impl AutopilotStateMachine {
             graph: None,
             route_node_ids: None,
             mode_at_engage: String::new(),
+            lane_only_engage: false,
             engage_mode: EngageMode::Route,
             route_to_lane_ticks: 0,
             lane_to_route_ticks: 0,
@@ -388,7 +392,7 @@ impl AutopilotStateMachine {
             AutopilotState::Off => {}
             AutopilotState::Engaging => {
                 self.engaging_ticks += 1;
-                let pre = check_preconditions(telemetry, bb);
+                let pre = check_preconditions(telemetry, bb, self.lane_only_engage);
                 if pre.all_met() {
                     self.precondition_stable_ticks += 1;
                     self.precondition_failure_streak = 0;
@@ -559,32 +563,45 @@ impl AutopilotStateMachine {
     ) -> Result<AutopilotState, String> {
         match (self.state, &event) {
             (AutopilotState::Off, AutopilotEvent::UserEngage) => {
-                // ── Phase 6.5q.1: synchronous off-route check ────────────
-                self.check_and_replan_if_offroute(bb);
+                // Lane-only engage: bypass route/cruise preconditions.
+                let lane_only =
+                    bb.get("autopilot.requested_mode").as_deref() == Some("lane_only");
+                bb.remove("autopilot.requested_mode");
 
-                // Vision mode: block engage when lane_keeper reports fallback level >= 2.
-                if bb.get("plugin.lane_keeper.mode").as_deref() == Some("vision")
-                    && bb.get("lane_keeper.engage_allowed").as_deref() != Some("true")
-                {
-                    let level = bb.get("lane_keeper.fallback_level").unwrap_or_default();
-                    tracing::warn!(
-                        "[state] Engage blocked: vision fallback_level={} (engage_allowed != true)",
-                        level,
-                    );
-                    return Err(format!(
-                        "Engage blocked: lane_keeper.engage_allowed=false (vision level {})",
-                        level
-                    ));
+                if lane_only {
+                    if self.last_telemetry.is_none() {
+                        return Err("Engage blocked: telemetry_lost".into());
+                    }
+                } else {
+                    // ── Phase 6.5q.1: synchronous off-route check ────────────
+                    self.check_and_replan_if_offroute(bb);
+
+                    // Vision mode: block engage when lane_keeper reports fallback level >= 2.
+                    if bb.get("plugin.lane_keeper.mode").as_deref() == Some("vision")
+                        && bb.get("lane_keeper.engage_allowed").as_deref() != Some("true")
+                    {
+                        let level = bb.get("lane_keeper.fallback_level").unwrap_or_default();
+                        tracing::warn!(
+                            "[state] Engage blocked: vision fallback_level={} (engage_allowed != true)",
+                            level,
+                        );
+                        return Err(format!(
+                            "Engage blocked: lane_keeper.engage_allowed=false (vision level {})",
+                            level
+                        ));
+                    }
+
+                    let engage_ready = bb.get("state.engage_ready").unwrap_or_default();
+                    if engage_ready == "false" {
+                        let blocked = bb
+                            .get("state.engage_blocked_by")
+                            .unwrap_or_else(|| "unknown".to_string());
+                        return Err(format!("Engage blocked: {}", blocked));
+                    }
                 }
 
-                let engage_ready = bb.get("state.engage_ready").unwrap_or_default();
-                if engage_ready == "false" {
-                    let blocked = bb
-                        .get("state.engage_blocked_by")
-                        .unwrap_or_else(|| "unknown".to_string());
-                    return Err(format!("Engage blocked: {}", blocked));
-                }
-                tracing::info!("[state] Off -> Engaging (user engage)");
+                tracing::info!("[state] Off -> Engaging (user engage, lane_only={lane_only})");
+                self.lane_only_engage = lane_only;
                 self.mode_at_engage = bb
                     .get("plugin.lane_keeper.mode")
                     .unwrap_or_else(|| "route_following".to_string());
@@ -610,6 +627,7 @@ impl AutopilotStateMachine {
                 self.cruise_off_ticks = 0;
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
+                self.lane_only_engage = false;
             }
             (AutopilotState::Fault, AutopilotEvent::UserReset) => {
                 tracing::info!("[state] Fault -> Off (user reset)");
@@ -618,6 +636,7 @@ impl AutopilotStateMachine {
                 self.cruise_off_ticks = 0;
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
+                self.lane_only_engage = false;
             }
             (_, AutopilotEvent::FaultDetected(reason)) => {
                 tracing::warn!("[state] -> Fault ({:?})", reason);
@@ -778,7 +797,7 @@ impl AutopilotStateMachine {
         telemetry: Option<&Telemetry>,
         bb: &SharedBlackboard,
     ) -> PreconditionSnapshot {
-        let p = check_preconditions(telemetry, bb);
+        let p = check_preconditions(telemetry, bb, self.lane_only_engage);
         PreconditionSnapshot {
             telemetry_ok: p.telemetry_ok,
             engine_running: p.engine_running,
@@ -835,6 +854,7 @@ impl AutopilotStateMachine {
         self.last_failure_reason = String::new();
         self.reset_debounce_counters();
         self.state_entry_ticks = 0;
+        self.lane_only_engage = false;
     }
 
     fn publish(&self, bb: &SharedBlackboard) {
@@ -1074,6 +1094,14 @@ impl AutopilotStateMachine {
             return;
         }
 
+        // Lane-only engage: locked to Lane mode for the session
+        if self.lane_only_engage {
+            self.engage_mode = EngageMode::Lane;
+            bb.set("autopilot.engage_mode", EngageMode::Lane.as_str());
+            bb.set("autopilot.advisory_reason", "");
+            return;
+        }
+
         let heading_diff = bb
             .get("lane_follower.heading_diff_deg")
             .and_then(|v| v.trim().parse::<f64>().ok())
@@ -1182,13 +1210,18 @@ impl AutopilotStateMachine {
 
 // ---- Helpers ---------------------------------------------------------------
 
-fn check_preconditions(telemetry: Option<&Telemetry>, bb: &SharedBlackboard) -> Preconditions {
+fn check_preconditions(
+    telemetry: Option<&Telemetry>,
+    bb: &SharedBlackboard,
+    lane_only: bool,
+) -> Preconditions {
     let mode = bb
         .get("plugin.lane_keeper.mode")
         .unwrap_or_else(|| "route_following".to_string());
-    // In vision mode router.active is irrelevant; repurpose the field to gate
-    // on lane_keeper.engage_allowed so Engaging→Active can complete.
-    let router_active = if mode == "vision" {
+    // Lane-only: no route required. Vision mode: gate on engage_allowed instead.
+    let router_active = if lane_only {
+        true
+    } else if mode == "vision" {
         bb.get("lane_keeper.engage_allowed")
             .map(|s| s == "true")
             .unwrap_or(false)
@@ -2984,6 +3017,111 @@ mod tests {
             bb.get("autopilot.engage_mode").as_deref(),
             Some("route"),
             "engage_mode must reset to route on Fault state"
+        );
+    }
+
+    // ── P0.3: lane_only_engage ─────────────────────────────────────────────
+
+    fn bb_lane_only() -> SharedBlackboard {
+        let bb = SharedBlackboard::new();
+        // No router.active — lane_only must bypass this
+        bb.set("plugins.loaded", "lane-keeper,speed-controller,vjoy-output");
+        bb
+    }
+
+    fn activate_sm_lane_only(sm: &mut AutopilotStateMachine, bb: &SharedBlackboard) {
+        let running = mock_running();
+        // One evaluate tick to populate last_telemetry before engage event
+        sm.evaluate(Some(&running), bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&running), bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    #[test]
+    fn lane_only_engage_bypasses_router_active() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only(); // no router.active
+        // Must succeed without router.active
+        activate_sm_lane_only(&mut sm, &bb);
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    #[test]
+    fn lane_only_engage_publishes_lane_mode() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        activate_sm_lane_only(&mut sm, &bb);
+        assert_eq!(
+            bb.get("autopilot.engage_mode").as_deref(),
+            Some("lane"),
+            "lane_only engage must publish engage_mode=lane"
+        );
+    }
+
+    #[test]
+    fn lane_only_stays_lane_regardless_of_heading_or_route() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        activate_sm_lane_only(&mut sm, &bb);
+
+        // Even with conditions that would normally trigger route transitions
+        bb.set("lane_follower.heading_diff_deg", "5.0");
+        bb.set("lane_follower.nearest_seg_dist_m", "1.0");
+        bb.set("router.active", "true");
+        bb.set("router.waypoint_count", "10");
+        for _ in 0..200 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        assert_eq!(
+            bb.get("autopilot.engage_mode").as_deref(),
+            Some("lane"),
+            "lane_only must stay in Lane mode — no route transitions allowed"
+        );
+        assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    #[test]
+    fn lane_only_engage_resets_on_disengage() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        activate_sm_lane_only(&mut sm, &bb);
+        assert_eq!(sm.state(), AutopilotState::Active);
+
+        sm.handle_event(AutopilotEvent::UserDisengage, &bb).unwrap();
+        sm.evaluate(Some(&running), &bb);
+        assert_eq!(sm.state(), AutopilotState::Off);
+        assert_eq!(
+            bb.get("autopilot.engage_mode").as_deref(),
+            Some("route"),
+            "after disengage, engage_mode must reset to route"
+        );
+    }
+
+    #[test]
+    fn normal_engage_still_requires_router_active() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only(); // no router.active
+        // state.engage_ready not set → should default-allow (engage_ready != "false")
+        // But router_active=false → preconditions fail → times out in Engaging
+        let running = mock_running();
+        sm.evaluate(Some(&running), &bb); // populate last_telemetry
+        // Normal engage (no lane_only key)
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        // Run until engage timeout (> ENGAGE_TIMEOUT ticks)
+        for _ in 0..600 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        // Must NOT reach Active — timed out back to Off
+        assert_ne!(
+            sm.state(),
+            AutopilotState::Active,
+            "normal engage without router.active must not reach Active"
         );
     }
 }
