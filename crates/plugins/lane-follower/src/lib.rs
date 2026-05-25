@@ -54,7 +54,7 @@ use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
     arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
     graph::MapGraph,
-    spline::{build_splines, evaluate_tangent, Vec3},
+    spline::{build_splines, evaluate_tangent, HermiteSegment, Vec3},
     spline_index::{build_index, SplineIndex},
 };
 use truckpilot_plugin_api::{
@@ -86,6 +86,9 @@ const LOOKAHEAD_SPEED_FACTOR: f32 = 0.3;
 
 /// Ring-buffer size for lookahead stability metric (ticks = 1 second at 50 Hz).
 const STABILITY_WINDOW: usize = 50;
+
+/// VMM-6: minimum minimap temporal confidence to use as fallback spline source.
+const MINIMAP_CONF_THRESHOLD: f32 = 0.4;
 
 /// EMA smoothing factor for the steering output (higher = faster response).
 const STEERING_EMA_ALPHA: f64 = 0.15;
@@ -146,6 +149,49 @@ pub struct LaneFollowerPlugin {
     /// RouterGraph built from the same graph.json — used for junction detection.
     router_graph: Option<RouterGraph>,
     junction_detector: JunctionDetector,
+    // VMM-6: minimap fallback spline source.
+    /// SplineIndex rebuilt from minimap.spline_json whenever the capture timestamp changes.
+    minimap_index: Option<SplineIndex>,
+    /// minimap.last_capture_ms seen on last refresh — change triggers rebuild.
+    last_minimap_ts: u64,
+    /// minimap.confidence last read from blackboard.
+    minimap_confidence: f32,
+}
+
+/// VMM-6: simple forward-walk lookahead over minimap segments (no LUT required).
+/// Starts at `(start_idx, start_t)` and walks forward until `dist_m` is consumed.
+/// Returns the world-space lookahead point, or None if segments run out.
+fn minimap_lookahead(
+    segs: &[HermiteSegment],
+    start_idx: usize,
+    start_t: f32,
+    dist_m: f32,
+) -> Option<Vec3> {
+    use truckpilot_map_parser::spline::evaluate;
+    let mut remaining = dist_m;
+    let mut idx = start_idx;
+    let mut t = start_t;
+    loop {
+        if idx >= segs.len() {
+            break;
+        }
+        let seg = &segs[idx];
+        let seg_remaining = seg.length_m * (1.0 - t);
+        if remaining <= seg_remaining {
+            let t_advance = t + (remaining / seg.length_m.max(1e-6));
+            return Some(evaluate(seg, t_advance.min(1.0)));
+        }
+        remaining -= seg_remaining;
+        idx += 1;
+        t = 0.0;
+    }
+    // Ran out of segments — return end of last segment.
+    if !segs.is_empty() {
+        let last = &segs[segs.len() - 1];
+        Some(evaluate(last, 1.0))
+    } else {
+        None
+    }
 }
 
 impl LaneFollowerPlugin {
@@ -194,6 +240,48 @@ impl LaneFollowerPlugin {
         self.router_graph = Some(RouterGraph::new(rg_nodes, rg_edges));
         ctx_info!(ctx, "lane-follower: RouterGraph built ({} nodes, {} edges)", n_nodes, n_edges);
     }
+
+    /// VMM-6: refresh minimap_index from BB if new data is available.
+    fn try_refresh_minimap(&mut self, ctx: &PluginContext) {
+        let conf: f32 = ctx
+            .blackboard
+            .get("minimap.confidence")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        self.minimap_confidence = conf;
+
+        if ctx.blackboard.get("minimap.detected").as_deref() != Some("true") {
+            return;
+        }
+        if conf < MINIMAP_CONF_THRESHOLD {
+            return;
+        }
+
+        let ts: u64 = ctx
+            .blackboard
+            .get("minimap.last_capture_ms")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        if ts == self.last_minimap_ts {
+            return; // nothing new
+        }
+
+        let json = match ctx.blackboard.get("minimap.spline_json") {
+            Some(j) => j,
+            None => return,
+        };
+
+        match serde_json::from_str::<Vec<HermiteSegment>>(&json) {
+            Ok(segs) if segs.len() >= 2 => {
+                self.minimap_index = Some(build_index(segs));
+                self.last_minimap_ts = ts;
+            }
+            _ => {
+                self.minimap_index = None;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,11 +327,17 @@ impl Plugin for LaneFollowerPlugin {
         self.steering_rate_limited_prev = 0.0;
         self.router_graph = None;
         self.junction_detector.reset();
+        self.minimap_index = None;
+        self.last_minimap_ts = 0;
+        self.minimap_confidence = 0.0;
     }
 
     fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
         // Reset per-tick steering so tick_request() sees None on any early return.
         self.last_steering_cmd = None;
+
+        // VMM-6: refresh minimap spline index from blackboard (cheap no-op if unchanged).
+        self.try_refresh_minimap(ctx);
 
         self.mode = LaneFollowerMode::from_bb(ctx);
 
@@ -282,10 +376,23 @@ impl Plugin for LaneFollowerPlugin {
             ctx.blackboard.set("lane_follower.junction_max_degree", detection.max_degree.to_string());
         }
 
-        let Some(index) = &self.index else {
-            ctx.blackboard.set("lane_follower.status", "no_index");
-            return;
+        // VMM-6: select primary or minimap SplineIndex.
+        let primary = &self.index;
+        let minimap = &self.minimap_index;
+        let index: &SplineIndex = match (primary, minimap) {
+            (Some(idx), _) => idx,
+            (None, Some(mm)) if self.minimap_confidence >= MINIMAP_CONF_THRESHOLD => mm,
+            _ => {
+                ctx.blackboard.set("lane_follower.status", "no_index");
+                ctx.blackboard.set("lane_follower.spline_source", "none");
+                return;
+            }
         };
+        let using_minimap = primary.is_none();
+        ctx.blackboard.set(
+            "lane_follower.spline_source",
+            if using_minimap { "minimap" } else { "map" },
+        );
 
         // ETS2 SDK heading is 0..1 CCW from North; convert to CW degrees (0=N, 90=E).
         let truck_heading_deg = ((-tel.heading) * 360.0).rem_euclid(360.0) as f32;
@@ -354,37 +461,26 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.wheelbase_m", format!("{:.1}", pure_pursuit::WHEELBASE_M));
 
-        // Lookahead — computed before warn-checks so keys are always present after a hit
-        if !self.luts.is_empty() {
-            if let Some(la) = lookahead(
+        // Lookahead — computed before warn-checks so keys are always present after a hit.
+        // VMM-6: minimap uses simple forward-walk (no LUT); primary uses arc-length LUT.
+        let la_point_opt: Option<Vec3> = if using_minimap {
+            minimap_lookahead(
+                index.segments.as_slice(),
+                hit.segment_idx,
+                hit.t,
+                lookahead_dist_m,
+            )
+        } else if !self.luts.is_empty() {
+            lookahead(
                 hit.segment_idx,
                 hit.t,
                 lookahead_dist_m,
                 &self.forward_adj,
                 index.segments.as_slice(),
                 &self.luts,
-            ) {
-                ctx.blackboard
-                    .set("lane_follower.lookahead_x", format!("{:.3}", la.point.x));
-                ctx.blackboard
-                    .set("lane_follower.lookahead_z", format!("{:.3}", la.point.z));
-
-                // Task 3 — Offset lookahead right by lane_offset_m.
-                // Tangent at lookahead point → right-normal in XZ: n = (-tz, tx) (normalised).
-                let la_tan = evaluate_tangent(&index.segments[la.seg_idx], la.t);
-                let la_len_xz = (la_tan.x * la_tan.x + la_tan.z * la_tan.z).sqrt();
-                let (la_n_x, la_n_z) = if la_len_xz > 1e-6 {
-                    (-la_tan.z / la_len_xz, la_tan.x / la_len_xz)
-                } else {
-                    (0.0_f32, 0.0_f32)
-                };
-                let offset_lx = la.point.x + la_n_x * lane_offset_m;
-                let offset_lz = la.point.z + la_n_z * lane_offset_m;
-                ctx.blackboard
-                    .set("lane_follower.lookahead_offset_x", format!("{offset_lx:.3}"));
-                ctx.blackboard
-                    .set("lane_follower.lookahead_offset_z", format!("{offset_lz:.3}"));
-
+            )
+            .map(|la| {
+                // When using primary LUT lookahead, publish extra LUT-specific keys.
                 ctx.blackboard
                     .set("lane_follower.lookahead_seg_idx", la.seg_idx.to_string());
                 ctx.blackboard
@@ -397,12 +493,6 @@ impl Plugin for LaneFollowerPlugin {
                     "dead_end"
                 };
                 ctx.blackboard.set("lane_follower.lookahead_status", la_status);
-
-                let dx = la.point.x - query.x;
-                let dz = la.point.z - query.z;
-                let heading_to_la = dx.atan2(-dz).to_degrees().rem_euclid(360.0);
-                ctx.blackboard
-                    .set("lane_follower.heading_to_lookahead_deg", format!("{:.2}", heading_to_la));
 
                 self.lookahead_seg_history.push_back(la.seg_idx);
                 if self.lookahead_seg_history.len() > STABILITY_WINDOW {
@@ -420,6 +510,42 @@ impl Plugin for LaneFollowerPlugin {
                     "lane_follower.lookahead_stable",
                     if jump_count < 3 { "true" } else { "false" },
                 );
+
+                la.point
+            })
+        } else {
+            None
+        };
+
+        if let Some(la_pt) = la_point_opt {
+            let la = la_pt;
+            {
+                ctx.blackboard
+                    .set("lane_follower.lookahead_x", format!("{:.3}", la.x));
+                ctx.blackboard
+                    .set("lane_follower.lookahead_z", format!("{:.3}", la.z));
+
+                // Offset lookahead right by lane_offset_m.
+                // Tangent at hit point → right-normal in XZ: n = (-tz, tx) (normalised).
+                let la_tan = evaluate_tangent(&index.segments[hit.segment_idx], hit.t);
+                let la_len_xz = (la_tan.x * la_tan.x + la_tan.z * la_tan.z).sqrt();
+                let (la_n_x, la_n_z) = if la_len_xz > 1e-6 {
+                    (-la_tan.z / la_len_xz, la_tan.x / la_len_xz)
+                } else {
+                    (0.0_f32, 0.0_f32)
+                };
+                let offset_lx = la.x + la_n_x * lane_offset_m;
+                let offset_lz = la.z + la_n_z * lane_offset_m;
+                ctx.blackboard
+                    .set("lane_follower.lookahead_offset_x", format!("{offset_lx:.3}"));
+                ctx.blackboard
+                    .set("lane_follower.lookahead_offset_z", format!("{offset_lz:.3}"));
+
+                let dx = la.x - query.x;
+                let dz = la.z - query.z;
+                let heading_to_la = dx.atan2(-dz).to_degrees().rem_euclid(360.0);
+                ctx.blackboard
+                    .set("lane_follower.heading_to_lookahead_deg", format!("{:.2}", heading_to_la));
             }
         }
 
