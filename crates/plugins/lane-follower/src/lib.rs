@@ -38,11 +38,13 @@
 //! | `lane_follower.wheelbase_m` | f64 metres | truck wheelbase (diagnostic constant) |
 //! | `lane_follower.rate_limited` | `"true"/"false"` | rate-limiter was active this tick |
 
+mod junction;
 mod pure_pursuit;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
+use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
     arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
     graph::MapGraph,
@@ -51,7 +53,8 @@ use truckpilot_map_parser::{
     spline_index::{build_index, SplineIndex},
 };
 use truckpilot_plugin_api::{
-    ctx_info, ctx_warn, ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry, TickPhase,
+    ctx_info, ctx_warn, graph::RouterGraph, ControlOutput, ControlRequest, Plugin, PluginContext,
+    Telemetry, TickPhase,
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +133,9 @@ pub struct LaneFollowerPlugin {
     steering_ema: f64,
     /// Previous rate-limited steering output (rate-limiter state).
     steering_rate_limited_prev: f64,
+    /// RouterGraph built from the same graph.json — used for junction detection.
+    router_graph: Option<RouterGraph>,
+    junction_detector: JunctionDetector,
 }
 
 impl LaneFollowerPlugin {
@@ -170,6 +176,13 @@ impl LaneFollowerPlugin {
         self.luts = luts;
         self.forward_adj = forward_adj;
         self.index = Some(build_index(segments));
+
+        let rg_nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+        let rg_edges: Vec<(u64, u64, f64)> = graph.edges.iter().map(|e| (e.from, e.to, e.distance_m)).collect();
+        let n_nodes = rg_nodes.len();
+        let n_edges = rg_edges.len();
+        self.router_graph = Some(RouterGraph::new(rg_nodes, rg_edges));
+        ctx_info!(ctx, "lane-follower: RouterGraph built ({} nodes, {} edges)", n_nodes, n_edges);
     }
 }
 
@@ -214,6 +227,8 @@ impl Plugin for LaneFollowerPlugin {
         self.last_steering_cmd = None;
         self.steering_ema = 0.0;
         self.steering_rate_limited_prev = 0.0;
+        self.router_graph = None;
+        self.junction_detector.reset();
     }
 
     fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
@@ -239,6 +254,23 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard.set("lane_follower.truck_x", format!("{truck_x:.3}"));
         ctx.blackboard.set("lane_follower.truck_y", format!("{truck_y:.3}"));
         ctx.blackboard.set("lane_follower.truck_z", format!("{truck_z:.3}"));
+
+        // Junction detection — runs regardless of index availability.
+        {
+            let detection = if let Some(graph) = &self.router_graph {
+                detect_junction(graph, truck_x, truck_z)
+            } else {
+                junction::JunctionDetection { is_junction: false, max_degree: 0, distance_m: None }
+            };
+            let (active, phase) = self.junction_detector.tick(&detection);
+            ctx.blackboard.set("lane_follower.junction_detected", if active { "true" } else { "false" });
+            ctx.blackboard.set("lane_follower.junction_phase", phase.as_str());
+            ctx.blackboard.set(
+                "lane_follower.junction_distance_m",
+                detection.distance_m.map_or_else(String::new, |d| format!("{d:.1}")),
+            );
+            ctx.blackboard.set("lane_follower.junction_max_degree", detection.max_degree.to_string());
+        }
 
         let Some(index) = &self.index else {
             ctx.blackboard.set("lane_follower.status", "no_index");
