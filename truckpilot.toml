@@ -109,3 +109,12 @@ roi_h = 200
 # Frames older than this (ms) are ignored.
 stale_after_ms = 500
 
+[plugins.lane-follower]
+# DS13d: geometric prefab-bias at junctions.
+# Radius around the nearest junction node within which the prefab-only query fires.
+# Should be >= junction detection radius (25m) + hysteresis buffer.
+junction_bias_radius_m = 30.0
+# If the nearest prefab NavCurve is farther than this, fall back to the regular road query.
+# Matches lookahead_distance_m_min (15m) — farther prefab would not be driveable.
+junction_bias_max_prefab_dist_m = 15.0
+

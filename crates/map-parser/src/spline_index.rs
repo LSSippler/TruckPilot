@@ -358,6 +358,71 @@ impl SplineIndex {
         })
     }
 
+    /// Findet das geometrisch nächste Segment, das ein Prädikat erfüllt.
+    ///
+    /// Wie [`nearest_with_projection`], aber überspringt Segmente, für die
+    /// `pred(seg_idx, metadata)` `false` zurückgibt.
+    ///
+    /// * `candidates` — maximale R-tree-Einträge, die untersucht werden.
+    ///   Bei dünner Prädikat-Übereinstimmung (z.B. prefab-only in einem
+    ///   Road-dominierten Index) sollte dieser Wert deutlich höher als der
+    ///   Standard-`CANDIDATES` gewählt werden (z.B. `CANDIDATES * 16`).
+    ///
+    /// Kein Heading-Filter — für Bias-Queries in Junctions sind beliebige
+    /// Einfahrtswinkel zu tolerieren.
+    pub fn nearest_with_projection_filtered<F>(
+        &self,
+        point: Vec3,
+        candidates: usize,
+        pred: F,
+    ) -> Option<NearestHit>
+    where
+        F: Fn(usize, Option<SegmentMetadata>) -> bool,
+    {
+        let p2 = [point.x, point.z];
+        let mut best: Option<(usize, f32, f32)> = None;
+
+        for (entry, _) in self
+            .tree
+            .nearest_neighbor_iter_with_distance_2(&p2)
+            .take(candidates)
+        {
+            let seg_idx = entry.idx as usize;
+            let meta = self.metadata[seg_idx];
+            if !pred(seg_idx, meta) {
+                continue;
+            }
+            let seg = &self.segments[seg_idx];
+            let seeds = [0.0f32, 0.5, 1.0];
+            let (t_best, d2_best) = seeds
+                .iter()
+                .map(|&t0| newton_closest(seg, point, t0))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .unwrap();
+            match best {
+                None => best = Some((seg_idx, t_best, d2_best)),
+                Some((_, _, bd2)) if d2_best < bd2 => {
+                    best = Some((seg_idx, t_best, d2_best));
+                }
+                _ => {}
+            }
+        }
+
+        let (seg_idx, t, dist2) = best?;
+        let seg = &self.segments[seg_idx];
+        let point_on_curve = evaluate(seg, t);
+        let tan = evaluate_tangent(seg, t);
+        let heading_deg = f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
+        Some(NearestHit {
+            segment_idx: seg_idx,
+            t,
+            point_on_curve,
+            dist_m: dist2.sqrt(),
+            heading_deg,
+            heading_filter_applied: false,
+        })
+    }
+
     /// Findet das nächste Segment mit Heading-Filter.
     ///
     /// Wie [`nearest_with_projection`], aber bevorzugt Segmente deren Tangente in
@@ -732,5 +797,86 @@ mod tests {
             !hit.heading_filter_applied,
             "filter_applied must be false when all candidates rejected"
         );
+    }
+
+    // --- nearest_with_projection_filtered Tests (DS13d) ---
+
+    fn prefab_meta() -> Option<SegmentMetadata> {
+        Some(SegmentMetadata {
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            lane_offset_right_m: 0.0,
+            road_look_token: 0,
+            is_prefab: true,
+        })
+    }
+
+    fn road_meta() -> Option<SegmentMetadata> {
+        Some(SegmentMetadata {
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            lane_offset_right_m: 1.875,
+            road_look_token: 0,
+            is_prefab: false,
+        })
+    }
+
+    /// DS13d TASK 6a: Bias-Query picks prefab segment when it is the closest qualifying entry.
+    #[test]
+    fn test_geometric_bias_picks_prefab_in_junction() {
+        // Layout: road at z=0 (10m from query), prefab at z=-3 (3m from query).
+        // Unfiltered nearest would be prefab (closer), but let's also test that
+        // the filter correctly returns only the prefab-tagged segment.
+        let road_seg = make_seg(0.0, 0.0, 20.0, 0.0);
+        let prefab_seg = make_seg(0.0, -3.0, 20.0, -3.0);
+        let segs = vec![road_seg, prefab_seg];
+        let meta = vec![road_meta(), prefab_meta()];
+        let idx = build_index_with_metadata(segs, meta);
+
+        let query = Vec3::new(10.0, 0.0, -3.0); // on the prefab segment
+        let hit = idx
+            .nearest_with_projection_filtered(query, 32, |_, m| m.is_some_and(|m| m.is_prefab))
+            .expect("must find prefab hit");
+        assert_eq!(hit.segment_idx, 1, "prefab segment is at index 1");
+        assert!(hit.dist_m < 0.5, "query is on prefab → dist ≈ 0, got {}", hit.dist_m);
+    }
+
+    /// DS13d TASK 6b: Filter returns None when no prefab in candidate range.
+    #[test]
+    fn test_geometric_bias_rejects_far_prefab() {
+        // Road at z=0, prefab far away at z=-200 (beyond a tight candidate window).
+        // With candidates=4, the tree returns the 4 closest entries by AABB;
+        // if the prefab AABB is far, it won't appear → filter returns None.
+        let road_seg = make_seg(0.0, 0.0, 20.0, 0.0);
+        let far_prefab = make_seg(0.0, -200.0, 20.0, -200.0);
+        let segs = vec![road_seg, far_prefab];
+        let meta = vec![road_meta(), prefab_meta()];
+        let idx = build_index_with_metadata(segs, meta);
+
+        let query = Vec3::new(10.0, 0.0, 0.0); // on the road segment
+        // With a tight candidates=1, the tree returns only the closest (road), prefab is skipped.
+        let hit = idx.nearest_with_projection_filtered(query, 1, |_, m| m.is_some_and(|m| m.is_prefab));
+        assert!(hit.is_none(), "no prefab within candidate window → None");
+    }
+
+    /// DS13d TASK 6c: Without predicate filtering, both road and prefab are candidates
+    /// and the geometrically closest wins normally.
+    #[test]
+    fn test_unfiltered_nearest_picks_road_when_road_is_closer() {
+        // Road at z=0 (2m from query), prefab at z=-10 (8m from query).
+        let road_seg = make_seg(0.0, 0.0, 20.0, 0.0);
+        let prefab_seg = make_seg(0.0, -10.0, 20.0, -10.0);
+        let segs = vec![road_seg, prefab_seg];
+        let meta = vec![road_meta(), prefab_meta()];
+        let idx = build_index_with_metadata(segs, meta);
+
+        let query = Vec3::new(10.0, 0.0, -2.0); // 2m from road
+        let hit = idx.nearest_with_projection(query, 8).expect("must find hit");
+        assert_eq!(hit.segment_idx, 0, "road is closer → unfiltered query picks road");
+        assert!(hit.dist_m < 3.0, "dist should be ~2m, got {}", hit.dist_m);
     }
 }
