@@ -223,6 +223,7 @@ fn print_help() {
 // ---------------------------------------------------------------------------
 
 fn cmd_parse_map(ets2_dir: &std::path::Path, mods_dir: Option<PathBuf>) {
+    info!("parse-map entry: cmd_parse_map");
     println!("Parsing ETS2 map from: {}", ets2_dir.display());
     let final_mods_dir = mods_dir.unwrap_or_else(default_mods_dir);
 
@@ -546,11 +547,14 @@ fn angle_diff(a: f64, b: f64) -> f64 {
 
 #[tokio::main]
 async fn main() {
-    // Check verbose flag before tracing init so we can set the right level.
+    // Check verbose flag and subcommand before tracing init.
+    // parse-map is a diagnostic command: INFO is on by default so users see PPD/sector logs
+    // without needing --verbose.  Daemon stays at WARN to avoid console spam.
     let raw_args: Vec<String> = std::env::args().collect();
     let verbose = raw_args.iter().any(|a| a == "--verbose" || a == "-v");
+    let is_parse_map = raw_args.iter().any(|a| a == "parse-map");
 
-    let max_level = if verbose {
+    let max_level = if verbose || is_parse_map {
         tracing::Level::INFO
     } else {
         tracing::Level::WARN

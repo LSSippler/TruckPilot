@@ -15,6 +15,7 @@ pub mod graph;
 pub mod hashfs;
 pub mod mod_loader;
 pub mod ppd;
+pub mod prefab_sii;
 pub mod road_full;
 pub mod road_look;
 pub mod sector;

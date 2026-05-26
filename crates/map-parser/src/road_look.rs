@@ -91,6 +91,31 @@ pub fn scs_token_hash(s: &str) -> u64 {
     h
 }
 
+/// TruckLib/Prism3D Token encoding: little-endian base-38.
+///
+/// Charset: '\0'=0, '0'-'9'=1-10, 'a'-'z'=11-36, '_'=37.
+/// token = sum(charIndex[i] * 38^i)  (position 0 is least-significant)
+///
+/// This is the format used to store prefab model tokens in ETS2 binary sector
+/// files. For a SII unit like "prefab.mod_ger_67", pass just "mod_ger_67"
+/// (the suffix after the last '.').
+pub fn trucklib_token(s: &str) -> u64 {
+    let mut h: u64 = 0;
+    let mut pow: u64 = 1; // 38^i, wrapping
+    for &b in s.as_bytes() {
+        let v: u64 = match b {
+            b'0'..=b'9' => (b - b'0' + 1) as u64,
+            b'a'..=b'z' => (b - b'a' + 11) as u64,
+            b'A'..=b'Z' => (b - b'A' + 11) as u64,
+            b'_' => 37,
+            _ => 0,
+        };
+        h = h.wrapping_add(v.wrapping_mul(pow));
+        pow = pow.wrapping_mul(38);
+    }
+    h
+}
+
 /// Maps an ETS2 lane-type name (from `lanes_left[]` / `lanes_right[]`) to a lane width.
 ///
 /// Motorway and highway lanes are wider; local/city lanes are narrower.

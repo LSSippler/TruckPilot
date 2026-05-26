@@ -310,7 +310,7 @@ mod tests {
     use super::*;
 
     fn n(uid: u64, x: f64, y: f64, z: f64) -> GraphNode {
-        GraphNode { uid, x, y, z }
+        GraphNode { uid, x, y, z, rotation: [0.0; 4] }
     }
 
     fn sectors(pairs: &[(u64, SectorId)]) -> HashMap<u64, SectorId> {

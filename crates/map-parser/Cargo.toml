@@ -90,3 +90,7 @@ path = "src/bin/node_inspect.rs"
 [[bin]]
 name = "spline_gen"
 path = "src/bin/spline_gen.rs"
+
+[[bin]]
+name = "truckpilot-sii-probe"
+path = "src/bin/sii_probe.rs"

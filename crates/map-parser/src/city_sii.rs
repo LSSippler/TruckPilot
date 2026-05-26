@@ -90,8 +90,7 @@ pub fn parse_city_sii(data: &[u8]) -> HashMap<String, CityEntry> {
         }
     };
 
-    let map = parse_city_text(text);
-    map
+    parse_city_text(text)
 }
 
 fn parse_city_text(text: &str) -> HashMap<String, CityEntry> {
@@ -288,19 +287,16 @@ pub fn load_city_sii(archives: &mut [Box<dyn Archive>]) -> HashMap<String, CityE
 
         let paths = discover_city_sii_paths(archive);
         for path in &paths {
-            match archive.read_path(path) {
-                Ok(bytes) => {
-                    any_found = true;
-                    info!("city.sii: loading '{}' from {} ({} bytes)", path, arc_label, bytes.len());
-                    let entries = parse_city_sii(&bytes);
-                    if entries.is_empty() {
-                        eprintln!("[city.sii] '{}' ({}): 0 entries (stub or BSII) — skipped", path, arc_label);
-                    } else {
-                        eprintln!("[city.sii] '{}' ({}): {} entries", path, arc_label, entries.len());
-                        merged.extend(entries);
-                    }
+            if let Ok(bytes) = archive.read_path(path) {
+                any_found = true;
+                info!("city.sii: loading '{}' from {} ({} bytes)", path, arc_label, bytes.len());
+                let entries = parse_city_sii(&bytes);
+                if entries.is_empty() {
+                    eprintln!("[city.sii] '{}' ({}): 0 entries (stub or BSII) — skipped", path, arc_label);
+                } else {
+                    eprintln!("[city.sii] '{}' ({}): {} entries", path, arc_label, entries.len());
+                    merged.extend(entries);
                 }
-                Err(_) => {}
             }
         }
     }

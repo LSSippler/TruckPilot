@@ -76,7 +76,7 @@ pub struct RawRoad {
 #[derive(Debug, Clone)]
 pub struct RawPrefab {
     pub uid: u64,
-    pub template_token: u32,
+    pub template_token: u64,
     pub node_count: u8,
     pub nodes: Vec<u64>,
 }
@@ -970,6 +970,7 @@ fn parse_sized_prefab(cur: &mut Cursor<&[u8]>) -> Result<RawPrefab, ParseError> 
     let uid = read_u64(cur)?;
     let token = read_u64(cur)?;
     let node_count = read_u32(cur)?;
+
     if node_count > MAX_LIST_COUNT {
         return Err(ParseError::Binary(format!(
             "implausible prefab node_count {node_count}"
@@ -981,7 +982,7 @@ fn parse_sized_prefab(cur: &mut Cursor<&[u8]>) -> Result<RawPrefab, ParseError> 
     }
     Ok(RawPrefab {
         uid,
-        template_token: (token & 0xFFFF_FFFF) as u32,
+        template_token: token,
         node_count: (node_count.min(255)) as u8,
         nodes,
     })
@@ -1057,8 +1058,8 @@ fn parse_prefab(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<()
     let uid = read_u64(cur)?;
     skip(cur, 45)?; // bounds(40) + flags(4) + view_dist(1)
 
-    let model_token = read_u64(cur)?;
-    skip(cur, 8)?; // variant token (u64)
+    let model_token = read_u64(cur)?;    // field A: offset 53
+    let _variant_token = read_u64(cur)?; // field B: offset 61
 
     // additionalParts: count(u32) + n×uid(u64)
     let n = read_u32(cur)? as usize;
@@ -1086,7 +1087,7 @@ fn parse_prefab(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<()
 
     sector.prefabs.push(RawPrefab {
         uid,
-        template_token: (model_token & 0xFFFF_FFFF) as u32,
+        template_token: model_token,
         node_count: node_count.min(255) as u8,
         nodes,
     });

@@ -14,6 +14,7 @@ use crate::error::ParseError;
 use crate::graph::{GraphBuilder, MapGraph};
 use crate::hashfs::{parse_directory_listing, scs_path_hash, HashFsArchive};
 use crate::ppd::PrefabDescriptor;
+use crate::prefab_sii::load_prefab_sii_defs;
 use crate::road_look::{load_road_look, scs_token_hash, RoadLookEntry};
 use crate::sector::{parse_sector, parse_sector_with_tracer};
 use crate::zip_archive::ZipArchive;
@@ -103,6 +104,7 @@ pub fn load_and_build(
     order: &ModLoadOrder,
     cache_dir: Option<&Path>,
 ) -> Result<MapGraph, ParseError> {
+    info!("parse-map entry: load_and_build");
     let t_total = Instant::now();
 
     if order.entries.is_empty() {
@@ -289,6 +291,7 @@ fn parse_sectors_from_archives(
     archives: &mut [Box<dyn Archive>],
     road_look: HashMap<u64, RoadLookEntry>,
 ) -> Result<MapGraph, ParseError> {
+    info!("parse-map entry: parse_sectors_from_archives");
     let t_sectors = Instant::now();
     let mut builder = GraphBuilder::new();
     builder.set_road_look(road_look);
@@ -381,6 +384,10 @@ fn parse_sectors_from_archives(
     );
 
     // Load PPD descriptors for prefabs
+    info!(
+        "Calling load_ppd_descriptors with {} prefab instances",
+        builder.raw_prefabs().len()
+    );
     let (ppd_descriptors, ppd_stats) = load_ppd_descriptors(archives, &builder);
     builder.set_ppd_descriptors(ppd_descriptors);
     builder.set_ppd_stats(ppd_stats.0, ppd_stats.1, ppd_stats.2, ppd_stats.3);
@@ -458,10 +465,15 @@ fn load_ppd_descriptors(
         return (HashMap::new(), (0, 0, 0, 0));
     }
 
-    // Build token→path map by walking PPD directories.
-    // HashFS: walk directory listings. ZIP: list_files() returns strings.
-    let mut token_to_path: HashMap<u64, String> = HashMap::new();
+    // Build token→path map via TruckLib base-38 tokens of the unit-name dot-suffix.
+    // E.g. "prefab.mod_ger_67" → trucklib_token("mod_ger_67").
+    // We read def/world/prefab*.sii to get the unit_name → ppd_path mapping.
+    let mut token_to_path: HashMap<u64, String> = load_prefab_sii_defs(archives);
 
+    // Supplement with stem-hash walk for ZIP archives (mods that don't ship SII).
+    // This secondary map uses scs_token_hash(stem) which is wrong for base-game
+    // prefabs but may cover a small number of mod-added prefabs whose unit names
+    // happen to match their file stems.
     for arc in archives.iter() {
         if let Some(hashfs_arc) = arc.as_any().downcast_ref::<HashFsArchive>() {
             for path in walk_ppd_paths(hashfs_arc) {
@@ -487,9 +499,11 @@ fn load_ppd_descriptors(
         }
     }
 
+    let sii_hits = tokens.iter().filter(|t| token_to_path.contains_key(t)).count();
     info!(
-        "PPD discovery: {} paths indexed for {} unique tokens",
+        "PPD discovery: {} paths indexed, {}/{} tokens matched",
         token_to_path.len(),
+        sii_hits,
         tokens.len()
     );
 
@@ -501,37 +515,37 @@ fn load_ppd_descriptors(
 
     for token in &tokens {
         if let Some(path) = token_to_path.get(token) {
+            // Strip leading '/' if present — archive paths don't use it.
+            let lookup = path.strip_prefix('/').unwrap_or(path.as_str());
             let data = archives
                 .iter_mut()
                 .rev()
-                .find_map(|arc| arc.read_path(path).ok());
+                .find_map(|arc| arc.read_path(lookup).ok());
             if let Some(raw) = data {
                 match parse_ppd(&raw) {
                     Ok(desc) => {
                         let nc = desc.nav_curves.len();
-                        info!("PPD {}: parsed {} nav_curves", path, nc);
                         total_nav_curves += nc;
                         descriptors.insert(*token, desc);
                         loaded += 1;
                     }
                     Err(e) => {
-                        warn!("PPD {} failed: {}", path, e);
+                        warn!("PPD {lookup} parse failed: {e}");
                         failed += 1;
                     }
                 }
             } else {
-                warn!("PPD {} could not be read from any archive", path);
+                debug!("PPD {lookup} not found in any archive");
                 failed += 1;
             }
         } else {
-            debug!("No PPD path for token 0x{token:016X}");
             failed += 1;
         }
     }
 
     let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
     info!(
-        "PPD total: {} loaded, {} failed, {} nav_curves in {:.1} ms",
+        "PPD load: {} loaded, {} failed, {} nav_curves in {:.1} ms",
         loaded, failed, total_nav_curves, elapsed
     );
 

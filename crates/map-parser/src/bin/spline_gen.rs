@@ -5,8 +5,7 @@
 //!   plot  --graph <graph.json> --output <out.svg> --bbox X1,Z1,X2,Z2
 //!   stats --graph <graph.json> [--bbox X1,Z1,X2,Z2]
 //!
-//! Heading-Quelle: atan2(dx, -dz) aus Edge-Positionen (Spec §1.3).
-//! Node-Quaternions werden nicht verwendet.
+//! Tangenten-Quelle: GraphNode.rotation Quaternion (DS12); Fallback auf Edge-Geometrie.
 
 use std::collections::HashMap;
 use std::io::{BufWriter, Write};
