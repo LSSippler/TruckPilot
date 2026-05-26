@@ -1,9 +1,9 @@
 use truckpilot_plugin_api::graph::RouterGraph;
 
-const SNAP_RADIUS_M: f64 = 25.0;
+pub const SNAP_RADIUS_M: f64 = 25.0;
 const MIN_DEGREE: usize = 2;
 const HEADING_SPREAD_THRESHOLD_RAD: f64 = std::f64::consts::PI / 6.0; // 30°
-const MIN_ACTIVATION_FRAMES: u32 = 3;
+pub const MIN_ACTIVATION_FRAMES: u32 = 3;
 const COAST_FRAMES: u32 = 5;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,11 @@ impl JunctionDetector {
     pub fn reset(&mut self) {
         self.junction_frames = 0;
         self.coast_remaining = 0;
+    }
+
+    /// DS13c: expose internal frame counter for diagnostic BB key.
+    pub fn frames(&self) -> u32 {
+        self.junction_frames
     }
 }
 

@@ -49,6 +49,15 @@
 //! | `lane_follower.safety_disengage_reason` | string | `""` or `lateral_excursion` / `steering_saturated` / `spline_lost` |
 //! | `lane_follower.safety_disengage_count` | u32 | monotonic safety-disengage count since daemon start |
 //! | `lane_follower.rate_limit_active` | `"true"/"false"` | tightened rate-limit (`|lateral| > 3m`) |
+//! | `lane_follower.nearest_seg_is_prefab` | `"true"/"false"` | DS13c: nearest segment is a prefab NavCurve |
+//! | `lane_follower.nearest_seg_ai_path_uid` | u64 | DS13c: prefab ai_path array index (0 if road) |
+//! | `lane_follower.junction_detection_radius_m` | f64 metres | DS13c: snap radius for junction detection |
+//! | `lane_follower.junction_min_activation_frames` | u32 | DS13c: frames needed to activate junction |
+//! | `lane_follower.junction_frames_count` | u32 | DS13c: consecutive positive detection frames |
+//! | `lane_follower.junction_phase_inside_threshold_m` | string | DS13c: "not_implemented" (no inside phase) |
+//! | `lane_follower.junction_phase_transitions_count` | u32 | DS13c: monotonic phase-string change counter |
+//! | `lane_follower.lookahead_hop_count` | usize | DS13c: segments traversed during lookahead |
+//! | `lane_follower.lookahead_hop_failed_reason` | string | DS13c: `"none"` / `"no_next_edge"` / `"max_hops"` |
 
 mod junction;
 mod pure_pursuit;
@@ -187,6 +196,13 @@ pub struct LaneFollowerPlugin {
     spline_lost_ticks: u32,
     /// Monotonic safety-disengage count since daemon start.
     safety_disengage_count: u32,
+    // ── DS13c: junction-failure diagnostic state ──────────────────────
+    /// Number of road segments [0..road_seg_count); prefab segs start at this index.
+    road_seg_count: usize,
+    /// Phase string from the previous tick — used to count transitions.
+    prev_junction_phase: Option<&'static str>,
+    /// Monotonic counter: increments on every junction_phase string change.
+    junction_phase_transitions: u32,
 }
 
 /// VMM-6: simple forward-walk lookahead over minimap segments (no LUT required).
@@ -280,6 +296,12 @@ impl LaneFollowerPlugin {
         ctx.blackboard.set("map.ppd.files_loaded", graph.stats.ppd_files_loaded.to_string());
         ctx.blackboard.set("map.ppd.files_failed", graph.stats.ppd_files_failed.to_string());
         ctx.blackboard.set("map.ppd.total_nav_curves_parsed", graph.stats.ppd_total_nav_curves.to_string());
+        // DS13c – TASK 4: road vs prefab segment index ranges for hypothesis A range-check.
+        ctx.blackboard.set("map.spline.road_segments_count", road_seg_count.to_string());
+        ctx.blackboard.set("map.spline.road_segment_idx_max", road_seg_count.saturating_sub(1).to_string());
+        ctx.blackboard.set("map.spline.prefab_segment_idx_min", road_seg_count.to_string());
+        ctx.blackboard.set("map.spline.prefab_segment_idx_max", total_seg_count.saturating_sub(1).to_string());
+        self.road_seg_count = road_seg_count;
 
         self.luts = luts;
         self.forward_adj = forward_adj;
@@ -490,6 +512,34 @@ impl Plugin for LaneFollowerPlugin {
                 detection.distance_m.map_or_else(String::new, |d| format!("{d:.1}")),
             );
             ctx.blackboard.set("lane_follower.junction_max_degree", detection.max_degree.to_string());
+            // DS13c – TASK 3: Hypothesis D — why does phase never transition to "inside"?
+            // Note: JunctionPhase has no "inside"/"crossing" state; "approaching" is the only
+            // active phase. SNAP_RADIUS_M is the detection radius — not an inside threshold.
+            ctx.blackboard.set(
+                "lane_follower.junction_detection_radius_m",
+                format!("{:.1}", junction::SNAP_RADIUS_M),
+            );
+            ctx.blackboard.set(
+                "lane_follower.junction_min_activation_frames",
+                junction::MIN_ACTIVATION_FRAMES.to_string(),
+            );
+            ctx.blackboard.set(
+                "lane_follower.junction_frames_count",
+                self.junction_detector.frames().to_string(),
+            );
+            // "inside" phase does not exist — approaching is the only active phase.
+            ctx.blackboard
+                .set("lane_follower.junction_phase_inside_threshold_m", "not_implemented");
+            let phase_str = phase.as_str();
+            if self.prev_junction_phase != Some(phase_str) {
+                self.junction_phase_transitions =
+                    self.junction_phase_transitions.saturating_add(1);
+                self.prev_junction_phase = Some(phase_str);
+            }
+            ctx.blackboard.set(
+                "lane_follower.junction_phase_transitions_count",
+                self.junction_phase_transitions.to_string(),
+            );
         }
 
         // VMM-6: select primary or minimap SplineIndex.
@@ -536,6 +586,18 @@ impl Plugin for LaneFollowerPlugin {
             .set("lane_follower.nearest_seg_z", format!("{:.3}", hit.point_on_curve.z));
         ctx.blackboard
             .set("lane_follower.heading_deg", format!("{:.2}", hit.heading_deg));
+        // DS13c – TASK 1: Hypothesis A — is the nearest segment a prefab NavCurve?
+        let nearest_is_prefab = seg_meta.is_some_and(|m| m.is_prefab);
+        ctx.blackboard
+            .set("lane_follower.nearest_seg_is_prefab", nearest_is_prefab.to_string());
+        // ai_path index = position within prefab array (0 when not prefab).
+        let nearest_seg_ai_path_uid = if nearest_is_prefab {
+            (hit.segment_idx.saturating_sub(self.road_seg_count)) as u64
+        } else {
+            0u64
+        };
+        ctx.blackboard
+            .set("lane_follower.nearest_seg_ai_path_uid", nearest_seg_ai_path_uid.to_string());
 
         ctx.blackboard
             .set("lane_follower.truck_heading_deg", format!("{truck_heading_deg:.2}"));
@@ -570,7 +632,7 @@ impl Plugin for LaneFollowerPlugin {
         // Right-normal at heading h (CW degrees): n = (cos h, sin h) in XZ.
         // Forward at heading h: f = (sin h, -cos h) in XZ.
         // Signed lateral = f × (truck − spline) = fx*(tz_diff) − fz*(tx_diff). Positive = truck right.
-        let road_h_rad = (hit.heading_deg as f32).to_radians();
+        let road_h_rad = hit.heading_deg.to_radians();
         let near_n_x = road_h_rad.cos();
         let near_n_z = road_h_rad.sin();
         let fwd_x = road_h_rad.sin();
@@ -604,9 +666,8 @@ impl Plugin for LaneFollowerPlugin {
 
         // Speed-adaptive lookahead: 1 sec ahead, clamped to [15m, 50m].
         let speed_kmh = tel.speed_ms as f32 * 3.6;
-        let lookahead_dist_m = (speed_kmh * LOOKAHEAD_SPEED_FACTOR)
-            .max(LOOKAHEAD_DIST_M_MIN)
-            .min(LOOKAHEAD_DIST_M_MAX);
+        let lookahead_dist_m =
+            (speed_kmh * LOOKAHEAD_SPEED_FACTOR).clamp(LOOKAHEAD_DIST_M_MIN, LOOKAHEAD_DIST_M_MAX);
         ctx.blackboard
             .set("lane_follower.lookahead_distance_m", format!("{lookahead_dist_m:.1}"));
         ctx.blackboard
@@ -644,6 +705,21 @@ impl Plugin for LaneFollowerPlugin {
                     "dead_end"
                 };
                 ctx.blackboard.set("lane_follower.lookahead_status", la_status);
+                // DS13c – TASK 2: Hypothesis C — lookahead hop diagnostics.
+                // remaining_dist_m=0 → ok (target reached); >0 → dead_end or max_hops.
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_hop_count",
+                    la.iteration_count.to_string(),
+                );
+                let hop_failed_reason = if la.remaining_dist_m == 0.0 {
+                    "none"
+                } else if la.iteration_count >= LOOKAHEAD_MAX_HOPS {
+                    "max_hops"
+                } else {
+                    "no_next_edge"
+                };
+                ctx.blackboard
+                    .set("lane_follower.lookahead_hop_failed_reason", hop_failed_reason);
 
                 self.lookahead_seg_history.push_back(la.seg_idx);
                 if self.lookahead_seg_history.len() > STABILITY_WINDOW {
