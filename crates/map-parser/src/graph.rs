@@ -19,6 +19,8 @@ use crate::spatial_match::{
 };
 use std::collections::HashSet;
 
+use crate::spline::{quat_rotate_vec, Vec3 as SplineVec3, FORWARD};
+
 // ---------------------------------------------------------------------------
 // Graph types
 // ---------------------------------------------------------------------------
@@ -101,6 +103,12 @@ pub struct PrefabAiPath {
     pub blinker: Option<ppd::Blinker>,
     pub curve_indices: Vec<u16>,
     pub semaphore_id: Option<i32>,
+    /// Rotation of the first NavCurve at path entry [qw, qx, qy, qz] (WXYZ).
+    #[serde(default = "default_quat")]
+    pub start_rotation: [f32; 4],
+    /// Rotation of the last NavCurve at path exit [qw, qx, qy, qz] (WXYZ).
+    #[serde(default = "default_quat")]
+    pub end_rotation: [f32; 4],
 }
 
 /// A single prefab placement in the world, referencing a shared descriptor.
@@ -1072,9 +1080,9 @@ fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n:
 
     let len = nc.length.max(0.001);
 
-    // Tangent from rotation quaternion: rotate (0,0,-len) by q.
-    let m0 = quat_rotate_vec(&nc.start_rotation, &[0.0, 0.0, -len]);
-    let m1 = quat_rotate_vec(&nc.end_rotation, &[0.0, 0.0, -len]);
+    // Tangent from rotation quaternion: rotate FORWARD by q, scaled by len.
+    let m0: SplineVec3 = quat_rotate_vec(nc.start_rotation, FORWARD * len);
+    let m1: SplineVec3 = quat_rotate_vec(nc.end_rotation, FORWARD * len);
 
     let nf = n as f32;
     let mut pts = Vec::with_capacity(n);
@@ -1089,9 +1097,9 @@ fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n:
         let h01 = -2.0 * t3 + 3.0 * t2;
         let h11 = t3 - t2;
 
-        let x = h00 * p0[0] + h10 * m0[0] + h01 * p1[0] + h11 * m1[0];
-        let y = h00 * p0[1] + h10 * m0[1] + h01 * p1[1] + h11 * m1[1];
-        let z = h00 * p0[2] + h10 * m0[2] + h01 * p1[2] + h11 * m1[2];
+        let x = h00 * p0[0] + h10 * m0.x + h01 * p1[0] + h11 * m1.x;
+        let y = h00 * p0[1] + h10 * m0.y + h01 * p1[1] + h11 * m1.y;
+        let z = h00 * p0[2] + h10 * m0.z + h01 * p1[2] + h11 * m1.z;
 
         pts.push([x, y, z]);
     }
@@ -1105,28 +1113,6 @@ fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n:
     pts
 }
 
-/// Basic quaternion rotation: q * v, where q = [x, y, z, w].
-fn quat_rotate_vec(q: &[f32; 4], v: &[f32; 3]) -> [f32; 3] {
-    let qx = q[0];
-    let qy = q[1];
-    let qz = q[2];
-    let qw = q[3];
-    let vx = v[0];
-    let vy = v[1];
-    let vz = v[2];
-
-    // t = 2.0 * cross(q.xyz, v)
-    let tx = 2.0 * (qy * vz - qz * vy);
-    let ty = 2.0 * (qz * vx - qx * vz);
-    let tz = 2.0 * (qx * vy - qy * vx);
-
-    // result = v + qw * t + cross(q.xyz, t)
-    let rx = vx + qw * tx + (qy * tz - qz * ty);
-    let ry = vy + qw * ty + (qz * tx - qx * tz);
-    let rz = vz + qw * tz + (qx * ty - qy * tx);
-
-    [rx, ry, rz]
-}
 
 /// Build PrefabAiPath records by walking NavCurves within a PrefabDescriptor,
 /// mapping control nodes to world-space GraphNode UIDs.
@@ -1211,6 +1197,8 @@ fn build_prefab_ai_paths(
 
             // Get meta from first curve
             let first_curve = &desc.nav_curves[start_curve_idx];
+            let last_curve_idx = curve_indices.last().copied().unwrap_or(start_curve_idx);
+            let last_curve = &desc.nav_curves[last_curve_idx.min(desc.nav_curves.len().saturating_sub(1))];
 
             paths.push(PrefabAiPath {
                 from_node_uid,
@@ -1227,6 +1215,8 @@ fn build_prefab_ai_paths(
                 } else {
                     None
                 },
+                start_rotation: first_curve.start_rotation,
+                end_rotation: last_curve.end_rotation,
             });
         }
     }
@@ -1311,38 +1301,33 @@ impl MapGraph {
             if pts.len() < 2 {
                 continue;
             }
-            for i in 0..pts.len() - 1 {
-                let p0 = crate::spline::Vec3::new(pts[i][0], pts[i][1], pts[i][2]);
-                let p1 = crate::spline::Vec3::new(pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
-                let dx = p1.x - p0.x;
-                let dy = p1.y - p0.y;
-                let dz = p1.z - p0.z;
-                let chord = (dx * dx + dy * dy + dz * dz).sqrt();
-                let tangent = if chord > 0.001 {
-                    crate::spline::Vec3::new(dx / chord, dy / chord, dz / chord) * chord
-                } else {
-                    crate::spline::Vec3::default()
-                };
-                segments.push(crate::spline::HermiteSegment {
-                    p0,
-                    p1,
-                    m0: tangent,
-                    m1: tangent,
-                    length_m: chord,
-                    from_uid: path.from_node_uid,
-                    to_uid: path.to_node_uid,
-                    edge_uid: 0,
-                });
-                metadata.push(Some(crate::spline::SegmentMetadata {
-                    lanes_in_direction: 1,
-                    lanes_opposite: 0,
-                    lanes_total: 1,
-                    lane_width_m: 3.75,
-                    lane_offset_right_m: 0.0,
-                    road_look_token: 0,
-                    is_prefab: true,
-                }));
+            let p0 = crate::spline::Vec3::new(pts[0][0], pts[0][1], pts[0][2]);
+            let p1 = crate::spline::Vec3::new(pts[pts.len() - 1][0], pts[pts.len() - 1][1], pts[pts.len() - 1][2]);
+            let chord_len = (p1 - p0).length();
+            if chord_len < 1e-4 {
+                continue;
             }
+            let m0 = crate::spline::quat_rotate_vec(path.start_rotation, crate::spline::FORWARD) * chord_len;
+            let m1 = crate::spline::quat_rotate_vec(path.end_rotation,   crate::spline::FORWARD) * chord_len;
+            segments.push(crate::spline::HermiteSegment {
+                p0,
+                p1,
+                m0,
+                m1,
+                length_m: path.length_m,
+                from_uid: path.from_node_uid,
+                to_uid: path.to_node_uid,
+                edge_uid: 0,
+            });
+            metadata.push(Some(crate::spline::SegmentMetadata {
+                lanes_in_direction: 1,
+                lanes_opposite: 0,
+                lanes_total: 1,
+                lane_width_m: 3.75,
+                lane_offset_right_m: 0.0,
+                road_look_token: 0,
+                is_prefab: true,
+            }));
         }
         (segments, metadata)
     }
@@ -1630,5 +1615,23 @@ mod tests {
         assert_eq!(g.prefabs[0].uid, 100);
         assert_eq!(g.prefabs[0].template_token, 0xABCD);
         assert_eq!(g.prefabs[0].connected_node_uids, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_navcurve_tangent_from_rotation() {
+        // Identity quaternion [1,0,0,0] WXYZ → FORWARD direction unchanged: (0,0,-1)
+        let identity = [1.0f32, 0.0, 0.0, 0.0];
+        let t = crate::spline::quat_rotate_vec(identity, crate::spline::FORWARD);
+        assert!(t.x.abs() < 1e-4, "x≈0, got {}", t.x);
+        assert!(t.y.abs() < 1e-4, "y≈0, got {}", t.y);
+        assert!((t.z + 1.0).abs() < 1e-4, "z≈-1 (North), got {}", t.z);
+
+        // East quaternion [√2/2, 0, -√2/2, 0] WXYZ → FORWARD rotates to East (+X)
+        let s = (2.0f32).sqrt() / 2.0;
+        let east_rot = [s, 0.0, -s, 0.0];
+        let t2 = crate::spline::quat_rotate_vec(east_rot, crate::spline::FORWARD);
+        assert!((t2.x - 1.0).abs() < 1e-3, "x≈1 (East), got {}", t2.x);
+        assert!(t2.y.abs() < 1e-4, "y≈0, got {}", t2.y);
+        assert!(t2.z.abs() < 1e-3, "z≈0, got {}", t2.z);
     }
 }

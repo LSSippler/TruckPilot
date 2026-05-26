@@ -16,7 +16,7 @@ use crate::error::ParseError;
 use crate::graph::MapGraph;
 
 /// Increment when the `MapGraph` schema changes to invalidate old caches.
-const PARSER_VERSION: u32 = 5; // Bumped: BuildStats gained PPD diagnostic fields (DS7 fix)
+const PARSER_VERSION: u32 = 6; // Bumped: PrefabAiPath gained start/end_rotation (DS13a)
 const BINCODE_CONFIG: Configuration = bincode::config::standard();
 
 /// On-disk cache envelope.

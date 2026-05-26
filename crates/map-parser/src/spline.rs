@@ -24,6 +24,9 @@ use crate::graph::{GraphEdge, MapGraph};
 /// < 1.0 → weichere Kurven; > 1.0 → aggressivere Überschwinger.
 pub const TANGENT_SCALE: f32 = 1.0;
 
+/// ETS2 forward direction in local space (SCS SDK: heading 0 = North = -Z world).
+pub const FORWARD: Vec3 = Vec3 { x: 0.0, y: 0.0, z: -1.0 };
+
 // ---------------------------------------------------------------------------
 // Datenmodell
 // ---------------------------------------------------------------------------
@@ -301,7 +304,7 @@ pub fn build_splines_ex(
             let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+                quat_rotate_vec(q, FORWARD * mag)
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.from) {
@@ -315,7 +318,7 @@ pub fn build_splines_ex(
             let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+                quat_rotate_vec(q, FORWARD * mag)
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.to) {
@@ -433,7 +436,7 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
             let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+                quat_rotate_vec(q, FORWARD * mag)
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.from) {
@@ -448,7 +451,7 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
             let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, Vec3::new(0.0, 0.0, -mag))
+                quat_rotate_vec(q, FORWARD * mag)
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.to) {
@@ -1069,7 +1072,7 @@ mod tests {
     fn test_quaternion_to_tangent_north() {
         // Identity quaternion [1,0,0,0] → North direction (0,0,-len) unchanged
         let q = [1.0f32, 0.0, 0.0, 0.0];
-        let result = quat_rotate_vec(q, Vec3::new(0.0, 0.0, -10.0));
+        let result = quat_rotate_vec(q, FORWARD * 10.0);
         assert!((result.x).abs() < 1e-4, "x≈0, got {}", result.x);
         assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
         assert!((result.z + 10.0).abs() < 1e-4, "z≈-10 (North), got {}", result.z);
@@ -1080,7 +1083,7 @@ mod tests {
         // East quaternion [√2/2, 0, -√2/2, 0] → rotates North to East
         let s = (2.0f32).sqrt() / 2.0;
         let q = [s, 0.0, -s, 0.0];
-        let result = quat_rotate_vec(q, Vec3::new(0.0, 0.0, -10.0));
+        let result = quat_rotate_vec(q, FORWARD * 10.0);
         assert!((result.x - 10.0).abs() < 1e-4, "x≈10 (East), got {}", result.x);
         assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
         assert!((result.z).abs() < 1e-4, "z≈0, got {}", result.z);
