@@ -98,6 +98,8 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 - [[01-Phases/Phase-6.2a-vJoy-Probe]] — **CLOSED 2026-05-15**: GATE-0 PASS. `truckpilot-vjoy-probe` Binary validated (Spec Final v1.0, 15/15 unit tests, alle 4 Manual-ETS2-Kriterien PASS). vJoy Device 1 X/Y/Z = Steering/Throttle/Brake. Phase 6.2c (vJoy Real Wiring) freigegeben.
 - [[01-Phases/Phase-6.6-Quaternion-Tangent-Fix]] — **CLOSED 2026-05-25**: DS12 P0 Fix live-verifiziert. Root Cause: Hermite-Tangenten aus Edge-Richtungen abgeleitet statt aus Node-Rotations-Quaternions (TruckLib-Formel). `GraphNode.rotation: [f32; 4]` + Rodrigues `quat_rotate_vec()` + Fallback auf `node_tangent()`. PARSER_VERSION 3→4. `lateral_dist_signed` 17.6m → 2.9m, `steering_cmd` saturiert → ±0.04 auf Geraden. 10 Perplexity-Findings konsolidiert (Lane-Width, Wheelbase, Lookahead-K_dd, PPD NavCurves, Trajectory-Items). Offen: Junction-Spikes (DS7 PrefabAiPath), residuale 1.9m (DS8 LaneIndex).
 
+- [[01-Phases/Phase-DS13a-quat-consolidation]] — **CLOSED 2026-05-26**: DS13a quat_rotate_vec Konsolidierung. Fall A: beide Quellen (PPD NavCurves + .base MapNodes) WXYZ bestätigt. graph.rs::quat_rotate_vec (XYZW-Bug) eliminiert. spline::quat_rotate_vec (WXYZ) als einzige Implementierung. pub const FORWARD = (0,0,-1) per SCS SDK. PrefabAiPath.start/end_rotation aus NavCurves. prefab_hermite_segments_with_metadata: 1 Segment/Pfad mit Rotations-Tangenten. PARSER_VERSION 5→6. Alle Tests grün, map-parser clippy clean. Commit `d49c459`. Live-Test pending.
+
 ## Reviews
 
 - [[03-Reviews/DeepSeek-Review]]

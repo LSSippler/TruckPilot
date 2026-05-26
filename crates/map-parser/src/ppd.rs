@@ -98,7 +98,9 @@ fn read_f32(cur: &mut Cursor<&[u8]>) -> Result<f32, ParseError> {
     let mut buf = [0u8; 4];
     cur.read_exact(&mut buf)
         .map_err(|e| ParseError::Binary(format!("read_f32: {e}")))?;
-    Ok(f32::from_le_bytes(buf))
+    let v = f32::from_le_bytes(buf);
+    // serde_json serialises NaN/Inf as null; reject them at parse time.
+    Ok(if v.is_finite() { v } else { 0.0 })
 }
 
 fn read_f32x3(cur: &mut Cursor<&[u8]>) -> Result<[f32; 3], ParseError> {
@@ -336,7 +338,7 @@ fn read_nav_curve(cur: &mut Cursor<&[u8]>) -> Result<NavCurve, ParseError> {
     let end_position = read_f32x3(cur)?;
     let start_rotation = read_f32x4(cur)?;
     let end_rotation = read_f32x4(cur)?;
-    let length = read_f32(cur)?;
+    let length = { let v = read_f32(cur)?; if v.is_finite() { v.max(0.0) } else { 0.0 } };
     let next_lines = read_i32x4(cur)?;
     let prev_lines = read_i32x4(cur)?;
     let next_used = read_u32(cur)?;
@@ -394,7 +396,7 @@ fn read_nav_node(cur: &mut Cursor<&[u8]>) -> Result<NavNode, ParseError> {
     let mut connections = Vec::with_capacity(actual_count);
     for _ in 0..actual_count {
         let target_node_index = read_u16(cur)?;
-        let length = read_f32(cur)?;
+        let length = { let v = read_f32(cur)?; if v.is_finite() { v.max(0.0) } else { 0.0 } };
         let curve_count = read_u8(cur)? as usize;
         let actual_cc = curve_count.min(8);
         let mut curve_indices = Vec::with_capacity(actual_cc);
