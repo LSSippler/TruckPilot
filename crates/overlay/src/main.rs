@@ -1,16 +1,26 @@
-//! TruckPilot Debug HUD — transparent overlay over ETS2
-//!
-//! Standalone binary. Lifecycle separate from daemon and UI.
+//! TruckPilot AR + Debug HUD — transparent overlay over ETS2
 //!
 //! Architecture:
-//!   - WebSocket client polls daemon at 5 Hz (ws://127.0.0.1:8765)
-//!   - Shared HudState (Arc) updated by WS thread, read by render thread
-//!   - procmod-overlay renders over ETS2 window at ~30 fps via DX11
-//!   - Runs without daemon: shows "DAEMON DISCONNECTED" banner
+//!   - WebSocket client   → polls daemon at 5 Hz (bias/segments/lane data)
+//!   - AR telemetry thread → reads SHM directly at 60 Hz (truck pose)
+//!   - Render loop        → procmod-overlay DX11, 60 fps
+//!
+//! ## Modes (F1 to cycle)
+//!   Minimap  — classic 480×480 HUD panel top-right
+//!   AR       — world-anchored road lines, full-screen projection
+//!   Both     — AR lines + minimap panel simultaneously
+//!
+//! ## Hotkeys
+//!   F1  cycle mode  |  F2  toggle visibility  |  F3  FOV calibration wizard
 
+mod ar_renderer;
+mod colors;
+mod config_reader;
 mod coords;
+mod projection;
 mod renderer;
 mod state;
+mod telemetry;
 mod ws_client;
 
 use std::sync::Arc;
@@ -21,7 +31,6 @@ use tracing::info;
 use crate::state::HudState;
 
 fn main() -> Result<()> {
-    // Tracing init — level controlled by RUST_LOG env var, default INFO
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -29,13 +38,15 @@ fn main() -> Result<()> {
         )
         .init();
 
-    info!("TruckPilot Debug HUD starting");
+    info!("TruckPilot AR HUD starting");
 
-    let state = HudState::new();
+    // ── Shared state ──────────────────────────────────────────────────────────
+    let hud_state = HudState::new();
+    let ar_pose = telemetry::spawn_telemetry_thread();
 
-    // Spawn WS client in background tokio runtime
-    let state_for_ws = Arc::clone(&state);
-    let ws_handle = std::thread::spawn(move || {
+    // ── WebSocket client (bias / segments / lane data) ────────────────────────
+    let state_for_ws = Arc::clone(&hud_state);
+    let _ws_handle = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -43,19 +54,17 @@ fn main() -> Result<()> {
         rt.block_on(ws_client::run(state_for_ws));
     });
 
-    // Render loop on main thread (Win32 message pump requires it)
+    // ── Render loop (Win32 message pump must be on main thread) ───────────────
     #[cfg(windows)]
     {
-        renderer::run(state)?;
+        renderer::run(hud_state, ar_pose)?;
     }
 
     #[cfg(not(windows))]
     {
         tracing::error!("TruckPilot overlay only supports Windows");
-        // Keep WS thread alive for smoke-test
-        let _ = ws_handle.join();
+        let _ = _ws_handle.join();
     }
 
-    let _ = ws_handle;
     Ok(())
 }

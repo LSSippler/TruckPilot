@@ -1,58 +1,125 @@
-//! TASK 4 — HUD render loop using procmod-overlay (DX11 backend).
+//! TASK 4/5/6/7/8 — Main render loop: Minimap, AR, and Both modes.
 //!
-//! Runs on the main thread at ~30 fps. Reads HudState every frame.
-//! Draws a 480×480 HUD panel in the top-right corner of the ETS2 window.
+//! ## Hotkeys
+//! * F1  — cycle RenderMode (Minimap → AR → Both → Minimap …)
+//! * F2  — toggle overlay visibility on/off
+//! * F3  — enter/exit FOV calibration wizard
+//! * ↑↓  — (during calibration) increase/decrease FOV by 1°
 //!
-//! ## Panel layout (480×480 px, origin = panel top-left)
-//!
-//!   ┌──────────────────────────────────────┐
-//!   │ [text panel, top-left, ~200×100px]   │
-//!   │                                      │
-//!   │        [map area, center]            │
-//!   │           ↑ truck arrow              │
-//!   │                                      │
-//!   └──────────────────────────────────────┘
-//!
-//! ## Coordinate systems
-//!
-//!   - HUD-local: origin = panel top-left, x right, y down
-//!   - Screen: offset by `panel_origin` (top-right of game window)
+//! ## Fullscreen
+//! The overlay is drawn at screen coordinates [0..screen_w] × [0..screen_h].
+//! Resolution is detected via Win32 GetSystemMetrics, with env var override
+//! and a 1920×1080 fallback.
 
 #![cfg(windows)]
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use procmod_overlay::{Color, Overlay, OverlayTarget};
 use tracing::{error, info, warn};
 
+use crate::ar_renderer::{render_ar, render_calibration};
+use crate::config_reader::{effective_fov, save_toml_fov};
 use crate::coords::{self, HUD_H, HUD_W};
 use crate::state::{HudData, HudState};
+use crate::telemetry::TruckPose;
 
-/// Target game window title substring.
+// ─── Win32 helpers (raw FFI, avoids version-pinning the `windows` crate) ─────
+
+extern "system" {
+    fn GetAsyncKeyState(vKey: i32) -> i16;
+    fn GetSystemMetrics(nIndex: i32) -> i32;
+}
+#[link(name = "user32")]
+extern "C" {}
+
+const VK_F1: i32 = 0x70;
+const VK_F2: i32 = 0x71;
+const VK_F3: i32 = 0x72;
+const VK_UP: i32 = 0x26;
+const VK_DOWN: i32 = 0x28;
+/// GetSystemMetrics index for primary monitor width.
+const SM_CXSCREEN: i32 = 0;
+/// GetSystemMetrics index for primary monitor height.
+const SM_CYSCREEN: i32 = 1;
+
+/// Returns true if the key was pressed since the last call (low bit set).
+/// Used for one-shot toggle detection.
+fn key_just_pressed(vk: i32) -> bool {
+    unsafe { GetAsyncKeyState(vk) & 0x0001 != 0 }
+}
+
+/// Returns true if the key is currently held down (high bit set).
+fn key_held(vk: i32) -> bool {
+    unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+}
+
+// ─── RenderMode ──────────────────────────────────────────────────────────────
+
+/// Which visualisation(s) to draw each frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    Minimap,
+    AR,
+    Both,
+}
+
+impl RenderMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Minimap => Self::AR,
+            Self::AR => Self::Both,
+            Self::Both => Self::Minimap,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Minimap => "Minimap",
+            Self::AR => "AR",
+            Self::Both => "Both",
+        }
+    }
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 const GAME_TITLE: &str = "Euro Truck Simulator 2";
-
-/// Render frame rate (fps).
-const FPS: u64 = 30;
+const FPS: u64 = 60;
 const FRAME_DURATION: Duration = Duration::from_millis(1000 / FPS);
+/// How fast FOV steps while arrow keys are held (degrees per second).
+const FOV_STEP_PER_SEC: f32 = 10.0;
 
-/// Screen width used to position HUD panel at top-right.
-/// Override via OVERLAY_SCREEN_W environment variable.
-fn screen_width() -> f32 {
-    std::env::var("OVERLAY_SCREEN_W")
+// ─── Screen size detection ────────────────────────────────────────────────────
+
+fn detect_screen_size() -> (f32, f32) {
+    // 1) Environment variable overrides (useful for multi-monitor setups).
+    let w = std::env::var("OVERLAY_SCREEN_W")
         .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1920.0_f32)
+        .and_then(|s| s.parse().ok());
+    let h = std::env::var("OVERLAY_SCREEN_H")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    if let (Some(w), Some(h)) = (w, h) {
+        return (w, h);
+    }
+
+    // 2) Win32 primary monitor resolution.
+    let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    if w > 0 && h > 0 {
+        return (w as f32, h as f32);
+    }
+
+    // 3) Fallback.
+    (1920.0, 1080.0)
 }
 
-/// Panel origin in screen coordinates.
-fn panel_origin() -> (f32, f32) {
-    let sw = screen_width();
-    (sw - HUD_W - 10.0, 10.0)
-}
+// ─── Entry point ─────────────────────────────────────────────────────────────
 
-pub fn run(state: Arc<HudState>) -> Result<()> {
+pub fn run(state: Arc<HudState>, pose: Arc<RwLock<TruckPose>>) -> Result<()> {
     info!("Connecting overlay to window: '{GAME_TITLE}'");
 
     let mut overlay = loop {
@@ -65,26 +132,69 @@ pub fn run(state: Arc<HudState>) -> Result<()> {
         }
     };
 
-    info!("Overlay attached. Starting render loop at {FPS} fps.");
-
-    let origin = panel_origin();
+    let (screen_w, screen_h) = detect_screen_size();
     info!(
-        "HUD panel at screen ({:.0}, {:.0}), size {}×{}",
-        origin.0, origin.1, HUD_W, HUD_H
+        "Screen size: {screen_w}×{screen_h}. Overlay attached. Starting render loop at {FPS} fps."
     );
+
+    // ── Per-frame mutable state ───────────────────────────────────────────────
+    let mut mode = RenderMode::AR; // default: AR for live testing
+    let mut visible = true;
+    let mut calibrating = false;
+    let mut fov_h = effective_fov();
+    let mut last_fov_key_time = Instant::now();
+
+    info!("Initial mode: {}, FOV: {fov_h:.1}°", mode.label());
 
     loop {
         let frame_start = Instant::now();
 
-        if !overlay.is_visible() {
-            // ETS2 not in foreground — still keep running but yield
+        // ── Hotkey polling ────────────────────────────────────────────────────
+        if key_just_pressed(VK_F1) && !calibrating {
+            mode = mode.cycle();
+            info!("Mode toggled → {}", mode.label());
+        }
+        if key_just_pressed(VK_F2) {
+            visible = !visible;
+            info!("Visibility → {visible}");
+        }
+        if key_just_pressed(VK_F3) {
+            calibrating = !calibrating;
+            if !calibrating {
+                if let Err(e) = save_toml_fov(fov_h) {
+                    error!("Failed to save FOV to truckpilot.toml: {e}");
+                } else {
+                    info!("Saved calibrated FOV {fov_h:.1}° to truckpilot.toml");
+                }
+            } else {
+                info!("Entering FOV calibration wizard (current FOV={fov_h:.1}°)");
+            }
+        }
+
+        // FOV adjustment during calibration (continuous while held).
+        if calibrating {
+            let dt = last_fov_key_time.elapsed().as_secs_f32();
+            if key_held(VK_UP) {
+                fov_h = (fov_h + FOV_STEP_PER_SEC * dt).clamp(30.0, 150.0);
+                last_fov_key_time = Instant::now();
+            } else if key_held(VK_DOWN) {
+                fov_h = (fov_h - FOV_STEP_PER_SEC * dt).clamp(30.0, 150.0);
+                last_fov_key_time = Instant::now();
+            }
+        }
+
+        // ── Visibility gate ───────────────────────────────────────────────────
+        if !visible || !overlay.is_visible() {
             std::thread::sleep(Duration::from_millis(50));
             continue;
         }
 
+        // ── Snapshot shared state ─────────────────────────────────────────────
         let data = state.snapshot();
         let connected = state.is_connected();
+        let pose_snap = pose.read().map(|p| p.clone()).unwrap_or_default();
 
+        // ── Frame draw ────────────────────────────────────────────────────────
         match overlay.begin_frame() {
             Ok(_) => {}
             Err(e) => {
@@ -93,7 +203,32 @@ pub fn run(state: Arc<HudState>) -> Result<()> {
             }
         }
 
-        draw_frame(&mut overlay, &data, connected, origin);
+        if calibrating {
+            // Calibration wizard always draws full-screen.
+            render_calibration(&mut overlay, &pose_snap, fov_h, screen_w, screen_h);
+        } else {
+            match mode {
+                RenderMode::Minimap => {
+                    let origin = minimap_origin(screen_w);
+                    draw_minimap_frame(&mut overlay, &data, connected, origin);
+                }
+                RenderMode::AR => {
+                    render_ar(
+                        &mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h,
+                    );
+                }
+                RenderMode::Both => {
+                    render_ar(
+                        &mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h,
+                    );
+                    let origin = minimap_origin(screen_w);
+                    draw_minimap_frame(&mut overlay, &data, connected, origin);
+                }
+            }
+
+            // Mode indicator badge (always visible).
+            draw_mode_badge(&mut overlay, mode, screen_w);
+        }
 
         match overlay.end_frame() {
             Ok(_) => {}
@@ -103,7 +238,7 @@ pub fn run(state: Arc<HudState>) -> Result<()> {
             }
         }
 
-        // Sleep remainder of frame budget
+        // ── Frame-rate limiter ────────────────────────────────────────────────
         let elapsed = frame_start.elapsed();
         if elapsed < FRAME_DURATION {
             std::thread::sleep(FRAME_DURATION - elapsed);
@@ -113,7 +248,23 @@ pub fn run(state: Arc<HudState>) -> Result<()> {
     Ok(())
 }
 
-fn draw_frame(
+// ─── Minimap helpers ──────────────────────────────────────────────────────────
+
+fn minimap_origin(screen_w: f32) -> (f32, f32) {
+    (screen_w - HUD_W - 10.0, 10.0)
+}
+
+fn draw_mode_badge(overlay: &mut Overlay, mode: RenderMode, screen_w: f32) {
+    let label = format!("Mode: {} (F1)", mode.label());
+    let bx = screen_w - 160.0;
+    let by = HUD_H + 20.0;
+    overlay.rect_filled(bx - 4.0, by - 2.0, 155.0, 22.0, Color::rgba(0, 0, 0, 180));
+    overlay.text(bx, by, &label, 13.0, Color::rgba(200, 230, 200, 255));
+}
+
+// ── The minimap draw function (verbatim from old renderer.rs) ─────────────────
+
+fn draw_minimap_frame(
     overlay: &mut Overlay,
     data: &HudData,
     connected: bool,
@@ -122,136 +273,74 @@ fn draw_frame(
     let ox = origin.0;
     let oy = origin.1;
     let scale = coords::DEFAULT_SCALE;
-    let center = coords::CENTER; // (240, 240) panel-local
+    let center = coords::CENTER;
 
-    // ─── Background panel (dark, semi-transparent) ─────────────────────────
-    overlay.rect_filled(
-        ox,
-        oy,
-        HUD_W,
-        HUD_H,
-        Color::rgba(0, 0, 0, 150),
-    );
+    overlay.rect_filled(ox, oy, HUD_W, HUD_H, Color::rgba(0, 0, 0, 150));
+    overlay.rect(ox, oy, HUD_W, HUD_H, Color::rgba(80, 80, 80, 200));
 
-    // ─── Panel border ───────────────────────────────────────────────────────
-    overlay.rect(
-        ox,
-        oy,
-        HUD_W,
-        HUD_H,
-        Color::rgba(80, 80, 80, 200),
-    );
-
-    // ─── Junction zone circle (30m radius) ─────────────────────────────────
     let junction_r_px = 30.0 * scale;
     let zone_color = if data.bias.zone_active {
-        Color::rgba(255, 140, 0, 180) // orange
+        Color::rgba(255, 140, 0, 180)
     } else {
-        Color::rgba(100, 100, 100, 80) // dim grey
+        Color::rgba(100, 100, 100, 80)
     };
-    // Dashed circle approximation: draw 16 small arcs (short lines on radius)
-    draw_dashed_circle(
-        overlay,
-        ox + center.0,
-        oy + center.1,
-        junction_r_px,
-        zone_color,
-        16,
-    );
+    draw_dashed_circle(overlay, ox + center.0, oy + center.1, junction_r_px, zone_color, 16);
 
-    // ─── Road & Prefab segments ─────────────────────────────────────────────
     for seg in &data.nearby_segments {
         let (sx, sy) = coords::world_to_pixel(
-            seg.start_x, seg.start_z,
-            data.pose.x, data.pose.z,
-            scale, center,
+            seg.start_x, seg.start_z, data.pose.x, data.pose.z, scale, center,
         );
         let (ex, ey) = coords::world_to_pixel(
-            seg.end_x, seg.end_z,
-            data.pose.x, data.pose.z,
-            scale, center,
+            seg.end_x, seg.end_z, data.pose.x, data.pose.z, scale, center,
         );
-
-        // Skip if both endpoints are far off-panel
         let range = -50.0..=(HUD_W + 50.0);
         if !range.contains(&sx) && !range.contains(&ex) {
             continue;
         }
-
         let is_nearest = data.lane.nearest_seg_idx == Some(seg.idx);
-        let is_accepted_bias = data.bias.prefab_accepted && seg.is_prefab && is_nearest;
-
+        let is_accepted = data.bias.prefab_accepted && seg.is_prefab && is_nearest;
         let (color, thickness) = if is_nearest {
-            (Color::rgba(220, 50, 50, 255), 3.0_f32) // red — nearest
+            (Color::rgba(220, 50, 50, 255), 3.0_f32)
         } else if seg.is_prefab {
-            (Color::rgba(60, 130, 220, 200), 1.5_f32) // blue — prefab
+            (Color::rgba(60, 130, 220, 200), 1.5_f32)
         } else {
-            (Color::rgba(150, 150, 150, 160), 1.0_f32) // grey — road
+            (Color::rgba(150, 150, 150, 160), 1.0_f32)
         };
-
-        overlay.line(
-            ox + sx, oy + sy,
-            ox + ex, oy + ey,
-            thickness,
-            color,
-        );
-
-        // Green outline for bias-accepted prefab
-        if is_accepted_bias {
+        overlay.line(ox + sx, oy + sy, ox + ex, oy + ey, thickness, color);
+        if is_accepted {
             overlay.line(
-                ox + sx, oy + sy,
-                ox + ex, oy + ey,
-                thickness + 2.0,
-                Color::rgba(50, 200, 50, 200),
+                ox + sx, oy + sy, ox + ex, oy + ey,
+                thickness + 2.0, Color::rgba(50, 200, 50, 200),
             );
         }
     }
 
-    // ─── Truck arrow ────────────────────────────────────────────────────────
     let heading_rad = data.pose.heading_deg.to_radians();
     let arrow_len = 12.0_f32;
-    // heading_deg: 0 = North (−Z), 90 = East (+X)
     let arrow_dx = heading_rad.sin() * arrow_len;
-    let arrow_dz = -heading_rad.cos() * arrow_len; // north = up = negative panel_y
+    let arrow_dz = -heading_rad.cos() * arrow_len;
     let tx = ox + center.0;
     let ty = oy + center.1;
-    overlay.line(
-        tx, ty,
-        tx + arrow_dx, ty + arrow_dz,
-        2.5,
-        Color::rgba(255, 255, 255, 255),
-    );
-    // Arrow head: small circle at tip
-    overlay.circle_filled(
-        tx + arrow_dx, ty + arrow_dz,
-        2.5,
-        Color::rgba(255, 255, 255, 255),
-    );
-    // Truck center dot
+    overlay.line(tx, ty, tx + arrow_dx, ty + arrow_dz, 2.5, Color::rgba(255, 255, 255, 255));
+    overlay.circle_filled(tx + arrow_dx, ty + arrow_dz, 2.5, Color::rgba(255, 255, 255, 255));
     overlay.circle_filled(tx, ty, 4.0, Color::rgba(0, 0, 0, 255));
     overlay.circle(tx, ty, 4.0, Color::rgba(255, 255, 255, 255));
 
-    // ─── Text panel (top-left corner of HUD) ────────────────────────────────
     let tp_x = ox + 6.0;
     let tp_y = oy + 6.0;
     let tp_w = 220.0_f32;
     let tp_h = 100.0_f32;
     let line_h = 16.0_f32;
     let font_size = 13.0_f32;
-
-    // Background
     overlay.rect_filled(tp_x - 2.0, tp_y - 2.0, tp_w, tp_h, Color::rgba(0, 0, 0, 180));
     overlay.rect(tp_x - 2.0, tp_y - 2.0, tp_w, tp_h, Color::rgba(60, 60, 60, 200));
 
-    // Line 1: lateral + steering
     let line1 = format!(
         "lateral={:.2}m  steer={:.3}",
-        data.lane.lateral_dist_signed,
-        data.lane.steering_filtered
+        data.lane.lateral_dist_signed, data.lane.steering_filtered
     );
     overlay.text(tp_x, tp_y, &line1, font_size, Color::rgba(200, 220, 200, 255));
 
-    // Line 2: bias status
     let line2 = format!(
         "bias: zone={} att={} acc={} {}",
         bool_char(data.bias.zone_active),
@@ -265,7 +354,6 @@ fn draw_frame(
     );
     overlay.text(tp_x, tp_y + line_h, &line2, font_size, Color::rgba(200, 200, 220, 255));
 
-    // Line 3: junction
     let dist_str = data
         .junction
         .distance_m
@@ -283,7 +371,6 @@ fn draw_frame(
     };
     overlay.text(tp_x, tp_y + line_h * 2.0, &line3, font_size, junc_color);
 
-    // Line 4: nearest segment
     let nearest_idx_str = data
         .lane
         .nearest_seg_idx
@@ -297,14 +384,12 @@ fn draw_frame(
     );
     overlay.text(tp_x, tp_y + line_h * 3.0, &line4, font_size, Color::rgba(180, 180, 255, 255));
 
-    // Line 5: pose
     let line5 = format!(
         "pos=({:.0},{:.0}) hdg={:.1}°",
         data.pose.x, data.pose.z, data.pose.heading_deg
     );
     overlay.text(tp_x, tp_y + line_h * 4.0, &line5, font_size, Color::rgba(160, 160, 160, 255));
 
-    // ─── DISCONNECTED banner ─────────────────────────────────────────────────
     if !connected {
         let msg = "DAEMON DISCONNECTED";
         let bx = ox + 10.0;
@@ -314,29 +399,47 @@ fn draw_frame(
     }
 }
 
-/// Draw a dashed circle with `n_dashes` line segments.
 fn draw_dashed_circle(
     overlay: &mut Overlay,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: Color,
-    n_dashes: usize,
+    cx: f32, cy: f32, radius: f32, color: Color, n_dashes: usize,
 ) {
     use std::f32::consts::TAU;
-    let step = TAU / (n_dashes as f32 * 2.0); // gap = half segment
+    let step = TAU / (n_dashes as f32 * 2.0);
     for i in 0..n_dashes {
         let t0 = i as f32 * TAU / n_dashes as f32;
         let t1 = t0 + step;
-        let x0 = cx + radius * t0.cos();
-        let y0 = cy + radius * t0.sin();
-        let x1 = cx + radius * t1.cos();
-        let y1 = cy + radius * t1.sin();
-        overlay.line(x0, y0, x1, y1, 1.0, color);
+        overlay.line(
+            cx + radius * t0.cos(), cy + radius * t0.sin(),
+            cx + radius * t1.cos(), cy + radius * t1.sin(),
+            1.0, color,
+        );
     }
 }
 
 #[inline]
-fn bool_char(b: bool) -> char {
-    if b { 'T' } else { 'F' }
+fn bool_char(b: bool) -> char { if b { 'T' } else { 'F' } }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mode_toggle_cycles() {
+        let m = RenderMode::Minimap;
+        let m = m.cycle();
+        assert_eq!(m, RenderMode::AR);
+        let m = m.cycle();
+        assert_eq!(m, RenderMode::Both);
+        let m = m.cycle();
+        assert_eq!(m, RenderMode::Minimap);
+    }
+
+    #[test]
+    fn detect_screen_size_returns_positive() {
+        let (w, h) = detect_screen_size();
+        assert!(w > 0.0, "width must be positive, got {w}");
+        assert!(h > 0.0, "height must be positive, got {h}");
+    }
 }

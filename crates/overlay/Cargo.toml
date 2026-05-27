@@ -23,3 +23,6 @@ url = "2"
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 truckpilot-ipc-protocol = { path = "../ipc-protocol" }
+truckpilot-telemetry = { path = "../telemetry" }
+glam = "0.28"
+toml = "0.8"
