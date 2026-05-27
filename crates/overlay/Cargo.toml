@@ -1,0 +1,25 @@
+[package]
+name = "truckpilot-overlay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "overlay"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+procmod-overlay = "1"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+url = "2"
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+truckpilot-ipc-protocol = { path = "../ipc-protocol" }

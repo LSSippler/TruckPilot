@@ -158,6 +158,7 @@ fn build_hermite_segments(world_pts: &[Vec3]) -> Vec<HermiteSegment> {
 
 // ── pixel → world transform ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn pixel_to_world(
     px: f32,
     py: f32,
@@ -335,7 +336,7 @@ impl Plugin for MinimapVisionPlugin {
 
         // Re-attempt SHM mapping while sidecar is absent.
         if self.shm_buf.is_none() {
-            if self.tick_counter % REMAP_INTERVAL_TICKS == 0 {
+            if self.tick_counter.is_multiple_of(REMAP_INTERVAL_TICKS) {
                 self.try_map(ctx);
             }
             if self.shm_buf.is_none() {

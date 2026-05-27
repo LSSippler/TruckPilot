@@ -100,6 +100,10 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 
 - [[01-Phases/Phase-DS13a-quat-consolidation]] — **CLOSED 2026-05-26**: DS13a quat_rotate_vec Konsolidierung. Fall A: beide Quellen (PPD NavCurves + .base MapNodes) WXYZ bestätigt. graph.rs::quat_rotate_vec (XYZW-Bug) eliminiert. spline::quat_rotate_vec (WXYZ) als einzige Implementierung. pub const FORWARD = (0,0,-1) per SCS SDK. PrefabAiPath.start/end_rotation aus NavCurves. prefab_hermite_segments_with_metadata: 1 Segment/Pfad mit Rotations-Tangenten. PARSER_VERSION 5→6. Alle Tests grün, map-parser clippy clean. Commit `d49c459`. Live-Test pending.
 
+- [[01-Phases/Phase-DS13d-Geometric-Prefab-Bias]] — **COMMITTED 2026-05-26**: DS13d Geometric Prefab-Bias. `SplineIndex::nearest_with_projection_filtered<F>` API. Junction-Zone-Bias (≤30m): prefab-only R*-Tree-Scan (128 Kandidaten), Fallback auf road wenn Prefab >15m oder not found. 4 neue BB-Keys (bias_zone_active/attempted/accepted/rejected_reason). truckpilot.toml `[plugins.lane-follower]` Sektion. 6 neue Unit-Tests (69 total). Clippy clean. Live-Test pending (DLLs gesperrt). Commit `16e5074`.
+
+- [[01-Phases/Phase-6.9-Overlay-HUD]] — **CLOSED 2026-05-27**: `crates/overlay` neuer standalone-Crate. `procmod-overlay 1.0.0` DX11-Overlay über ETS2. WS-Client 5 Hz Blackboard-Poll + Exponential-Backoff. HUD-Panel 480×480 top-right: Segmente (grau/blau/rot), Junction-Zone-Kreis, Truck-Pfeil, 5-Zeilen Text-Panel, DAEMON DISCONNECTED Banner. `SpatialSegmentsInRadius` IPC-Command + `SpatialSegmentsResponse` in ipc-protocol (Stub in Core). Coords-Unittest 5/5 grün. Workspace clippy clean (0 warnings). `overlay.exe` 2.84 MB, Smoke-Test bestätigt Reconnect-Loop.
+
 ## Reviews
 
 - [[03-Reviews/DeepSeek-Review]]

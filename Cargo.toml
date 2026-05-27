@@ -28,6 +28,7 @@ members = [
     "crates/plugins/lane-detection",
     "crates/plugins/lane-follower",
     "crates/plugins/minimap-vision",
+    "crates/overlay",
 ]
 resolver = "2"
 

@@ -192,6 +192,26 @@ pub enum CoreMessage {
         v: u32,
         keys: Vec<String>,
     },
+    /// Response to `UiCommand::SpatialSegmentsInRadius`.
+    /// Contains road/prefab segment geometry for the overlay HUD.
+    SpatialSegmentsResponse {
+        v: u32,
+        segments: Vec<SegmentInfo>,
+    },
+}
+
+/// Segment geometry returned by `SpatialSegmentsInRadius`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    pub idx: u64,
+    pub is_prefab: bool,
+    pub ai_path_uid: u32,
+    pub start_x: f32,
+    pub start_z: f32,
+    pub end_x: f32,
+    pub end_z: f32,
+    pub control_uid_a: u64,
+    pub control_uid_b: u64,
 }
 
 /// Messages sent from UI to Core (commands)
@@ -262,6 +282,20 @@ pub enum UiCommand {
         key: String,
         value: String,
     },
+    /// Query nearby road/prefab segments within a radius around a world position.
+    /// Used by the overlay HUD to render segment lines on the map.
+    /// Returns `CoreMessage::SpatialSegmentsResponse`.
+    SpatialSegmentsInRadius {
+        x: f32,
+        z: f32,
+        radius_m: f32,
+        #[serde(default = "default_max_results")]
+        max_results: usize,
+    },
+}
+
+fn default_max_results() -> usize {
+    200
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -371,6 +371,18 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             manager.lock().await.blackboard.set(key, value);
             Vec::new()
         }
+        UiCommand::SpatialSegmentsInRadius { x, z, radius_m, max_results } => {
+            // Stub: SplineIndex is built offline (map-parser) and not yet wired into
+            // the live daemon. Returns an empty segment list so the overlay HUD can
+            // connect without crashing. Full integration is deferred to Phase 6.9.
+            tracing::debug!(
+                "spatial.segments_in_radius({x}, {z}, r={radius_m}, max={max_results}) → stub (empty)"
+            );
+            vec![truckpilot_ipc_protocol::CoreMessage::SpatialSegmentsResponse {
+                v: V,
+                segments: Vec::new(),
+            }]
+        }
     }
 }
 
