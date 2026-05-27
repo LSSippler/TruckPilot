@@ -147,6 +147,10 @@ pub struct PluginManager {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
     /// this each tick; the state machine reads it for engage-time checks.
     pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
+    /// SplineIndex for spatial HUD queries (Phase 6.9 overlay).
+    /// Built at daemon startup from `graph.json`; `None` when the file is missing
+    /// or when building the index failed (non-critical — HUD shows no segments).
+    pub spline_index: Option<Arc<truckpilot_map_parser::SplineIndex>>,
     /// Per-plugin configuration loaded from `truckpilot.toml`.
     /// Key = plugin name. Missing key → default enabled=true, no extra keys.
     plugin_configs: HashMap<String, PluginTomlConfig>,
@@ -198,6 +202,7 @@ impl PluginManager {
             _watcher: watcher,
             graph: None,
             route_node_ids: Arc::new(RwLock::new(HashSet::new())),
+            spline_index: None,
             plugin_configs,
         }
     }

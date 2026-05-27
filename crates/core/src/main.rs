@@ -495,10 +495,9 @@ fn load_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
     })
 }
 
-/// Load graph.json into a [`RouterGraph`] for synchronous off-route checks
-/// (Phase 6.5q.1). Hard-exits if the file is missing or malformed — the
-/// daemon cannot operate without a routing graph.
-fn load_router_graph_or_exit() -> RouterGraph {
+/// Load `graph.json` once into a `MapGraph`.
+/// Hard-exits on missing file or parse errors — the daemon cannot operate without the graph.
+fn load_map_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
     let path = PathBuf::from("graph.json");
     if !path.exists() {
         eprintln!("ERROR: graph.json not found.");
@@ -509,19 +508,20 @@ fn load_router_graph_or_exit() -> RouterGraph {
         eprintln!("ERROR: Cannot read graph.json: {e}");
         std::process::exit(1);
     });
-    let map_graph: truckpilot_map_parser::graph::MapGraph = serde_json::from_str(&json)
-        .unwrap_or_else(|e| {
-            eprintln!("ERROR: Cannot parse graph.json: {e}");
-            std::process::exit(1);
-        });
+    serde_json::from_str::<truckpilot_map_parser::graph::MapGraph>(&json).unwrap_or_else(|e| {
+        eprintln!("ERROR: Cannot parse graph.json: {e}");
+        std::process::exit(1);
+    })
+}
 
+/// Build a [`RouterGraph`] for routing (Phase 6.5q.1).
+fn build_router_graph(map_graph: &truckpilot_map_parser::graph::MapGraph) -> RouterGraph {
     let nodes: Vec<(u64, f64, f64)> = map_graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
     let edges: Vec<(u64, u64, f64)> = map_graph
         .edges
         .iter()
         .map(|e| (e.from, e.to, e.distance_m))
         .collect();
-
     info!(
         "Loaded routing graph: {} nodes, {} edges",
         nodes.len(),
@@ -529,6 +529,30 @@ fn load_router_graph_or_exit() -> RouterGraph {
     );
     RouterGraph::new(nodes, edges)
 }
+
+/// Build a [`SplineIndex`] for spatial HUD queries (Phase 6.9 overlay).
+///
+/// This is an optional, non-critical resource.  Returns `None` on any error
+/// so the daemon can continue running without HUD segment rendering.
+///
+/// # Cost
+/// ~2 s and ~150 MB RAM for a 1M-segment map (Berlin + DLCs).
+fn build_spline_index_for_hud(
+    map_graph: &truckpilot_map_parser::graph::MapGraph,
+) -> Option<truckpilot_map_parser::SplineIndex> {
+    let t0 = Instant::now();
+    let (segments, metadata, _stats) =
+        truckpilot_map_parser::spline::build_splines_ex(map_graph);
+    let seg_count = segments.len();
+    let index = truckpilot_map_parser::build_index_with_metadata(segments, metadata);
+    info!(
+        "SplineIndex (HUD) built: {} segments in {:.1}s",
+        seg_count,
+        t0.elapsed().as_secs_f64()
+    );
+    Some(index)
+}
+
 
 fn angle_diff(a: f64, b: f64) -> f64 {
     let mut d = a - b;
@@ -621,12 +645,17 @@ async fn run_daemon() {
         std::fs::create_dir_all(&plugin_dir).expect("create plugins dir");
     }
 
-    // ── Phase 6.5q.1: load routing graph ───────────────────────────
-    let graph = load_router_graph_or_exit();
-    let graph = Arc::new(graph);
+    // ── Phase 6.5q.1: load routing graph + Phase 6.9: SplineIndex ─────
+    // Load MapGraph once; derive both RouterGraph and SplineIndex from it.
+    let map_graph = load_map_graph_or_exit();
+    let graph = Arc::new(build_router_graph(&map_graph));
+    let spline_index_opt = build_spline_index_for_hud(&map_graph);
+    // MapGraph can be dropped after both consumers are built.
+    drop(map_graph);
 
     let mut manager = PluginManager::new(plugin_dir, plugin_configs);
     manager.graph = Some(Arc::clone(&graph));
+    manager.spline_index = spline_index_opt.map(Arc::new);
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());

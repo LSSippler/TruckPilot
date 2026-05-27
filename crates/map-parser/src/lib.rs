@@ -34,7 +34,7 @@ pub use error::ParseError;
 pub use graph::RoadAuditResult;
 pub use graph::{GraphBuilder, GraphEdge, GraphNode, MapGraph};
 pub use spline::{build_splines_ex, SegmentMetadata};
-pub use spline_index::build_index_with_metadata;
+pub use spline_index::{build_index_with_metadata, SplineIndex};
 pub use hashfs::{parse_directory_listing, DirItem, HashFsArchive};
 pub use mod_loader::{load_and_build, parse_sectors_with_drop_tracer, ArchiveFile, ModLoadOrder};
 pub use zip_archive::ZipArchive;

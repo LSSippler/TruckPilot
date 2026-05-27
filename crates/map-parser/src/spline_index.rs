@@ -304,6 +304,28 @@ impl SplineIndex {
             .collect()
     }
 
+    /// Wie [`within_radius`], liefert aber zusätzlich den Segment-Index und die Metadaten.
+    ///
+    /// Rückgabe: `Vec<(segment_idx, &HermiteSegment, Option<SegmentMetadata>)>`
+    ///
+    /// Wird vom Core-Daemon für `SpatialSegmentsInRadius`-IPC-Queries genutzt
+    /// (Overlay HUD Phase 6.9).
+    pub fn within_radius_with_idx(
+        &self,
+        point: Vec3,
+        radius_m: f32,
+    ) -> Vec<(usize, &HermiteSegment, Option<SegmentMetadata>)> {
+        let p2 = [point.x, point.z];
+        let r2 = radius_m * radius_m;
+        self.tree
+            .locate_within_distance(p2, r2)
+            .map(|entry| {
+                let idx = entry.idx as usize;
+                (idx, &self.segments[idx], self.metadata[idx])
+            })
+            .collect()
+    }
+
     /// Findet das nächste Segment mit exakter Projektion via Newton-Raphson.
     ///
     /// Strategie:
@@ -878,5 +900,68 @@ mod tests {
         let hit = idx.nearest_with_projection(query, 8).expect("must find hit");
         assert_eq!(hit.segment_idx, 0, "road is closer → unfiltered query picks road");
         assert!(hit.dist_m < 3.0, "dist should be ~2m, got {}", hit.dist_m);
+    }
+
+    // --- within_radius_with_idx Tests (Phase 6.9 HUD Overlay) ---
+
+    /// within_radius_with_idx returns segment indices alongside geometry.
+    #[test]
+    fn within_radius_with_idx_returns_indices() {
+        let idx = toy_index();
+        // Query near segment 0 ((0,0)→(10,0)) with 2m radius
+        let results = idx.within_radius_with_idx(Vec3::new(5.0, 0.0, 0.0), 2.0);
+        assert!(
+            !results.is_empty(),
+            "Should find at least one segment within 2m of (5,0)"
+        );
+        // All returned indices must be valid
+        for (seg_idx, seg, _meta) in &results {
+            assert!(
+                *seg_idx < idx.segments.len(),
+                "idx {seg_idx} out of bounds"
+            );
+            // The returned reference must match the indexed segment
+            assert!(
+                std::ptr::eq(*seg, &idx.segments[*seg_idx]),
+                "returned segment ref must match segments[idx]"
+            );
+        }
+    }
+
+    /// within_radius_with_idx returns metadata when available.
+    #[test]
+    fn within_radius_with_idx_returns_metadata() {
+        let road_seg = make_seg(0.0, 0.0, 20.0, 0.0);
+        let prefab_seg = make_seg(0.0, -5.0, 20.0, -5.0);
+        let segs = vec![road_seg, prefab_seg];
+        let meta = vec![road_meta(), prefab_meta()];
+        let idx = build_index_with_metadata(segs, meta);
+
+        // Query near both segments (y=0 and y=-5, radius 10m covers both)
+        let results = idx.within_radius_with_idx(Vec3::new(10.0, 0.0, -2.5), 10.0);
+        assert_eq!(results.len(), 2, "both segments within 10m");
+
+        // Each segment should have the correct is_prefab flag
+        for (seg_idx, _seg, meta) in &results {
+            let expected_prefab = *seg_idx == 1;
+            let got_prefab = meta.map(|m| m.is_prefab).unwrap_or(false);
+            assert_eq!(
+                got_prefab, expected_prefab,
+                "segment {seg_idx}: expected is_prefab={expected_prefab}, got {got_prefab}"
+            );
+        }
+    }
+
+    /// within_radius_with_idx respects the radius bound.
+    #[test]
+    fn within_radius_with_idx_excludes_far_segments() {
+        let idx = toy_index();
+        // Only segment 0 ((0,0)→(10,0)) is within 2m of (5,0)
+        let results = idx.within_radius_with_idx(Vec3::new(5.0, 0.0, 0.0), 2.0);
+        let far_count = results.iter().filter(|(_, s, _)| s.p0.x > 15.0).count();
+        assert_eq!(
+            far_count, 0,
+            "no segment starting at x>15 should be within 2m of x=5"
+        );
     }
 }
