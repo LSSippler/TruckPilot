@@ -17,7 +17,13 @@ use crate::{
     telemetry::TruckPose,
 };
 
-/// Segments are raised by this many metres so they are visible above the road surface.
+/// Segments are raised by this many metres above the truck's Y (road level).
+///
+/// **Do not use a world-space constant here.** ETS2 terrain Y varies widely
+/// (sea-level roads at Y≈0, mountain roads at Y≈200+). Hardcoding 0.05 places
+/// all segments near world Y=0, making them project off-screen when the truck
+/// is at any significant elevation. Instead we use `pose.truck_y + GROUND_OFFSET`
+/// so segments are always rendered at the truck's current ground level.
 const GROUND_OFFSET: f32 = 0.05;
 
 /// Near-plane distance (metres). Segments closer than this are clipped.
@@ -40,9 +46,13 @@ pub fn render_ar(
     let nearest_idx = data.lane.nearest_seg_idx;
 
     // ── 2. Project all segments ──────────────────────────────────────────────
+    // Use truck Y as ground reference so segments project correctly at any
+    // terrain elevation. See GROUND_OFFSET doc comment above.
+    let ground_y = pose.truck_y;
+
     for seg in &data.nearby_segments {
-        // Raise segment above ground to ensure visibility.
-        let seg_y = GROUND_OFFSET;
+        // Raise segment to truck's ground level + small offset.
+        let seg_y = ground_y + GROUND_OFFSET;
         let p0_world = Vec3::new(seg.start_x, seg_y, seg.start_z);
         let p1_world = Vec3::new(seg.end_x, seg_y, seg.end_z);
 
@@ -94,13 +104,25 @@ pub fn render_ar(
         }
     }
 
-    // ── 3. Camera-mode reminder text ─────────────────────────────────────────
+    // ── 3. Status overlay text ────────────────────────────────────────────────
+    let seg_count = data.nearby_segments.len();
     if !pose.is_fresh() {
         let msg = "AR-Mode: NO TELEMETRY (SHM unavailable)";
         overlay.text(10.0, 10.0, msg, 14.0, Color::rgba(255, 80, 80, 255));
     } else {
-        let mode_msg = "AR-Mode requires Cabin-Cam (F1 in ETS2)";
-        overlay.text(10.0, 10.0, mode_msg, 13.0, Color::rgba(200, 200, 200, 200));
+        let mode_msg = format!(
+            "AR-Mode [cabin-cam] | segs: {} | Y: {:.1}m",
+            seg_count, ground_y
+        );
+        overlay.text(10.0, 10.0, &mode_msg, 13.0, Color::rgba(200, 200, 200, 200));
+    }
+    if seg_count == 0 && pose.is_fresh() {
+        overlay.text(
+            10.0, 30.0,
+            "No segments — daemon offline or WS not connected",
+            13.0,
+            Color::rgba(255, 160, 40, 220),
+        );
     }
 }
 

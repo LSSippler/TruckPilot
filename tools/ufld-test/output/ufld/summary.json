@@ -1,0 +1,9 @@
+{
+  "model": "ufldv2_culane_res18_320x1600.onnx",
+  "model_key": "culane_v2",
+  "provider": "CPUExecutionProvider",
+  "frames": 9,
+  "detected": 8,
+  "detection_rate_pct": 88.9,
+  "avg_latency_ms": 37.2
+}

@@ -45,10 +45,20 @@ const SM_CXSCREEN: i32 = 0;
 /// GetSystemMetrics index for primary monitor height.
 const SM_CYSCREEN: i32 = 1;
 
-/// Returns true if the key was pressed since the last call (low bit set).
-/// Used for one-shot toggle detection.
-fn key_just_pressed(vk: i32) -> bool {
-    unsafe { GetAsyncKeyState(vk) & 0x0001 != 0 }
+/// Edge-detect a key press using the high bit of GetAsyncKeyState.
+///
+/// The low bit ("pressed since last call") only updates for the foreground
+/// input thread. Since ETS2 owns the keyboard while the overlay runs in the
+/// background, `& 0x0001` never fires. The high bit (0x8000) reflects the
+/// actual hardware state regardless of focus and works reliably from any
+/// process. We detect a rising edge by comparing to `prev`.
+///
+/// Call once per frame for each key. `prev` must be initialised to `false`.
+fn key_just_pressed_hb(vk: i32, prev: &mut bool) -> bool {
+    let now = unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 };
+    let fired = now && !*prev;
+    *prev = now;
+    fired
 }
 
 /// Returns true if the key is currently held down (high bit set).
@@ -144,21 +154,26 @@ pub fn run(state: Arc<HudState>, pose: Arc<RwLock<TruckPose>>) -> Result<()> {
     let mut fov_h = effective_fov();
     let mut last_fov_key_time = Instant::now();
 
+    // Previous-key-state for high-bit edge detection (see key_just_pressed_hb).
+    let mut f1_prev = false;
+    let mut f2_prev = false;
+    let mut f3_prev = false;
+
     info!("Initial mode: {}, FOV: {fov_h:.1}°", mode.label());
 
     loop {
         let frame_start = Instant::now();
 
-        // ── Hotkey polling ────────────────────────────────────────────────────
-        if key_just_pressed(VK_F1) && !calibrating {
+        // ── Hotkey polling (high-bit edge detection) ──────────────────────────
+        if key_just_pressed_hb(VK_F1, &mut f1_prev) && !calibrating {
             mode = mode.cycle();
             info!("Mode toggled → {}", mode.label());
         }
-        if key_just_pressed(VK_F2) {
+        if key_just_pressed_hb(VK_F2, &mut f2_prev) {
             visible = !visible;
             info!("Visibility → {visible}");
         }
-        if key_just_pressed(VK_F3) {
+        if key_just_pressed_hb(VK_F3, &mut f3_prev) {
             calibrating = !calibrating;
             if !calibrating {
                 if let Err(e) = save_toml_fov(fov_h) {

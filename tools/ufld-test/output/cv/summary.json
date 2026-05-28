@@ -1,0 +1,7 @@
+{
+  "method": "classical_cv_hough",
+  "frames": 12,
+  "detected": 1,
+  "detection_rate_pct": 8.3,
+  "avg_latency_ms": 7.5
+}

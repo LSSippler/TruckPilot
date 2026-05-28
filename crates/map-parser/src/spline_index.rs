@@ -199,6 +199,34 @@ pub struct NearestHit {
     pub heading_filter_applied: bool,
 }
 
+/// Ergebnis von [`SplineIndex::within_radius_filtered_heading`].
+///
+/// Enthält alle für den Forward-Adjacency-Tiebreak nötigen Felder.
+#[derive(Debug, Clone)]
+pub struct HeadingFilteredHit {
+    /// Index des Segments in `SplineIndex::segments`
+    pub idx: usize,
+    /// Euklidische Distanz vom Query-Punkt zum nächsten Punkt auf der Kurve (Meter)
+    pub dist_m: f32,
+    /// Hermite-Parameter t ∈ [0,1] des Projektionspunkts
+    pub t: f32,
+    /// Koordinate des nächsten Punkts auf der Kurve
+    pub point_on_curve: Vec3,
+    /// Heading-Differenz in Radiant [0, PI] zwischen Truck-Heading und Segment-Tangente
+    pub heading_diff_rad: f32,
+    /// Per-Segment-Metadaten (None wenn nicht gesetzt)
+    pub meta: Option<SegmentMetadata>,
+}
+
+/// Minimaler Winkelabstand zwischen zwei Headings in Radiant.
+/// Beide Eingaben in Radiant. Ergebnis in [0, PI].
+#[inline]
+fn angular_diff_rad(a: f32, b: f32) -> f32 {
+    use std::f32::consts::PI;
+    let d = (a - b).abs() % (2.0 * PI);
+    if d > PI { 2.0 * PI - d } else { d }
+}
+
 // ---------------------------------------------------------------------------
 // SplineIndex
 // ---------------------------------------------------------------------------
@@ -324,6 +352,88 @@ impl SplineIndex {
                 (idx, &self.segments[idx], self.metadata[idx])
             })
             .collect()
+    }
+
+    /// Heading-gefilterter Radius-Query: findet Prefab-Kandidaten, die
+    ///
+    /// 1. innerhalb von `radius_m` liegen (AABB-basiert),
+    /// 2. das Prädikat `filter(idx, meta)` erfüllen, und
+    /// 3. deren Tangente am Newton-Projektionspunkt höchstens `max_heading_diff_rad`
+    ///    vom Truck-Heading abweicht.
+    ///
+    /// Rückgabe: bis zu 8 Treffer, aufsteigend nach `dist_m` sortiert.
+    ///
+    /// * `truck_heading_rad` — Fahrtrichtung in Radiant (CW von Nord, 0=N, π/2=O).
+    ///   Matching zur ETS2-Konvention: `heading_deg = atan2(tan.x, -tan.z)`.
+    /// * `max_heading_diff_rad` — Maximale erlaubte Heading-Abweichung (Apollo: π/4 = 45°).
+    /// * `filter` — Zusätzliches Prädikat `(idx, meta) -> bool` (z.B. `is_prefab`).
+    ///
+    /// NavCurves sind unidirektional → nur eine Tangent-Richtung wird geprüft.
+    pub fn within_radius_filtered_heading<F>(
+        &self,
+        pos: Vec3,
+        radius_m: f32,
+        truck_heading_rad: f32,
+        max_heading_diff_rad: f32,
+        filter: F,
+    ) -> Vec<HeadingFilteredHit>
+    where
+        F: Fn(usize, Option<&SegmentMetadata>) -> bool,
+    {
+        use std::f32::consts::PI;
+        let p2 = [pos.x, pos.z];
+        let r2 = radius_m * radius_m;
+
+        let mut hits: Vec<HeadingFilteredHit> = self
+            .tree
+            .locate_within_distance(p2, r2)
+            .filter_map(|entry| {
+                let idx = entry.idx as usize;
+                let meta = self.metadata[idx];
+                // Predicate filter
+                if !filter(idx, meta.as_ref()) {
+                    return None;
+                }
+                let seg = &self.segments[idx];
+                // Newton projection from 3 seeds → closest point + parameter t
+                let seeds = [0.0f32, 0.5, 1.0];
+                let (t_best, d2_best) = seeds
+                    .iter()
+                    .map(|&t0| newton_closest(seg, pos, t0))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .unwrap();
+
+                // Tangent at projection point → segment heading (CW from North, radians)
+                let tan = evaluate_tangent(seg, t_best);
+                let tan_len_xz = (tan.x * tan.x + tan.z * tan.z).sqrt();
+                if tan_len_xz < 1e-6 {
+                    return None; // degenerate segment
+                }
+                // Same convention as NearestHit.heading_deg: atan2(tan.x, -tan.z)
+                let seg_heading_rad = f32::atan2(tan.x, -tan.z).rem_euclid(2.0 * PI);
+                let heading_diff = angular_diff_rad(truck_heading_rad, seg_heading_rad);
+
+                // DS13e: Reject if heading difference exceeds the allowed threshold
+                if heading_diff > max_heading_diff_rad {
+                    return None;
+                }
+
+                let point_on_curve = evaluate(seg, t_best);
+                Some(HeadingFilteredHit {
+                    idx,
+                    dist_m: d2_best.sqrt(),
+                    t: t_best,
+                    point_on_curve,
+                    heading_diff_rad: heading_diff,
+                    meta,
+                })
+            })
+            .collect();
+
+        // Sort ascending by dist_m, return top 8
+        hits.sort_by(|a, b| a.dist_m.partial_cmp(&b.dist_m).unwrap_or(std::cmp::Ordering::Equal));
+        hits.truncate(8);
+        hits
     }
 
     /// Findet das nächste Segment mit exakter Projektion via Newton-Raphson.
@@ -962,6 +1072,104 @@ mod tests {
         assert_eq!(
             far_count, 0,
             "no segment starting at x>15 should be within 2m of x=5"
+        );
+    }
+
+    // --- within_radius_filtered_heading Tests (DS13e) ---
+    //
+    // Heading convention (ETS2): atan2(tan.x, -tan.z), CW from North.
+    //   North segment (0,0)→(0,-10): tan=(0,-10) → atan2(0,10)=0° = 0 rad
+    //   East  segment (0,0)→(10,0):  tan=(10,0)  → atan2(10,0)=90° = π/2 rad
+    //   ~5°  segment (0,0)→(0.87,-9.96): heading≈5° ≈ 0.087 rad
+    //   ~44° segment (0,0)→(6.947,-7.193): heading≈44° ≈ 0.768 rad
+    //   ~46° segment (0,0)→(7.193,-6.947): heading≈46° ≈ 0.803 rad
+
+    /// DS13e TASK 6a: orthogonal segment (East, 90°) rejected when truck faces North (0°).
+    #[test]
+    fn test_heading_filter_rejects_orthogonal() {
+        use std::f32::consts::PI;
+        // East segment: (0,0)→(10,0) → heading 90° = π/2 ≈ 1.571 rad
+        let east_seg = make_seg(0.0, 0.0, 10.0, 0.0);
+        let idx = build_index(vec![east_seg]);
+        let query = Vec3::new(5.0, 0.0, 1.0); // near segment
+        let hits = idx.within_radius_filtered_heading(
+            query,
+            50.0,
+            0.0,      // truck heading = North = 0 rad
+            PI / 4.0, // 45° threshold
+            |_, _| true,
+        );
+        assert!(
+            hits.is_empty(),
+            "East segment (90°) should be rejected when truck faces North (diff=90° > 45°)"
+        );
+    }
+
+    /// DS13e TASK 6b: nearly-aligned segment (~5°) accepted below 45° threshold.
+    #[test]
+    fn test_heading_filter_accepts_aligned() {
+        use std::f32::consts::PI;
+        // ~5° segment: slightly East of North
+        let seg = make_seg(0.0, 0.0, 0.87, -9.96);
+        let idx = build_index(vec![seg]);
+        let query = Vec3::new(0.4, 0.0, -5.0); // near midpoint
+        let hits = idx.within_radius_filtered_heading(
+            query,
+            50.0,
+            0.0,      // truck heading = North = 0 rad
+            PI / 4.0, // 45° threshold
+            |_, _| true,
+        );
+        assert!(
+            !hits.is_empty(),
+            "~5° segment should be accepted (heading_diff ≈ 5° < 45°)"
+        );
+        assert!(
+            hits[0].heading_diff_rad < 0.1,
+            "heading_diff_rad should be < 0.1 rad (got {:.4})",
+            hits[0].heading_diff_rad
+        );
+    }
+
+    /// DS13e TASK 6c: segment at 44° accepted at 45° threshold (just below).
+    #[test]
+    fn test_heading_filter_accepts_at_threshold() {
+        use std::f32::consts::PI;
+        // ~44° segment: sin(44°)≈0.6947, cos(44°)≈0.7193
+        let seg = make_seg(0.0, 0.0, 6.947, -7.193);
+        let idx = build_index(vec![seg]);
+        let query = Vec3::new(3.5, 0.0, -3.6); // near midpoint
+        let hits = idx.within_radius_filtered_heading(
+            query,
+            50.0,
+            0.0,      // truck heading = North = 0 rad
+            PI / 4.0, // 45° = 0.7854 rad threshold
+            |_, _| true,
+        );
+        assert!(
+            !hits.is_empty(),
+            "~44° segment should be accepted at 45° threshold"
+        );
+    }
+
+    /// DS13e TASK 6d: segment at 46° rejected at 45° threshold (just over).
+    #[test]
+    fn test_heading_filter_rejects_just_over_threshold() {
+        use std::f32::consts::PI;
+        // ~46° segment: sin(46°)≈0.7193, cos(46°)≈0.6947
+        let seg = make_seg(0.0, 0.0, 7.193, -6.947);
+        let idx = build_index(vec![seg]);
+        let query = Vec3::new(3.6, 0.0, -3.5); // near midpoint
+        let hits = idx.within_radius_filtered_heading(
+            query,
+            50.0,
+            0.0,      // truck heading = North = 0 rad
+            PI / 4.0, // 45° = 0.7854 rad threshold
+            |_, _| true,
+        );
+        assert!(
+            hits.is_empty(),
+            "~46° segment should be rejected at 45° threshold (diff > 45°)"
         );
     }
 }

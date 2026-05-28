@@ -1,120 +1,71 @@
-# TruckPilot default configuration
-#
-# All values below match the built-in defaults in src/config.rs.
-
-[steering]
-# Proportional gain for heading error correction (recommended 0.1..2.0).
-kp = 0.8
-# Integral gain for compensating steady-state steering drift (recommended 0.0..0.5).
-ki = 0.1
-# Derivative gain for damping fast heading changes (recommended 0.0..1.0).
-kd = 0.3
-# Absolute cap for integral contribution to avoid windup (recommended 0.1..10.0).
-integral_limit = 2.0
-# Look-ahead distance in meters used for route heading target (recommended 5.0..200.0).
-look_ahead_distance = 50.0
-
-[speed]
-# Proportional gain for speed controller (recommended 0.1..2.0).
-kp = 0.5
-# Integral gain for speed controller (recommended 0.0..0.5).
-ki = 0.1
-# Derivative gain for speed controller (recommended 0.0..1.0).
-kd = 0.05
-# Absolute cap for speed integral term (recommended 1.0..50.0).
-integral_limit = 10.0
-# Speed used when no valid navigation speed limit is available, in km/h (recommended 10.0..130.0).
-fallback_speed_kmh = 80.0
-
-[routing]
-# Route optimization mode: "distance" or "eta".
-cost_mode = "distance"
-# If true, prefers edges with higher speed limits during planning.
-prefer_speed = false
-# If true, applies Catmull-Rom route smoothing before steering.
-smooth_route = true
-# Number of Catmull-Rom interpolation subdivisions per segment (valid range 1..1000).
-subdivisions = 4
-
-[telemetry]
-# ETS2 telemetry HTTP endpoint used as fallback when SHM is unavailable.
-url = "http://localhost:25555/api/ets2/telemetry"
-# If true, disables telemetry polling and skips autopilot live loop.
-disabled = false
-
 [acc]
-# Enable adaptive cruise control speed limiting.
 enabled = false
-# Desired minimum distance to lead vehicle in meters.
-target_distance_m = 50.0
-# ACC PID proportional gain.
-kp = 0.8
-# ACC PID integral gain.
-ki = 0.02
-# ACC PID derivative gain.
 kd = 0.2
+ki = 0.02
+kp = 0.8
+target_distance_m = 50.0
 
 [logging]
-# Reserved section for future logging options.
-# Not currently consumed by src/config.rs.
 verbose = false
 
-[plugins.scs-sdk-output]
-# Native SCS SDK controller output via SHM back-channel (no vJoy driver required).
-# Requires truckpilot_telemetry.dll with scs_input_init export to be loaded by ETS2.
-# Set to true and disable vjoy-output to switch to SCS SDK mode.
-enabled = true
-
-[plugins.vjoy-output]
-# Legacy vJoy virtual joystick output (requires vJoy driver installed).
-# Disable when using scs-sdk-output.
-enabled = false
+[overlay]
+fov_h_deg = 124.76094818115234
 
 [plugins.ets2-nav-bridge]
-# Publish nav.* blackboard keys derived from GPS telemetry (1 Hz).
 enabled = true
 
 [plugins.lane-data-collector]
-# Set to true to activate frame+telemetry capture for vision-model training.
-enabled = true
-# Save one frame every N plugin ticks (PhaseB = 10 Hz → 50 ticks = 5 s).
 capture_interval_ticks = 50
-# Stop automatically after this many frames (~42 min at 5 s intervals).
+enabled = true
 max_frames = 500
-# Output root; session subdir YYYY-MM-DD_HHMMSS is created automatically.
 output_dir = "data/captures"
 
 [plugins.lane-detection]
-# UFLD v2 lane detection — TuSimple 320×800 model by default (~20ms avg, 100% detection rate).
-# enabled=true: plugin validates model at startup but tick() is a no-op until set to true.
 enabled = true
-# Path to UFLD v2 ONNX model. Switch to CULane path for comparison/fallback.
-model_path = "C:/Users/Sippler/Documents/TruckPilot/tools/ufld-test/models/ufldv2_tusimple_res18_320x800.onnx"
-# model_path = "tools/ufld-test/models/ufldv2_culane_res18_320x1600.onnx"
-# Lane existence probability threshold (0.1–1.0).
 exist_thresh = 0.5
+model_path = "C:/Users/Sippler/Documents/TruckPilot/tools/ufld-test/models/ufldv2_tusimple_res18_320x800.onnx"
+
+[plugins.lane-follower]
+junction_bias_max_prefab_dist_m = 10.0
+junction_bias_radius_m = 30.0
+junction_max_heading_diff_deg = 45.0
+
+[plugins.minimap-vision]
+enabled = false
+meters_per_pixel = 10.0
+roi_h = 200
+roi_w = 200
+stale_after_ms = 500
 
 [plugins.router]
 enabled = true
 
-[plugins.minimap-vision]
-# VMM-3/4/5: reads TruckPilotMinimapLine SHM from Python minimap sidecar.
-# Requires: python -m minimap_sidecar running with ETS2 open.
+[plugins.scs-sdk-output]
+enabled = true
+
+[plugins.vjoy-output]
 enabled = false
-# ETS2 minimap scale: world meters per minimap pixel. Calibrate empirically.
-meters_per_pixel = 10.0
-# ROI dimensions in pixels (must match [vision.minimap] set by minimap_calibration).
-roi_w = 200
-roi_h = 200
-# Frames older than this (ms) are ignored.
-stale_after_ms = 500
 
-[plugins.lane-follower]
-# DS13d: geometric prefab-bias at junctions.
-# Radius around the nearest junction node within which the prefab-only query fires.
-# Should be >= junction detection radius (25m) + hysteresis buffer.
-junction_bias_radius_m = 30.0
-# If the nearest prefab NavCurve is farther than this, fall back to the regular road query.
-# Matches lookahead_distance_m_min (15m) — farther prefab would not be driveable.
-junction_bias_max_prefab_dist_m = 15.0
+[routing]
+cost_mode = "distance"
+prefer_speed = false
+smooth_route = true
+subdivisions = 4
 
+[speed]
+fallback_speed_kmh = 80.0
+integral_limit = 10.0
+kd = 0.05
+ki = 0.1
+kp = 0.5
+
+[steering]
+integral_limit = 2.0
+kd = 0.3
+ki = 0.1
+kp = 0.8
+look_ahead_distance = 50.0
+
+[telemetry]
+disabled = false
+url = "http://localhost:25555/api/ets2/telemetry"

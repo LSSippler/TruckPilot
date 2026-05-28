@@ -74,7 +74,7 @@ use truckpilot_map_parser::{
     arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
     graph::MapGraph,
     spline::{build_splines_ex, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3},
-    spline_index::{build_index, build_index_with_metadata, SplineIndex},
+    spline_index::{build_index, build_index_with_metadata, HeadingFilteredHit, NearestHit, SplineIndex},
 };
 use truckpilot_plugin_api::{
     ctx_info, ctx_warn, graph::RouterGraph, ControlOutput, ControlRequest, Plugin, PluginContext,
@@ -118,16 +118,20 @@ const STEERING_RATE_LIMIT: f64 = 0.05;
 /// Standard ETS2 lane width in metres (2-lane road).
 const LANE_WIDTH_M: f32 = 3.75;
 
-// ── DS13d: Prefab-Bias constants ───────────────────────────────────────────
+// ── DS13d/DS13e: Prefab-Bias constants ────────────────────────────────────
 /// Default bias-zone radius: junction_detected or junction within this distance.
 const DEFAULT_BIAS_RADIUS_M: f32 = 30.0;
 /// Default max prefab distance: if prefab farther than this, fall back to road.
-const DEFAULT_BIAS_MAX_PREFAB_DIST_M: f32 = 15.0;
-/// R-tree scan multiplier for prefab-only filtered query.
-/// Road segments dominate the index, so a wider scan is needed to find prefab entries.
-const PREFAB_CANDIDATES_FACTOR: usize = 16;
+/// Reduced from 15.0 → 10.0 per Apollo kLanesSearchRange (DS13e).
+const DEFAULT_BIAS_MAX_PREFAB_DIST_M: f32 = 10.0;
 /// Default right-lane offset from road centreline: half a lane width.
 const LANE_OFFSET_RIGHT_M: f32 = LANE_WIDTH_M / 2.0;
+/// Default max heading diff for junction prefab-bias (Apollo max_lane_angle_diff_in_junction = 45°).
+const DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG: f32 = 45.0;
+/// Active-segment memory: frames out of junction zone before resetting.
+const ACTIVE_SEG_RESET_FRAMES: u32 = 10;
+/// Active-segment memory: max age in seconds before resetting.
+const ACTIVE_SEG_MAX_AGE_SECS: u64 = 5;
 
 // ── Safety-Fallback (Task 1-3) ──────────────────────────────────────────────
 /// |lateral_dist_signed| above this → hard-disengage with reason="lateral_excursion".
@@ -221,6 +225,17 @@ pub struct LaneFollowerPlugin {
     bias_radius_m: f32,
     /// Max allowed distance to a prefab hit before falling back to road.
     bias_max_prefab_dist_m: f32,
+    // ── DS13e: heading-aware prefab-bias ─────────────────────────────
+    /// Max heading diff (rad) for heading-aware prefab query (default: π/4 = 45°).
+    junction_max_heading_diff_rad: f32,
+    /// Active-segment memory: last accepted prefab segment index.
+    last_active_segment_idx: Option<usize>,
+    /// Active-segment memory: when last_active_segment_idx was last set.
+    last_active_segment_at: Option<std::time::Instant>,
+    /// Consecutive ticks out of junction zone (for active-segment expiry).
+    out_of_zone_frames: u32,
+    /// Cumulative count of ticks where heading filter found no aligned prefab in bias zone.
+    bias_rejected_heading_count: u32,
 }
 
 /// VMM-6: simple forward-walk lookahead over minimap segments (no LUT required).
@@ -471,14 +486,22 @@ impl Plugin for LaneFollowerPlugin {
             .get("lane_follower.junction_bias_max_prefab_dist_m")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(DEFAULT_BIAS_MAX_PREFAB_DIST_M);
+        // DS13e: heading-aware prefab query config.
+        self.junction_max_heading_diff_rad = ctx
+            .blackboard
+            .get("lane_follower.junction_max_heading_diff_deg")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG)
+            .to_radians();
 
         ctx_info!(
             ctx,
-            "lane-follower: loaded (mode={}, index={}, bias_radius={:.1}m, bias_max_prefab={:.1}m)",
+            "lane-follower: loaded (mode={}, index={}, bias_radius={:.1}m, bias_max_prefab={:.1}m, max_heading_diff={:.0}°)",
             self.mode.as_str(),
             if self.index.is_some() { "ok" } else { "none" },
             self.bias_radius_m,
             self.bias_max_prefab_dist_m,
+            self.junction_max_heading_diff_rad.to_degrees(),
         );
     }
 
@@ -500,6 +523,12 @@ impl Plugin for LaneFollowerPlugin {
         // (spec: monotonic since daemon start).
         self.saturated_ticks = 0;
         self.spline_lost_ticks = 0;
+        // DS13e: reset active-segment memory.
+        self.last_active_segment_idx = None;
+        self.last_active_segment_at = None;
+        self.out_of_zone_frames = 0;
+        self.bias_rejected_heading_count = 0;
+        self.junction_max_heading_diff_rad = DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG.to_radians();
     }
 
     fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
@@ -601,51 +630,98 @@ impl Plugin for LaneFollowerPlugin {
         let truck_heading_deg = ((-tel.heading) * 360.0).rem_euclid(360.0) as f32;
         let query = Vec3::new(truck_x as f32, tel.position[1] as f32, truck_z as f32);
 
-        // DS13d: geometric prefab-bias in junction zone.
+        // DS13d/DS13e: heading-aware prefab-bias in junction zone.
         let bias_radius_m = self.bias_radius_m;
         let bias_max_prefab_dist_m = self.bias_max_prefab_dist_m;
+        let max_heading_diff_rad = self.junction_max_heading_diff_rad;
         let in_junction_zone = junction_active_for_bias
             || junction_distance_for_bias.is_some_and(|d| d < bias_radius_m as f64);
 
-        let (hit_opt, bias_attempted, bias_accepted, bias_rejected_reason): (
-            Option<truckpilot_map_parser::spline_index::NearestHit>,
+        // Convert truck heading to radians (ETS2 CW from North, matching SplineIndex convention).
+        let truck_heading_rad = truck_heading_deg.to_radians();
+
+        let (hit_opt, bias_attempted, bias_accepted, bias_rejected_reason, bias_heading_diff_rad, bias_tiebreak_successor, bias_should_count_heading_reject): (
+            Option<NearestHit>,
             bool,
             bool,
             &'static str,
+            f32,
+            bool,
+            bool,
         ) = if in_junction_zone {
-            let prefab_hit = index.nearest_with_projection_filtered(
+            // DS13e TASK 2: heading-aware prefab query (replaces nearest_with_projection_filtered)
+            let candidates = index.within_radius_filtered_heading(
                 query,
-                CANDIDATES * PREFAB_CANDIDATES_FACTOR,
+                bias_radius_m,
+                truck_heading_rad,
+                max_heading_diff_rad,
                 |_idx, meta| meta.is_some_and(|m| m.is_prefab),
             );
-            match prefab_hit {
-                Some(h) if h.dist_m <= bias_max_prefab_dist_m => (Some(h), true, true, "none"),
-                Some(_) => {
+
+            // DS13e TASK 3: Forward-Adjacency-Tiebreak — prefer successor of last active segment.
+            let (best_hit, tiebreak_used) = if let Some(prev_idx) = self.last_active_segment_idx {
+                // Segments whose from_uid == prev_seg.to_uid are the successors.
+                let to_uid = index.segments.get(prev_idx).map(|s| s.to_uid);
+                let empty: Vec<usize> = Vec::new();
+                let successors: &[usize] = to_uid
+                    .and_then(|uid| self.forward_adj.get(&uid))
+                    .map(|v| v.as_slice())
+                    .unwrap_or(empty.as_slice());
+                // Prefer the first candidate that is a successor; fall back to closest.
+                let found = candidates.iter().find(|c| successors.contains(&c.idx));
+                if found.is_some() {
+                    (found, true)
+                } else {
+                    (candidates.first(), false)
+                }
+            } else {
+                (candidates.first(), false)
+            };
+
+            match best_hit {
+                Some(h) if h.dist_m <= bias_max_prefab_dist_m => {
+                    let nearest = heading_filtered_to_nearest(h, index);
+                    (Some(nearest), true, true, "none", h.heading_diff_rad, tiebreak_used, false)
+                }
+                Some(h) => {
+                    // Prefab found but too far — heading-aligned but outside dist threshold.
                     let fallback =
                         index.nearest_with_heading_filter(query, truck_heading_deg, CANDIDATES);
-                    (fallback, true, false, "too_far")
+                    (fallback, true, false, "too_far", h.heading_diff_rad, false, false)
                 }
                 None => {
+                    // Heading filter rejected all prefab candidates in the radius.
                     let fallback =
                         index.nearest_with_heading_filter(query, truck_heading_deg, CANDIDATES);
-                    (fallback, true, false, "none_found")
+                    (fallback, true, false, "none_found", 0.0, false, true)
                 }
             }
         } else {
             let hit = index.nearest_with_heading_filter(query, truck_heading_deg, CANDIDATES);
-            (hit, false, false, "not_active")
+            (hit, false, false, "not_active", 0.0, false, false)
         };
 
         ctx.blackboard.set("lane_follower.bias_zone_active", in_junction_zone.to_string());
         ctx.blackboard.set("lane_follower.bias_prefab_attempted", bias_attempted.to_string());
         ctx.blackboard.set("lane_follower.bias_prefab_accepted", bias_accepted.to_string());
         ctx.blackboard.set("lane_follower.bias_prefab_rejected_reason", bias_rejected_reason);
+        // DS13e: tiebreak diagnostic key (available on all paths).
+        ctx.blackboard.set("lane_follower.tiebreak_used_successor", bias_tiebreak_successor.to_string());
+        // suppress unused-variable warning for bias_heading_diff_rad on no_hit path
+        let _ = bias_heading_diff_rad;
 
         let Some(hit) = hit_opt else {
             ctx.blackboard.set("lane_follower.status", "no_hit");
+            ctx.blackboard.set("lane_follower.heading_diff_rad", "0.0000");
             self.reset_safety_counters();
             return;
         };
+
+        // DS13e: heading_diff of the SELECTED segment (more accurate than bias-attempt diff).
+        let selected_heading_diff_rad =
+            angular_diff_deg(truck_heading_deg, hit.heading_deg).to_radians();
+        ctx.blackboard
+            .set("lane_follower.heading_diff_rad", format!("{selected_heading_diff_rad:.4}"));
 
         // DS8: per-segment lane metadata (None for prefab/building/ferry segments).
         let seg_meta: Option<SegmentMetadata> =
@@ -953,6 +1029,43 @@ impl Plugin for LaneFollowerPlugin {
             self.saturated_ticks = 0;
         }
         self.check_safety_trip(lateral_dist_signed, ctx);
+
+        // ── DS13e TASK 3: Active-segment memory update ────────────────────────
+        // (placed after last `index` use so borrow checker is happy)
+        if bias_accepted {
+            self.last_active_segment_idx = Some(hit.segment_idx);
+            self.last_active_segment_at = Some(std::time::Instant::now());
+            self.out_of_zone_frames = 0;
+        } else if !in_junction_zone {
+            self.out_of_zone_frames = self.out_of_zone_frames.saturating_add(1);
+            if self.out_of_zone_frames >= ACTIVE_SEG_RESET_FRAMES {
+                self.last_active_segment_idx = None;
+                self.last_active_segment_at = None;
+            }
+        }
+        // Time-based expiry: reset if last accepted prefab was > 5s ago.
+        if let Some(at) = self.last_active_segment_at {
+            if at.elapsed() > std::time::Duration::from_secs(ACTIVE_SEG_MAX_AGE_SECS) {
+                self.last_active_segment_idx = None;
+                self.last_active_segment_at = None;
+            }
+        }
+
+        // DS13e TASK 4: remaining diagnostic BB keys.
+        if bias_should_count_heading_reject {
+            self.bias_rejected_heading_count =
+                self.bias_rejected_heading_count.saturating_add(1);
+        }
+        ctx.blackboard.set(
+            "lane_follower.bias_rejected_heading_count",
+            self.bias_rejected_heading_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_follower.last_active_segment_idx",
+            self.last_active_segment_idx
+                .map_or(-1i64, |i| i as i64)
+                .to_string(),
+        );
     }
 
     fn tick_request(
@@ -992,6 +1105,25 @@ impl Plugin for LaneFollowerPlugin {
 fn angular_diff_deg(a: f32, b: f32) -> f32 {
     let diff = (a - b).abs() % 360.0;
     if diff > 180.0 { 360.0 - diff } else { diff }
+}
+
+/// Converts a [`HeadingFilteredHit`] into a [`NearestHit`].
+///
+/// `evaluate_tangent` is used to recompute `heading_deg` from the segment tangent
+/// at the stored `t` parameter. The segment's `heading_filter_applied` is always `true`
+/// (the heading filter was active to produce this hit).
+fn heading_filtered_to_nearest(hit: &HeadingFilteredHit, index: &SplineIndex) -> NearestHit {
+    let seg = &index.segments[hit.idx];
+    let tan = evaluate_tangent(seg, hit.t);
+    let heading_deg = f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
+    NearestHit {
+        segment_idx: hit.idx,
+        t: hit.t,
+        point_on_curve: hit.point_on_curve,
+        dist_m: hit.dist_m,
+        heading_deg,
+        heading_filter_applied: true,
+    }
 }
 
 truckpilot_plugin_api::export_plugin!(LaneFollowerPlugin);
@@ -2193,6 +2325,218 @@ mod tests {
             ctx.blackboard.get("lane_follower.nearest_seg_is_prefab").as_deref(),
             Some("false"),
             "road segment must be selected when bias not active"
+        );
+    }
+
+    // ── DS13e: heading-aware bias + forward-adjacency tiebreak ──────────────
+
+    /// Helper: build a RouterGraph with a junction node at (jx, jz) with 2 outgoing edges
+    /// at 90° spread — enough to satisfy the heading_spread > 30° requirement.
+    fn make_junction_rg(jx: f64, jz: f64) -> truckpilot_plugin_api::graph::RouterGraph {
+        // Node 1 at (jx, jz); Node 2 North of it; Node 3 East of it.
+        truckpilot_plugin_api::graph::RouterGraph::new(
+            vec![
+                (1u64, jx, jz),
+                (2u64, jx, jz - 5.0), // 5m North
+                (3u64, jx + 5.0, jz), // 5m East
+            ],
+            vec![
+                (1u64, 2u64, 5.0f64),
+                (1u64, 3u64, 5.0f64),
+            ],
+        )
+    }
+
+    /// DS13e TASK 3: Forward-adjacency tiebreak picks the successor of the last active segment
+    /// even when a closer (but non-successor) candidate exists.
+    #[test]
+    fn test_forward_adjacency_picks_successor() {
+        use std::f32::consts::PI;
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // Three North-going prefab segments (all heading ≈ 0°):
+        //   A (idx 0): at x=-5 (far from truck), to_uid=200 — serves as "last active".
+        //   B (idx 1): at x=0.3 (dist≈0.3 from truck), from_uid=200 — SUCCESSOR of A.
+        //   C (idx 2): at x=0.0 (dist≈0  from truck), from_uid=400 — NOT successor (closer!).
+        // Without tiebreak C would win; with tiebreak B (successor) should win.
+        let make_north_prefab = |x: f32, from_uid: u64, to_uid: u64| HermiteSegment {
+            p0: Vec3::new(x, 0.0, 0.0),
+            p1: Vec3::new(x, 0.0, -10.0),
+            m0: Vec3::new(0.0, 0.0, -10.0),
+            m1: Vec3::new(0.0, 0.0, -10.0),
+            length_m: 10.0,
+            from_uid,
+            to_uid,
+            edge_uid: from_uid,
+        };
+        let seg_a = make_north_prefab(-5.0, 100, 200);
+        let seg_b = make_north_prefab(0.3, 200, 300); // successor of A
+        let seg_c = make_north_prefab(0.0, 400, 500); // NOT successor, but closer
+
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        });
+        let segs = vec![seg_a, seg_b, seg_c];
+        let metas = vec![prefab_meta, prefab_meta, prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            road_seg_count: 0,
+            last_active_segment_idx: Some(0), // A is "last active"
+            junction_max_heading_diff_rad: PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck at (0, 0, -5), heading North (ETS2 heading=0 → truck_heading_deg=0°).
+        let tel = make_telemetry(0.0, 0.0, -5.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            Some("true"),
+            "prefab must be accepted in junction zone"
+        );
+        let nearest_idx: usize = ctx
+            .blackboard
+            .get("lane_follower.nearest_seg_idx")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let tiebreak_used: bool = ctx
+            .blackboard
+            .get("lane_follower.tiebreak_used_successor")
+            .unwrap()
+            .parse()
+            .unwrap();
+        // B (idx=1) should be selected via tiebreak despite C (idx=2) being closer.
+        assert_eq!(
+            nearest_idx, 1,
+            "tiebreak must pick B (successor idx=1) over C (closer idx=2), got {nearest_idx}"
+        );
+        assert!(tiebreak_used, "tiebreak_used_successor must be true when successor was found");
+    }
+
+    /// DS13e TASK 4: bias_rejected_heading_count increments when heading filter
+    /// rejects all prefab candidates in the junction zone.
+    #[test]
+    fn test_bias_rejected_heading_count_increments() {
+        use std::f32::consts::PI;
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // East-going prefab: truck faces North → heading diff = 90° > 45° → heading filter rejects.
+        let east_prefab = HermiteSegment {
+            p0: Vec3::new(-5.0, 0.0, -5.0),
+            p1: Vec3::new(5.0, 0.0, -5.0),
+            m0: Vec3::new(10.0, 0.0, 0.0),
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        });
+        let segs = vec![east_prefab];
+        let metas = vec![prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck at (0, 0, -5), heading North (0°). East prefab has 90° diff → heading-rejected.
+        let tel = make_telemetry(0.0, 0.0, -5.0, 0.0);
+
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            Some("none_found"),
+            "East prefab (90° > 45°) must be heading-rejected → none_found"
+        );
+        let count: u32 = ctx
+            .blackboard
+            .get("lane_follower.bias_rejected_heading_count")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(count, 1, "heading_reject count must be 1 after first tick");
+
+        // Second tick: count must increment to 2.
+        plugin.tick(Some(&tel), &mut out, &ctx);
+        let count2: u32 = ctx
+            .blackboard
+            .get("lane_follower.bias_rejected_heading_count")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(count2, 2, "heading_reject count must increment to 2 on second tick");
+    }
+
+    /// DS13e TASK 3: last_active_segment_idx resets to -1 after ACTIVE_SEG_RESET_FRAMES
+    /// consecutive ticks outside the junction zone.
+    #[test]
+    fn test_active_segment_resets_after_zone_exit() {
+        // Plugin with last_active_segment_idx pre-set; no junction zone active (no router_graph).
+        let mut plugin = make_chain_plugin();
+        plugin.last_active_segment_idx = Some(0);
+        plugin.last_active_segment_at = Some(std::time::Instant::now());
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck near segment 0, heading North — should reach status=ok every tick.
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+
+        // Run exactly ACTIVE_SEG_RESET_FRAMES ticks without junction zone.
+        for _ in 0..ACTIVE_SEG_RESET_FRAMES {
+            plugin.tick(Some(&tel), &mut out, &ctx);
+        }
+        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"),
+            "must reach ok status to write last_active_segment_idx key");
+
+        let last_idx: i64 = ctx
+            .blackboard
+            .get("lane_follower.last_active_segment_idx")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            last_idx, -1,
+            "after {} ticks outside junction zone, last_active_segment_idx must reset to -1",
+            ACTIVE_SEG_RESET_FRAMES
         );
     }
 }

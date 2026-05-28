@@ -1,0 +1,10 @@
+frame,lane_count,center_offset_px,confidence,latency_ms,detected
+frame_0000.jpg,1,N/A,0.00,44.9,1
+frame_0001.jpg,2,-0.5,0.50,29.7,1
+frame_0002.jpg,2,424.5,0.50,41.4,1
+frame_0003.jpg,2,-0.5,0.50,37.0,1
+frame_0004.jpg,2,-467.5,0.50,36.7,1
+frame_0005.jpg,3,-0.5,0.75,38.1,1
+frame_0006.jpg,3,262.5,0.75,37.5,1
+frame_0007.jpg,2,119.5,0.50,29.9,1
+frame_0008.jpg,0,N/A,0.00,39.7,0

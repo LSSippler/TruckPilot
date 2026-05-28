@@ -1,0 +1,12 @@
+{
+  "frame_idx": 8,
+  "timestamp": "2026-06-07T14:00:44Z",
+  "position": {
+    "x": -1.0,
+    "z": -1.0
+  },
+  "heading_rad": -1.0,
+  "speed_ms": -1.0,
+  "nav_distance": -1.0,
+  "nav_time": -1.0
+}
