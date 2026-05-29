@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -29,7 +30,9 @@ fn print_usage() {
     eprintln!(
         "  build-release                cargo build --workspace --release, then copy-plugins"
     );
-    eprintln!("  deploy-ets2-telemetry [DIR]  Copy truckpilot_telemetry.dll to ETS2 plugins dir");
+    eprintln!(
+        "  deploy-ets2-telemetry [DIR]  Build (msvc) + copy truckpilot_telemetry.dll to ETS2 plugins dir"
+    );
     eprintln!();
     eprintln!("Flags for copy-plugins:");
     eprintln!("  --debug   Copy from target/debug/ instead of target/release/");
@@ -55,19 +58,116 @@ fn build_release() {
     copy_plugins_impl("release");
 }
 
+/// Standard build target for the telemetry DLL. Explicitly msvc so the build
+/// output lands in a deterministic, toolchain-independent directory
+/// (`target/x86_64-pc-windows-msvc/release/`). Two reasons this is pinned:
+///
+/// 1. An explicit `--target` makes cargo write to `target/<triple>/release/`,
+///    NOT the host-default `target/release/`. The old deploy read
+///    `target/release/` while builds (cross-gnu, or any explicit-target build)
+///    landed in `target/<triple>/release/` — so deploy silently shipped a
+///    stale DLL every time. Build and deploy now read the SAME directory.
+/// 2. msvc needs no external toolchain (gnu's mingw linker went missing before),
+///    so this build works on a stock Windows dev box.
+const TELEMETRY_TARGET: &str = "x86_64-pc-windows-msvc";
+const TELEMETRY_DLL: &str = "truckpilot_telemetry.dll";
+
+/// Directory the telemetry DLL is built into for [`TELEMETRY_TARGET`].
+fn telemetry_dll_build_path(root: &Path) -> PathBuf {
+    root.join("target")
+        .join(TELEMETRY_TARGET)
+        .join("release")
+        .join(TELEMETRY_DLL)
+}
+
+/// Last-modified time of `p`, or `None` if it can't be read.
+fn file_mtime(p: &Path) -> Option<SystemTime> {
+    fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+/// Newest mtime among all `*.rs` files under `dir` (recursive). `None` if the
+/// directory can't be read or holds no `.rs` files.
+fn newest_rs_mtime(dir: &Path) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|s| s.to_str()) == Some("rs") {
+                if let Ok(m) = entry.metadata().and_then(|md| md.modified()) {
+                    newest = Some(newest.map_or(m, |n| n.max(m)));
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Would deploying this DLL ship stale code? `None` dll_mtime = missing DLL =
+/// stale. If we have no source mtime to compare against we trust the DLL.
+/// Otherwise stale iff the DLL predates the newest source file.
+fn is_stale(dll_mtime: Option<SystemTime>, newest_src_mtime: Option<SystemTime>) -> bool {
+    match (dll_mtime, newest_src_mtime) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(dll), Some(src)) => dll < src,
+    }
+}
+
 fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
     let root = workspace_root();
-    let src = root
-        .join("target")
-        .join("release")
-        .join("truckpilot_telemetry.dll");
 
-    if !src.exists() {
-        eprintln!("truckpilot_telemetry.dll not found at {}", src.display());
-        eprintln!("Run `cargo build --workspace --release` first.");
+    // 1) Build fresh for the standard msvc target. This is the heart of the
+    //    stale-deploy fix: build and deploy now reference the SAME directory,
+    //    so a successful deploy can never ship an old DLL.
+    println!("==> cargo build --release --target {TELEMETRY_TARGET} -p truckpilot-telemetry-dll");
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--target",
+            TELEMETRY_TARGET,
+            "-p",
+            "truckpilot-telemetry-dll",
+        ])
+        .current_dir(&root)
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to spawn cargo: {e}");
+            std::process::exit(1);
+        });
+    if !status.success() {
+        eprintln!("Build failed — not deploying.");
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    let src = telemetry_dll_build_path(&root);
+
+    // 2) Stale guard (backstop). The build above should have produced a fresh
+    //    DLL; if it is missing or older than the crate sources, abort loudly
+    //    instead of silently shipping stale code (the bug this whole change
+    //    exists to kill).
+    let src_dir = root.join("crates").join("telemetry-dll").join("src");
+    let dll_mtime = file_mtime(&src);
+    let src_mtime = newest_rs_mtime(&src_dir);
+    if is_stale(dll_mtime, src_mtime) {
+        if dll_mtime.is_none() {
+            eprintln!("DLL not found at {} after build.", src.display());
+        } else {
+            eprintln!(
+                "STALE: DLL at {} is older than sources in {} — refusing to deploy.",
+                src.display(),
+                src_dir.display()
+            );
+        }
+        eprintln!("Build the telemetry DLL for {TELEMETRY_TARGET} and retry.");
         std::process::exit(1);
     }
 
+    // 3) Destination: explicit arg wins, else ETS2_PLUGINS_DIR.
     let dst_dir = args
         .next()
         .or_else(|| std::env::var("ETS2_PLUGINS_DIR").ok())
@@ -77,22 +177,32 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
             eprintln!("  or set ETS2_PLUGINS_DIR env var.");
             std::process::exit(1);
         });
-
     let dst_dir = PathBuf::from(&dst_dir);
     if !dst_dir.exists() {
-        eprintln!(
-            "Destination directory does not exist: {}",
-            dst_dir.display()
-        );
+        eprintln!("Destination directory does not exist: {}", dst_dir.display());
         std::process::exit(1);
     }
 
-    let dst = dst_dir.join("truckpilot_telemetry.dll");
+    // 4) Copy and report the deployed file's age. `fs::copy` preserves the
+    //    source mtime on Windows, so this shows when the DLL was BUILT — a
+    //    few seconds means fresh; minutes/days means something is wrong.
+    let dst = dst_dir.join(TELEMETRY_DLL);
     match fs::copy(&src, &dst) {
-        Ok(_) => println!("Deployed truckpilot_telemetry.dll -> {}", dst.display()),
+        Ok(_) => {
+            let age = file_mtime(&dst)
+                .and_then(|m| m.elapsed().ok())
+                .map(|d| format!("{:.1}s ago", d.as_secs_f64()))
+                .unwrap_or_else(|| "unknown".into());
+            println!("Deployed {TELEMETRY_DLL} -> {}", dst.display());
+            println!("  from  : {}", src.display());
+            println!("  built : {age}  (build timestamp; stale-guard already confirmed it is newer than sources)");
+        }
         Err(e) => {
             eprintln!("Copy failed: {e}");
-            eprintln!("Is ETS2 running? Close it first.");
+            eprintln!(
+                "The DLL in {} is locked. Close ETS2 (and stop the daemon) first.",
+                dst_dir.display()
+            );
             std::process::exit(1);
         }
     }
@@ -370,6 +480,68 @@ mod tests {
         assert_eq!(copied, 1);
         assert!(errors.is_empty());
         assert!(dst.join("truckpilot_plugin_test.so").exists());
+    }
+
+    // --- deploy-ets2-telemetry: path + stale-guard (the stale-deploy fix) ---
+
+    #[test]
+    fn build_path_uses_msvc_triple_not_host_default() {
+        let root = Path::new("X:").join("repo");
+        let p = telemetry_dll_build_path(&root);
+        assert!(p.ends_with("truckpilot_telemetry.dll"));
+        let s = p.to_string_lossy();
+        assert!(s.contains("x86_64-pc-windows-msvc"), "path: {s}");
+        assert!(s.contains("release"), "path: {s}");
+        // Must NOT be the host-default target/release/ path that silently
+        // shipped stale DLLs.
+        let host_default = Path::new("target")
+            .join("release")
+            .join("truckpilot_telemetry.dll");
+        assert!(!p.ends_with(&host_default), "must not be host-default: {s}");
+    }
+
+    #[test]
+    fn is_stale_true_when_dll_missing() {
+        assert!(is_stale(None, Some(SystemTime::UNIX_EPOCH)));
+        assert!(is_stale(None, None));
+    }
+
+    #[test]
+    fn is_stale_true_when_dll_older_than_source() {
+        let older = SystemTime::UNIX_EPOCH;
+        let newer = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60);
+        assert!(is_stale(Some(older), Some(newer)));
+    }
+
+    #[test]
+    fn is_stale_false_when_dll_newer_or_equal() {
+        let older = SystemTime::UNIX_EPOCH;
+        let newer = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60);
+        assert!(!is_stale(Some(newer), Some(older)));
+        assert!(!is_stale(Some(newer), Some(newer))); // equal = not stale
+    }
+
+    #[test]
+    fn is_stale_false_when_no_source_mtime() {
+        // Can't read sources → trust the built DLL rather than block deploy.
+        assert!(!is_stale(Some(SystemTime::UNIX_EPOCH), None));
+    }
+
+    #[test]
+    fn newest_rs_mtime_some_when_rs_present_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("lib.rs"), b"fn x() {}").unwrap();
+        assert!(newest_rs_mtime(tmp.path()).is_some());
+    }
+
+    #[test]
+    fn newest_rs_mtime_none_without_rs() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("notes.txt"), b"x").unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), b"x").unwrap();
+        assert!(newest_rs_mtime(tmp.path()).is_none());
     }
 
     // Manual tests for locked-DLL / error collection path:
