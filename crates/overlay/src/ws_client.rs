@@ -37,6 +37,9 @@ const BLACKBOARD_KEYS: &[&str] = &[
     "lane_follower.junction_detected",
     "lane_follower.junction_distance_m",
     "lane_follower.junction_phase",
+    "lane_follower.lateral_source",
+    "lane_follower.lookahead_offset_x",
+    "lane_follower.lookahead_offset_z",
 ];
 
 /// Runs forever: connect, poll, reconnect on error.

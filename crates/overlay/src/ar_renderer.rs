@@ -11,7 +11,7 @@ use glam::Vec3;
 use procmod_overlay::{Color, Overlay};
 
 use crate::{
-    colors::{COLOR_BIAS_ACCEPTED, COLOR_NEAREST, COLOR_PREFAB, COLOR_ROAD},
+    colors::{COLOR_BIAS_ACCEPTED, COLOR_DS14_TARGET, COLOR_NEAREST, COLOR_PREFAB, COLOR_ROAD},
     projection::{clip_segment_to_near, ets2_heading_to_quat, world_to_screen, CameraIntrinsics},
     state::HudData,
     telemetry::TruckPose,
@@ -101,6 +101,34 @@ pub fn render_ar(
         // Extra highlight stroke for bias-accepted segments.
         if is_accepted {
             overlay.line(px0, py0, px1, py1, width + 2.0, Color::rgba(50, 230, 50, 180));
+        }
+    }
+
+    // ── DS14 synthetic target (only in K2-gap road_offset mode) ───────────────
+    // NOTE (follow-up ticket): target Y is approximated as truck_y + GROUND_OFFSET.
+    // lookahead_offset is 2D; exact ground-Y at the target is unavailable. Fine for
+    // roughly flat gaps; a gap on a slope will show the marker slightly off-surface.
+    if let Some((tx, tz)) = data.ds14_target_to_draw() {
+        let target_y = ground_y + GROUND_OFFSET;
+        let truck_ground = Vec3::new(pose.truck_x, target_y, pose.truck_z);
+        let target_world = Vec3::new(tx, target_y, tz);
+
+        // Linie Truck → Ziel: als Segment per clip_segment_to_near projizieren
+        // (dieselbe robuste Behind-Near-Logik wie die Strassen-Segmente).
+        let tc = cam_rot.inverse().mul_vec3(truck_ground - cam_pos);
+        let gc = cam_rot.inverse().mul_vec3(target_world - cam_pos);
+        if let Some((a, b)) = clip_segment_to_near(tc, gc, NEAR) {
+            let ax = k.f_x * (a.x / a.z) + k.cx;
+            let ay = k.cy - k.f_x * (a.y / a.z);
+            let bx = k.f_x * (b.x / b.z) + k.cx;
+            let by = k.cy - k.f_x * (b.y / b.z);
+            overlay.line(ax, ay, bx, by, 3.0, COLOR_DS14_TARGET);
+        }
+
+        // Marker am Zielpunkt: world_to_screen gibt None zurück, wenn hinter Near.
+        if let Some((px, py)) = world_to_screen(target_world, cam_pos, cam_rot, &k, NEAR) {
+            overlay.circle(px, py, 8.0, COLOR_DS14_TARGET);
+            overlay.circle_filled(px, py, 3.0, COLOR_DS14_TARGET);
         }
     }
 
