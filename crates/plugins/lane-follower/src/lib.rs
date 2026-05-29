@@ -62,6 +62,7 @@
 //! | `lane_follower.bias_prefab_attempted` | `"true"/"false"` | DS13d: prefab-only query was issued |
 //! | `lane_follower.bias_prefab_accepted` | `"true"/"false"` | DS13d: prefab hit was accepted as nearest |
 //! | `lane_follower.bias_prefab_rejected_reason` | string | DS13d: `"none"` / `"too_far"` / `"none_found"` / `"not_active"` |
+//! | `lane_follower.lateral_source` | string | DS14: `"navcurve"` / `"road_offset"` / `"road_center"` |
 
 mod junction;
 mod pure_pursuit;
@@ -799,7 +800,11 @@ impl Plugin for LaneFollowerPlugin {
 
         // ── Safety-Fallback (Task 2) ─────────────────────────────────────
         // Rate-limit tightening + gain dampening active when |lateral| > soft threshold.
-        let rate_limit_active = lateral_dist_signed.abs() > SAFETY_LATERAL_SOFT_M;
+        // DS14.1: In K2 gap junctions (none_found), nearest-seg reference is invalid — suppress
+        // the Soft-Safety trip to avoid dampening Pure-Pursuit against its own synthetic target.
+        // Hard-Safety (check_safety_trip / SAFETY_LATERAL_HARD_M) is unaffected.
+        let rate_limit_active = bias_rejected_reason != "none_found"
+            && lateral_dist_signed.abs() > SAFETY_LATERAL_SOFT_M;
         ctx.blackboard.set(
             "lane_follower.rate_limit_active",
             if rate_limit_active { "true" } else { "false" },
@@ -928,6 +933,56 @@ impl Plugin for LaneFollowerPlugin {
                     .set("lane_follower.heading_to_lookahead_deg", format!("{:.2}", heading_to_la));
             }
         }
+
+        // DS14: Synthetic lookahead for none_found gap junctions (K2 coverage gaps).
+        //
+        // When the prefab-bias query returns none_found, the normal lookahead above landed
+        // on a road dead-end at the junction edge (la_point_opt = Some(junction_edge)).
+        // That dead-end lookahead is behind the truck once it enters the gap, causing
+        // Pure-Pursuit to steer off-course.
+        //
+        // Fix: overwrite lookahead_offset_x/z with a synthetic target computed directly
+        // from truck heading + road_look lane offset.  This block runs AFTER the normal
+        // lookahead block so it cleanly overwrites the stale dead-end value.
+        //
+        // Right-normal convention (matches existing code at ~line 788):
+        //   forward  = (sin h, -cos h)  in XZ   [0=North=-Z, 90=East=+X]
+        //   right    = (cos h,  sin h)  in XZ
+        //   Proof h=0 (North): right=(1,0)=East ✓   h=90 (East): right=(0,1)=South ✓
+        let lateral_source: &'static str = if bias_accepted {
+            "navcurve"
+        } else if bias_rejected_reason == "none_found" {
+            let h_rad = truck_heading_deg.to_radians();
+            let fwd_x = h_rad.sin();
+            let fwd_z = -h_rad.cos();
+            let right_x = h_rad.cos(); // right-normal: (cos h, sin h)
+            let right_z = h_rad.sin();
+            let synth_offset_m = seg_meta
+                .map(|m| if m.is_prefab { LANE_OFFSET_RIGHT_M } else { m.lane_offset_right_m })
+                .unwrap_or(LANE_OFFSET_RIGHT_M);
+            let synth_la_x =
+                truck_x as f32 + fwd_x * lookahead_dist_m + right_x * synth_offset_m;
+            let synth_la_z =
+                truck_z as f32 + fwd_z * lookahead_dist_m + right_z * synth_offset_m;
+            ctx.blackboard
+                .set("lane_follower.lookahead_x", format!("{synth_la_x:.3}"));
+            ctx.blackboard
+                .set("lane_follower.lookahead_z", format!("{synth_la_z:.3}"));
+            ctx.blackboard
+                .set("lane_follower.lookahead_offset_x", format!("{synth_la_x:.3}"));
+            ctx.blackboard
+                .set("lane_follower.lookahead_offset_z", format!("{synth_la_z:.3}"));
+            let heading_to_la = (synth_la_x - truck_x as f32)
+                .atan2(-(synth_la_z - truck_z as f32))
+                .to_degrees()
+                .rem_euclid(360.0);
+            ctx.blackboard
+                .set("lane_follower.heading_to_lookahead_deg", format!("{heading_to_la:.2}"));
+            "road_offset"
+        } else {
+            "road_center"
+        };
+        ctx.blackboard.set("lane_follower.lateral_source", lateral_source);
 
         if hit.dist_m > DIST_WARN_M {
             ctx_warn!(
@@ -2504,6 +2559,490 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(count2, 2, "heading_reject count must increment to 2 on second tick");
+    }
+
+    // ── DS14: Synthetic Lookahead Tests ─────────────────────────────────────
+
+    /// Right-normal (cos h, sin h) is East when heading North.
+    /// Confirms sign convention: positive offset moves lane target right of road center.
+    #[test]
+    fn ds14_right_normal_heading_north() {
+        let h_rad = 0.0_f32.to_radians();
+        let right_x = h_rad.cos(); // 1.0
+        let right_z = h_rad.sin(); // 0.0
+        assert!((right_x - 1.0).abs() < 1e-6, "heading North: right_x must be 1.0 (East)");
+        assert!(right_z.abs() < 1e-6, "heading North: right_z must be 0.0");
+        // Lane point must be East of road center (larger X)
+        let lane_x = 0.0_f32 + right_x * 3.75;
+        let lane_z = 0.0_f32 + right_z * 3.75;
+        assert!(lane_x > 0.0, "lane center must be East of road center when heading North");
+        let _ = lane_z;
+    }
+
+    /// Right-normal (cos h, sin h) is South (+Z) when heading East.
+    #[test]
+    fn ds14_right_normal_heading_east() {
+        let h_rad = 90.0_f32.to_radians();
+        let right_x = h_rad.cos(); // ~0.0
+        let right_z = h_rad.sin(); // ~1.0
+        assert!(right_x.abs() < 1e-5, "heading East: right_x must be ~0 (South has no X component)");
+        assert!((right_z - 1.0).abs() < 1e-5, "heading East: right_z must be ~1.0 (South = +Z)");
+        let lane_z = 0.0_f32 + right_z * 3.75;
+        assert!(lane_z > 0.0, "lane center must be South (+Z) of road center when heading East");
+    }
+
+    /// Right-normal (cos h, sin h) is West (-X) when heading South.
+    #[test]
+    fn ds14_right_normal_heading_south() {
+        let h_rad = 180.0_f32.to_radians();
+        let right_x = h_rad.cos(); // -1.0
+        let right_z = h_rad.sin(); // ~0.0
+        assert!((right_x + 1.0).abs() < 1e-5, "heading South: right_x must be -1.0 (West)");
+        assert!(right_z.abs() < 1e-5, "heading South: right_z must be ~0.0");
+        let lane_x = 0.0_f32 + right_x * 3.75;
+        assert!(lane_x < 0.0, "lane center must be West (-X) of road center when heading South");
+    }
+
+    /// Right-normal (cos h, sin h) is North (-Z) when heading West.
+    #[test]
+    fn ds14_right_normal_heading_west() {
+        let h_rad = 270.0_f32.to_radians();
+        let right_x = h_rad.cos(); // ~0.0
+        let right_z = h_rad.sin(); // -1.0
+        assert!(right_x.abs() < 1e-5, "heading West: right_x must be ~0");
+        assert!((right_z + 1.0).abs() < 1e-5, "heading West: right_z must be -1.0 (North = -Z)");
+        let lane_z = 0.0_f32 + right_z * 3.75;
+        assert!(lane_z < 0.0, "lane center must be North (-Z) of road center when heading West");
+    }
+
+    /// When none_found, lateral_source=road_offset and lookahead_offset_x/z are overwritten
+    /// with a synthetic target (truck_pos + forward*lookahead_dist + right*lane_offset).
+    #[test]
+    fn ds14_none_found_sets_road_offset_and_synthetic_lookahead() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // East-going prefab: truck faces North → heading diff 90° > 45° → none_found.
+        let east_prefab = HermiteSegment {
+            p0: Vec3::new(-5.0, 0.0, -5.0),
+            p1: Vec3::new(5.0, 0.0, -5.0),
+            m0: Vec3::new(10.0, 0.0, 0.0),
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        });
+        let segs = vec![east_prefab];
+        let metas = vec![prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck at (0,0,-5) heading North (0°). Speed=0 → lookahead_dist = 15m.
+        let tel = make_telemetry(0.0, 0.0, -5.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            Some("none_found"),
+            "prerequisite: must be none_found"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            Some("road_offset"),
+            "none_found must set lateral_source=road_offset"
+        );
+
+        // Synthetic target: truck(0,0,-5) + forward(0,-1)*15 + right(1,0)*LANE_OFFSET_RIGHT_M
+        let expected_x = 0.0_f32 + 0.0 * 15.0 + 1.0 * LANE_OFFSET_RIGHT_M;
+        let expected_z = -5.0_f32 + (-1.0) * 15.0 + 0.0 * LANE_OFFSET_RIGHT_M;
+        let got_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let got_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_z")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            (got_x - expected_x).abs() < 0.01,
+            "lookahead_offset_x: expected {expected_x:.3} got {got_x:.3}"
+        );
+        assert!(
+            (got_z - expected_z).abs() < 0.01,
+            "lookahead_offset_z: expected {expected_z:.3} got {got_z:.3}"
+        );
+    }
+
+    /// When bias_accepted=true (normal NavCurve hit), lateral_source=navcurve.
+    #[test]
+    fn ds14_navcurve_hit_sets_lateral_source_navcurve() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // North-going prefab: truck faces North → heading diff 0° < 45° → accepted.
+        let north_prefab = HermiteSegment {
+            p0: Vec3::new(0.0, 0.0, -0.0),
+            p1: Vec3::new(0.0, 0.0, -10.0),
+            m0: Vec3::new(0.0, 0.0, -10.0),
+            m1: Vec3::new(0.0, 0.0, -10.0),
+            length_m: 10.0,
+            from_uid: 50,
+            to_uid: 51,
+            edge_uid: 1,
+        };
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        });
+        let segs = vec![north_prefab];
+        let metas = vec![prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck 2m into segment, heading North.
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            Some("true"),
+            "prerequisite: prefab must be accepted"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            Some("navcurve"),
+            "bias_accepted=true must set lateral_source=navcurve"
+        );
+    }
+
+    /// lateral_source is computed fresh each tick — no state bleeds between ticks.
+    #[test]
+    fn ds14_lateral_source_no_state_bleeding() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+        use std::f32::consts::PI;
+
+        // East-going prefab produces none_found when truck heads North,
+        // but navcurve when truck heads East.
+        let east_prefab = HermiteSegment {
+            p0: Vec3::new(-5.0, 0.0, -5.0),
+            p1: Vec3::new(5.0, 0.0, -5.0),
+            m0: Vec3::new(10.0, 0.0, 0.0),
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        });
+        let segs = vec![east_prefab];
+        let metas = vec![prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+
+        // Tick 1: heading North → none_found → road_offset
+        let tel_north = make_telemetry(0.0, 0.0, -5.0, 0.0);
+        plugin.tick(Some(&tel_north), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            Some("road_offset"),
+            "tick 1 heading North must give road_offset"
+        );
+
+        // Tick 2: heading East (ETS2 heading = 0.25 full rotation = 90°)
+        // ETS2 heading is stored as fraction 0..1 (0=North, 0.25=East).
+        // make_telemetry uses heading directly — the plugin converts: (-heading * 360).rem_euclid(360)
+        // heading=0.0 → truck_heading_deg = 0.0 (North)
+        // heading=-0.25 → truck_heading_deg = 90.0 (East) ... let's verify convention:
+        // truck_heading_deg = ((-tel.heading) * 360.0).rem_euclid(360.0)
+        // For East (90°): -tel.heading * 360 = 90 → tel.heading = -0.25
+        let tel_east = make_telemetry(0.0, 0.0, -5.0, -0.25);
+        plugin.tick(Some(&tel_east), &mut out, &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            Some("true"),
+            "tick 2 heading East must accept East prefab"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            Some("navcurve"),
+            "tick 2 heading East must give navcurve (no state from tick 1 road_offset)"
+        );
+    }
+
+    /// DS14.1: none_found guard — Soft-Safety must NOT fire when lateral > SOFT but bias=none_found.
+    /// nearest-seg reference is invalid in K2 gap; suppressing avoids fighting the synthetic target.
+    #[test]
+    fn ds14_1_soft_safety_none_found_bypass() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // East prefab at z=-5. Truck at (0,0,0.9) heading North:
+        //   heading diff = 90° > 45° → none_found
+        //   lateral = fwd_x*(truck_z - curve_z) = 1.0*(0.9-(-5)) ≈ 5.9 > SOFT (3.0m)
+        let east_prefab = HermiteSegment {
+            p0: Vec3::new(-5.0, 0.0, -5.0),
+            p1: Vec3::new(5.0, 0.0, -5.0),
+            m0: Vec3::new(10.0, 0.0, 0.0),
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let segs = vec![east_prefab];
+        let metas = vec![Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        })];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, 0.9, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            Some("none_found"),
+            "prerequisite: must be none_found"
+        );
+        let lateral: f32 = ctx
+            .blackboard
+            .get("lane_follower.lateral_dist_signed")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            lateral.abs() > SAFETY_LATERAL_SOFT_M,
+            "prerequisite: |lateral|={lateral} must exceed SOFT threshold"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            Some("false"),
+            "none_found: Soft-Safety must NOT fire (invalid nearest-seg reference in K2 gap)"
+        );
+    }
+
+    /// DS14.1: too_far guard check — Soft-Safety must still fire when lateral > SOFT and bias=too_far.
+    /// Uses a North-going prefab 5.9m to the right: heading diff=0° passes the heading filter,
+    /// but bias_max_prefab_dist_m=0.0 rejects it as too_far.
+    #[test]
+    fn ds14_1_soft_safety_too_far_active() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // North prefab at x=5.9 (heading diff 0° < 45° → passes filter, but dist=5.9 > 0.0 → too_far).
+        // lateral_dist_signed ≈ -5.9 (truck left of North road) → |lateral| > SOFT (3.0m).
+        let north_prefab = HermiteSegment {
+            p0: Vec3::new(5.9, 0.0, 0.0),
+            p1: Vec3::new(5.9, 0.0, -10.0),
+            m0: Vec3::new(0.0, 0.0, -10.0),
+            m1: Vec3::new(0.0, 0.0, -10.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let segs = vec![north_prefab];
+        let metas = vec![Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        })];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 0.0, // dist=5.9 > 0.0 → too_far
+            ..Default::default()
+        };
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            Some("too_far"),
+            "prerequisite: must be too_far (heading passes filter, dist > 0.0 threshold)"
+        );
+        let lateral: f32 = ctx
+            .blackboard
+            .get("lane_follower.lateral_dist_signed")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            lateral.abs() > SAFETY_LATERAL_SOFT_M,
+            "prerequisite: |lateral|={lateral} must exceed SOFT threshold"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            Some("true"),
+            "too_far: Soft-Safety must still fire when lateral > SOFT threshold"
+        );
+    }
+
+    /// DS14.1: Hard-Safety (lateral_excursion) must fire even when none_found guard suppresses Soft.
+    /// Proves the guard only affects rate_limit_active, not check_safety_trip.
+    #[test]
+    fn ds14_1_hard_safety_unaffected_by_none_found_guard() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // East prefab at z=-5. Truck at (0,0,3.5) heading North:
+        //   heading diff = 90° > 45° → none_found (guard suppresses Soft)
+        //   lateral = 1.0*(3.5-(-5)) = 8.5 > HARD (8.0m) → hard trip must still fire
+        let east_prefab = HermiteSegment {
+            p0: Vec3::new(-5.0, 0.0, -5.0),
+            p1: Vec3::new(5.0, 0.0, -5.0),
+            m0: Vec3::new(10.0, 0.0, 0.0),
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 1,
+        };
+        let segs = vec![east_prefab];
+        let metas = vec![Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_look_token: 0,
+        })];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(index),
+            luts,
+            forward_adj,
+            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("plugin.lane-follower.mode", "active");
+        let mut out = ControlOutput::default();
+        let tel = make_telemetry(0.0, 0.0, 3.5, 0.0);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            Some("none_found"),
+            "prerequisite: none_found (guard suppresses Soft)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            Some("false"),
+            "Soft-Safety suppressed by none_found guard"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            Some("lateral_excursion"),
+            "Hard-Safety must still fire despite Soft being suppressed"
+        );
+        assert_eq!(
+            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            Some("true"),
+            "Hard-Safety must request disengage"
+        );
     }
 
     /// DS13e TASK 3: last_active_segment_idx resets to -1 after ACTIVE_SEG_RESET_FRAMES
