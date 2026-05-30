@@ -945,6 +945,12 @@ impl Plugin for LaneFollowerPlugin {
         // from truck heading + road_look lane offset.  This block runs AFTER the normal
         // lookahead block so it cleanly overwrites the stale dead-end value.
         //
+        // Inherent heading bias: because the target is truck-relative (not road-relative),
+        // heading_to_lookahead_deg − truck_heading_deg = atan2(offset, lookahead_dist)
+        // = atan2(1.875m, 15m) ≈ 7.1° regardless of truck position.  This is intentional:
+        // Pure-Pursuit steers toward the right-lane target; the bias is accepted/harmless
+        // for short gaps (<100m) because the EMA+rate-limiter dampens actual heading change.
+        //
         // Right-normal convention (matches existing code at ~line 788):
         //   forward  = (sin h, -cos h)  in XZ   [0=North=-Z, 90=East=+X]
         //   right    = (cos h,  sin h)  in XZ
