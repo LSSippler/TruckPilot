@@ -28,6 +28,7 @@
 //! | router.path_total_distance_m     | f64    | Total route distance in metres     |
 //! | router.last_snap_dist            | f64    | Distance to snapped start node (m) |
 //! | router.last_snap_heading_filter_applied | bool | Whether heading filter was used |
+//! | router.snap_method               | string | "edge" / "node" / "" — snap strategy used for last plan |
 //! | router.auto_replan_count         | u32    | Number of auto-replans triggered   |
 //! | router.auto_replan_triggered_at  | u64    | Epoch ms of last auto-replan       |
 //! | router.last_replan_reason        | string | "off_route" or ""                  |
@@ -43,8 +44,12 @@ use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
-/// Wider radius for off-route detection vs the 20m A*-snap limit.
-/// Highway nodes can be spaced >20m apart; 50m avoids false "on-route" gaps.
+/// Node-snap radius: fallback when edge-snap finds nothing.
+const SNAP_RADIUS_M: f64 = 20.0;
+/// Edge-snap radius: project truck position onto the nearest road edge within this distance.
+/// Highway segments can span 50–200 m between nodes; 100 m covers all practical cases.
+const EDGE_SNAP_RADIUS_M: f64 = 100.0;
+/// Wider radius for off-route detection vs the snap limit.
 const OFF_ROUTE_DETECT_RADIUS_M: f64 = 50.0;
 
 /// Sliding-window size for snap stabilisation (Phase 6.5t).
@@ -189,6 +194,7 @@ struct RouteResult {
     route_node_ids: Vec<u64>,
     snap_dist_m: f64,
     heading_filter_applied: bool,
+    snap_method: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +220,7 @@ pub struct RouterPlugin {
     // ---- Phase 6.5q: Snap diagnostic ----
     last_snap_dist_m: f64,
     last_snap_heading_filter_applied: bool,
+    last_snap_method: String,
     // ---- Phase 6.5q: Off-route auto-replan ----
     current_route_node_ids: HashSet<u64>,
     auto_replan_count: u32,
@@ -247,6 +254,7 @@ impl Default for RouterPlugin {
             waypoint_count: 0,
             path_total_distance_m: 0.0,
             last_snap_dist_m: 0.0,
+            last_snap_method: String::new(),
             last_snap_heading_filter_applied: false,
             current_route_node_ids: HashSet::new(),
             auto_replan_count: 0,
@@ -359,13 +367,23 @@ fn router_worker_loop(
                 route_node_ids: vec![],
                 snap_dist_m: 0.0,
                 heading_filter_applied: false,
+                snap_method: "none".to_string(),
             });
             continue;
         }
 
-        // Find nearest graph node to the truck's current position (heading-aware).
-        let snap_result =
-            graph.find_nearest_with_heading(req.truck_x, req.truck_z, req.truck_heading, 20.0);
+        // Snap truck position to the nearest graph node.
+        // First try edge-snap (projects truck onto nearest road segment, then picks
+        // the direction-aligned endpoint); fall back to node-snap for sparse areas.
+        let edge_snap =
+            graph.find_nearest_on_edge(req.truck_x, req.truck_z, req.truck_heading, EDGE_SNAP_RADIUS_M);
+        let (snap_result, snap_method) = match edge_snap {
+            Some(r) => (Some(r), "edge"),
+            None => (
+                graph.find_nearest_with_heading(req.truck_x, req.truck_z, req.truck_heading, SNAP_RADIUS_M),
+                "node",
+            ),
+        };
         let (start_uid, snap_dist_m, heading_filter_applied) = match snap_result {
             Some(r) => r,
             None => {
@@ -378,12 +396,13 @@ fn router_worker_loop(
                     plan_ms: t_start.elapsed().as_millis() as u64,
                     result_kind: "start_node_unknown".to_string(),
                     error_detail: format!(
-                        "Start position ({:.1}, {:.1}) has no nearby graph node within 20m",
-                        req.truck_x, req.truck_z,
+                        "Start position ({:.1}, {:.1}) has no nearby graph edge within {}m or node within {}m",
+                        req.truck_x, req.truck_z, EDGE_SNAP_RADIUS_M, SNAP_RADIUS_M,
                     ),
                     route_node_ids: vec![],
                     snap_dist_m: 0.0,
                     heading_filter_applied: false,
+                    snap_method: "none".to_string(),
                 });
                 continue;
             }
@@ -422,6 +441,7 @@ fn router_worker_loop(
                     route_node_ids,
                     snap_dist_m,
                     heading_filter_applied,
+                    snap_method: snap_method.to_string(),
                 });
             }
             None => {
@@ -440,6 +460,7 @@ fn router_worker_loop(
                     route_node_ids: vec![],
                     snap_dist_m: 0.0,
                     heading_filter_applied: false,
+                    snap_method: snap_method.to_string(),
                 });
             }
         }
@@ -476,6 +497,8 @@ impl Plugin for RouterPlugin {
                 shared.nodes.len(),
                 shared.edges.len()
             );
+            ctx.blackboard
+                .set("router.graph_node_count", shared.nodes.len().to_string());
             Some(Arc::clone(shared))
         } else {
             self.graph_path = ctx
@@ -499,6 +522,8 @@ impl Plugin for RouterPlugin {
                             g.edges.len(),
                             self.graph_path
                         );
+                        ctx.blackboard
+                            .set("router.graph_node_count", g.nodes.len().to_string());
                         Some(Arc::new(RouterGraph::new(nodes, edges)))
                     }
                     Err(e) => {
@@ -534,6 +559,7 @@ impl Plugin for RouterPlugin {
         ctx.blackboard.set("router.last_snap_dist", "0");
         ctx.blackboard
             .set("router.last_snap_heading_filter_applied", "false");
+        ctx.blackboard.set("router.snap_method", "");
         ctx.blackboard.set("router.auto_replan_count", "0");
         ctx.blackboard.set("router.auto_replan_triggered_at", "");
         ctx.blackboard.set("router.last_replan_reason", "");
@@ -592,6 +618,7 @@ impl Plugin for RouterPlugin {
                                 self.last_snap_dist_m = result.snap_dist_m;
                                 self.last_snap_heading_filter_applied =
                                     result.heading_filter_applied;
+                                self.last_snap_method = result.snap_method.clone();
                                 self.current_route_node_ids =
                                     result.route_node_ids.iter().copied().collect();
                                 if let Some(ref lock) = ctx.route_node_ids {
@@ -817,6 +844,8 @@ impl Plugin for RouterPlugin {
             "router.last_snap_heading_filter_applied",
             self.last_snap_heading_filter_applied.to_string(),
         );
+        ctx.blackboard
+            .set("router.snap_method", &self.last_snap_method);
         ctx.blackboard.set(
             "router.auto_replan_count",
             self.auto_replan_count.to_string(),

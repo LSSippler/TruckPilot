@@ -115,6 +115,64 @@ impl RouterGraph {
         }
     }
 
+    /// Find the best start node by projecting the truck position onto the nearest graph edge.
+    ///
+    /// Projects the truck's `(x, z)` onto every edge via point-to-segment math,
+    /// finds the closest edge within `max_dist_m`, then picks the from/to node
+    /// whose direction aligns with the truck's forward heading.
+    ///
+    /// Returns `Some((uid, dist_to_edge, true))` on success; `None` if no edge
+    /// is within `max_dist_m`.
+    pub fn find_nearest_on_edge(
+        &self,
+        x: f64,
+        z: f64,
+        heading: f64,
+        max_dist_m: f64,
+    ) -> Option<(u64, f64, bool)> {
+        let heading_rad = -heading * std::f64::consts::TAU;
+        let hx = heading_rad.sin();
+        let hz = -heading_rad.cos();
+
+        let mut best_dist = f64::MAX;
+        let mut best_uid: Option<u64> = None;
+
+        for &(from_uid, to_uid, _) in &self.edges {
+            let Some(&(fx, fz)) = self.positions.get(&from_uid) else {
+                continue;
+            };
+            let Some(&(tx, tz)) = self.positions.get(&to_uid) else {
+                continue;
+            };
+            let ex = tx - fx;
+            let ez = tz - fz;
+            let len_sq = ex * ex + ez * ez;
+            if len_sq < 0.01 {
+                continue;
+            }
+            // Project truck onto segment, clamped to [0, 1].
+            let t = ((x - fx) * ex + (z - fz) * ez) / len_sq;
+            let t = t.clamp(0.0, 1.0);
+            let px = fx + t * ex;
+            let pz = fz + t * ez;
+            let dist = ((x - px) * (x - px) + (z - pz) * (z - pz)).sqrt();
+            if dist >= best_dist || dist > max_dist_m {
+                continue;
+            }
+            // Pick the node whose direction matches the truck heading.
+            let len = len_sq.sqrt();
+            let chosen = if ex / len * hx + ez / len * hz >= 0.0 {
+                to_uid
+            } else {
+                from_uid
+            };
+            best_dist = dist;
+            best_uid = Some(chosen);
+        }
+
+        best_uid.map(|uid| (uid, best_dist, true))
+    }
+
     pub fn plan(&self, start: u64, goal: u64) -> Option<(Vec<u64>, f64)> {
         if !self.positions.contains_key(&start) || !self.positions.contains_key(&goal) {
             return None;
@@ -211,6 +269,32 @@ fn reconstruct(came_from: &HashMap<u64, u64>, start: u64, goal: u64) -> Vec<u64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Edge-snap: truck midway on a 200m highway segment (too far from any node for
+    /// the old 20m node-snap) — edge-snap must succeed with the direction-correct node.
+    #[test]
+    fn edge_snap_midpoint_highway() {
+        // Two nodes 200m apart along x-axis.
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 200.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+
+        // Truck at (100, 5): 5m beside the edge, 100m from both nodes.
+        // Node-snap with 20m would fail; edge-snap with 100m must succeed.
+        // Heading = 0.0 → ETS2 North, heading_rad=0, hx=0, hz=-1 — perpendicular to edge.
+        // Try heading = 0.75 (East in ETS2: heading_rad=-0.75*TAU, sin≈1, cos≈0) → hx≈1, hz≈0.
+        let result = graph.find_nearest_on_edge(100.0, 5.0, 0.75, 100.0);
+        assert!(result.is_some(), "edge-snap must find the edge when truck is 5m off it");
+        let (uid, dist, edge_used) = result.unwrap();
+        assert!(edge_used, "must return edge_used=true");
+        assert!(dist < 6.0, "distance to edge must be near 5m, got {dist:.2}");
+        // Heading east → to-node (uid=2) should be chosen.
+        assert_eq!(uid, 2, "heading east along edge → to-node (uid=2) must be chosen");
+
+        // Node-snap (20m) must fail at this position.
+        let node_result = graph.find_nearest_with_heading(100.0, 5.0, 0.75, 20.0);
+        assert!(node_result.is_none(), "node-snap with 20m must fail when both nodes are 100m away");
+    }
 
     #[test]
     fn heading_south_ets2_accepts_south_pointing_edge() {
