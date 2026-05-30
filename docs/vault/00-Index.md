@@ -104,6 +104,10 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 
 - [[01-Phases/Phase-6.9-Overlay-HUD]] — **CLOSED 2026-05-27**: `crates/overlay` neuer standalone-Crate. `procmod-overlay 1.0.0` DX11-Overlay über ETS2. WS-Client 5 Hz Blackboard-Poll + Exponential-Backoff. HUD-Panel 480×480 top-right: Segmente (grau/blau/rot), Junction-Zone-Kreis, Truck-Pfeil, 5-Zeilen Text-Panel, DAEMON DISCONNECTED Banner. `SpatialSegmentsInRadius` IPC-Command + `SpatialSegmentsResponse` in ipc-protocol (Stub in Core). Coords-Unittest 5/5 grün. Workspace clippy clean (0 warnings). `overlay.exe` 2.84 MB, Smoke-Test bestätigt Reconnect-Loop.
 
+- DS14-A Heading-Bias — **CLOSED 2026-05-30 as accepted/harmless**: 7.1° = atan2(1.875m, 15m) — inhärente Geometrie des truck-relativen synthetischen Ziels. EMA+Rate-Limiter dämpfen jeden Effekt weg. Kein Verhaltens-Fix. Kommentar in `lib.rs` DS14-Block ergänzt. DS14-B (NavCurve-Pickup-Transient) bleibt offen als niedrig-prio.
+
+- [[01-Phases/Phase-A2-Camera-Pose-D3D11-Hook-Pivot]] — **PIVOT 2026-05-29** (zurückgestellt auf Phase 7+, Spike-Code NICHT in master): Camera-Pose via D3D11-Present-Hook für drift-freies AR-Overlay. Blt-Dummy → `present_hook` feuert nie → V-VTABLE-MISMATCH → Flip-Dummy (`CreateSwapChainForHwnd`+`FLIP_DISCARD`, ABI 3× verifiziert, sauber installiert) → live WEITER kein `[scan]`. **Verdikt: ETS2 präsentiert über D3D12, nicht D3D11-DXGI** — D3D11-VTable-Patch trifft ungenutzte VTable. STOP-Gate verhinderte Vollausbau. Nutzbar bleibt: Stale-Deploy-Fix (committed `a7521891`), Overlay-B DS14-Marker (commit-reif), Erkenntnis ETS2=D3D12. Siehe [[05-Decisions/ADR-002-Camera-Pose-Render-Hook-Deferred]].
+
 ## Reviews
 
 - [[03-Reviews/DeepSeek-Review]]
@@ -119,6 +123,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 ## Decisions
 
 - [[05-Decisions/ADR-001-Plugin-FFI]]
+- [[05-Decisions/ADR-002-Camera-Pose-Render-Hook-Deferred]] — Render-Hook für Kamera-Pose zurückgestellt; **ETS2 präsentiert über D3D12**, nicht D3D11.
 
 ## Phase 6.2 Sub-Phase Status (touch 2026-05-11)
 
@@ -161,6 +166,7 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 
 - **xtask copy-plugins** (2026-05-15): `cargo xtask copy-plugins` deploys all `truckpilot_plugin_*.dll` from `target/release/` to `plugins/`. `hello-world` demo moved from `crates/plugins/` to `crates/examples/`, `libhello_world.so` removed from `plugins/`.
 - [[01-Phases/Phase-6.5o-Plugin-DLL-Auto-Copy]] — **CLOSED 2026-05-21**: `cargo build-release` alias (xtask build-release subcommand) auto-deploys all plugin DLLs after build. `cargo deploy-ets2` for Telemetry-DLL. `scripts/ship.ps1` as PowerShell fallback. Commit `bd9d885c`.
+- [[01-Phases/Phase-Deploy-Guard-CopyPlugins]] — **CLOSED 2026-05-30**: copy-plugins Daemon-Lock-Härtung. Daemon-Guard (tasklist/pgrep) + DLL-Lock-Check vor jedem Copy. Exit 1 wenn Daemon läuft, Exit 2 wenn Copy scheitert. Verhindert Windows FILE_SHARE_DELETE Stale-DLL-Trap (dieselbe Fehlerklasse wie Commit `a7521891`). 18/18 Tests grün.
 
 - [[01-Phases/Phase-6.5k-Lane-Keeper-Waypoint-Reload]] — **CLOSED 2026-05-20**: Stale-Waypoint-Bug behoben. Hash-basierter Reload-Trigger ersetzt `is_empty()`-Guard. Disengage leert Cache. 12/12 Tests grün.
 - [[01-Phases/Phase-6.5l-Heading-Konvention-Fix]] — **CLOSED 2026-05-20**: ETS2-Konvention-Fix `atan2(dz)` → `atan2(-dz)`. error_rad 2.08→0.39 rad, kein Vollanschlag mehr. 15/15 Tests grün.

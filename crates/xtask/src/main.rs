@@ -208,6 +208,36 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
     }
 }
 
+/// Returns true if the TruckPilot daemon process is currently running.
+/// On Windows, uses `tasklist`; on other platforms, uses `pgrep`.
+/// Returns false when detection fails (safe default: allow deploy).
+#[cfg(windows)]
+fn daemon_is_running() -> bool {
+    Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq truckpilot-core.exe", "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("truckpilot-core.exe"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn daemon_is_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "truckpilot-core"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Returns true if `path` cannot be opened for writing (locked by another process).
+/// On Windows, os error 32 = ERROR_SHARING_VIOLATION.
+fn dll_is_locked(path: &Path) -> bool {
+    match std::fs::OpenOptions::new().write(true).create(false).open(path) {
+        Err(e) => e.raw_os_error() == Some(32),
+        Ok(_) => false,
+    }
+}
+
 fn copy_plugins(args: impl Iterator<Item = String>) {
     let mut debug = false;
     for arg in args {
@@ -232,6 +262,38 @@ fn copy_plugins_impl(profile: &str) {
         eprintln!("Source directory does not exist: {}", src.display());
         eprintln!("Run `cargo build --workspace --{}` first.", profile);
         std::process::exit(1);
+    }
+
+    // Daemon-Guard: abort before any copy attempt if daemon is running.
+    // Prevents the Windows FILE_SHARE_DELETE trap where the copy appears to
+    // succeed (delete-pending + new file written) but the daemon continues
+    // executing the old DLL mapping until it is fully restarted.
+    if daemon_is_running() {
+        eprintln!("ERROR: TruckPilot daemon (truckpilot-core.exe) is running.");
+        eprintln!("Stop the daemon first, then re-run `cargo xtask copy-plugins`.");
+        std::process::exit(1);
+    }
+
+    // Lock-Guard: catch any other process holding a plugin DLL (e.g. debugger,
+    // antivirus with an exclusive handle). Daemon-Guard above handles the common
+    // case; this is a defence-in-depth backstop.
+    if dst.exists() {
+        if let Ok(entries) = fs::read_dir(&dst) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if is_plugin_file(&path) && dll_is_locked(&path) {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string());
+                    eprintln!("ERROR: Plugin DLL `{name}` is locked by another process.");
+                    eprintln!(
+                        "Stop whatever holds the DLL, then re-run `cargo xtask copy-plugins`."
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
     }
 
     let (copied, errors) = deploy_plugins_to_dir(&src, &dst);
@@ -544,6 +606,19 @@ mod tests {
         assert!(newest_rs_mtime(tmp.path()).is_none());
     }
 
+    #[test]
+    fn dll_is_locked_false_for_nonexistent() {
+        assert!(!dll_is_locked(Path::new("C:\\nonexistent_dll_path_12345_xtask.dll")));
+    }
+
+    #[test]
+    fn dll_is_locked_false_for_unlocked_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dll = tmp.path().join("truckpilot_plugin_test.dll");
+        fs::write(&dll, b"fake dll content").unwrap();
+        assert!(!dll_is_locked(&dll));
+    }
+
     // Manual tests for locked-DLL / error collection path:
     //
     // Windows file-locking semantics differ from file-permission semantics.
@@ -555,20 +630,36 @@ mod tests {
     //
     // Manual test workflows:
     //
-    // 1. Locked DLL → ERROR + exit code 2:
+    // 1. Daemon-Guard (copy_plugins_impl level, NEW):
+    //    a. Start the daemon: `.\target\release\truckpilot-core.exe daemon &`
+    //    b. Run `cargo xtask copy-plugins`
+    //    c. Expected: "ERROR: TruckPilot daemon ... is running", exit code 1
+    //    d. Verify: `echo $LASTEXITCODE` → 1  (1 = blocked-before-copy, 2 = copy-failed)
+    //    e. Stop daemon, re-run: plugins deployed, exit 0
+    //
+    // 2. Lock-Guard (copy_plugins_impl level, NEW):
+    //    a. Lock one DLL manually in plugins/:
+    //       `$f = [System.IO.File]::Open("plugins\truckpilot_plugin_router.dll",
+    //              [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write,
+    //              [System.IO.FileShare]::None)`
+    //    b. Run `cargo xtask copy-plugins`
+    //    c. Expected: "ERROR: Plugin DLL ... is locked", exit code 1
+    //    d. `$f.Close()`, re-run: exit 0
+    //
+    // 3. Locked DLL → ERROR in deploy_plugins_to_dir (legacy path, still active):
     //    a. Start the daemon: `.\target\release\truckpilot-core.exe daemon &`
     //    b. Run `cargo build-release`
-    //    c. Expected: non-zero exit code, error message listing locked DLLs,
-    //       "Action: stop the daemon, then run `cargo xtask copy-plugins`"
-    //    d. Verify: `echo $LASTEXITCODE` → 2
+    //    c. Expected: non-zero exit code (daemon-guard catches it at 1, not 2)
+    //    d. Verify: `echo $LASTEXITCODE` → 1
     //
-    // 2. After stopping daemon → success:
+    // 4. After stopping daemon → success:
     //    a. Kill the daemon
     //    b. Run `cargo xtask copy-plugins`
     //    c. Expected: all plugins deployed, exit 0
     //
-    // 3. Partial deploy (some DLLs locked, some not):
-    //    a. Lock one DLL manually (e.g. PowerShell: `$f = [System.IO.File]::Open(...)`)
-    //    b. Run `cargo xtask copy-plugins`
-    //    c. Expected: non-zero exit, lists only the locked file, others deploy ok
+    // 5. Partial deploy (some DLLs locked, some not):
+    //    a. Lock one DLL manually (see case 2 above)
+    //    b. Daemon NOT running (so daemon-guard passes)
+    //    c. Run `cargo xtask copy-plugins`
+    //    d. Expected: lock-guard fires, exit 1, names the locked DLL
 }
