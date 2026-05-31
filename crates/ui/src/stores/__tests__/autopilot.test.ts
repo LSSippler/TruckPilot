@@ -7,7 +7,6 @@ const fakeStatus = {
   preconditions: {
     telemetry_ok: true,
     engine_running: true,
-    cruise_active: true,
     critical_plugins_loaded: true,
     router_active: true,
   },

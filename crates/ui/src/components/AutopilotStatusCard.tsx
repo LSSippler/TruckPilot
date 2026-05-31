@@ -43,12 +43,6 @@ function toPreconditions(snap: PreconditionSnapshot): Precondition[] {
       hint: snap.engine_running ? undefined : "Start the truck engine.",
     },
     {
-      id: "cruise",
-      label: "Cruise",
-      state: snap.cruise_active ? "ok" : "missing",
-      hint: snap.cruise_active ? undefined : "Activate cruise control in ETS2.",
-    },
-    {
       id: "plugins",
       label: "Plugins",
       state: snap.critical_plugins_loaded ? "ok" : "missing",
@@ -67,7 +61,6 @@ function missingPreconditions(p: PreconditionSnapshot): string[] {
   const missing: string[] = [];
   if (!p.telemetry_ok) missing.push("Telemetry");
   if (!p.engine_running) missing.push("Engine");
-  if (!p.cruise_active) missing.push("Cruise");
   if (!p.critical_plugins_loaded) missing.push("Plugins");
   if (!p.router_active) missing.push("Route");
   return missing;

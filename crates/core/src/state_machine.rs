@@ -32,7 +32,6 @@ const PAUSE_DETECT: u64 = 250; // 5 s stopped
 const PAUSE_TIMEOUT: u64 = 15_000; // 5 min
 const PRECONDITION_STABLE: u64 = 50; // 1 s
 const TELEMETRY_LOSS: u64 = 25; // 500 ms
-const CRUISE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before CruiseDeactivated fault
 const ENGINE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before EngineStopped fault
 const PRECONDITION_GLITCH_TOLERANCE: u64 = 10; // 200 ms at 50 Hz daemon tick rate
 const ZERO_SPEED_MS: f64 = 0.028; // ≈ 0.1 km/h
@@ -76,7 +75,6 @@ pub enum FailureReason {
     WaypointsUnreachable,
     VjoyDisconnected,
     BlackboardPoisoned,
-    CruiseDeactivated,
     EngineStopped,
     CriticalPluginMissing(String),
     UserRequested,
@@ -128,7 +126,6 @@ pub enum AutopilotEvent {
 pub struct Preconditions {
     pub telemetry_ok: bool,
     pub engine_running: bool,
-    pub cruise_active: bool,
     pub critical_plugins_loaded: bool,
     pub router_active: bool,
     /// Lane-only mode: truck must be within 20m of a known road node.
@@ -140,7 +137,6 @@ impl Preconditions {
     pub fn all_met(&self) -> bool {
         self.telemetry_ok
             && self.engine_running
-            && self.cruise_active
             && self.critical_plugins_loaded
             && self.router_active
             && self.truck_on_road
@@ -258,9 +254,6 @@ pub struct AutopilotStateMachine {
     /// Ticks-since-entering-current-state. Reset on every state transition
     /// initiated by `evaluate` or `handle_event`.
     state_entry_ticks: u64,
-    /// Consecutive ticks with cruise_control_kmh <= 0. Faults only after
-    /// [`CRUISE_OFF_TOLERANCE`] — protects against single-frame torn reads.
-    cruise_off_ticks: u64,
     /// Consecutive ticks with engine_rpm <= 100. Faults only after
     /// [`ENGINE_OFF_TOLERANCE`] — protects against single-frame glitches.
     engine_off_ticks: u64,
@@ -313,7 +306,6 @@ impl AutopilotStateMachine {
             precondition_stable_ticks: 0,
             ticks: 0,
             state_entry_ticks: 0,
-            cruise_off_ticks: 0,
             engine_off_ticks: 0,
             precondition_failure_streak: 0,
             max_stable_counter_in_engaging: 0,
@@ -425,7 +417,6 @@ impl AutopilotStateMachine {
                     self.engaging_ticks = 0;
                     self.precondition_stable_ticks = 0;
                     self.precondition_failure_streak = 0;
-                    self.cruise_off_ticks = 0;
                     self.engine_off_ticks = 0;
                 } else if self.engaging_ticks > ENGAGE_TIMEOUT {
                     tracing::warn!(
@@ -438,7 +429,6 @@ impl AutopilotStateMachine {
                     self.precondition_stable_ticks = 0;
                     self.precondition_failure_streak = 0;
                     self.max_stable_counter_in_engaging = 0;
-                    self.cruise_off_ticks = 0;
                     self.engine_off_ticks = 0;
                 }
             }
@@ -450,7 +440,6 @@ impl AutopilotStateMachine {
                     if check_steering_override(Some(t)) {
                         tracing::info!("[state] Active -> Off (steering override)");
                         self.state = AutopilotState::Off;
-                        self.cruise_off_ticks = 0;
                         self.engine_off_ticks = 0;
                         self.publish(bb);
                         return self.state;
@@ -464,21 +453,6 @@ impl AutopilotStateMachine {
                         }
                     } else {
                         self.engine_off_ticks = 0;
-                    }
-                    // Vision mode: ETS2 disables its cruise control whenever our
-                    // semantical steering input fires. CruiseDeactivated is
-                    // irrelevant in vision mode — skip the fault entirely.
-                    if self.mode_at_engage != "vision" {
-                        if t.cruise_control_kmh <= 0.0 {
-                            self.cruise_off_ticks += 1;
-                            if self.cruise_off_ticks > CRUISE_OFF_TOLERANCE {
-                                self.transition_to_fault(FailureReason::CruiseDeactivated);
-                                self.publish(bb);
-                                return self.state;
-                            }
-                        } else {
-                            self.cruise_off_ticks = 0;
-                        }
                     }
                     // Vision mode Level-4 disengage signal from lane-keeper plugin.
                     if bb.get("lane_keeper.fallback_level").as_deref() == Some("4")
@@ -501,7 +475,6 @@ impl AutopilotStateMachine {
                                 current_mode,
                             );
                             self.state = AutopilotState::Off;
-                            self.cruise_off_ticks = 0;
                             self.engine_off_ticks = 0;
                             self.publish(bb);
                             return self.state;
@@ -518,7 +491,6 @@ impl AutopilotStateMachine {
                         self.state = AutopilotState::Paused;
                         self.paused_ticks = 0;
                         self.stopped_ticks = 0;
-                        self.cruise_off_ticks = 0;
                         self.engine_off_ticks = 0;
                     }
                 }
@@ -530,13 +502,11 @@ impl AutopilotStateMachine {
                     self.state = AutopilotState::Active;
                     self.paused_ticks = 0;
                     self.stopped_ticks = 0;
-                    self.cruise_off_ticks = 0;
                     self.engine_off_ticks = 0;
                 } else if self.paused_ticks > PAUSE_TIMEOUT {
                     tracing::info!("[state] Paused -> Off (5 min timeout)");
                     self.state = AutopilotState::Off;
                     self.paused_ticks = 0;
-                    self.cruise_off_ticks = 0;
                     self.engine_off_ticks = 0;
                 }
             }
@@ -615,7 +585,6 @@ impl AutopilotStateMachine {
                 self.precondition_failure_streak = 0;
                 self.max_stable_counter_in_engaging = 0;
                 self.last_failure_reason = String::new();
-                self.cruise_off_ticks = 0;
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
             }
@@ -628,7 +597,6 @@ impl AutopilotStateMachine {
                 self.paused_ticks = 0;
                 self.stopped_ticks = 0;
                 self.precondition_stable_ticks = 0;
-                self.cruise_off_ticks = 0;
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
                 self.lane_only_engage = false;
@@ -637,7 +605,6 @@ impl AutopilotStateMachine {
                 tracing::info!("[state] Fault -> Off (user reset)");
                 self.state = AutopilotState::Off;
                 self.fault_reason = None;
-                self.cruise_off_ticks = 0;
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
                 self.lane_only_engage = false;
@@ -805,7 +772,6 @@ impl AutopilotStateMachine {
         PreconditionSnapshot {
             telemetry_ok: p.telemetry_ok,
             engine_running: p.engine_running,
-            cruise_active: p.cruise_active,
             critical_plugins_loaded: p.critical_plugins_loaded,
             router_active: p.router_active,
         }
@@ -834,7 +800,6 @@ impl AutopilotStateMachine {
     }
 
     fn reset_debounce_counters(&mut self) {
-        self.cruise_off_ticks = 0;
         self.engine_off_ticks = 0;
     }
 
@@ -878,10 +843,6 @@ impl AutopilotStateMachine {
         if self.state != AutopilotState::Engaging {
             return;
         }
-        bb.set(
-            "state.precondition_cruise_ok",
-            pre.cruise_active.to_string(),
-        );
         bb.set(
             "state.precondition_engine_ok",
             pre.engine_running.to_string(),
@@ -1273,13 +1234,6 @@ fn check_preconditions(
     Preconditions {
         telemetry_ok: telemetry.is_some(),
         engine_running: telemetry.map(|t| t.engine_rpm > 100.0).unwrap_or(false),
-        // Vision mode: ETS2 kills its own cruise control whenever our
-        // semantical steering fires (user-override behaviour). Cruise is
-        // irrelevant — treat it as always satisfied.
-        cruise_active: mode == "vision"
-            || telemetry
-                .map(|t| t.cruise_control_kmh > 0.0)
-                .unwrap_or(false),
         critical_plugins_loaded: check_critical_plugins(bb),
         router_active,
         truck_on_road,
@@ -1310,6 +1264,9 @@ fn is_engine_running(telemetry: Option<&Telemetry>) -> bool {
 }
 
 fn check_steering_override(_telemetry: Option<&Telemetry>) -> bool {
+    // SCS SDK Telemetry has no raw steering-input field (heading/position only).
+    // Human override: use `engage-cli disengage` or a dedicated key mapping until
+    // a DirectInput-parallel solution is implemented outside the SCS SDK path.
     false
 }
 
@@ -1318,8 +1275,6 @@ fn precondition_failure_reason(pre: &Preconditions) -> &'static str {
         "telemetry_lost"
     } else if !pre.engine_running {
         "engine_off"
-    } else if !pre.cruise_active {
-        "cruise_inactive"
     } else if !pre.critical_plugins_loaded {
         "plugins_missing"
     } else if !pre.truck_on_road {
@@ -1614,32 +1569,18 @@ mod tests {
     }
 
     #[test]
-    fn single_cruise_glitch_does_not_fault() {
+    fn cruise_off_does_not_fault() {
+        // ETS2 cruise control is irrelevant — autopilot runs its own throttle/brake.
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_with_preconditions();
         let running = mock_running();
         engage_to_active(&mut sm, &bb, &running);
         let mut cc_off = running.clone();
         cc_off.cruise_control_kmh = 0.0;
-        sm.evaluate(Some(&cc_off), &bb);
-        assert_eq!(sm.state(), AutopilotState::Active);
-        sm.evaluate(Some(&running), &bb);
-        assert_eq!(sm.state(), AutopilotState::Active);
-    }
-
-    #[test]
-    fn sustained_cruise_off_triggers_fault() {
-        let mut sm = AutopilotStateMachine::new();
-        let bb = bb_with_preconditions();
-        let running = mock_running();
-        engage_to_active(&mut sm, &bb, &running);
-        let mut cc_off = running.clone();
-        cc_off.cruise_control_kmh = 0.0;
-        for _ in 0..26 {
+        for _ in 0..700 {
             sm.evaluate(Some(&cc_off), &bb);
         }
-        assert_eq!(sm.state(), AutopilotState::Fault);
-        assert_eq!(sm.fault_reason(), Some(&FailureReason::CruiseDeactivated));
+        assert_eq!(sm.state(), AutopilotState::Active);
     }
 
     /// Build a blackboard that satisfies all vision-mode preconditions,
@@ -1656,8 +1597,6 @@ mod tests {
         bb
     }
 
-    /// Telemetry with engine running but cruise OFF — the exact state that
-    /// used to trigger CruiseDeactivated in vision mode.
     fn mock_running_no_cruise() -> Telemetry {
         let mut t = mock_running();
         t.cruise_control_kmh = 0.0;
@@ -1665,26 +1604,7 @@ mod tests {
     }
 
     #[test]
-    fn vision_mode_cruise_off_does_not_fault_while_active() {
-        let mut sm = AutopilotStateMachine::new();
-        let bb = bb_vision_preconditions();
-        let t = mock_running_no_cruise();
-        engage_to_active(&mut sm, &bb, &t);
-        // 26 ticks with cruise=0 — would fault in route mode but must not in vision.
-        for _ in 0..26 {
-            sm.evaluate(Some(&t), &bb);
-        }
-        assert_eq!(
-            sm.state(),
-            AutopilotState::Active,
-            "vision mode must not fault on CruiseDeactivated"
-        );
-        assert_ne!(sm.fault_reason(), Some(&FailureReason::CruiseDeactivated));
-    }
-
-    #[test]
     fn vision_mode_engages_without_cruise() {
-        // cruise_active must not block Engaging→Active in vision mode.
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_vision_preconditions();
         let t = mock_running_no_cruise(); // cruise_control_kmh == 0
@@ -1695,7 +1615,7 @@ mod tests {
         assert_eq!(
             sm.state(),
             AutopilotState::Active,
-            "vision mode must reach Active without ETS2 cruise"
+            "must reach Active without ETS2 cruise active"
         );
     }
 
@@ -1728,7 +1648,6 @@ mod tests {
         let snap = sm.preconditions_snapshot(Some(&t), &bb);
         assert!(snap.telemetry_ok);
         assert!(snap.engine_running);
-        assert!(snap.cruise_active);
         assert!(snap.critical_plugins_loaded);
         assert!(snap.router_active);
     }
@@ -1740,7 +1659,6 @@ mod tests {
         let snap = sm.preconditions_snapshot(None, &bb);
         assert!(!snap.telemetry_ok);
         assert!(!snap.engine_running);
-        assert!(!snap.cruise_active);
         assert!(!snap.critical_plugins_loaded);
         assert!(!snap.router_active);
     }
@@ -1951,10 +1869,6 @@ mod tests {
         }
         assert_eq!(sm.state(), AutopilotState::Engaging);
 
-        assert_eq!(
-            bb.get("state.precondition_cruise_ok").as_deref(),
-            Some("true")
-        );
         assert_eq!(
             bb.get("state.precondition_engine_ok").as_deref(),
             Some("true")

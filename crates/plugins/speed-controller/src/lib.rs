@@ -1,12 +1,12 @@
 //! Speed-Controller plugin — PID-based throttle/brake regulation.
 //!
-//! Target speed is the minimum of six sources (whichever are present):
-//!   1. `cruise.target_kmh`        — UI cruise setpoint
+//! Target speed is the minimum of five sources (whichever are present):
+//!   1. `cruise.target_kmh`        — UI cruise setpoint (optional override; defaults to 50 km/h)
 //!   2. `t.nav_speed_limit_kmh`    — in-game nav speed limit
 //!   3. `sign.speed_limit_kmh`     — map sign-reader
 //!   4. `sign_vision.speed_limit_kmh` — vision fallback
 //!   5. `acc.speed_cap_kmh`        — ACC follow-distance cap (conditional)
-//!   6. `FALLBACK_SPEED_KMH` (80)  — when everything else is absent
+//!      Fallback: `FALLBACK_SPEED_KMH` (50 km/h) — when no source is set
 //!
 //! Writes `output.throttle` and `output.brake` via `tick_request`.
 //!
@@ -21,7 +21,7 @@ use truckpilot_plugin_api::{
 };
 
 const PRIORITY_NORMAL: i32 = 50;
-const FALLBACK_SPEED_KMH: f64 = 80.0;
+const FALLBACK_SPEED_KMH: f64 = 50.0;
 
 const DEFAULT_KP: f64 = 0.25;
 const DEFAULT_KI: f64 = 0.08;
@@ -196,9 +196,6 @@ fn compute_target_speed(t: &Telemetry, ctx: &PluginContext) -> f64 {
             target = target.min(v);
             had_source = true;
         }
-    } else if t.cruise_control_kmh > 0.0 {
-        target = target.min(t.cruise_control_kmh);
-        had_source = true;
     }
 
     if t.nav_speed_limit_kmh > 0.0 {
@@ -273,15 +270,18 @@ mod tests {
 
     #[test]
     fn test_cruise_target_stable() {
-        let t = make_telemetry(20.0, 90.0, -1.0);
-        let ctx = active_ctx(SharedBlackboard::new());
+        let t = make_telemetry(20.0, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "90.0");
+        let ctx = active_ctx(bb);
         assert!((compute_target_speed(&t, &ctx) - 90.0).abs() < 0.01);
     }
 
     #[test]
     fn test_sign_limit_reduces_target() {
-        let t = make_telemetry(20.0, 100.0, -1.0);
+        let t = make_telemetry(20.0, 0.0, -1.0);
         let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "100.0");
         bb.set("sign.speed_limit_kmh", "60.0");
         let ctx = active_ctx(bb);
         assert!((compute_target_speed(&t, &ctx) - 60.0).abs() < 0.01);
@@ -289,8 +289,9 @@ mod tests {
 
     #[test]
     fn test_acc_cap_when_present() {
-        let t = make_telemetry(20.0, 100.0, 80.0);
+        let t = make_telemetry(20.0, 0.0, 80.0);
         let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "100.0");
         bb.set("acc.speed_cap_kmh", "50.0");
         let ctx = active_ctx(bb);
         assert!((compute_target_speed(&t, &ctx) - 50.0).abs() < 0.01);
@@ -298,14 +299,14 @@ mod tests {
 
     #[test]
     fn test_acc_cap_absent_path_a() {
-        let t = make_telemetry(20.0, 100.0, 80.0);
+        let t = make_telemetry(20.0, 0.0, 80.0);
         let ctx = active_ctx(SharedBlackboard::new());
         assert!((compute_target_speed(&t, &ctx) - 80.0).abs() < 0.01);
     }
 
     #[test]
     fn test_vision_fallback_when_map_absent() {
-        let t = make_telemetry(20.0, 120.0, -1.0);
+        let t = make_telemetry(20.0, 0.0, -1.0);
         let bb = SharedBlackboard::new();
         bb.set("sign_vision.speed_limit_kmh", "70.0");
         let ctx = active_ctx(bb);
@@ -313,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_sources_absent_uses_fallback_80() {
+    fn test_all_sources_absent_uses_fallback_50() {
         let t = Telemetry {
             position: [0.0; 3],
             heading: 0.0,
@@ -337,15 +338,17 @@ mod tests {
     #[test]
     fn test_state_gate_returns_none_when_off() {
         let mut p = SpeedControllerPlugin::default();
-        let t = make_telemetry(20.0, 80.0, -1.0);
+        let t = make_telemetry(20.0, 0.0, -1.0);
         assert!(p.tick_request(Some(&t), &off_ctx()).is_none());
     }
 
     #[test]
     fn test_dead_band_no_oscillation() {
         let mut p = SpeedControllerPlugin::default();
-        let t = make_telemetry(80.0 / 3.6, 80.0, -1.0);
-        let ctx = active_ctx(SharedBlackboard::new());
+        let t = make_telemetry(80.0 / 3.6, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        let ctx = active_ctx(bb);
         let req = p.tick_request(Some(&t), &ctx).unwrap();
         assert_eq!(req.throttle, Some(0.0));
         assert_eq!(req.brake, Some(0.0));
@@ -354,8 +357,10 @@ mod tests {
     #[test]
     fn test_bergab_override_at_minus_10() {
         let mut p = SpeedControllerPlugin::default();
-        let t = make_telemetry(100.0 / 3.6, 80.0, -1.0);
-        let ctx = active_ctx(SharedBlackboard::new());
+        let t = make_telemetry(100.0 / 3.6, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        let ctx = active_ctx(bb);
         let req = p.tick_request(Some(&t), &ctx).unwrap();
         assert_eq!(req.brake, Some(1.0));
         assert_eq!(req.throttle, Some(0.0));
@@ -364,9 +369,11 @@ mod tests {
     #[test]
     fn engine_off_zeros_outputs() {
         let mut p = SpeedControllerPlugin::default();
-        let mut t = make_telemetry(0.0, 80.0, -1.0);
+        let mut t = make_telemetry(0.0, 0.0, -1.0);
         t.engine_rpm = 0.0;
-        let ctx = active_ctx(SharedBlackboard::new());
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        let ctx = active_ctx(bb);
         let req = p.tick_request(Some(&t), &ctx).unwrap();
         assert_eq!(req.throttle, Some(0.0));
         assert_eq!(req.brake, Some(0.0));
@@ -375,8 +382,10 @@ mod tests {
     #[test]
     fn pid_throttles_up_when_below_target() {
         let mut p = SpeedControllerPlugin::default();
-        let t = make_telemetry(50.0 / 3.6, 80.0, -1.0);
-        let ctx = active_ctx(SharedBlackboard::new());
+        let t = make_telemetry(50.0 / 3.6, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        let ctx = active_ctx(bb);
         let req = p.tick_request(Some(&t), &ctx).unwrap();
         assert!(req.throttle.unwrap() > 0.0);
         assert_eq!(req.brake, Some(0.0));
@@ -389,8 +398,9 @@ mod tests {
         bb.set("plugin.speed_controller.kp", "0.5");
         bb.set("plugin.speed_controller.ki", "0.0");
         bb.set("plugin.speed_controller.kd", "0.0");
+        bb.set("cruise.target_kmh", "80.0");
         let ctx = active_ctx(bb);
-        let t = make_telemetry(50.0 / 3.6, 80.0, -1.0);
+        let t = make_telemetry(50.0 / 3.6, 0.0, -1.0);
         let _ = p.tick_request(Some(&t), &ctx);
         assert!((p.last_gains.0 - 0.5).abs() < 1e-9);
     }

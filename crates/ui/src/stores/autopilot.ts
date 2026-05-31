@@ -4,7 +4,6 @@ import type { AutopilotState, PreconditionSnapshot } from "@/lib/types";
 const initialPreconditions: PreconditionSnapshot = {
   telemetry_ok: false,
   engine_running: false,
-  cruise_active: false,
   critical_plugins_loaded: false,
   router_active: false,
 };
