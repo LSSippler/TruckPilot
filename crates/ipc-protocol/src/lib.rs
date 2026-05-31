@@ -292,6 +292,14 @@ pub enum UiCommand {
         #[serde(default = "default_max_results")]
         max_results: usize,
     },
+    /// Set the router goal by world-space position (ETS2 x/z).
+    /// The daemon snaps to the nearest road node within 5 000 m and writes
+    /// `router.goal_uid`. On failure, `router.last_planning_result` is set to
+    /// `"goal_snap_failed"` or `"graph_not_loaded"`.
+    SetRouterGoalByPosition {
+        x: f64,
+        z: f64,
+    },
 }
 
 fn default_max_results() -> usize {
@@ -336,7 +344,6 @@ pub struct ModInfo {
 pub struct PreconditionSnapshot {
     pub telemetry_ok: bool,
     pub engine_running: bool,
-    pub cruise_active: bool,
     pub critical_plugins_loaded: bool,
     pub router_active: bool,
 }
@@ -402,7 +409,6 @@ mod tests {
             preconditions: PreconditionSnapshot {
                 telemetry_ok: true,
                 engine_running: true,
-                cruise_active: true,
                 critical_plugins_loaded: true,
                 router_active: false,
             },
@@ -440,7 +446,6 @@ mod tests {
             preconditions: PreconditionSnapshot {
                 telemetry_ok: false,
                 engine_running: false,
-                cruise_active: false,
                 critical_plugins_loaded: true,
                 router_active: false,
             },
@@ -586,6 +591,22 @@ mod tests {
             UiCommand::SetBlackboardKey { key, value } => {
                 assert_eq!(key, "lane_keeper.mode");
                 assert_eq!(value, "vision");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn ui_command_set_router_goal_by_position_round_trip() {
+        let cmd = UiCommand::SetRouterGoalByPosition { x: -16400.0, z: -3200.0 };
+        let s = serde_json::to_string(&cmd).unwrap();
+        assert!(s.contains(r#""type":"set_router_goal_by_position""#), "wire form: {s}");
+        assert!(s.contains(r#"-16400"#), "wire form: {s}");
+        let back: UiCommand = serde_json::from_str(&s).unwrap();
+        match back {
+            UiCommand::SetRouterGoalByPosition { x, z } => {
+                assert!((x - -16400.0).abs() < 1e-6);
+                assert!((z - -3200.0).abs() < 1e-6);
             }
             _ => panic!("wrong variant"),
         }

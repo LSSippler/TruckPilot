@@ -371,6 +371,36 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             manager.lock().await.blackboard.set(key, value);
             Vec::new()
         }
+        UiCommand::SetRouterGoalByPosition { x, z } => {
+            // Clone the graph Arc outside the lock to avoid blocking plugin ticks.
+            let maybe_graph = manager.lock().await.graph.clone();
+            if let Some(graph) = maybe_graph {
+                match graph.find_nearest_geometric(x, z, 5000.0) {
+                    Some((uid, dist)) => {
+                        let mgr = manager.lock().await;
+                        mgr.blackboard.set("router.goal_uid", uid.to_string());
+                        mgr.blackboard.set("router.goal_snap_dist", format!("{dist:.1}"));
+                        info!("router goal by position ({x:.1},{z:.1}) → uid={uid} snap={dist:.1}m");
+                    }
+                    None => {
+                        manager
+                            .lock()
+                            .await
+                            .blackboard
+                            .set("router.last_planning_result", "goal_snap_failed");
+                        warn!("SetRouterGoalByPosition ({x},{z}): no node within 5000 m");
+                    }
+                }
+            } else {
+                manager
+                    .lock()
+                    .await
+                    .blackboard
+                    .set("router.last_planning_result", "graph_not_loaded");
+                warn!("SetRouterGoalByPosition: RouterGraph not loaded");
+            }
+            Vec::new()
+        }
         UiCommand::SpatialSegmentsInRadius { x, z, radius_m, max_results } => {
             // Clone the Arc while holding the lock (fast — just an atomic increment).
             // The actual query runs *outside* the lock to avoid blocking plugin ticks.

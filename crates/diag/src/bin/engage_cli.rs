@@ -4,13 +4,14 @@
 //! running daemon over WebSocket (`ws://127.0.0.1:8765` by default).
 //!
 //! Subcommands:
-//!   set-goal <uid>       Set router.goal_uid
-//!   set-start <uid>      Set router.start_uid (or pass --clear to use current position)
-//!   set-cruise <kmh>     Set cruise.target_kmh
-//!   engage               Request AutopilotEngage
-//!   disengage            Request AutopilotDisengage
-//!   reset                Request AutopilotReset
-//!   status               Print autopilot.state, fault_reason, preconditions
+//!   set-goal <uid>           Set router.goal_uid (requires a valid road-node UID)
+//!   set-goal-pos --x --z     Set router goal by ETS2 world coords; server snaps to nearest node
+//!   set-start <uid>          Set router.start_uid (or pass --clear to use current position)
+//!   set-cruise <kmh>         Set cruise.target_kmh
+//!   engage                   Request AutopilotEngage
+//!   disengage                Request AutopilotDisengage
+//!   reset                    Request AutopilotReset
+//!   status                   Print autopilot.state, fault_reason, preconditions
 
 use std::net::TcpStream;
 
@@ -31,8 +32,17 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Set router.goal_uid
+    /// Set router.goal_uid (requires a valid road-node UID)
     SetGoal { uid: u64 },
+    /// Set router goal by ETS2 world-space position; server snaps to nearest road node
+    SetGoalPos {
+        /// World X coordinate in metres (ETS2 space)
+        #[arg(long)]
+        x: f64,
+        /// World Z coordinate in metres (ETS2 space)
+        #[arg(long)]
+        z: f64,
+    },
     /// Set router.start_uid; pass --clear to use the current truck position instead
     SetStart {
         #[arg(conflicts_with = "clear")]
@@ -119,7 +129,6 @@ fn print_status(ws: &mut Ws) -> Result<(), String> {
             println!("preconditions:");
             println!("  telemetry_ok        = {}", preconditions.telemetry_ok);
             println!("  engine_running      = {}", preconditions.engine_running);
-            println!("  cruise_active       = {}", preconditions.cruise_active);
             println!(
                 "  critical_plugins    = {}",
                 preconditions.critical_plugins_loaded
@@ -149,6 +158,11 @@ fn main() {
             &mut ws,
             &UiCommand::SetRouterGoal { uid },
             &format!("router.goal_uid = {uid}"),
+        ),
+        Cmd::SetGoalPos { x, z } => fire_and_forget(
+            &mut ws,
+            &UiCommand::SetRouterGoalByPosition { x, z },
+            &format!("router goal by position ({x:.1}, {z:.1})"),
         ),
         Cmd::SetStart { uid, clear } => {
             let value = if clear { None } else { uid };

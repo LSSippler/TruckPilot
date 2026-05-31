@@ -31,7 +31,6 @@ export type AutopilotState = "Off" | "Engaging" | "Active" | "Paused" | "Fault";
 export interface PreconditionSnapshot {
   telemetry_ok: boolean;
   engine_running: boolean;
-  cruise_active: boolean;
   critical_plugins_loaded: boolean;
   router_active: boolean;
 }
@@ -122,7 +121,9 @@ export type UiCommand =
   | { type: "set_cruise_target"; kmh: number }
   | { type: "blackboard_get"; keys: string[] }
   | { type: "blackboard_list"; prefix: string | null }
-  | { type: "set_blackboard_key"; key: string; value: string };
+  | { type: "set_blackboard_key"; key: string; value: string }
+  // x/z are ETS2 world-space coordinates; server snaps to nearest road node.
+  | { type: "set_router_goal_by_position"; x: number; z: number };
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 
