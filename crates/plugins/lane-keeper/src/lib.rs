@@ -31,6 +31,8 @@ const PRIORITY_LEVEL4: i32 = 200;
 const BASE_LOOK_AHEAD: f64 = 5.0;
 const SPEED_FACTOR: f64 = 0.5;
 const WAYPOINT_REACH_M: f64 = 5.0;
+/// Right-lane offset (Rechtsfahrgebot). Mirrors lane-follower LANE_OFFSET_RIGHT_M.
+const LANE_OFFSET_RIGHT_M: f64 = 1.875;
 
 // ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
@@ -304,6 +306,15 @@ impl LaneKeeperPlugin {
         if dx * dx + dz * dz < 1e-12 {
             return 0.0;
         }
+
+        // Shift lookahead right by LANE_OFFSET_RIGHT_M (Rechtsfahrgebot).
+        // Right-normal in ETS2 XZ (x=East, z=South): (-dz, dx) / |d|.
+        // Mirrors lane-follower/src/lib.rs:913-918. Division safe: 1e-12 guard above.
+        let len_xz = (dx * dx + dz * dz).sqrt();
+        let look_x = look_x + (-dz / len_xz) * LANE_OFFSET_RIGHT_M;
+        let look_z = look_z + (dx / len_xz) * LANE_OFFSET_RIGHT_M;
+        let dx = look_x - tx;
+        let dz = look_z - tz;
 
         let target = dx.atan2(-dz);
         // t.heading (Telemetry) is ETS2 SDK format: [0..1] CCW from North.
@@ -990,7 +1001,8 @@ mod tests {
         let mut lk = active_plugin_with_straight_path();
         let ctx = fresh_ctx();
         let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
-        assert!(err.abs() < 0.01, "expected ~0, got {err}");
+        // After offset: lookahead shifts East → target slightly right of North → err > 0.
+        assert!(err > 0.0, "truck on centerline, target right → positive error, got {err}");
     }
 
     #[test]
@@ -1050,7 +1062,8 @@ mod tests {
         let ctx = ctx_with_state("Active");
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
-        assert!(s.abs() < 0.1, "expected near-zero on straight, got {s}");
+        // After offset: truck on centerline → small positive steering toward right lane.
+        assert!(s > 0.0 && s < 0.2, "positive steering toward right lane expected, got {s}");
     }
 
     #[test]
@@ -1061,7 +1074,8 @@ mod tests {
         };
         let ctx = fresh_ctx();
         let err = plugin.compute_heading_error(0.0, 0.0, 0.0, 13.88, &ctx);
-        assert!(err.abs() < 0.01, "expected ~0, got {err}");
+        // After offset: lookahead shifts East → err > 0 (turn right toward right lane).
+        assert!(err > 0.0, "truck on centerline, target right → positive error, got {err}");
     }
 
     #[test]
@@ -1073,7 +1087,9 @@ mod tests {
         let ctx = fresh_ctx();
         // ETS2 East = 0.75 (0.75 CCW turns from North = 270° CCW = 90° CW = East)
         let err = plugin.compute_heading_error(0.0, 0.0, 0.75, 13.88, &ctx);
-        assert!(err.abs() < 0.01, "expected ~0, got {err}");
+        // After offset: truck heads East, right lane is South (+z) → target shifts South
+        // → target angle > π/2, heading_rad = π/2 → err > 0.
+        assert!(err > 0.0, "truck on centerline heading East, target shifted South → err > 0, got {err}");
     }
 
     #[test]
@@ -1685,5 +1701,39 @@ mod tests {
             .tick_request(Some(&t), &ctx)
             .expect("Active must produce ControlRequest");
         assert!(req.steering.is_some(), "Active must produce steering");
+    }
+
+    // ── Lane-offset (Rechtsfahrgebot) tests ──────────────────────────────────
+
+    #[test]
+    fn lane_offset_north_road_shifts_target_right() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]], // North road
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck on centerline heading North → offset shifts target East (+x).
+        // err > 0: must steer right toward right lane.
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
+        assert!(
+            err > 0.0 && err < 0.1,
+            "north road: expected small positive error (target right of center), got {err:.4}",
+        );
+    }
+
+    #[test]
+    fn lane_offset_east_road_shifts_target_south() {
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [100.0, 0.0]], // East road
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Truck on centerline heading East (ETS2=0.75) → offset shifts target South (+z).
+        // target angle > π/2, heading_rad = π/2 → err > 0.
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.75, 10.0, &ctx);
+        assert!(
+            err > 0.0 && err < 0.1,
+            "east road: expected small positive error (target shifted South), got {err:.4}",
+        );
     }
 }
