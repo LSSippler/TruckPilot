@@ -306,7 +306,12 @@ impl LaneKeeperPlugin {
         }
 
         let target = dx.atan2(-dz);
-        let mut err = target - heading;
+        // t.heading (Telemetry) is ETS2 SDK format: [0..1] CCW from North.
+        // Convert to CW radians (0=N, π/2=E) to match target's convention.
+        // Formula mirrors lane-follower: (-raw * 2π).rem_euclid(2π).
+        let heading_rad =
+            (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
+        let mut err = target - heading_rad;
         while err > std::f64::consts::PI {
             err -= 2.0 * std::f64::consts::PI;
         }
@@ -1066,7 +1071,8 @@ mod tests {
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        let err = plugin.compute_heading_error(0.0, 0.0, std::f64::consts::FRAC_PI_2, 13.88, &ctx);
+        // ETS2 East = 0.75 (0.75 CCW turns from North = 270° CCW = 90° CW = East)
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.75, 13.88, &ctx);
         assert!(err.abs() < 0.01, "expected ~0, got {err}");
     }
 
@@ -1077,8 +1083,31 @@ mod tests {
             ..Default::default()
         };
         let ctx = fresh_ctx();
-        let err = plugin.compute_heading_error(0.0, 0.0, 0.353, 13.88, &ctx);
+        // Truck heading ~20° CW from North in ETS2 [0..1] CCW format:
+        // ets2 = 1 - 20°/360° = 0.9444; converts to 0.349 rad ≈ 20°.
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.9444, 13.88, &ctx);
         assert!(err > 0.0 && err < 0.6, "expected ~0.4 positive, got {err}");
+    }
+
+    #[test]
+    fn ets2_raw_heading_gives_small_error_on_aligned_road() {
+        // Regression guard: before fix, heading=0.9796 (ETS2 [0..1] for ~7.33° CW) was
+        // subtracted directly from a radian target, producing a phantom −49° error
+        // that immediately triggered AutoReplan (threshold 60°) and suppressed all steering.
+        let mut plugin = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]], // North road
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // ETS2 heading 0.9796 ≈ 7.33° CW from North (truck nearly aligned with road).
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.9796, 0.0, &ctx);
+        // Must be near-zero (≤15° = 0.26 rad), NOT −49° (−0.852 rad).
+        assert!(
+            err.abs() < 0.26,
+            "ETS2 heading 0.9796 should give ~7° error, got {:.4} rad ({:.1}°)",
+            err,
+            err.to_degrees(),
+        );
     }
 
     #[test]
@@ -1087,7 +1116,9 @@ mod tests {
             waypoints: vec![[0.0, 0.0], [-0.1, 100.0]],
             ..Default::default()
         };
-        let heading = std::f64::consts::PI - 0.01;
+        // ETS2 [0..1] for ~179.4° CW (nearly South) ≈ 0.5016.
+        // Converts to π-0.01 rad after rem_euclid, matching original test intent.
+        let heading = 0.5016_f64;
         let ctx = fresh_ctx();
         let err = lk.compute_heading_error(0.0, 0.0, heading, 10.0, &ctx);
         assert!(err.abs() < 0.5, "wraparound produced {err}");
