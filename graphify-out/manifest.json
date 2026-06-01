@@ -1,0 +1,1212 @@
+{
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\heading_stage.rs": {
+    "mtime": 1779619720.3584304,
+    "ast_hash": "ed6e8917406fcab6f59cde60f45f3ae3",
+    "semantic_hash": "ed6e8917406fcab6f59cde60f45f3ae3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\ipc.rs": {
+    "mtime": 1779896510.7622807,
+    "ast_hash": "bcca3c94ae01a89f1e9359749e9849c5",
+    "semantic_hash": "bcca3c94ae01a89f1e9359749e9849c5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\main.rs": {
+    "mtime": 1779896540.0052154,
+    "ast_hash": "fad559272083b69a068c23ac935f8431",
+    "semantic_hash": "fad559272083b69a068c23ac935f8431"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\plugin_manager.rs": {
+    "mtime": 1779896455.330101,
+    "ast_hash": "0313ab7057fda757671bfb13c307fef3",
+    "semantic_hash": "0313ab7057fda757671bfb13c307fef3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\state_machine.rs": {
+    "mtime": 1779691858.5663168,
+    "ast_hash": "c8e45b0de405435377e9ff4fd9e63dce",
+    "semantic_hash": "c8e45b0de405435377e9ff4fd9e63dce"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\core\\src\\watchdog.rs": {
+    "mtime": 1779619720.3805776,
+    "ast_hash": "4fc9efb323aa7ab1d9a4c1e40188b619",
+    "semantic_hash": "4fc9efb323aa7ab1d9a4c1e40188b619"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\main.rs": {
+    "mtime": 1778509734.0379817,
+    "ast_hash": "600db8e91f2c3049c9574b15422b72a6",
+    "semantic_hash": "600db8e91f2c3049c9574b15422b72a6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\anchor_junction_audit.rs": {
+    "mtime": 1778859745.7162187,
+    "ast_hash": "cb8bbc28d41564874fd17a48a8565d41",
+    "semantic_hash": "cb8bbc28d41564874fd17a48a8565d41"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\archive_audit.rs": {
+    "mtime": 1778859745.7162187,
+    "ast_hash": "76c0ce8675c0a0537904192a43ad7008",
+    "semantic_hash": "76c0ce8675c0a0537904192a43ad7008"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\bezier-size-scan.rs": {
+    "mtime": 1779615245.556049,
+    "ast_hash": "7f520f898adbc18d83c7cd53dc24bbe0",
+    "semantic_hash": "7f520f898adbc18d83c7cd53dc24bbe0"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\blackboard_query.rs": {
+    "mtime": 1779550370.0856369,
+    "ast_hash": "11e005d1fa4fe0622f811710d41137d4",
+    "semantic_hash": "11e005d1fa4fe0622f811710d41137d4"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\bothunresolved-forensik.rs": {
+    "mtime": 1779615245.566054,
+    "ast_hash": "6c87ab82feb9d725a83470d5930566b0",
+    "semantic_hash": "6c87ab82feb9d725a83470d5930566b0"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\compare_with_ets2la.rs": {
+    "mtime": 1779615245.5722435,
+    "ast_hash": "75b6c646841716a1a38630ef891a90e5",
+    "semantic_hash": "75b6c646841716a1a38630ef891a90e5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\cross-sector-audit.rs": {
+    "mtime": 1779615245.5796769,
+    "ast_hash": "4e5314bc73ad774230d057ce5418a631",
+    "semantic_hash": "4e5314bc73ad774230d057ce5418a631"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\engage_cli.rs": {
+    "mtime": 1779689742.257125,
+    "ast_hash": "b0d1208516cdd7a576d6d7714a4e9025",
+    "semantic_hash": "b0d1208516cdd7a576d6d7714a4e9025"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\ets2la_traffic_probe.rs": {
+    "mtime": 1778859745.7172186,
+    "ast_hash": "5e67be073b9f3eeaebe14ea4769083a3",
+    "semantic_hash": "5e67be073b9f3eeaebe14ea4769083a3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\graph_stats.rs": {
+    "mtime": 1779615245.5846777,
+    "ast_hash": "f9f28fe393a81dbff607d23d6a9268b1",
+    "semantic_hash": "f9f28fe393a81dbff607d23d6a9268b1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\h4c_ppd_check.rs": {
+    "mtime": 1778859745.7172186,
+    "ast_hash": "07fd5ca87556e826d7ca322a78688544",
+    "semantic_hash": "07fd5ca87556e826d7ca322a78688544"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\h4c_prefab_roi.rs": {
+    "mtime": 1778859745.7182195,
+    "ast_hash": "2acf09afe1c870f084f29f1b2b13f395",
+    "semantic_hash": "2acf09afe1c870f084f29f1b2b13f395"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\item_census.rs": {
+    "mtime": 1778859745.7182195,
+    "ast_hash": "e59cb20fe44929b4ef5b53f4f8023df3",
+    "semantic_hash": "e59cb20fe44929b4ef5b53f4f8023df3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\multi-sector-audit.rs": {
+    "mtime": 1779615245.5941854,
+    "ast_hash": "fca6057bf1309e82e5fa4616b9e99ec3",
+    "semantic_hash": "fca6057bf1309e82e5fa4616b9e99ec3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\node-parser-hex-audit.rs": {
+    "mtime": 1779615245.6012514,
+    "ast_hash": "8e2802ad44fcab480aebec6beb98b988",
+    "semantic_hash": "8e2802ad44fcab480aebec6beb98b988"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\quaternion_validate.rs": {
+    "mtime": 1779615245.607738,
+    "ast_hash": "bd95bb0bc0513fe14e751a1d34fc5172",
+    "semantic_hash": "bd95bb0bc0513fe14e751a1d34fc5172"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\road-drop-audit.rs": {
+    "mtime": 1779615245.6122448,
+    "ast_hash": "2071cb2adb301c3655e14be93b6e2d3c",
+    "semantic_hash": "2071cb2adb301c3655e14be93b6e2d3c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\router_perf_audit.rs": {
+    "mtime": 1778859745.7192209,
+    "ast_hash": "27ca5bdd532fcb33bae764a103b0bcb5",
+    "semantic_hash": "27ca5bdd532fcb33bae764a103b0bcb5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\route_success_audit.rs": {
+    "mtime": 1779615245.6167507,
+    "ast_hash": "3a0ffe06b2d84c5a7bca3f3f789dfc15",
+    "semantic_hash": "3a0ffe06b2d84c5a7bca3f3f789dfc15"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\routing-islands.rs": {
+    "mtime": 1779615245.6262553,
+    "ast_hash": "25c1bf3a3dc7e94d35b01d7fbcd91796",
+    "semantic_hash": "25c1bf3a3dc7e94d35b01d7fbcd91796"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\sec-single-inspect.rs": {
+    "mtime": 1779615245.6297624,
+    "ast_hash": "533877e145d385d82ee9f4121c92180a",
+    "semantic_hash": "533877e145d385d82ee9f4121c92180a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\seg-inspect.rs": {
+    "mtime": 1779636857.3977377,
+    "ast_hash": "8400e4dc883d5960de660334dd3439f3",
+    "semantic_hash": "8400e4dc883d5960de660334dd3439f3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\shm_frame_reader.rs": {
+    "mtime": 1778859745.7197287,
+    "ast_hash": "f024da915749b76e9a2cb8a45e196d65",
+    "semantic_hash": "f024da915749b76e9a2cb8a45e196d65"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\sign-format-compare.rs": {
+    "mtime": 1779615245.637274,
+    "ast_hash": "7bc90121e4c50780e223aef48fa326b3",
+    "semantic_hash": "7bc90121e4c50780e223aef48fa326b3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\sign-precrash-audit.rs": {
+    "mtime": 1779615245.6462839,
+    "ast_hash": "2371cc6d6cbfee1424ca2b7de38f80b8",
+    "semantic_hash": "2371cc6d6cbfee1424ca2b7de38f80b8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\uid-lookup.rs": {
+    "mtime": 1779615245.64829,
+    "ast_hash": "f9aaaba2d6d795f67d4674d40feb4fba",
+    "semantic_hash": "f9aaaba2d6d795f67d4674d40feb4fba"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\validate-cities.rs": {
+    "mtime": 1779615245.651287,
+    "ast_hash": "ebd4cb418c2093567989ed5352e60c90",
+    "semantic_hash": "ebd4cb418c2093567989ed5352e60c90"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\vis_uid_audit.rs": {
+    "mtime": 1778859745.7197287,
+    "ast_hash": "2d5dc3b321d40a9dcb7d5b977602c622",
+    "semantic_hash": "2d5dc3b321d40a9dcb7d5b977602c622"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\src\\bin\\vjoy_probe.rs": {
+    "mtime": 1778850491.7248194,
+    "ast_hash": "a6e252f29b1103f4768cdffb7c947684",
+    "semantic_hash": "a6e252f29b1103f4768cdffb7c947684"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\examples\\hello-world\\src\\lib.rs": {
+    "mtime": 1778510478.020647,
+    "ast_hash": "5bde27ba8f0f3caf254168248d15cda2",
+    "semantic_hash": "5bde27ba8f0f3caf254168248d15cda2"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ipc-protocol\\src\\lib.rs": {
+    "mtime": 1779895726.4556472,
+    "ast_hash": "6f0f31f250d9f461b00c985905b13853",
+    "semantic_hash": "6f0f31f250d9f461b00c985905b13853"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\archive.rs": {
+    "mtime": 1778859745.7207327,
+    "ast_hash": "79bfa41cb6244e4bd87853b6cd389bcc",
+    "semantic_hash": "79bfa41cb6244e4bd87853b6cd389bcc"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\arc_length.rs": {
+    "mtime": 1779631404.0429542,
+    "ast_hash": "41f4654d16fe20b858e99d13d4754de6",
+    "semantic_hash": "41f4654d16fe20b858e99d13d4754de6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\cache.rs": {
+    "mtime": 1779812985.5463731,
+    "ast_hash": "ee34b099787c4fe7bf8787c8afaef70f",
+    "semantic_hash": "ee34b099787c4fe7bf8787c8afaef70f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\cityhash.rs": {
+    "mtime": 1778859745.7267303,
+    "ast_hash": "f525134c01c37cffbd79fded55256789",
+    "semantic_hash": "f525134c01c37cffbd79fded55256789"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\city_sii.rs": {
+    "mtime": 1779811874.1055357,
+    "ast_hash": "5d97b910b3f9f28b55285c03b8e457f4",
+    "semantic_hash": "5d97b910b3f9f28b55285c03b8e457f4"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\drop_tracer.rs": {
+    "mtime": 1778992641.7382748,
+    "ast_hash": "abbf5dd4ae93c11bd00e0ab58b1ada98",
+    "semantic_hash": "abbf5dd4ae93c11bd00e0ab58b1ada98"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\error.rs": {
+    "mtime": 1778509734.041353,
+    "ast_hash": "f731edbdac2cee66a819926cc69d2150",
+    "semantic_hash": "f731edbdac2cee66a819926cc69d2150"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\graph.rs": {
+    "mtime": 1779812980.941766,
+    "ast_hash": "df081fd21e86bb5eacf2d6b152cdd2d1",
+    "semantic_hash": "df081fd21e86bb5eacf2d6b152cdd2d1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\hashfs.rs": {
+    "mtime": 1778859745.7277303,
+    "ast_hash": "fb261172aaaf7e10918a30a00ae0f2a1",
+    "semantic_hash": "fb261172aaaf7e10918a30a00ae0f2a1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\lib.rs": {
+    "mtime": 1779896420.23567,
+    "ast_hash": "8a39e055f6d0c064824005dcbc1acbce",
+    "semantic_hash": "8a39e055f6d0c064824005dcbc1acbce"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\mod_loader.rs": {
+    "mtime": 1779812019.9387534,
+    "ast_hash": "a8a19f236b36ceb829e8e2044c691413",
+    "semantic_hash": "a8a19f236b36ceb829e8e2044c691413"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\ppd.rs": {
+    "mtime": 1779814214.8252673,
+    "ast_hash": "2c3bd7495d8aa6a987ec3dbf6247df3a",
+    "semantic_hash": "2c3bd7495d8aa6a987ec3dbf6247df3a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\prefab_sii.rs": {
+    "mtime": 1779812078.1708326,
+    "ast_hash": "a6e58962f72d2f401bd7cd2b1b17bd93",
+    "semantic_hash": "a6e58962f72d2f401bd7cd2b1b17bd93"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\road_full.rs": {
+    "mtime": 1778859745.7292342,
+    "ast_hash": "5fae483818c413701a1068f0c0e42d2d",
+    "semantic_hash": "5fae483818c413701a1068f0c0e42d2d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\road_look.rs": {
+    "mtime": 1779730758.23592,
+    "ast_hash": "8f5d0d072070d1869cee90f71fc6797e",
+    "semantic_hash": "8f5d0d072070d1869cee90f71fc6797e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\sector.rs": {
+    "mtime": 1779811996.5421948,
+    "ast_hash": "84fe6bdf5226eabcece602877e1c1bd6",
+    "semantic_hash": "84fe6bdf5226eabcece602877e1c1bd6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\signs.rs": {
+    "mtime": 1779721100.9658115,
+    "ast_hash": "cb9c552599f3133f32aaf54b6f67c281",
+    "semantic_hash": "cb9c552599f3133f32aaf54b6f67c281"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\spatial_match.rs": {
+    "mtime": 1779721100.9673212,
+    "ast_hash": "8e7be45b5bb107e3f8bde778c3f5d61b",
+    "semantic_hash": "8e7be45b5bb107e3f8bde778c3f5d61b"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\spline.rs": {
+    "mtime": 1779812896.3532753,
+    "ast_hash": "3ea0a21755c9d002ded1b9ffba4cc30a",
+    "semantic_hash": "3ea0a21755c9d002ded1b9ffba4cc30a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\spline_index.rs": {
+    "mtime": 1779904527.289845,
+    "ast_hash": "23ef1f2fb04a1e83933bd015cd8f63c8",
+    "semantic_hash": "23ef1f2fb04a1e83933bd015cd8f63c8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\zip_archive.rs": {
+    "mtime": 1778319297.029202,
+    "ast_hash": "881a79349aca4aa38e60f61cb36579f9",
+    "semantic_hash": "881a79349aca4aa38e60f61cb36579f9"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\aux_probe.rs": {
+    "mtime": 1778859745.7207327,
+    "ast_hash": "29c4caa0fd7452379a8ec18a34a7b542",
+    "semantic_hash": "29c4caa0fd7452379a8ec18a34a7b542"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\bezier_audit.rs": {
+    "mtime": 1778859745.7217329,
+    "ast_hash": "fb073661137c326a5c677970c8bf9cd7",
+    "semantic_hash": "fb073661137c326a5c677970c8bf9cd7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\buildings_audit.rs": {
+    "mtime": 1778859745.7217329,
+    "ast_hash": "a22ae053e7d3bfb6d4b1f47c869b97ee",
+    "semantic_hash": "a22ae053e7d3bfb6d4b1f47c869b97ee"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\curve_audit.rs": {
+    "mtime": 1778859745.7227325,
+    "ast_hash": "44032a7be1dfddc457c3a27f481167a1",
+    "semantic_hash": "44032a7be1dfddc457c3a27f481167a1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\ferry_diag.rs": {
+    "mtime": 1778509734.0401382,
+    "ast_hash": "8465e1a4b07d9268cdc660cc8e73b0a8",
+    "semantic_hash": "8465e1a4b07d9268cdc660cc8e73b0a8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\graph_stats.rs": {
+    "mtime": 1779521297.8094265,
+    "ast_hash": "e054ec0265a826b00aee42eedadb2919",
+    "semantic_hash": "e054ec0265a826b00aee42eedadb2919"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\map_probe.rs": {
+    "mtime": 1778330794.1215074,
+    "ast_hash": "38a753e2092bcf6ec34eafd7c08cf78f",
+    "semantic_hash": "38a753e2092bcf6ec34eafd7c08cf78f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\model_audit.rs": {
+    "mtime": 1778859745.7227325,
+    "ast_hash": "8ecf99a1f41c428a74467b4ae56a6c51",
+    "semantic_hash": "8ecf99a1f41c428a74467b4ae56a6c51"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\node_inspect.rs": {
+    "mtime": 1779619720.520527,
+    "ast_hash": "7358e7632823135a01ad0be3d5325ad3",
+    "semantic_hash": "7358e7632823135a01ad0be3d5325ad3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\prefab_at_pos.rs": {
+    "mtime": 1779978322.6470668,
+    "ast_hash": "61a3a6a6a0be6d18a7e9581295aebfc5",
+    "semantic_hash": "61a3a6a6a0be6d18a7e9581295aebfc5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\prefab_coverage_audit.rs": {
+    "mtime": 1779978811.0759714,
+    "ast_hash": "a5713f00f26df015b4a1186e690c5450",
+    "semantic_hash": "a5713f00f26df015b4a1186e690c5450"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\road_audit.rs": {
+    "mtime": 1778859745.7237327,
+    "ast_hash": "c944b1df2aff661fd92303a6189933bc",
+    "semantic_hash": "c944b1df2aff661fd92303a6189933bc"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\road_dump.rs": {
+    "mtime": 1778859745.7237327,
+    "ast_hash": "399243c598376e64095d25ccfcbfe26b",
+    "semantic_hash": "399243c598376e64095d25ccfcbfe26b"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\route_test.rs": {
+    "mtime": 1779627782.172601,
+    "ast_hash": "90773a2e3e798e7f090593eea11f75f6",
+    "semantic_hash": "90773a2e3e798e7f090593eea11f75f6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\sector_audit.rs": {
+    "mtime": 1778859745.7247326,
+    "ast_hash": "6da0cf238bb8f6478cf7fb5cf576f142",
+    "semantic_hash": "6da0cf238bb8f6478cf7fb5cf576f142"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\sii_probe.rs": {
+    "mtime": 1779811908.3352225,
+    "ast_hash": "fd449125ebca6cab72f9f856ac5ab783",
+    "semantic_hash": "fd449125ebca6cab72f9f856ac5ab783"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\singleton_audit.rs": {
+    "mtime": 1778859745.7247326,
+    "ast_hash": "add8c2f2c61be5bcbb42815bf73ac9ec",
+    "semantic_hash": "add8c2f2c61be5bcbb42815bf73ac9ec"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\spline_gen.rs": {
+    "mtime": 1779721100.9648085,
+    "ast_hash": "cc996ea2fb2406652521f0de4f9bd03b",
+    "semantic_hash": "cc996ea2fb2406652521f0de4f9bd03b"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\uid_resolution.rs": {
+    "mtime": 1778859745.7257323,
+    "ast_hash": "4ee6429ecfb9ee552e84c60a18d6917d",
+    "semantic_hash": "4ee6429ecfb9ee552e84c60a18d6917d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\src\\bin\\vis_uids.rs": {
+    "mtime": 1778859745.7257323,
+    "ast_hash": "0c1bf54f788b5e2fd679a89ca43ab0df",
+    "semantic_hash": "0c1bf54f788b5e2fd679a89ca43ab0df"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\tests\\extract_fixtures.rs": {
+    "mtime": 1778859745.7302418,
+    "ast_hash": "258dc99c7301bb22e61efa1b62c19875",
+    "semantic_hash": "258dc99c7301bb22e61efa1b62c19875"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\tests\\real_archive_test.rs": {
+    "mtime": 1778859745.7312424,
+    "ast_hash": "c5c3a1f1af3e7757cea15d1c178be966",
+    "semantic_hash": "c5c3a1f1af3e7757cea15d1c178be966"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\map-parser\\tests\\sector_fixtures.rs": {
+    "mtime": 1778350994.7836883,
+    "ast_hash": "1afcc1c910fafab498bea952326e443d",
+    "semantic_hash": "1afcc1c910fafab498bea952326e443d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\ar_renderer.rs": {
+    "mtime": 1779908092.2013228,
+    "ast_hash": "e585851bfcc612f05fdb05cfb9ed8671",
+    "semantic_hash": "e585851bfcc612f05fdb05cfb9ed8671"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\colors.rs": {
+    "mtime": 1779904540.3219287,
+    "ast_hash": "562708fb2b3210706fab44f0679c7622",
+    "semantic_hash": "562708fb2b3210706fab44f0679c7622"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\config_reader.rs": {
+    "mtime": 1779904558.6976323,
+    "ast_hash": "e6e58523eab50e27dd65ff555cb8c52a",
+    "semantic_hash": "e6e58523eab50e27dd65ff555cb8c52a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\coords.rs": {
+    "mtime": 1779895787.11833,
+    "ast_hash": "7030f6003d69b1eb62d79e4b8030d382",
+    "semantic_hash": "7030f6003d69b1eb62d79e4b8030d382"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\main.rs": {
+    "mtime": 1779904759.7764978,
+    "ast_hash": "6fd588b8552559ea5cdde8acbc9c99f4",
+    "semantic_hash": "6fd588b8552559ea5cdde8acbc9c99f4"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\projection.rs": {
+    "mtime": 1779905010.89839,
+    "ast_hash": "d2f9f7ad56c29bf3ac8f42988b4949d4",
+    "semantic_hash": "d2f9f7ad56c29bf3ac8f42988b4949d4"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\renderer.rs": {
+    "mtime": 1779908066.7963843,
+    "ast_hash": "e544b16e09961fd22baf67ee813d7435",
+    "semantic_hash": "e544b16e09961fd22baf67ee813d7435"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\state.rs": {
+    "mtime": 1779895790.0211303,
+    "ast_hash": "765b8385a0ea24061bc14a351db7aefa",
+    "semantic_hash": "765b8385a0ea24061bc14a351db7aefa"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\telemetry.rs": {
+    "mtime": 1779904967.8432949,
+    "ast_hash": "3994b7958a43ca872e7e372a4d00faa1",
+    "semantic_hash": "3994b7958a43ca872e7e372a4d00faa1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\overlay\\src\\ws_client.rs": {
+    "mtime": 1779895796.2289135,
+    "ast_hash": "a94300402017a1f6d5ed242d21cdc165",
+    "semantic_hash": "a94300402017a1f6d5ed242d21cdc165"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugin-api\\src\\graph.rs": {
+    "mtime": 1779648021.2578745,
+    "ast_hash": "a1c0d51d53745b73fbdac54b33079923",
+    "semantic_hash": "a1c0d51d53745b73fbdac54b33079923"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugin-api\\src\\lib.rs": {
+    "mtime": 1779639476.7474103,
+    "ast_hash": "2fffd9202884eb104ec8a1f538931e94",
+    "semantic_hash": "2fffd9202884eb104ec8a1f538931e94"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugin-api\\src\\pid.rs": {
+    "mtime": 1778859745.732242,
+    "ast_hash": "3555fb49b76956e2ac704f330ed679c7",
+    "semantic_hash": "3555fb49b76956e2ac704f330ed679c7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugin-api\\tests\\test_shared_frame_store.rs": {
+    "mtime": 1778824977.817789,
+    "ast_hash": "924405aff9b08cbb908a4f2e86b097c2",
+    "semantic_hash": "924405aff9b08cbb908a4f2e86b097c2"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\acc\\src\\lib.rs": {
+    "mtime": 1778509734.0449412,
+    "ast_hash": "9cdb0a8a08b00b1a231493907704409d",
+    "semantic_hash": "9cdb0a8a08b00b1a231493907704409d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\break-planner\\src\\lib.rs": {
+    "mtime": 1778859745.732242,
+    "ast_hash": "6286c484c7afdc132bffcaebe0fad00e",
+    "semantic_hash": "6286c484c7afdc132bffcaebe0fad00e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\ets2-nav-bridge\\src\\lib.rs": {
+    "mtime": 1779619720.618501,
+    "ast_hash": "f37adb9a53014f93e06f832ededc4d97",
+    "semantic_hash": "f37adb9a53014f93e06f832ededc4d97"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\fuel-stops\\src\\lib.rs": {
+    "mtime": 1778859745.7332423,
+    "ast_hash": "06e5c2471999f38526df3d2e3ccc014c",
+    "semantic_hash": "06e5c2471999f38526df3d2e3ccc014c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-changer\\src\\lib.rs": {
+    "mtime": 1779526598.3400855,
+    "ast_hash": "ecd8d276218fa0dee428e06dfb7a0f44",
+    "semantic_hash": "ecd8d276218fa0dee428e06dfb7a0f44"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-data-collector\\src\\lib.rs": {
+    "mtime": 1779619720.6252706,
+    "ast_hash": "da5cd5800f3b900865847568d4696185",
+    "semantic_hash": "da5cd5800f3b900865847568d4696185"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-detection\\src\\bias.rs": {
+    "mtime": 1779619720.6291285,
+    "ast_hash": "b4f151f5539b2fea32254580d1ce9949",
+    "semantic_hash": "b4f151f5539b2fea32254580d1ce9949"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-detection\\src\\clustering.rs": {
+    "mtime": 1779619720.6311765,
+    "ast_hash": "370cb094d4a2ff250fb84858a984eee1",
+    "semantic_hash": "370cb094d4a2ff250fb84858a984eee1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-detection\\src\\lib.rs": {
+    "mtime": 1779619720.6352553,
+    "ast_hash": "4b10dc97458ec7de8a90a640e93c1139",
+    "semantic_hash": "4b10dc97458ec7de8a90a640e93c1139"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-detection\\src\\postprocess.rs": {
+    "mtime": 1779619720.6362555,
+    "ast_hash": "8f16d29862f79ca512d7be2564370fd3",
+    "semantic_hash": "8f16d29862f79ca512d7be2564370fd3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-detection\\src\\preprocess.rs": {
+    "mtime": 1779619720.6362555,
+    "ast_hash": "2402759f155b461caa877ca81df6518c",
+    "semantic_hash": "2402759f155b461caa877ca81df6518c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-follower\\src\\junction.rs": {
+    "mtime": 1779819687.5620394,
+    "ast_hash": "329e908999cc4b874fdc2c29a313c4fe",
+    "semantic_hash": "329e908999cc4b874fdc2c29a313c4fe"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-follower\\src\\lib.rs": {
+    "mtime": 1779904981.9816875,
+    "ast_hash": "df1bc3a7935638e4700dce685c504941",
+    "semantic_hash": "df1bc3a7935638e4700dce685c504941"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-follower\\src\\pure_pursuit.rs": {
+    "mtime": 1779643612.6914506,
+    "ast_hash": "98b7f91f5aad3122ecd18885666726d7",
+    "semantic_hash": "98b7f91f5aad3122ecd18885666726d7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-keeper\\src\\extrapolation.rs": {
+    "mtime": 1779619720.6412733,
+    "ast_hash": "179fa7d58b1055d0e4ebf6427b050b85",
+    "semantic_hash": "179fa7d58b1055d0e4ebf6427b050b85"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-keeper\\src\\fallback.rs": {
+    "mtime": 1779619720.6432853,
+    "ast_hash": "a350e484cab7793473bee1660b48acb6",
+    "semantic_hash": "a350e484cab7793473bee1660b48acb6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-keeper\\src\\heading_hold.rs": {
+    "mtime": 1779619720.64429,
+    "ast_hash": "0e625b72db4a7e2469b99413e11d0e9a",
+    "semantic_hash": "0e625b72db4a7e2469b99413e11d0e9a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\lane-keeper\\src\\lib.rs": {
+    "mtime": 1779645973.990695,
+    "ast_hash": "c0fdc2a810066fc347e7abb8c4ef2874",
+    "semantic_hash": "c0fdc2a810066fc347e7abb8c4ef2874"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\minimap-vision\\src\\lib.rs": {
+    "mtime": 1779895856.4607956,
+    "ast_hash": "0f27d9ad96a6b0ee6fac45115c42af40",
+    "semantic_hash": "0f27d9ad96a6b0ee6fac45115c42af40"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\minimap-vision\\src\\shm_reader.rs": {
+    "mtime": 1779699957.4622872,
+    "ast_hash": "4e391f9211f45a639265d8107a1df770",
+    "semantic_hash": "4e391f9211f45a639265d8107a1df770"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\router\\src\\lib.rs": {
+    "mtime": 1779648038.6716049,
+    "ast_hash": "87d3ab5545a57392fb3a694e43c6f40f",
+    "semantic_hash": "87d3ab5545a57392fb3a694e43c6f40f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\scs-sdk-output\\src\\lib.rs": {
+    "mtime": 1779619720.666891,
+    "ast_hash": "e0d512c60e01c169f9a6019b248a7fdb",
+    "semantic_hash": "e0d512c60e01c169f9a6019b248a7fdb"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-reader\\src\\lib.rs": {
+    "mtime": 1778859745.7352426,
+    "ast_hash": "91969a551df23eef3d5f293767947def",
+    "semantic_hash": "91969a551df23eef3d5f293767947def"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-vision\\src\\lib.rs": {
+    "mtime": 1779619720.6944482,
+    "ast_hash": "6103e0ec36a2c271c18fcfca8ad48ee7",
+    "semantic_hash": "6103e0ec36a2c271c18fcfca8ad48ee7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-vision\\src\\postprocess.rs": {
+    "mtime": 1778835724.2923162,
+    "ast_hash": "29a4fe0507fccb87ebaeb5a9d6cbf85d",
+    "semantic_hash": "29a4fe0507fccb87ebaeb5a9d6cbf85d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-vision\\src\\preprocess.rs": {
+    "mtime": 1778835724.2933164,
+    "ast_hash": "7d39985a459da7d40a157a5523a2841e",
+    "semantic_hash": "7d39985a459da7d40a157a5523a2841e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-vision\\src\\speed_mapper.rs": {
+    "mtime": 1779609883.9536405,
+    "ast_hash": "3c444cd951815a6f46c5cdd1806f6819",
+    "semantic_hash": "3c444cd951815a6f46c5cdd1806f6819"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\sign-vision\\src\\speed_templates_real.rs": {
+    "mtime": 1778874211.7673793,
+    "ast_hash": "5e3645e5a8aa54ce1b12e11a35216b86",
+    "semantic_hash": "5e3645e5a8aa54ce1b12e11a35216b86"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\speed-controller\\src\\lib.rs": {
+    "mtime": 1779526594.396281,
+    "ast_hash": "c283bbe68ad33f05907e0e75f15696c2",
+    "semantic_hash": "c283bbe68ad33f05907e0e75f15696c2"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\stats-logger\\src\\lib.rs": {
+    "mtime": 1778859745.7362423,
+    "ast_hash": "4caf980a15e983213884f72102f88522",
+    "semantic_hash": "4caf980a15e983213884f72102f88522"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\vision-frame-source\\src\\lib.rs": {
+    "mtime": 1778856900.1938553,
+    "ast_hash": "81b5751c8d4f927db592839ffad7fabe",
+    "semantic_hash": "81b5751c8d4f927db592839ffad7fabe"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\vision-frame-source\\src\\shm_reader.rs": {
+    "mtime": 1778831712.7265103,
+    "ast_hash": "42e4a662a878a6cf09651e11da53779d",
+    "semantic_hash": "42e4a662a878a6cf09651e11da53779d"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\vision-frame-source\\tests\\mock_writer.rs": {
+    "mtime": 1778831712.7285118,
+    "ast_hash": "65cad7d8750f04f245bf71b1a14a1be4",
+    "semantic_hash": "65cad7d8750f04f245bf71b1a14a1be4"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\vjoy-output\\src\\lib.rs": {
+    "mtime": 1779619720.717146,
+    "ast_hash": "0832ad673792b05cbce10623a6141007",
+    "semantic_hash": "0832ad673792b05cbce10623a6141007"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\plugins\\vjoy-output\\src\\vjoy_wrapper.rs": {
+    "mtime": 1779619720.7181458,
+    "ast_hash": "f0c4653a5129bab82141e387520b1f54",
+    "semantic_hash": "f0c4653a5129bab82141e387520b1f54"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\http.rs": {
+    "mtime": 1779526571.5376382,
+    "ast_hash": "46f52b424708440ae2a10da320fb2dba",
+    "semantic_hash": "46f52b424708440ae2a10da320fb2dba"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\lib.rs": {
+    "mtime": 1778855036.8415494,
+    "ast_hash": "9b0977244696b51b266222f1968f1cff",
+    "semantic_hash": "9b0977244696b51b266222f1968f1cff"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\memory.rs": {
+    "mtime": 1778330794.1198156,
+    "ast_hash": "46ccef0b698261b44a20ca7ebdc0d688",
+    "semantic_hash": "46ccef0b698261b44a20ca7ebdc0d688"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\mock.rs": {
+    "mtime": 1779526567.5194373,
+    "ast_hash": "825c0a151c441897cb436b595ddc7eb8",
+    "semantic_hash": "825c0a151c441897cb436b595ddc7eb8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\shm.rs": {
+    "mtime": 1779639479.618678,
+    "ast_hash": "03931901f58ca4da02b233d9be3d28a5",
+    "semantic_hash": "03931901f58ca4da02b233d9be3d28a5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\bin\\shm_sim.rs": {
+    "mtime": 1779526575.7248125,
+    "ast_hash": "51e8ccab975b67e325576b11363095a0",
+    "semantic_hash": "51e8ccab975b67e325576b11363095a0"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry\\src\\bin\\telemetry_probe.rs": {
+    "mtime": 1778330794.1177852,
+    "ast_hash": "a9c6e6ece6e7efdc6a0e9902211d8bf9",
+    "semantic_hash": "a9c6e6ece6e7efdc6a0e9902211d8bf9"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\telemetry-dll\\src\\lib.rs": {
+    "mtime": 1779619720.7362018,
+    "ast_hash": "4684766602ecfbace403aec47fed67d3",
+    "semantic_hash": "4684766602ecfbace403aec47fed67d3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\components.json": {
+    "mtime": 1778509734.0533943,
+    "ast_hash": "c7d098ab95aab62136cbde8462806763",
+    "semantic_hash": "c7d098ab95aab62136cbde8462806763"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\eslint.config.js": {
+    "mtime": 1778509734.0533943,
+    "ast_hash": "b9be39143a59d819c434a917522c036a",
+    "semantic_hash": "b9be39143a59d819c434a917522c036a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\package.json": {
+    "mtime": 1778509734.055476,
+    "ast_hash": "930aa12574ef953418eeb74e1f0befa3",
+    "semantic_hash": "930aa12574ef953418eeb74e1f0befa3"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\tsconfig.json": {
+    "mtime": 1778509734.0751574,
+    "ast_hash": "693ebe3b3fb28321f0e0ffd64b8bba03",
+    "semantic_hash": "693ebe3b3fb28321f0e0ffd64b8bba03"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\vite.config.ts": {
+    "mtime": 1778509734.0751574,
+    "ast_hash": "c2effbad90c5a177179b3ca71ce29edc",
+    "semantic_hash": "c2effbad90c5a177179b3ca71ce29edc"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\scripts\\sync-ipc-types.mjs": {
+    "mtime": 1778509734.055476,
+    "ast_hash": "6d4cc2c299358f682d233f6bef98a960",
+    "semantic_hash": "6d4cc2c299358f682d233f6bef98a960"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\App.tsx": {
+    "mtime": 1779130743.1196456,
+    "ast_hash": "181e30e5271b312bfd31bf51a649397b",
+    "semantic_hash": "181e30e5271b312bfd31bf51a649397b"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\main.tsx": {
+    "mtime": 1778509734.0690603,
+    "ast_hash": "91996e451723d6aac39ce760128ee2a8",
+    "semantic_hash": "91996e451723d6aac39ce760128ee2a8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\AutopilotStatusCard.tsx": {
+    "mtime": 1779382715.9263039,
+    "ast_hash": "4e1fed7d0b1f2248151bd09fb81243c7",
+    "semantic_hash": "4e1fed7d0b1f2248151bd09fb81243c7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\AutopilotToastWatcher.tsx": {
+    "mtime": 1779130737.692577,
+    "ast_hash": "7dbcac39d56da3a584d17deb9b7bc123",
+    "semantic_hash": "7dbcac39d56da3a584d17deb9b7bc123"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\BigNumberDisplay.tsx": {
+    "mtime": 1779130534.199883,
+    "ast_hash": "82d9eafc0d235729a93919d07f98f98f",
+    "semantic_hash": "82d9eafc0d235729a93919d07f98f98f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\CruiseCard.tsx": {
+    "mtime": 1779117117.1651773,
+    "ast_hash": "1d10e48370b428584a12d000692f3859",
+    "semantic_hash": "1d10e48370b428584a12d000692f3859"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\EngageButton.tsx": {
+    "mtime": 1779130770.9528382,
+    "ast_hash": "31cb139555ff0ee0b072ddcd1ca0f920",
+    "semantic_hash": "31cb139555ff0ee0b072ddcd1ca0f920"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\EngagementChecklist.tsx": {
+    "mtime": 1779551930.8881538,
+    "ast_hash": "1dfa7029de65985dfbee972e43e4978e",
+    "semantic_hash": "1dfa7029de65985dfbee972e43e4978e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ETS2StatusIndicator.tsx": {
+    "mtime": 1779130773.5710824,
+    "ast_hash": "93290ba5dabf6294b386af16984d1783",
+    "semantic_hash": "93290ba5dabf6294b386af16984d1783"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\FailsafeBanner.tsx": {
+    "mtime": 1779130776.4123893,
+    "ast_hash": "85e857c4c4b1b72404d66cf234943067",
+    "semantic_hash": "85e857c4c4b1b72404d66cf234943067"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\HotkeyHandler.tsx": {
+    "mtime": 1779117136.0014002,
+    "ast_hash": "b96d06a5c5c118f76d6558f4ca38f69a",
+    "semantic_hash": "b96d06a5c5c118f76d6558f4ca38f69a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\LogLine.tsx": {
+    "mtime": 1779130622.00643,
+    "ast_hash": "53f4c590fccc6ac4842ac2a6ca19b8ea",
+    "semantic_hash": "53f4c590fccc6ac4842ac2a6ca19b8ea"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\PluginToggleItem.tsx": {
+    "mtime": 1779130779.4954133,
+    "ast_hash": "f06eb42f14ee114350db3cda23743de7",
+    "semantic_hash": "f06eb42f14ee114350db3cda23743de7"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\PreconditionPill.tsx": {
+    "mtime": 1779130782.036389,
+    "ast_hash": "ee789c363f3da21907a5c75931ebeac8",
+    "semantic_hash": "ee789c363f3da21907a5c75931ebeac8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\RouteCard.tsx": {
+    "mtime": 1779525400.7194507,
+    "ast_hash": "bbf3138369d99df7afa6cc87e7b836ef",
+    "semantic_hash": "bbf3138369d99df7afa6cc87e7b836ef"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\TelemetrySparkline.tsx": {
+    "mtime": 1779130795.328067,
+    "ast_hash": "81ba1415e57a4450802d772d8d853b1c",
+    "semantic_hash": "81ba1415e57a4450802d772d8d853b1c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\VJoyBar.tsx": {
+    "mtime": 1779130784.8110979,
+    "ast_hash": "651a45459c7a7ebf4deb225e610ef3c8",
+    "semantic_hash": "651a45459c7a7ebf4deb225e610ef3c8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\VjoyMonitor.tsx": {
+    "mtime": 1779204099.8648612,
+    "ast_hash": "a0496a2921987d6823a2b38e179c3da5",
+    "semantic_hash": "a0496a2921987d6823a2b38e179c3da5"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\layout\\RouteShell.tsx": {
+    "mtime": 1779130750.4437897,
+    "ast_hash": "670ed710f2f5c657cf0aa0b3a049a0aa",
+    "semantic_hash": "670ed710f2f5c657cf0aa0b3a049a0aa"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\layout\\Sidebar.tsx": {
+    "mtime": 1779130788.2396572,
+    "ast_hash": "e22d6e37993747370e28d212a098243c",
+    "semantic_hash": "e22d6e37993747370e28d212a098243c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\layout\\StatusBar.tsx": {
+    "mtime": 1778509734.0601153,
+    "ast_hash": "bce24a6b9c4a037256d7d7e6122a0572",
+    "semantic_hash": "bce24a6b9c4a037256d7d7e6122a0572"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\layout\\TopBar.tsx": {
+    "mtime": 1779129824.4446833,
+    "ast_hash": "203e6db3fb7a816089f1694af2d98f9f",
+    "semantic_hash": "203e6db3fb7a816089f1694af2d98f9f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\schema-form\\SchemaForm.tsx": {
+    "mtime": 1778509734.0614104,
+    "ast_hash": "3e30b2a5f2dae4c32a83d103306f4ecf",
+    "semantic_hash": "3e30b2a5f2dae4c32a83d103306f4ecf"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\schema-form\\__tests__\\SchemaForm.test.tsx": {
+    "mtime": 1778509734.0614104,
+    "ast_hash": "68871af7353fb30e0567fca7b9f8caca",
+    "semantic_hash": "68871af7353fb30e0567fca7b9f8caca"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\sidebar\\NavGroup.tsx": {
+    "mtime": 1779130455.018361,
+    "ast_hash": "4ae2aee2f331bc131f685b281702d9de",
+    "semantic_hash": "4ae2aee2f331bc131f685b281702d9de"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\sidebar\\NavItem.tsx": {
+    "mtime": 1779130461.216509,
+    "ast_hash": "b378267fab386e12d223142cbcdcb852",
+    "semantic_hash": "b378267fab386e12d223142cbcdcb852"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\telemetry\\HeadingCompass.tsx": {
+    "mtime": 1778509734.0619256,
+    "ast_hash": "1faab12f647b2c3b9de18c04911fdbe1",
+    "semantic_hash": "1faab12f647b2c3b9de18c04911fdbe1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\telemetry\\MiniMap.tsx": {
+    "mtime": 1778509734.0619256,
+    "ast_hash": "d698238fc709680e0ba5654090903bbb",
+    "semantic_hash": "d698238fc709680e0ba5654090903bbb"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\telemetry\\Sparkline.tsx": {
+    "mtime": 1779117206.5288186,
+    "ast_hash": "ee56c6d63f4e2cdfbbbbb35843d38359",
+    "semantic_hash": "ee56c6d63f4e2cdfbbbbb35843d38359"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\telemetry\\SpeedGauge.tsx": {
+    "mtime": 1778509734.0624452,
+    "ast_hash": "b48f32bc466256f380a2d65125f303ae",
+    "semantic_hash": "b48f32bc466256f380a2d65125f303ae"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\alert-dialog.tsx": {
+    "mtime": 1778509734.0629618,
+    "ast_hash": "0f7c30219baafd56f76f13322657c118",
+    "semantic_hash": "0f7c30219baafd56f76f13322657c118"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\badge.tsx": {
+    "mtime": 1778509734.0629618,
+    "ast_hash": "5694bbfe2972924fcd63b93c0daa5118",
+    "semantic_hash": "5694bbfe2972924fcd63b93c0daa5118"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\button.tsx": {
+    "mtime": 1778509734.0634806,
+    "ast_hash": "92b36bba77d8457a7bde6d25fc36fbc6",
+    "semantic_hash": "92b36bba77d8457a7bde6d25fc36fbc6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\card.tsx": {
+    "mtime": 1778509734.0634806,
+    "ast_hash": "53d2702a4857d7385de9807f1f368c2a",
+    "semantic_hash": "53d2702a4857d7385de9807f1f368c2a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\dialog.tsx": {
+    "mtime": 1778509734.0639944,
+    "ast_hash": "b7a43961ee01cde9d7924b516011e704",
+    "semantic_hash": "b7a43961ee01cde9d7924b516011e704"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\input.tsx": {
+    "mtime": 1778509734.0639944,
+    "ast_hash": "c476663fa2bec4dfd242fffe53bf8f2e",
+    "semantic_hash": "c476663fa2bec4dfd242fffe53bf8f2e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\label.tsx": {
+    "mtime": 1778509734.0645056,
+    "ast_hash": "ccbe30a0d47040141ad06741e75df41f",
+    "semantic_hash": "ccbe30a0d47040141ad06741e75df41f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\progress.tsx": {
+    "mtime": 1778509734.0645056,
+    "ast_hash": "cdb754ad793c995035d1476f3954a11a",
+    "semantic_hash": "cdb754ad793c995035d1476f3954a11a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\scroll-area.tsx": {
+    "mtime": 1778509734.065027,
+    "ast_hash": "54cffb9ab50ce9d4d10bc8b0fe006ceb",
+    "semantic_hash": "54cffb9ab50ce9d4d10bc8b0fe006ceb"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\select.tsx": {
+    "mtime": 1778509734.065027,
+    "ast_hash": "5c9632b394c0469c28f7bc99e27e6aec",
+    "semantic_hash": "5c9632b394c0469c28f7bc99e27e6aec"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\separator.tsx": {
+    "mtime": 1778509734.065541,
+    "ast_hash": "c9db2c2903e341561973c7547ccc8a96",
+    "semantic_hash": "c9db2c2903e341561973c7547ccc8a96"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\slider.tsx": {
+    "mtime": 1778509734.0658693,
+    "ast_hash": "87d72e3d0632a4ca487b6459301669de",
+    "semantic_hash": "87d72e3d0632a4ca487b6459301669de"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\switch.tsx": {
+    "mtime": 1778509734.0658693,
+    "ast_hash": "04924eded271af27687d53201bbad1da",
+    "semantic_hash": "04924eded271af27687d53201bbad1da"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\tabs.tsx": {
+    "mtime": 1778509734.066491,
+    "ast_hash": "8b2835c208d094d070d878840920c95f",
+    "semantic_hash": "8b2835c208d094d070d878840920c95f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\components\\ui\\tooltip.tsx": {
+    "mtime": 1778509734.067005,
+    "ast_hash": "b6fe55e9608394cd663ce416a30e7452",
+    "semantic_hash": "b6fe55e9608394cd663ce416a30e7452"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\hooks\\useIpcEvent.ts": {
+    "mtime": 1778509734.067005,
+    "ast_hash": "fac1c379d55be4e39100def019b8540c",
+    "semantic_hash": "fac1c379d55be4e39100def019b8540c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\hooks\\usePlugins.ts": {
+    "mtime": 1778509734.0675201,
+    "ast_hash": "b8fe25862952eda637aaac7e3e454db0",
+    "semantic_hash": "b8fe25862952eda637aaac7e3e454db0"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\hooks\\useTelemetry.ts": {
+    "mtime": 1778509734.0675201,
+    "ast_hash": "40fa7728ca2ce4c8ca61cb7537817cf8",
+    "semantic_hash": "40fa7728ca2ce4c8ca61cb7537817cf8"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\lib\\ipc.ts": {
+    "mtime": 1779117075.6237044,
+    "ast_hash": "c6fad32a566542339408d4349df5178f",
+    "semantic_hash": "c6fad32a566542339408d4349df5178f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\lib\\tauri-bridge.ts": {
+    "mtime": 1779603752.2172267,
+    "ast_hash": "ca4a5d5ae039c856fe7f0fe42265c0f6",
+    "semantic_hash": "ca4a5d5ae039c856fe7f0fe42265c0f6"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\lib\\types.ts": {
+    "mtime": 1779550374.5360906,
+    "ast_hash": "2b9ef1fa06e983e14cee459a91c4930f",
+    "semantic_hash": "2b9ef1fa06e983e14cee459a91c4930f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\lib\\utils.ts": {
+    "mtime": 1778509734.0685484,
+    "ast_hash": "83ecf9553c3a2a10acd4a5b066a1ef21",
+    "semantic_hash": "83ecf9553c3a2a10acd4a5b066a1ef21"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\Blackboard.tsx": {
+    "mtime": 1779117290.5656307,
+    "ast_hash": "ab2851b39f6bbdb03007532784971401",
+    "semantic_hash": "ab2851b39f6bbdb03007532784971401"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\Dashboard.tsx": {
+    "mtime": 1779130603.092348,
+    "ast_hash": "788e8245768781656db866f2a6f1ec3e",
+    "semantic_hash": "788e8245768781656db866f2a6f1ec3e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\ExternalDashboard.tsx": {
+    "mtime": 1778509734.0695722,
+    "ast_hash": "bf5773a0fb09d4a1462c276c82ab9668",
+    "semantic_hash": "bf5773a0fb09d4a1462c276c82ab9668"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\Logs.tsx": {
+    "mtime": 1779130798.4556384,
+    "ast_hash": "9c01de0815ad253333dafe00b3f64dfe",
+    "semantic_hash": "9c01de0815ad253333dafe00b3f64dfe"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\ModManager.tsx": {
+    "mtime": 1779130729.0780563,
+    "ast_hash": "ba2df3f51c3f9ce3dcde804d11c1ece0",
+    "semantic_hash": "ba2df3f51c3f9ce3dcde804d11c1ece0"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\PidTuning.tsx": {
+    "mtime": 1779130722.343839,
+    "ast_hash": "fcf00a36007fc12769b9a2c39c501781",
+    "semantic_hash": "fcf00a36007fc12769b9a2c39c501781"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\Plugins.tsx": {
+    "mtime": 1779130669.223941,
+    "ast_hash": "a11a18a101c77a1da9f54c49f1e5c158",
+    "semantic_hash": "a11a18a101c77a1da9f54c49f1e5c158"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\routes\\Settings.tsx": {
+    "mtime": 1779603794.9318624,
+    "ast_hash": "f8cfc6bed7aea6ffa5872097ad9a23db",
+    "semantic_hash": "f8cfc6bed7aea6ffa5872097ad9a23db"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\autopilot.ts": {
+    "mtime": 1778512480.5655322,
+    "ast_hash": "07e0a052788ed488fd6d5e3003163c14",
+    "semantic_hash": "07e0a052788ed488fd6d5e3003163c14"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\blackboard.ts": {
+    "mtime": 1779117038.5841234,
+    "ast_hash": "3f5039f4d1493de019bbf1de7d00477a",
+    "semantic_hash": "3f5039f4d1493de019bbf1de7d00477a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\connection.ts": {
+    "mtime": 1778509734.0725617,
+    "ast_hash": "f83a8fdf0d094b604541599e49208819",
+    "semantic_hash": "f83a8fdf0d094b604541599e49208819"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\logs.ts": {
+    "mtime": 1779116519.5231032,
+    "ast_hash": "38ba45d79b23f58d4e829ad7d7531465",
+    "semantic_hash": "38ba45d79b23f58d4e829ad7d7531465"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\mods.ts": {
+    "mtime": 1778509734.073079,
+    "ast_hash": "49289b75ddca4a5a12a0586d67424739",
+    "semantic_hash": "49289b75ddca4a5a12a0586d67424739"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\pid.ts": {
+    "mtime": 1778509734.0735981,
+    "ast_hash": "99c69fc9f1f374b8f37f936e77aa2c4f",
+    "semantic_hash": "99c69fc9f1f374b8f37f936e77aa2c4f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\plugins.ts": {
+    "mtime": 1778509734.0735981,
+    "ast_hash": "ca5f6c6bb2c547285c8942ff42373803",
+    "semantic_hash": "ca5f6c6bb2c547285c8942ff42373803"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\settings.ts": {
+    "mtime": 1778509734.0741186,
+    "ast_hash": "ecbc46eee9c1a2569512544770a80859",
+    "semantic_hash": "ecbc46eee9c1a2569512544770a80859"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\telemetry.ts": {
+    "mtime": 1779117219.693475,
+    "ast_hash": "78371889c71b65f7911e4d1f0beddf7f",
+    "semantic_hash": "78371889c71b65f7911e4d1f0beddf7f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\__tests__\\autopilot.test.ts": {
+    "mtime": 1778512636.765833,
+    "ast_hash": "aba23cd2f7a3f02294585e13c324a790",
+    "semantic_hash": "aba23cd2f7a3f02294585e13c324a790"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\__tests__\\connection.test.ts": {
+    "mtime": 1778509734.0714133,
+    "ast_hash": "4f71a74108db84f3d4c0b8eecba7963a",
+    "semantic_hash": "4f71a74108db84f3d4c0b8eecba7963a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\__tests__\\logs.test.ts": {
+    "mtime": 1779116594.4673567,
+    "ast_hash": "c1ef3351f2c79171afe5e8cdd3352286",
+    "semantic_hash": "c1ef3351f2c79171afe5e8cdd3352286"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\stores\\__tests__\\plugins.test.ts": {
+    "mtime": 1778509734.0725617,
+    "ast_hash": "40ff00a1aac1ea1b9a910be8db03e08e",
+    "semantic_hash": "40ff00a1aac1ea1b9a910be8db03e08e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src\\test\\setup.ts": {
+    "mtime": 1778509734.074638,
+    "ast_hash": "a6ce4996fcb887749b7eb6ea93a13a80",
+    "semantic_hash": "a6ce4996fcb887749b7eb6ea93a13a80"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\build.rs": {
+    "mtime": 1778509734.0559943,
+    "ast_hash": "667702979da61fdc96948886b7cd7a33",
+    "semantic_hash": "667702979da61fdc96948886b7cd7a33"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\tauri.conf.json": {
+    "mtime": 1778509734.05909,
+    "ast_hash": "4df30f4ca39e73ed9de5b9fc4a31a59a",
+    "semantic_hash": "4df30f4ca39e73ed9de5b9fc4a31a59a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\capabilities\\default.json": {
+    "mtime": 1778509734.0565143,
+    "ast_hash": "af4a5fe8b9f07c3c868f3a9a94f73a8e",
+    "semantic_hash": "af4a5fe8b9f07c3c868f3a9a94f73a8e"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\gen\\schemas\\acl-manifests.json": {
+    "mtime": 1779603818.1366057,
+    "ast_hash": "2f9573a300a07a02534910b4d1a4065f",
+    "semantic_hash": "2f9573a300a07a02534910b4d1a4065f"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\gen\\schemas\\capabilities.json": {
+    "mtime": 1778330805.4993305,
+    "ast_hash": "3dac229a18510dee0428bc7b3345b24a",
+    "semantic_hash": "3dac229a18510dee0428bc7b3345b24a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\gen\\schemas\\desktop-schema.json": {
+    "mtime": 1779603818.1471157,
+    "ast_hash": "879ba47d04b8d9917a9283ec3df34728",
+    "semantic_hash": "879ba47d04b8d9917a9283ec3df34728"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\gen\\schemas\\linux-schema.json": {
+    "mtime": 1778509734.057031,
+    "ast_hash": "85581d7ce59c6fe49f27cdcf6292810a",
+    "semantic_hash": "85581d7ce59c6fe49f27cdcf6292810a"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\gen\\schemas\\windows-schema.json": {
+    "mtime": 1779603818.1471157,
+    "ast_hash": "879ba47d04b8d9917a9283ec3df34728",
+    "semantic_hash": "879ba47d04b8d9917a9283ec3df34728"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\commands.rs": {
+    "mtime": 1779619720.7413027,
+    "ast_hash": "41af6459f2f30cb4cf2c5cf15085ef94",
+    "semantic_hash": "41af6459f2f30cb4cf2c5cf15085ef94"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\daemon.rs": {
+    "mtime": 1779116209.7692475,
+    "ast_hash": "862245e8f86c19818059989175498d05",
+    "semantic_hash": "862245e8f86c19818059989175498d05"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\daemon_config.rs": {
+    "mtime": 1779115722.7267568,
+    "ast_hash": "fe0b53d4782f8d6ecfabea68cd1008e1",
+    "semantic_hash": "fe0b53d4782f8d6ecfabea68cd1008e1"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\hotkey_config.rs": {
+    "mtime": 1779603707.3359327,
+    "ast_hash": "1a94bc142b7e3252917330626bf5cdbf",
+    "semantic_hash": "1a94bc142b7e3252917330626bf5cdbf"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\hotkey_manager.rs": {
+    "mtime": 1779603829.1645763,
+    "ast_hash": "89d80a27606582bc3071c7e5c3a106ee",
+    "semantic_hash": "89d80a27606582bc3071c7e5c3a106ee"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\ipc_bridge.rs": {
+    "mtime": 1778509734.0575442,
+    "ast_hash": "cf19ed967c738479a086ad39a6ff2999",
+    "semantic_hash": "cf19ed967c738479a086ad39a6ff2999"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\lib.rs": {
+    "mtime": 1779603734.1490753,
+    "ast_hash": "478d44053238d1fad6946bfc1a84014c",
+    "semantic_hash": "478d44053238d1fad6946bfc1a84014c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\main.rs": {
+    "mtime": 1778509734.0580587,
+    "ast_hash": "10e174a9f29cfc99057547c5b7033c98",
+    "semantic_hash": "10e174a9f29cfc99057547c5b7033c98"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\steam_detect.rs": {
+    "mtime": 1778509734.058578,
+    "ast_hash": "58e11b3ad730bb75457241e65b935908",
+    "semantic_hash": "58e11b3ad730bb75457241e65b935908"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\src\\window_manager.rs": {
+    "mtime": 1778509734.058578,
+    "ast_hash": "24ef33c851946a2b2cdec7bee528350c",
+    "semantic_hash": "24ef33c851946a2b2cdec7bee528350c"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\xtask\\src\\main.rs": {
+    "mtime": 1779619720.7478242,
+    "ast_hash": "9fbf6d42dfe94ff6e5ca9056c79eb284",
+    "semantic_hash": "9fbf6d42dfe94ff6e5ca9056c79eb284"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\diag\\README.md": {
+    "mtime": 1778992653.6994166,
+    "ast_hash": "502b5decbcd6da0c3f15562c0af2d558",
+    "semantic_hash": "502b5decbcd6da0c3f15562c0af2d558"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\index.html": {
+    "mtime": 1778509734.0539103,
+    "ast_hash": "7ffaf3951c01a535ee6e8849c3959105",
+    "semantic_hash": "7ffaf3951c01a535ee6e8849c3959105"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\README.md": {
+    "mtime": 1778509734.0528817,
+    "ast_hash": "7fe97478979eae3160d0889b48d5edbf",
+    "semantic_hash": "7fe97478979eae3160d0889b48d5edbf"
+  },
+  "C:\\Users\\Sippler\\Documents\\TruckPilot\\crates\\ui\\src-tauri\\icons\\icon.png": {
+    "mtime": 1778330805.501064,
+    "ast_hash": "4b23b9fab353a51886435a81e92f834e",
+    "semantic_hash": "4b23b9fab353a51886435a81e92f834e"
+  }
+}

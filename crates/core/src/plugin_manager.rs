@@ -147,10 +147,12 @@ pub struct PluginManager {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
     /// this each tick; the state machine reads it for engage-time checks.
     pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
-    /// SplineIndex for spatial HUD queries (Phase 6.9 overlay).
-    /// Built at daemon startup from `graph.json`; `None` when the file is missing
-    /// or when building the index failed (non-critical — HUD shows no segments).
+    /// Shared SplineIndex (Road + NavCurves, Phase 2b). Built at daemon startup;
+    /// Arc-shared across all plugins and the HUD IPC layer.
     pub spline_index: Option<Arc<truckpilot_map_parser::SplineIndex>>,
+    /// Number of road-derived segments at the front of `spline_index`.
+    /// NavCurve segments start at this index. 0 when spline_index is None.
+    pub spline_index_road_seg_count: usize,
     /// Per-plugin configuration loaded from `truckpilot.toml`.
     /// Key = plugin name. Missing key → default enabled=true, no extra keys.
     plugin_configs: HashMap<String, PluginTomlConfig>,
@@ -203,6 +205,7 @@ impl PluginManager {
             graph: None,
             route_node_ids: Arc::new(RwLock::new(HashSet::new())),
             spline_index: None,
+            spline_index_road_seg_count: 0,
             plugin_configs,
         }
     }
@@ -520,12 +523,16 @@ impl PluginManager {
             let frame_store = Arc::clone(&self.frame_store);
             let graph = self.graph.clone();
             let route_node_ids = Arc::clone(&self.route_node_ids);
+            let spline_index = self.spline_index.clone();
+            let spline_index_road_seg_count = self.spline_index_road_seg_count;
             Self::run_on_load_for(
                 &mut self.plugins[idx],
                 &blackboard,
                 &frame_store,
                 &graph,
                 &route_node_ids,
+                &spline_index,
+                spline_index_road_seg_count,
             );
         }
         info!(
@@ -545,6 +552,8 @@ impl PluginManager {
             &self.frame_store,
             &self.graph,
             &self.route_node_ids,
+            &self.spline_index,
+            self.spline_index_road_seg_count,
         );
     }
 
@@ -554,6 +563,8 @@ impl PluginManager {
         frame_store: &Arc<SharedFrameStore>,
         graph: &Option<Arc<RouterGraph>>,
         route_node_ids: &Arc<RwLock<HashSet<u64>>>,
+        spline_index: &Option<Arc<truckpilot_map_parser::SplineIndex>>,
+        spline_index_road_seg_count: usize,
     ) {
         debug_assert!(!loaded.initialized, "on_load must not run twice");
         let mut ctx = PluginContext::new(loaded.name.clone(), blackboard.clone())
@@ -561,6 +572,9 @@ impl PluginManager {
             .with_log_sink(make_log_sink());
         ctx.graph = graph.clone();
         ctx.route_node_ids = Some(Arc::clone(route_node_ids));
+        if let Some(si) = spline_index {
+            ctx = ctx.with_spline_index(Arc::clone(si), spline_index_road_seg_count);
+        }
         loaded.plugin.on_load(&ctx);
         loaded.initialized = true;
     }

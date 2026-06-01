@@ -474,6 +474,14 @@ pub struct PluginContext {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin writes this
     /// each tick; the state machine reads it for synchronous off-route checks.
     pub route_node_ids: Option<Arc<RwLock<std::collections::HashSet<u64>>>>,
+    /// Shared SplineIndex (Road + NavCurves, Phase 2b). Built once at daemon
+    /// start; Arc-shared so all plugins pay zero marginal cost. `None` when
+    /// graph.json is unavailable (non-critical, plugins fall back to self-load).
+    pub spline_index: Option<Arc<truckpilot_map_parser::SplineIndex>>,
+    /// Number of road-derived segments (from build_splines_ex) in spline_index.
+    /// NavCurve segments start at index `spline_index_road_seg_count`.
+    /// 0 when spline_index is None.
+    pub spline_index_road_seg_count: usize,
 }
 
 impl std::fmt::Debug for PluginContext {
@@ -485,6 +493,7 @@ impl std::fmt::Debug for PluginContext {
             .field("tick_count", &self.tick_count)
             .field("has_graph", &self.graph.is_some())
             .field("has_route_node_ids", &self.route_node_ids.is_some())
+            .field("has_spline_index", &self.spline_index.is_some())
             .finish()
     }
 }
@@ -502,6 +511,8 @@ impl PluginContext {
             log_sink: None,
             graph: None,
             route_node_ids: None,
+            spline_index: None,
+            spline_index_road_seg_count: 0,
         }
     }
 
@@ -536,6 +547,17 @@ impl PluginContext {
         if let Some(sink) = &self.log_sink {
             (sink.0)(level, target, message);
         }
+    }
+
+    /// Attach the shared SplineIndex (Phase 2b). Builder-style.
+    pub fn with_spline_index(
+        mut self,
+        index: Arc<truckpilot_map_parser::SplineIndex>,
+        road_seg_count: usize,
+    ) -> Self {
+        self.spline_index = Some(index);
+        self.spline_index_road_seg_count = road_seg_count;
+        self
     }
 
     /// Set the per-tick delta time in seconds. Builder-style. Clamped to >= 0.001.

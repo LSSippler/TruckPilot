@@ -69,6 +69,7 @@ mod pure_pursuit;
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
@@ -185,7 +186,7 @@ impl LaneFollowerMode {
 
 #[derive(Default)]
 pub struct LaneFollowerPlugin {
-    index: Option<SplineIndex>,
+    index: Option<Arc<SplineIndex>>,
     luts: Vec<ArcLengthLUT>,
     forward_adj: HashMap<u64, Vec<usize>>,
     lookahead_seg_history: VecDeque<usize>,
@@ -197,8 +198,8 @@ pub struct LaneFollowerPlugin {
     steering_ema: f64,
     /// Previous rate-limited steering output (rate-limiter state).
     steering_rate_limited_prev: f64,
-    /// RouterGraph built from the same graph.json — used for junction detection.
-    router_graph: Option<RouterGraph>,
+    /// RouterGraph used for junction detection (Arc-shared when ctx.graph is available).
+    router_graph: Option<Arc<RouterGraph>>,
     junction_detector: JunctionDetector,
     // VMM-6: minimap fallback spline source.
     /// SplineIndex rebuilt from minimap.spline_json whenever the capture timestamp changes.
@@ -339,13 +340,13 @@ impl LaneFollowerPlugin {
 
         self.luts = luts;
         self.forward_adj = forward_adj;
-        self.index = Some(build_index_with_metadata(segments, metadata));
+        self.index = Some(Arc::new(build_index_with_metadata(segments, metadata)));
 
         let rg_nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
         let rg_edges: Vec<(u64, u64, f64)> = graph.edges.iter().map(|e| (e.from, e.to, e.distance_m)).collect();
         let n_nodes = rg_nodes.len();
         let n_edges = rg_edges.len();
-        self.router_graph = Some(RouterGraph::new(rg_nodes, rg_edges));
+        self.router_graph = Some(Arc::new(RouterGraph::new(rg_nodes, rg_edges)));
         ctx_info!(ctx, "lane-follower: RouterGraph built ({} nodes, {} edges)", n_nodes, n_edges);
     }
 
@@ -469,11 +470,47 @@ impl Plugin for LaneFollowerPlugin {
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        let path = ctx
-            .blackboard
-            .get("plugin.lane-follower.graph_path")
-            .unwrap_or_else(|| DEFAULT_GRAPH_PATH.to_string());
-        self.load_index(&path, ctx);
+        // Phase 2b: use daemon-provided shared SplineIndex when available.
+        // Saves ~140MB RAM and ~2s load time by avoiding a second graph.json read.
+        if let Some(shared_index) = &ctx.spline_index {
+            let road_seg_count = ctx.spline_index_road_seg_count;
+            let total_seg_count = shared_index.segments.len();
+            let prefab_seg_count = total_seg_count.saturating_sub(road_seg_count);
+
+            let t0 = std::time::Instant::now();
+            let luts = build_all_luts(&shared_index.segments);
+            let forward_adj = build_forward_adjacency(&shared_index.segments);
+            let lut_ms = t0.elapsed().as_millis();
+            let lut_kb = (luts.len() * std::mem::size_of::<ArcLengthLUT>()) as f32 / 1024.0;
+            ctx_info!(
+                ctx,
+                "lane-follower: shared SplineIndex {} segs ({} road + {} NavCurves); LUT {}ms {:.1}KB",
+                total_seg_count, road_seg_count, prefab_seg_count, lut_ms, lut_kb
+            );
+
+            ctx.blackboard.set("map.spline.total_segments", total_seg_count.to_string());
+            ctx.blackboard.set("map.spline.prefab_segments", prefab_seg_count.to_string());
+            ctx.blackboard.set("map.spline.road_segments_count", road_seg_count.to_string());
+            ctx.blackboard.set("map.spline.road_segment_idx_max", road_seg_count.saturating_sub(1).to_string());
+            ctx.blackboard.set("map.spline.prefab_segment_idx_min", road_seg_count.to_string());
+            ctx.blackboard.set("map.spline.prefab_segment_idx_max", total_seg_count.saturating_sub(1).to_string());
+
+            self.road_seg_count = road_seg_count;
+            self.luts = luts;
+            self.forward_adj = forward_adj;
+            self.index = Some(Arc::clone(shared_index));
+
+            // RouterGraph from ctx (zero-copy Arc share) or skip (junction detection degrades gracefully).
+            if let Some(rg) = &ctx.graph {
+                self.router_graph = Some(Arc::clone(rg));
+            }
+        } else {
+            let path = ctx
+                .blackboard
+                .get("plugin.lane-follower.graph_path")
+                .unwrap_or_else(|| DEFAULT_GRAPH_PATH.to_string());
+            self.load_index(&path, ctx);
+        }
         self.mode = LaneFollowerMode::from_bb(ctx);
 
         // DS13d: load prefab-bias config (PluginManager seeds from truckpilot.toml).
@@ -563,7 +600,7 @@ impl Plugin for LaneFollowerPlugin {
         // Junction detection — runs regardless of index availability.
         // Returns (active, distance_m) for DS13d prefab-bias query below.
         let (junction_active_for_bias, junction_distance_for_bias): (bool, Option<f64>) = {
-            let detection = if let Some(graph) = &self.router_graph {
+            let detection = if let Some(graph) = self.router_graph.as_deref() {
                 detect_junction(graph, truck_x, truck_z)
             } else {
                 junction::JunctionDetection { is_junction: false, max_degree: 0, distance_m: None }
@@ -609,8 +646,8 @@ impl Plugin for LaneFollowerPlugin {
         };
 
         // VMM-6: select primary or minimap SplineIndex.
-        let primary = &self.index;
-        let minimap = &self.minimap_index;
+        let primary = self.index.as_deref();          // Option<Arc<SplineIndex>> → Option<&SplineIndex>
+        let minimap = self.minimap_index.as_ref();    // Option<SplineIndex> → Option<&SplineIndex>
         let index: &SplineIndex = match (primary, minimap) {
             (Some(idx), _) => idx,
             (None, Some(mm)) if self.minimap_confidence >= MINIMAP_CONF_THRESHOLD => mm,
@@ -1359,7 +1396,7 @@ mod tests {
     #[test]
     fn tick_sets_dist_warn_when_far_from_road() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(index), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Query far from all segments (e.g. x=0, z=-500 — all segments end at z=-100)
@@ -1377,7 +1414,7 @@ mod tests {
     #[test]
     fn tick_sets_heading_warn_when_truck_facing_wrong_way() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(index), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Truck at (-45, 0, -50) near Seg 1 (heading 0°=North)
@@ -1396,7 +1433,7 @@ mod tests {
     #[test]
     fn tick_writes_ok_and_all_keys_on_nominal_path() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(index), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Truck at (-45, 0, -50), facing North (heading=0)
@@ -1440,7 +1477,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
     }
 
     #[test]
@@ -1652,7 +1689,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
     }
 
     // ── Lookahead status: ok (within segment) ────────────────────────────────
@@ -1706,7 +1743,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -1.0, 0.0);
@@ -1750,7 +1787,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
@@ -1980,7 +2017,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // ETS2 heading 0.75 → truck_heading_deg = (-0.75 * 360).rem_euclid(360) = 90° = East.
@@ -2046,7 +2083,7 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(index), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
     }
 
     #[test]
@@ -2207,7 +2244,7 @@ mod tests {
         let forward_adj = build_forward_adjacency(&[seg.clone()]);
         let index = build_index_with_metadata(vec![seg], vec![meta]);
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
             ..Default::default()
@@ -2294,7 +2331,7 @@ mod tests {
         let index = build_index_with_metadata(segs, meta);
         // road_seg_count=1 → prefab starts at index 1
         LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
             road_seg_count: 1,
@@ -2450,10 +2487,10 @@ mod tests {
         let index = build_index_with_metadata(segs, metas);
 
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             road_seg_count: 0,
             last_active_segment_idx: Some(0), // A is "last active"
             junction_max_heading_diff_rad: PI / 4.0,
@@ -2527,10 +2564,10 @@ mod tests {
         let index = build_index_with_metadata(segs, metas);
 
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,
@@ -2654,10 +2691,10 @@ mod tests {
         let index = build_index_with_metadata(segs, metas);
 
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,
@@ -2738,10 +2775,10 @@ mod tests {
         let index = build_index_with_metadata(segs, metas);
 
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,
@@ -2800,10 +2837,10 @@ mod tests {
         let index = build_index_with_metadata(segs, metas);
 
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,
@@ -2876,10 +2913,10 @@ mod tests {
         let luts = build_all_luts(&segs);
         let index = build_index_with_metadata(segs, metas);
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,
@@ -2945,10 +2982,10 @@ mod tests {
         let luts = build_all_luts(&segs);
         let index = build_index_with_metadata(segs, metas);
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 0.0, // dist=5.9 > 0.0 → too_far
@@ -3014,10 +3051,10 @@ mod tests {
         let luts = build_all_luts(&segs);
         let index = build_index_with_metadata(segs, metas);
         let mut plugin = LaneFollowerPlugin {
-            index: Some(index),
+            index: Some(Arc::new(index)),
             luts,
             forward_adj,
-            router_graph: Some(make_junction_rg(0.0, -5.0)),
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
             junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
             bias_radius_m: 30.0,
             bias_max_prefab_dist_m: 10.0,

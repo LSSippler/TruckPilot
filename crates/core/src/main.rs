@@ -504,6 +504,8 @@ fn load_map_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
         eprintln!("Run first: truckpilot-core parse-map --ets2-dir <path>");
         std::process::exit(1);
     }
+    let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
+    eprintln!("INFO: Loading graph from {:?}", abs);
     let json = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("ERROR: Cannot read graph.json: {e}");
         std::process::exit(1);
@@ -530,27 +532,39 @@ fn build_router_graph(map_graph: &truckpilot_map_parser::graph::MapGraph) -> Rou
     RouterGraph::new(nodes, edges)
 }
 
-/// Build a [`SplineIndex`] for spatial HUD queries (Phase 6.9 overlay).
+/// Build the shared [`SplineIndex`] (Road + NavCurve segments, Phase 2b).
+///
+/// Returns `(index, road_seg_count)` where `road_seg_count` is the number of
+/// segments from `build_splines_ex` (i.e. non-NavCurve). NavCurve segments
+/// start at index `road_seg_count` in the returned index.
 ///
 /// This is an optional, non-critical resource.  Returns `None` on any error
-/// so the daemon can continue running without HUD segment rendering.
-///
-/// # Cost
-/// ~2 s and ~150 MB RAM for a 1M-segment map (Berlin + DLCs).
+/// so the daemon can continue running without spatial queries.
 fn build_spline_index_for_hud(
     map_graph: &truckpilot_map_parser::graph::MapGraph,
-) -> Option<truckpilot_map_parser::SplineIndex> {
+) -> Option<(truckpilot_map_parser::SplineIndex, usize)> {
     let t0 = Instant::now();
-    let (segments, metadata, _stats) =
+    let (mut segments, mut metadata, _stats) =
         truckpilot_map_parser::spline::build_splines_ex(map_graph);
-    let seg_count = segments.len();
+    let road_seg_count = segments.len();
+
+    // Phase 2b: append NavCurve segments so junction geometry is covered.
+    // NavCurves have is_prefab=true and lane_offset_right_m=0.0 (already at lane-centre).
+    let (prefab_segs, prefab_meta) = map_graph.prefab_hermite_segments_with_metadata();
+    let navcurve_count = prefab_segs.len();
+    segments.extend(prefab_segs);
+    metadata.extend(prefab_meta);
+
+    let total_count = segments.len();
     let index = truckpilot_map_parser::build_index_with_metadata(segments, metadata);
     info!(
-        "SplineIndex (HUD) built: {} segments in {:.1}s",
-        seg_count,
+        "SplineIndex built: {} segs ({} road + {} NavCurve) in {:.1}s",
+        total_count,
+        road_seg_count,
+        navcurve_count,
         t0.elapsed().as_secs_f64()
     );
-    Some(index)
+    Some((index, road_seg_count))
 }
 
 
@@ -655,7 +669,10 @@ async fn run_daemon() {
 
     let mut manager = PluginManager::new(plugin_dir, plugin_configs);
     manager.graph = Some(Arc::clone(&graph));
-    manager.spline_index = spline_index_opt.map(Arc::new);
+    if let Some((index, road_seg_count)) = spline_index_opt {
+        manager.spline_index = Some(Arc::new(index));
+        manager.spline_index_road_seg_count = road_seg_count;
+    }
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());

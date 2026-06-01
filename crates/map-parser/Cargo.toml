@@ -94,3 +94,15 @@ path = "src/bin/spline_gen.rs"
 [[bin]]
 name = "truckpilot-sii-probe"
 path = "src/bin/sii_probe.rs"
+
+[[bin]]
+name = "truckpilot-prefab-at-pos"
+path = "src/bin/prefab_at_pos.rs"
+
+[[bin]]
+name = "truckpilot-prefab-coverage-audit"
+path = "src/bin/prefab_coverage_audit.rs"
+
+[[bin]]
+name = "truckpilot-edge-uid-audit"
+path = "src/bin/edge_uid_audit.rs"
