@@ -106,3 +106,7 @@ path = "src/bin/prefab_coverage_audit.rs"
 [[bin]]
 name = "truckpilot-edge-uid-audit"
 path = "src/bin/edge_uid_audit.rs"
+
+[[bin]]
+name = "truckpilot-road-look-probe"
+path = "src/bin/road_look_probe.rs"

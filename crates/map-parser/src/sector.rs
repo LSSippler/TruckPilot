@@ -1048,7 +1048,7 @@ fn parse_road(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<(), 
         dlc_guard: header.dlc_guard,
         is_hidden: header.is_hidden(),
         gps_avoid: header.gps_avoid(),
-        road_type_token: header.right_look,
+        road_type_token: header.road_type,
     });
     Ok(())
 }

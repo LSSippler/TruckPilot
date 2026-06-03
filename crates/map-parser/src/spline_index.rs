@@ -555,6 +555,21 @@ impl SplineIndex {
         })
     }
 
+    /// Projiziert `point` auf ein bekanntes Segment `seg_idx` via Newton-Raphson (3 Seeds).
+    /// Gibt `(t, dist_m)` zurück; `None` wenn `seg_idx` out of bounds.
+    /// Wie `nearest_with_projection`, aber für ein einzelnes vorher bekanntes Segment
+    /// (Route-Topologie-Lookup im Lane-Keeper, Phase 2d).
+    pub fn project_on_segment(&self, seg_idx: usize, point: Vec3) -> Option<(f32, f32)> {
+        let seg = self.segments.get(seg_idx)?;
+        let seeds = [0.0f32, 0.5, 1.0];
+        let (t_best, d2_best) = seeds
+            .iter()
+            .map(|&t0| newton_closest(seg, point, t0))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap();
+        Some((t_best, d2_best.sqrt()))
+    }
+
     /// Findet das nächste Segment mit Heading-Filter.
     ///
     /// Wie [`nearest_with_projection`], aber bevorzugt Segmente deren Tangente in
@@ -1170,6 +1185,26 @@ mod tests {
         assert!(
             hits.is_empty(),
             "~46° segment should be rejected at 45° threshold (diff > 45°)"
+        );
+    }
+
+    // --- project_on_segment Tests (Phase 2d) ---
+
+    /// project_on_segment returns (t, dist) for a known segment, and None for OOB idx.
+    #[test]
+    fn project_on_segment_roundtrip() {
+        // Straight segment (0,0)→(10,0). Point (5,0,2): nearest point is (5,0,0).
+        let idx = build_index(vec![make_seg(0.0, 0.0, 10.0, 0.0)]);
+        let (t, dist) = idx
+            .project_on_segment(0, Vec3::new(5.0, 0.0, 2.0))
+            .expect("seg 0 exists");
+        assert!((t - 0.5).abs() < 0.05, "midpoint → t≈0.5, got {t}");
+        assert!((dist - 2.0).abs() < 0.1, "perp distance ≈ 2m, got {dist}");
+
+        // Out-of-bounds segment index → None.
+        assert!(
+            idx.project_on_segment(7, Vec3::new(5.0, 0.0, 2.0)).is_none(),
+            "OOB seg_idx must return None"
         );
     }
 }

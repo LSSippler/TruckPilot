@@ -596,6 +596,14 @@ impl Plugin for RouterPlugin {
             if let Some(ref lock) = ctx.route_node_ids {
                 self.current_route_node_ids = lock.read().unwrap().clone();
             }
+            // The engage-time synchronous replan (state_machine.rs) just published
+            // `router.route_node_ids` for the truck's snapped start position. Drain
+            // any in-flight worker result so the Step-1 poll below cannot overwrite
+            // that authoritative route in the same tick with a path snapped from a
+            // different start (same goal_uid passes the guard). Stays consistent.
+            if let Some(rx) = &self.result_rx {
+                while rx.lock().unwrap().try_recv().is_ok() {}
+            }
         }
 
         // ── 1. Poll worker result (non-blocking, always first) ────────────────
@@ -624,6 +632,16 @@ impl Plugin for RouterPlugin {
                                 if let Some(ref lock) = ctx.route_node_ids {
                                     *lock.write().unwrap() = self.current_route_node_ids.clone();
                                 }
+                                match serde_json::to_string(&result.route_node_ids) {
+                                    Ok(route_json) => {
+                                        ctx.blackboard.set("router.route_node_ids", &route_json);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "[router] failed to serialize route_node_ids: {e}"
+                                        );
+                                    }
+                                }
                                 tracing::info!(
                                     "[router] route ready: {} waypoints, {:.1}km, {}ms",
                                     result.waypoint_count,
@@ -644,6 +662,7 @@ impl Plugin for RouterPlugin {
                         self.active = false;
                         self.waypoint_count = 0;
                         self.path_total_distance_m = 0.0;
+                        ctx.blackboard.remove("router.route_node_ids");
                         tracing::warn!("[router] route failed: {}", result.error_detail);
                     }
 
@@ -674,6 +693,7 @@ impl Plugin for RouterPlugin {
                 if let Some(ref lock) = ctx.route_node_ids {
                     lock.write().unwrap().clear();
                 }
+                ctx.blackboard.remove("router.route_node_ids");
                 self.auto_replan_count = 0;
                 self.last_replan_snap_pos = None;
                 self.last_auto_replan_at_ms = 0;
@@ -1120,6 +1140,189 @@ mod tests {
             bb.get("router.last_planning_result").as_deref(),
             Some("uid_not_in_graph")
         );
+    }
+
+    // ── router.route_node_ids publishing tests ──────────────────────────────────
+
+    /// Build a graph where the truck starts at node 1 (0, 0) with heading 0.5
+    /// (ETS2 South = +z direction). The edge 1→2 runs along the +z axis so
+    /// edge-snap picks node 1 as start. Path 1→2→3 = three nodes.
+    fn south_graph() -> (Vec<(u64, f64, f64)>, Vec<(u64, u64, f64)>) {
+        (
+            vec![(1, 0.0, 0.0), (2, 0.0, 100.0), (3, 0.0, 200.0)],
+            vec![(1, 2, 100.0), (2, 3, 100.0)],
+        )
+    }
+
+    /// After a successful plan the blackboard key `router.route_node_ids` must:
+    /// 1. Be present (non-None) — the fix publishes it in the tick() success block.
+    /// 2. Deserialise to a Vec<u64>.
+    /// 3. Contain the goal UID as the last element (direction Start→Goal).
+    #[test]
+    fn route_node_ids_published_after_successful_plan() {
+        let (n, e) = south_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(50); // replan tick
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(0.0, 0.0); // truck at node 1 position
+
+        // First tick: submits route request.
+        p.tick(Some(&t), &mut out, &ctx);
+        assert!(p.pending_request, "request should be pending after first tick");
+
+        // Let the worker complete A*.
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Second tick: polls result, publishes to blackboard.
+        p.tick(Some(&t), &mut out, &ctx);
+
+        assert_eq!(
+            bb.get("router.active").as_deref(),
+            Some("true"),
+            "route must be active after successful plan"
+        );
+
+        // Key must be present.
+        let raw = bb
+            .get("router.route_node_ids")
+            .expect("router.route_node_ids must be set after successful plan");
+
+        // Must parse as a JSON array of u64.
+        let ids: Vec<u64> =
+            serde_json::from_str(&raw).expect("route_node_ids must be valid JSON Vec<u64>");
+
+        assert!(
+            !ids.is_empty(),
+            "route_node_ids must not be empty after a successful plan"
+        );
+
+        // The final element must be the goal UID — this verifies Start→Goal order.
+        assert_eq!(
+            *ids.last().unwrap(),
+            3u64,
+            "last element of route_node_ids must be goal UID 3 (Start→Goal order), got {:?}",
+            ids
+        );
+
+        // The first element must NOT be the goal — path must not be reversed.
+        assert_ne!(
+            ids[0],
+            3u64,
+            "first element must not be the goal; route would be reversed: {:?}",
+            ids
+        );
+
+        // Consecutive pairs must be monotonically increasing in z (north→south graph).
+        // This verifies that the order is travel-direction (Start→Goal), not reversed.
+        for window in ids.windows(2) {
+            let a = window[0];
+            let b = window[1];
+            // Higher-UID nodes are further south in this graph, and all edges go south.
+            assert!(
+                a < b,
+                "node IDs must be in Start→Goal order (a={a} < b={b}): {:?}",
+                ids
+            );
+        }
+    }
+
+    /// Edge case: when the worker returns success=false, the key must be
+    /// absent (removed) so the lane-keeper cannot read stale node IDs.
+    #[test]
+    fn route_node_ids_absent_after_failed_plan() {
+        let (n, e) = south_graph();
+        let mut p = plugin_with_worker(n, e);
+
+        let bb = SharedBlackboard::new();
+        // Pre-populate with stale data to prove the remove() actually fires.
+        bb.set("router.route_node_ids", "[1,2,3]");
+
+        bb.set("router.goal_uid", "999"); // UID not in graph → failure
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(7);
+        let mut out = ControlOutput::default();
+
+        // First tick: detects new goal 999, submits.
+        p.tick(None, &mut out, &ctx);
+        assert!(p.pending_request);
+
+        // Worker quickly responds uid_not_in_graph.
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Second tick: receives failure result.
+        p.tick(None, &mut out, &ctx);
+
+        assert_eq!(bb.get("router.active").as_deref(), Some("false"));
+        assert_eq!(
+            bb.get("router.last_planning_result").as_deref(),
+            Some("uid_not_in_graph")
+        );
+        assert!(
+            bb.get("router.route_node_ids").is_none(),
+            "router.route_node_ids must be removed (not stale) after a failed plan"
+        );
+    }
+
+    /// Edge case: when the goal is cleared (empty string), the key must be
+    /// removed so downstream consumers see no stale route.
+    #[test]
+    fn route_node_ids_absent_after_goal_cleared() {
+        let (n, e) = south_graph();
+        let mut p = plugin_with_worker(n, e);
+
+        let bb = SharedBlackboard::new();
+        // Pre-load a route so there is something to clear.
+        bb.set("router.route_node_ids", "[1,2,3]");
+        // Simulate plugin having accepted goal 3 previously.
+        p.goal_uid = 3;
+        p.last_seen_goal_str = "3".to_string();
+
+        // Now clear the goal.
+        bb.set("router.goal_uid", "");
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+
+        assert_eq!(
+            bb.get("router.route_node_ids"),
+            None,
+            "router.route_node_ids must be removed when goal is cleared"
+        );
+        assert_eq!(p.goal_uid, 0, "goal_uid must be reset to 0");
+    }
+
+    /// Serialisation invariant (no thread needed): serde_json::to_string on a
+    /// known Vec<u64> must produce exactly the expected JSON, matching what
+    /// tick() writes to the blackboard.
+    #[test]
+    fn route_node_ids_serialisation_preserves_order_and_precision() {
+        let ids: Vec<u64> = vec![10, 20, 30];
+        let json = serde_json::to_string(&ids).unwrap();
+        let round_tripped: Vec<u64> = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            round_tripped,
+            vec![10u64, 20u64, 30u64],
+            "round-trip must preserve exact order and values"
+        );
+        // Large ETS2 UIDs above 2^53 must not lose precision.
+        const HAMBURG: u64 = 6_526_933_291_294_064_640;
+        let large_ids: Vec<u64> = vec![HAMBURG, HAMBURG + 1];
+        let large_json = serde_json::to_string(&large_ids).unwrap();
+        let large_rt: Vec<u64> = serde_json::from_str(&large_json).unwrap();
+        assert_eq!(
+            large_rt[0], HAMBURG,
+            "large UID must survive JSON round-trip without precision loss"
+        );
+        assert_eq!(large_rt[1], HAMBURG + 1);
     }
 
     // ── Phase 6.5q: Snap und Auto-Replan Tests ──────────────────────────────────

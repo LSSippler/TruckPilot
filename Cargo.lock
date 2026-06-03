@@ -5206,6 +5206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "truckpilot-map-parser",
  "truckpilot-plugin-api",
 ]
 

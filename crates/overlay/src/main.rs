@@ -17,6 +17,7 @@ mod ar_renderer;
 mod colors;
 mod config_reader;
 mod coords;
+mod diag;
 mod projection;
 mod renderer;
 mod state;

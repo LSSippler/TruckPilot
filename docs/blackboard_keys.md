@@ -71,6 +71,49 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 | `telemetry.odometer_km` | core/main | stats-logger | f64 | absent | per-tick |
 | `cruise.target_kmh` | (no writer found in code) | speed-controller | f64 | absent | persistent (UI-Pfad fehlt) |
 
+## Lane-Keeper Phase 2c/2d Diagnose-Keys (read-only Instrumentierung)
+
+Hinzugefuegt 2026-06-02 fuer die Spline-Pfad-Diagnose. Reine Diagnose, keine
+Verhaltensaenderung. `fallback_reason`/`fallback_detail` werden pro aktivem
+Route-Following-Tick in `try_spline_heading_error` gesetzt; die `*_present`/
+`*_count`-Keys einmalig in `on_load`.
+
+| Key | Owner (Writer) | Format | Werte / Default | Lifetime |
+|---|---|---|---|---|
+| `lane_keeper.spline_index_present` | lane-keeper on_load | `"true"`/`"false"` | je nach `ctx.spline_index` | persistent (on_load) |
+| `lane_keeper.seg_by_from_to_count` | lane-keeper on_load | usize | Anzahl (from,to)->seg Road-Eintraege, `0` ohne Index | persistent (on_load) |
+| `lane_keeper.router_graph_present` | lane-keeper on_load | `"true"`/`"false"` | RouterGraph-Klon erfolgreich? | persistent (on_load) |
+| `lane_keeper.fallback_reason` | lane-keeper (RouteFollowing dispatch) | string | `none`/`index_none`/`route_miss`/`reversed_hop`/`dist_gate` | per-aktiv-tick |
+| `lane_keeper.fallback_detail` | lane-keeper (RouteFollowing dispatch) | string | feiner: `index_none`/`graph_none`/`no_route_node_ids`/`route_parse_err`/`route_too_short`/`route_end`/`from_to_miss`/`reversed_hop`/`project_oob`/`dist_gate`/`degenerate_tangent`/`none` | per-aktiv-tick |
+| `lane_keeper.hop_projection_dist_m` | lane-keeper (RouteFollowing dispatch) | f64 `"{:.2}"` | laterale Truck↔Hop-Distanz (gesetzt sobald Projektion gelang) | per-aktiv-tick |
+
+### Phase 2f-Diagnose (read-only): dist_gate-Aufschlüsselung
+
+Hinzugefuegt 2026-06-02. Pro aktivem Tick in `try_spline_heading_error` VOR dem
+dist-Gate gesetzt, um H1 (Gate zu eng) vs H2 (Projektions-/Segment-Auswahl-Fehler)
+zu unterscheiden. `hop_projection_dist_m` == `truck_to_segment_dist_m` ==
+`projected_point_dist_m` (alle = Distanz Truck→nächster Punkt auf seg_idx0).
+
+| Key | Format | Bedeutung |
+|---|---|---|
+| `lane_keeper.lookahead_target_dist_m` | f64 m | Soll-Voraus-Abstand (BASE+speed·factor) — geht NICHT ins Gate ein |
+| `lane_keeper.truck_to_segment_dist_m` | f64 m | Distanz Truck→nächster Punkt auf seg_idx0 (= Gate-Wert) |
+| `lane_keeper.projected_point_dist_m` | f64 m | identisch (= dist) |
+| `lane_keeper.projection_t` | f64 [0..1] | Newton-Parameter: ≈0/1 = Truck am Segment-Ende (Overshoot), mittig = lateraler Miss |
+| `lane_keeper.current_seg_length_m` | f64 m | Länge von seg_idx0 |
+| `lane_keeper.current_seg_is_prefab` | bool | seg_idx0 Prefab- oder Road-Segment |
+| `lane_keeper.dist_to_next_node_m` | f64 m | Euklid Truck→nächster Route-Node (node-advance-Gate-Wert, Schwelle 5m) |
+| `lane_keeper.dist_gate_threshold_m` | f64 m | aktuelle Gate-Schwelle (40m) |
+
+> **Hinweis Mehrfachnutzung `lane_keeper.fallback_reason`:** Im *Vision*-Modus
+> schreibt `publish_vision_diagnostics` denselben Key mit den Cascade-Gruenden
+> (L0–L4). Da Vision- und RouteFollowing-Modus zur Laufzeit exklusiv sind, gibt
+> es keine echte Kollision; im Berlin-Test (RouteFollowing) traegt der Key den
+> Dispatch-Grund. `prefab_hop` aus dem urspruenglichen 5-Bedingungen-Modell wird
+> NICHT separat emittiert — Prefab-Hops fehlen in der road-only `seg_by_from_to`
+> und erscheinen daher als `route_miss`/`from_to_miss` (der Dispatch unterscheidet
+> sie nicht). Der Task-3-Sample-Log deckt die tatsaechlichen (from,to)-UIDs auf.
+
 ## Konflikte
 
 ### `autopilot.state` — multi-writer by design

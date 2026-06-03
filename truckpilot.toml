@@ -9,7 +9,7 @@ target_distance_m = 50.0
 verbose = false
 
 [overlay]
-fov_h_deg = 124.76094818115234
+fov_h_deg = 60.02552795410156
 
 [plugins.ets2-nav-bridge]
 enabled = true

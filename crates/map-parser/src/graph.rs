@@ -238,7 +238,7 @@ impl GraphBuilder {
 
     /// Apply road-look lane counts to legacy roads (those with lanes == 0).
     ///
-    /// Tries an exact lookup of `road_type_token` (= `right_look` token) in
+    /// Tries an exact lookup of `road_type_token` (= `road_type` token) in
     /// the road-look map.  On miss, falls back to bidirectional (1 lane each
     /// way) for any road that has at least one look token set, so that graph
     /// connectivity is preserved.  Sized-format roads that already carry lane
@@ -256,8 +256,15 @@ impl GraphBuilder {
             // Try exact road_look map lookup first.
             if road.road_type_token != 0 {
                 if let Some(entry) = self.road_look.get(&road.road_type_token) {
-                    road.lanes_forward = entry.lanes_right;
-                    road.lanes_backward = entry.lanes_left;
+                    // Phase 2e: real lane counts drive the lane OFFSET (forward =
+                    // lanes_right). `.max(1)` keeps a counter-direction edge alive
+                    // even for one-way carriageways (lanes_left==0) so routing
+                    // connectivity matches the prior bidirectional baseline —
+                    // Phase 2e changes offsets, not topology. Correct one-way
+                    // enforcement is deferred to a junction/cross-sector
+                    // connectivity phase.
+                    road.lanes_forward = entry.lanes_right.max(1);
+                    road.lanes_backward = entry.lanes_left.max(1);
                     hits += 1;
                     continue;
                 }
@@ -450,7 +457,7 @@ impl GraphBuilder {
                     dlc_guard: road.dlc_guard,
                     is_hidden: road.is_hidden,
                     gps_avoid: road.gps_avoid,
-                    road_look_token: road.look_token,
+                    road_look_token: road.road_type_token,
                     lanes_opposite: road.lanes_forward,
                     lane_width_m: lane_width,
                 });

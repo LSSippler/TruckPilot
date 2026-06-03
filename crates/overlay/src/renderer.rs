@@ -209,6 +209,15 @@ pub fn run(state: Arc<HudState>, pose: Arc<RwLock<TruckPose>>) -> Result<()> {
         let connected = state.is_connected();
         let pose_snap = pose.read().map(|p| p.clone()).unwrap_or_default();
 
+        // ── READ-ONLY projection diagnostics (1 Hz, AR/Both, fresh telemetry) ──
+        // Pure observation alongside the render; no effect on drawing or autopilot.
+        if !calibrating
+            && matches!(mode, RenderMode::AR | RenderMode::Both)
+            && pose_snap.is_fresh()
+        {
+            crate::diag::log_ar_frame(&pose_snap, &data, fov_h, screen_w, screen_h);
+        }
+
         // ── Frame draw ────────────────────────────────────────────────────────
         match overlay.begin_frame() {
             Ok(_) => {}

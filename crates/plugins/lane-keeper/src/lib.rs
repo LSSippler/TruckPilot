@@ -19,6 +19,14 @@ mod heading_hold;
 use extrapolation::{extrapolate_center, LaneWidthState};
 use fallback::FallbackState;
 use heading_hold::{wrap_angle, HeadingHoldState};
+use std::collections::HashMap;
+use std::sync::Arc;
+use truckpilot_map_parser::{
+    arc_length::{arc_length, build_lut, t_at_arc_length},
+    spline::{evaluate, evaluate_tangent, Vec3},
+    SplineIndex,
+};
+use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{
     pid::Pid, ControlOutput, ControlRequest, Plugin, PluginContext, Telemetry,
 };
@@ -33,6 +41,16 @@ const SPEED_FACTOR: f64 = 0.5;
 const WAYPOINT_REACH_M: f64 = 5.0;
 /// Right-lane offset (Rechtsfahrgebot). Mirrors lane-follower LANE_OFFSET_RIGHT_M.
 const LANE_OFFSET_RIGHT_M: f64 = 1.875;
+
+/// Phase 2d: Max Hops die der Spline-Lookahead entlang der Route walkt, bevor er
+/// am Segmentende clampt (Zyklus-/Nicht-Vorrück-Sicherung, analog Lane-Follower).
+const SPLINE_LOOKAHEAD_MAX_HOPS: usize = 64;
+/// Phase 2d: Max laterale Distanz Truck↔Hop-Segment (Centerline), bevor der
+/// Spline-Pfad auf Catmull zurückfällt (Schutz gegen verirrte Projektionen,
+/// härtet Finding A zusätzlich ab). Großzügig: korrekt in der rechten Spur
+/// liegt der Truck bis ~17m (5-spurig) von der Centerline; >40m = nicht auf
+/// diesem Hop.
+const MAX_HOP_PROJECTION_DIST_M: f32 = 40.0;
 
 // ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
@@ -87,6 +105,28 @@ pub struct LaneKeeperPlugin {
     tick_count: u64,
     /// Whether the last vision tick was in the Active state (for transition detection).
     was_active: bool,
+
+    // ── Phase 2c/2d: SplineIndex Route-Geometrie ────────────────────────────
+    index: Option<Arc<SplineIndex>>,
+    router_graph: Option<Arc<RouterGraph>>,
+    seg_by_from_to: HashMap<(u64, u64), usize>,
+    cached_route_node_ids: Vec<u64>,
+    cached_route_hash: u64,
+    node_progress_idx: usize,
+    /// true solange der Spline-Pfad im letzten Tick aktiv war (für sauberen
+    /// Re-Sync des Catmull-progress_idx beim Übergang Spline→Catmull).
+    was_spline_active: bool,
+    /// Phase 2c/2d-Diagnose (read-only): einmaliges Flag, damit der
+    /// route_miss-Sample-Log (erste 3 Hops + in_map) nur EINMAL feuert.
+    route_miss_sample_logged: bool,
+    /// Phase 2f-B-Diagnose (read-only): zählt JEDEN Eintritt in
+    /// `try_spline_heading_error` (vor jeder Bedingung). Wächst er NICHT mit den
+    /// Ticks → Funktion wird gar nicht betreten (H1).
+    reanchor_called_count: u64,
+    /// Phase 2f-B-Diagnose (read-only): zählt, wie oft der Code bis zum
+    /// tatsächlichen `node_progress_idx`-Schreiben (re-anchor-Scan-Write) kommt.
+    /// called wächst aber reached NICHT → eine Bedingung VOR dem Scan bricht ab.
+    reanchor_reached_write: u64,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -109,6 +149,16 @@ impl Default for LaneKeeperPlugin {
             level_4_entered_at_tick: None,
             tick_count: 0,
             was_active: false,
+            index: None,
+            router_graph: None,
+            seg_by_from_to: HashMap::new(),
+            cached_route_node_ids: Vec::new(),
+            cached_route_hash: 0,
+            node_progress_idx: 0,
+            was_spline_active: false,
+            route_miss_sample_logged: false,
+            reanchor_called_count: 0,
+            reanchor_reached_write: 0,
         }
     }
 }
@@ -212,6 +262,501 @@ impl LaneKeeperPlugin {
         }
     }
 
+    fn try_spline_heading_error(
+        &mut self,
+        tx: f64,
+        tz: f64,
+        heading: f64,
+        speed_ms: f64,
+        ctx: &PluginContext,
+    ) -> Option<f64> {
+        // Phase 2f-B-Diagnose (read-only): Funktions-Eintritt zählen, GANZ AM ANFANG,
+        // vor JEDER Bedingung/early-return. Wächst dieser Zähler nicht mit den Ticks,
+        // wird try_spline_heading_error (und damit der re-anchor-Scan) gar nicht
+        // betreten (H1: hinter dem dist_gate / im Spline-Zweig übersprungen).
+        self.reanchor_called_count += 1;
+        ctx.blackboard.set(
+            "lane_keeper.reanchor_called_count",
+            self.reanchor_called_count.to_string(),
+        );
+
+        // Phase 2c/2d-Diagnose (read-only): jeder Dispatch-Pfad schreibt GENAU EINEN
+        // `lane_keeper.fallback_reason` (6-Wert-Vertrag) plus eine feinere
+        // `lane_keeper.fallback_detail`. Reihenfolge = Dispatch-Flow → die ERSTE
+        // greifende Bedingung gewinnt. KEINE Verhaltensänderung: nur Keys + Logs.
+        let Some(index) = self.index.as_ref() else {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "index_none");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "index_none");
+            return None;
+        };
+        let Some(rg) = self.router_graph.as_ref() else {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "index_none");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "graph_none");
+            return None;
+        };
+
+        // Route cachen (hash-reload); progress reset bei Routenwechsel.
+        let Some(route_json) = ctx.blackboard.get("router.route_node_ids") else {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "route_miss");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "no_route_node_ids");
+            return None;
+        };
+        let route_hash = hash_str(&route_json);
+        let route_changed = route_hash != self.cached_route_hash;
+        if route_changed {
+            let Ok(nodes) = serde_json::from_str::<Vec<u64>>(&route_json) else {
+                ctx.blackboard
+                    .set("lane_keeper.fallback_reason", "route_miss");
+                ctx.blackboard
+                    .set("lane_keeper.fallback_detail", "route_parse_err");
+                return None;
+            };
+            self.cached_route_node_ids = nodes;
+            self.cached_route_hash = route_hash;
+            self.node_progress_idx = 0;
+            self.route_miss_sample_logged = false; // neue Route → Sample erneut erlauben
+        }
+        let route = &self.cached_route_node_ids;
+        if route.len() < 2 {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "route_miss");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "route_too_short");
+            return None;
+        }
+
+        // Phase 2g (Variante B): Globale R-tree-nearest-Query (wie Lane-Follower) statt
+        // route-only Vorwärts-Fenster-Scan. Der route-only-Scan misst die Distanz zur
+        // Vorgänger-/Snap-Kante falsch (Truck sitzt auf to_uid == route[0], KEIN
+        // Vorwärts-Hop → 69m statt 3.4m → dist_gate feuert permanent). Die globale
+        // nearest-Query findet die geometrisch nächste, heading-kompatible Kante (~3.4m,
+        // inkl. Gegenfahrbahn-Schutz). Anschließend Route-Relevanz-Prüfung gegen die
+        // Route (kein Abspringen auf Parallelstraßen).
+        let truck_heading_deg = ((-heading) * 360.0).rem_euclid(360.0) as f32; // heading = t.heading [0..1]
+        let query = Vec3::new(tx as f32, 0.0, tz as f32); // Y=0 ok: R-tree ist XZ-only
+        let Some(hit) = index.nearest_with_heading_filter(query, truck_heading_deg, 8) else {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "route_miss");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "no_nearest");
+            return None;
+        };
+        let cur_seg = hit.segment_idx;
+        let t_cur = hit.t;
+        let seg_f = index.segments[cur_seg].from_uid;
+        let seg_t = index.segments[cur_seg].to_uid;
+
+        // Route-Relevanz-Prüfung (Route-Constraint). Linearer Scan über die Route (~8 Knoten):
+        //   on-route Hop:        ∃ j: route[j]==F && route[j+1]==T → progress=j,  end=j+1
+        //   Vorgänger-Kante:     sonst ∃ k: route[k]==T            → progress=k,  end=k
+        //   off-route:           sonst → Catmull-Fallback (Schutz gegen Parallelstraße)
+        // on-route wird gegenüber feeds-into bevorzugt; jeweils kleinster passender Index.
+        let mut on_route_idx: Option<usize> = None;
+        let mut feeds_into_idx: Option<usize> = None;
+        for k in 0..route.len() {
+            if on_route_idx.is_none()
+                && k + 1 < route.len()
+                && route[k] == seg_f
+                && route[k + 1] == seg_t
+            {
+                on_route_idx = Some(k);
+            }
+            if feeds_into_idx.is_none() && route[k] == seg_t {
+                feeds_into_idx = Some(k);
+            }
+        }
+        let (node_progress_idx, end_route_idx) = if let Some(j) = on_route_idx {
+            // on-route: exakter direktionaler (from,to)-Match → immer sicher,
+            // unabhängig vom Heading-Flag (W1) und ohne Forward-Hop-Prüfung (W2).
+            (j, j + 1)
+        } else if let Some(k) = feeds_into_idx {
+            // feeds-into (Vorgänger-Kante): nur akzeptieren wenn
+            //   W1: der nearest-Treffer den Heading-Filter bestanden hat
+            //       (sonst evtl. flach einmündende Querstraße), UND
+            //   W2: der erste Vorwärts-Walk-Hop route[k]→route[k+1] existiert
+            //       (sonst Rückwärts-/U-turn-Route ohne Forward-Segment).
+            let accept_feeds_into = hit.heading_filter_applied
+                && k + 1 < route.len()
+                && self.seg_by_from_to.contains_key(&(route[k], route[k + 1]));
+            if !accept_feeds_into {
+                let detail = if !hit.heading_filter_applied {
+                    "feeds_into_no_heading"
+                } else {
+                    "feeds_into_no_forward_hop"
+                };
+                ctx.blackboard.set("lane_keeper.fallback_reason", "off_route");
+                ctx.blackboard.set("lane_keeper.fallback_detail", detail);
+                return None;
+            }
+            (k, k)
+        } else {
+            ctx.blackboard.set("lane_keeper.fallback_reason", "off_route");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "nearest_not_on_route");
+            return None;
+        };
+        self.node_progress_idx = node_progress_idx;
+
+        // Phase 2f-B-Diagnose (read-only): Re-anchor-Instrumentierung weiter befüllen.
+        // Gate-Distanz ist 2D (XZ) zum projizierten Punkt auf der nearest-Kante.
+        let pc = evaluate(&index.segments[cur_seg], t_cur);
+        let dist = (((tx - pc.x as f64).powi(2) + (tz - pc.z as f64).powi(2)).sqrt()) as f32;
+        // Phase 2g-Diag2 (read-only): IST-Lateralversatz des Trucks gegen die Spur-MITTE,
+        // gemessen am Truck-Projektionspunkt `pc` auf cur_seg. +rechts / -links (Right-Normal
+        // n=(-tan.z,tan.x)). Entscheidende Metrik: fährt der Truck mittig (truck_lat≈0) trotz
+        // gelogtem Offset 5.625 → die Kette Offset→Position greift nicht.
+        let tan_cur = evaluate_tangent(&index.segments[cur_seg], t_cur);
+        let tcl = (tan_cur.x * tan_cur.x + tan_cur.z * tan_cur.z).sqrt();
+        let truck_lat_vs_centerline = if tcl > 1e-6 {
+            let rn_cx = (-tan_cur.z / tcl) as f64;
+            let rn_cz = (tan_cur.x / tcl) as f64;
+            (tx - pc.x as f64) * rn_cx + (tz - pc.z as f64) * rn_cz
+        } else {
+            0.0
+        };
+        ctx.blackboard
+            .set("lane_keeper.reanchor_scan_window", "global");
+        ctx.blackboard
+            .set("lane_keeper.reanchor_best_idx", node_progress_idx.to_string());
+        ctx.blackboard
+            .set("lane_keeper.reanchor_best_dist_m", format!("{dist:.2}"));
+        self.reanchor_reached_write += 1;
+        ctx.blackboard.set(
+            "lane_keeper.reanchor_reached_write",
+            self.reanchor_reached_write.to_string(),
+        );
+        ctx.blackboard
+            .set("lane_keeper.reanchor_idx_written", node_progress_idx.to_string());
+
+        // seg_idx0 = cur_seg; i0/a0/b0/t_truck auf die nearest-Kante umgestellt.
+        let i0 = node_progress_idx;
+        ctx.blackboard
+            .set("lane_keeper.seg_idx0_source_value", i0.to_string());
+        let seg_idx0 = cur_seg;
+        let (a0, b0) = (seg_f, seg_t);
+        let t_truck = t_cur;
+        ctx.blackboard
+            .set("lane_keeper.hop_projection_dist_m", format!("{dist:.2}"));
+
+        // ── Phase 2f-Diagnose (read-only): warum sitzt dist strukturell >40m? ──
+        // WICHTIG: `dist` (= hop_projection_dist_m) ist die Distanz Truck→NÄCHSTER
+        // PUNKT auf seg_idx0 (project_on_segment), NICHT ein Vorausschau-Abstand.
+        // `look_ahead` (Soll-Voraus) wird erst NACH dem Gate berechnet und geht NICHT
+        // ins Gate ein. truck_to_segment_dist_m == projected_point_dist_m == dist.
+        //   → H1 (Gate zu eng auf legitimem Lookahead) ist damit strukturell NICHT
+        //     der Mechanismus; das Gate misst Truck↔Segment.
+        // Diskriminator H2-Varianten:
+        //   projection_t ≈ 1.0 (oder 0.0) + dist groß  → Truck am Segment-ENDE
+        //     vorbei (longitudinaler Overshoot): node_progress hängt → seg_idx0 ist
+        //     ein bereits passierter Hop. Fix = node-advance, nicht Gate-Anheben.
+        //   projection_t mittig (0.3..0.7) + dist groß  → echter LATERALER Miss
+        //     (falsches/zu weit entferntes Segment). Fix = Segment-Auswahl/Projektion.
+        //   dist_to_next_node_m strukturell > WAYPOINT_REACH_M (5m)  → der
+        //     node-advance feuert nie (Truck fährt rechte Spur ~5.6m neben den
+        //     Median-Nodes) → progress hängt. Das ist die wahrscheinlichste Wurzel.
+        let look_ahead_target = (BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR) as f32;
+        let seg_len = index.segments[seg_idx0].length_m;
+        let seg_is_prefab = index
+            .metadata
+            .get(seg_idx0)
+            .and_then(|m| m.as_ref())
+            .map(|m| m.is_prefab)
+            .unwrap_or(false);
+        let dist_to_next_node = match rg.positions.get(&b0) {
+            Some(&(nx, nz)) => ((tx - nx).powi(2) + (tz - nz).powi(2)).sqrt(),
+            None => -1.0,
+        };
+        ctx.blackboard
+            .set("lane_keeper.lookahead_target_dist_m", format!("{look_ahead_target:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.truck_to_segment_dist_m", format!("{dist:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.projected_point_dist_m", format!("{dist:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.projection_t", format!("{t_truck:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.current_seg_length_m", format!("{seg_len:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.current_seg_is_prefab", seg_is_prefab.to_string());
+        ctx.blackboard
+            .set("lane_keeper.dist_to_next_node_m", format!("{dist_to_next_node:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.current_hop", format!("{a0}->{b0}"));
+        ctx.blackboard
+            .set("lane_keeper.node_progress_idx", self.node_progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.dist_gate_threshold_m",
+            format!("{MAX_HOP_PROJECTION_DIST_M:.2}"),
+        );
+
+        // ── Phase 2g-Diagnose (read-only): WO kommen die ~58m her? ──
+        // Vergleicht für den AKTUELLEN Hop (a0->b0) drei Koordinaten-Quellen am selben Tick:
+        //   1. Truck-Weltposition (tx,tz)
+        //   2. Router-Graph-Node-Positionen von a0 (= route[i0]) und b0
+        //   3. SplineIndex-Segment-Endpunkte p0/p1 des Segments seg_by_from_to[(a0,b0)]
+        // Beweisrichtung:
+        //   node(a0) ≈ seg.p0 UND node(b0) ≈ seg.p1  → identische Geometrie → NICHT H-A/H-B
+        //     (beide stammen aus map_graph.nodes[uid]; build_router_graph & build_splines_ex teilen die Quelle).
+        //   dist(truck, node(a0)) ≈ truck_to_segment_dist_m (~60m) bei projection_t≈0
+        //     → route[0] (= direction-aligned Snap-Endpunkt) ist selbst weit weg, nicht die Geometrie → H-C.
+        let seg0 = &index.segments[seg_idx0];
+        let (sp0x, sp0z) = (seg0.p0.x as f64, seg0.p0.z as f64);
+        let (sp1x, sp1z) = (seg0.p1.x as f64, seg0.p1.z as f64);
+        let (na0x, na0z, na0_present) = match rg.positions.get(&a0) {
+            Some(&(x, z)) => (x, z, true),
+            None => (0.0, 0.0, false),
+        };
+        let (nb0x, nb0z, nb0_present) = match rg.positions.get(&b0) {
+            Some(&(x, z)) => (x, z, true),
+            None => (0.0, 0.0, false),
+        };
+        let dxz = |ax: f64, az: f64, bx: f64, bz: f64| ((ax - bx).powi(2) + (az - bz).powi(2)).sqrt();
+        let node_a0_vs_segp0 = if na0_present { dxz(na0x, na0z, sp0x, sp0z) } else { -1.0 };
+        let node_b0_vs_segp1 = if nb0_present { dxz(nb0x, nb0z, sp1x, sp1z) } else { -1.0 };
+        let truck_to_node_a0 = if na0_present { dxz(tx, tz, na0x, na0z) } else { -1.0 };
+        let truck_to_segp0 = dxz(tx, tz, sp0x, sp0z);
+        ctx.blackboard
+            .set("lane_keeper.diag_truck_xz", format!("{tx:.2},{tz:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_a0_xz", format!("{na0x:.2},{na0z:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_b0_xz", format!("{nb0x:.2},{nb0z:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_seg_p0_xz", format!("{sp0x:.2},{sp0z:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_seg_p1_xz", format!("{sp1x:.2},{sp1z:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_a0_vs_segp0_m", format!("{node_a0_vs_segp0:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_b0_vs_segp1_m", format!("{node_b0_vs_segp1:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_truck_to_node_a0_m", format!("{truck_to_node_a0:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_truck_to_segp0_m", format!("{truck_to_segp0:.2}"));
+
+        // Task 2: Offset über mehrere Hops — globaler Frame-Versatz (H-B) oder ein einzelnes
+        // falsches Mapping (H-A)? Pro Hop: dist(node(route[j]), seg.p0). Konstant ~58m → H-B;
+        // nur dieser Hop → H-A; alle ~0 → Geometrie stimmt überall → NICHT H-A/H-B.
+        let mut max_diff = 0.0f64;
+        let mut sum_diff = 0.0f64;
+        let mut n_diff = 0usize;
+        let mut per_hop = String::new();
+        let hop_end = route.len().saturating_sub(1).min(10);
+        for j in 0..hop_end {
+            if let Some(&seg) = self.seg_by_from_to.get(&(route[j], route[j + 1])) {
+                if let (Some(&(nx, nz)), Some(s)) =
+                    (rg.positions.get(&route[j]), index.segments.get(seg))
+                {
+                    let d = dxz(nx, nz, s.p0.x as f64, s.p0.z as f64);
+                    max_diff = max_diff.max(d);
+                    sum_diff += d;
+                    n_diff += 1;
+                    if per_hop.len() < 200 {
+                        per_hop.push_str(&format!("h{j}={d:.1} "));
+                    }
+                }
+            }
+        }
+        let mean_diff = if n_diff > 0 { sum_diff / n_diff as f64 } else { -1.0 };
+        ctx.blackboard
+            .set("lane_keeper.diag_node_vs_seg_maxdiff_m", format!("{max_diff:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_vs_seg_meandiff_m", format!("{mean_diff:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.diag_node_vs_seg_per_hop", per_hop.trim().to_string());
+
+        if dist > MAX_HOP_PROJECTION_DIST_M {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "dist_gate");
+            ctx.blackboard.set("lane_keeper.fallback_detail", "dist_gate");
+            return None; // Truck nicht wirklich auf diesem Hop → Catmull-Fallback
+        }
+
+        let look_ahead = (BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR) as f32;
+
+        // Multi-Hop Arc-Length-Walk entlang forward Road-Hops. Startet bei cur_seg/t_cur
+        // und hängt ab end_route_idx Vorwärts-Route-Hops an. Vereinheitlicht on-route &
+        // Vorgänger-Kante (feeds-into):
+        //   on-route Fall (cur_seg = route[j]→route[j+1], end_route_idx=j+1):
+        //     erster Advance = route[j+1]→route[j+2].
+        //   Vorgänger Fall (cur_seg = Snap-Kante endet an route[k], end_route_idx=k):
+        //     erster Advance = route[k]→route[k+1].
+        let mut cur = cur_seg;
+        let mut cur_lut = build_lut(&index.segments[cur]);
+        let mut arc_at = arc_length(&cur_lut, t_cur);
+        let mut remaining = look_ahead;
+        let mut next_route_idx = end_route_idx; // route-Index des END-Knotens von cur
+        let mut hop_count = 0usize;
+
+        let (final_seg, final_t) = loop {
+            let arc_remaining = (cur_lut.total_length_m - arc_at).max(0.0);
+            if remaining <= arc_remaining {
+                let target_arc = arc_at + remaining;
+                break (cur, t_at_arc_length(&cur_lut, &index.segments[cur], target_arc));
+            }
+            remaining -= arc_remaining;
+            hop_count += 1;
+            if hop_count >= SPLINE_LOOKAHEAD_MAX_HOPS {
+                break (cur, 1.0);
+            }
+            if next_route_idx + 1 >= route.len() {
+                break (cur, 1.0);
+            }
+            let (na, nb) = (route[next_route_idx], route[next_route_idx + 1]);
+            match self.seg_by_from_to.get(&(na, nb)) {
+                Some(&ni) => {
+                    cur = ni;
+                    cur_lut = build_lut(&index.segments[cur]);
+                    arc_at = 0.0;
+                    next_route_idx += 1;
+                }
+                None => break (cur, 1.0), // nächster Hop reversed/prefab/miss → konservativ clampen (2e-Grenze)
+            }
+        };
+
+        // Lane-Offset aus Metadaten des Lande-Segments.
+        let seg = &index.segments[final_seg];
+        let look_point = evaluate(seg, final_t);
+        let (lane_offset, source): (f32, &str) = match index.metadata[final_seg] {
+            Some(m) if m.is_prefab => (0.0, "spline_prefab"),
+            Some(m) => (m.lane_offset_right_m, "spline_road"),
+            None => (LANE_OFFSET_RIGHT_M as f32, "spline_road"),
+        };
+
+        // Right-Normal an der lokalen Tangente (Fahrtrichtung = p0→p1, nur forward-Hops): n=(-tz,tx)/|t|.
+        let tan = evaluate_tangent(seg, final_t);
+        let len_xz = (tan.x * tan.x + tan.z * tan.z).sqrt();
+        if len_xz < 1e-6 {
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "route_miss");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "degenerate_tangent");
+            return None;
+        }
+        let n_x = (-tan.z / len_xz) as f64;
+        let n_z = (tan.x / len_xz) as f64;
+        let look_x = look_point.x as f64 + n_x * lane_offset as f64;
+        let look_z = look_point.z as f64 + n_z * lane_offset as f64;
+
+        // ── Phase 2g-Diag2 (read-only): bricht die Kette Offset → Lenk-Zielpunkt? ──
+        // Task 1: Soll-Linie sichtbar machen. steer_target = Lookahead-Punkt MIT Offset (geht in
+        // den heading_error/Lenkung), centerline = derselbe Lookahead OHNE Offset.
+        //   |steer_target - centerline| ≈ 0   → Offset NICHT im Zielpunkt (H1)
+        //   |steer_target - centerline| ≈ 5.6 → Offset IST im Zielpunkt (weiter zu H2 / Control-Law)
+        let steer_dx = look_x - look_point.x as f64;
+        let steer_dz = look_z - look_point.z as f64;
+        let steer_target_minus_centerline = (steer_dx * steer_dx + steer_dz * steer_dz).sqrt();
+        ctx.blackboard
+            .set("lane_keeper.steer_target_xz", format!("{look_x:.2},{look_z:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.spline_centerline_xz",
+            format!("{:.2},{:.2}", look_point.x, look_point.z),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.steer_target_minus_centerline_m",
+            format!("{steer_target_minus_centerline:.3}"),
+        );
+        // Task 2: Right-Normal + Richtung relativ zur TRUCK-Fahrtrichtung (nicht nur zur Segment-
+        // Tangente). dir_dot>0 → Offset nach Truck-RECHTS (+1), <0 → links (-1, H2-Vorzeichenfehler).
+        let h_cw = (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
+        let truck_fx = h_cw.sin();
+        let truck_fz = -h_cw.cos();
+        let truck_right_x = -truck_fz; // right of travel = (-fz, fx)
+        let truck_right_z = truck_fx;
+        let dir_dot = n_x * truck_right_x + n_z * truck_right_z;
+        let offset_direction_check = if (lane_offset as f64).abs() < 1e-6 {
+            0.0
+        } else if dir_dot >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        ctx.blackboard
+            .set("lane_keeper.right_normal_xz", format!("{n_x:.3},{n_z:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.offset_direction_check", format!("{offset_direction_check:.0}"));
+        // Task 3: Truck-IST-Versatz gegen Centerline und gegen die Soll-Offset-Linie.
+        //   truck_lat_vs_centerline ≈ 0    → Truck fährt MITTIG (Kette greift nicht)
+        //   truck_lat_vs_centerline ≈ +5.6 → Truck auf der Soll-Spur (visuell evtl. fehlinterpretiert)
+        //   truck_lat_vs_offsetline ≈ 0    → Truck IST auf der Offset-Linie
+        ctx.blackboard.set(
+            "lane_keeper.truck_lat_vs_centerline_m",
+            format!("{truck_lat_vs_centerline:.3}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.truck_lat_vs_offsetline_m",
+            format!("{:.3}", truck_lat_vs_centerline - lane_offset as f64),
+        );
+        // Task 4: Es gibt KEINEN Cross-Track-Term. steering_out = PID(heading_error), wobei
+        // heading_error den Offset-Lookahead-Zielpunkt (look_x/look_z) nutzt. Referenz dokumentieren.
+        ctx.blackboard.set(
+            "lane_keeper.lat_error_reference",
+            "heading_to_offset_lookahead_no_crosstrack",
+        );
+
+        // Diagnostik
+        ctx.blackboard.set("lane_keeper.lateral_source", source);
+        ctx.blackboard
+            .set("lane_keeper.lane_offset_applied_m", format!("{lane_offset:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.lookahead_hop_count", hop_count.to_string());
+        ctx.blackboard
+            .set("lane_keeper.current_hop", format!("{a0}->{b0}"));
+        ctx.blackboard
+            .set("lane_keeper.node_progress_idx", self.node_progress_idx.to_string());
+        ctx.blackboard
+            .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.look_x", format!("{look_x:.2}"));
+        ctx.blackboard
+            .set("lane_keeper.look_z", format!("{look_z:.2}"));
+
+        // Spline-Pfad hat gegriffen → Fallback-Grund = "none" (kein Fallback).
+        ctx.blackboard.set("lane_keeper.fallback_reason", "none");
+        ctx.blackboard.set("lane_keeper.fallback_detail", "none");
+
+        // Shared Tail — IDENTISCH zum Catmull-Pfad; 2b-Heading-Konvert UNVERÄNDERT.
+        let dx = look_x - tx;
+        let dz = look_z - tz;
+        if dx * dx + dz * dz < 1e-12 {
+            return Some(0.0);
+        }
+        let target = dx.atan2(-dz);
+        let heading_rad = (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
+        let mut err = target - heading_rad;
+        while err > std::f64::consts::PI {
+            err -= 2.0 * std::f64::consts::PI;
+        }
+        while err < -std::f64::consts::PI {
+            err += 2.0 * std::f64::consts::PI;
+        }
+        ctx.blackboard
+            .set("lane_keeper.target_heading", format!("{target:.6}"));
+        Some(err)
+    }
+
+    fn resync_progress_idx(&mut self, tx: f64, tz: f64) {
+        if self.waypoints.len() < 2 {
+            return;
+        }
+        let mut best_i = 0usize;
+        let mut best_d = f64::MAX;
+        for (i, &[wx, wz]) in self.waypoints.iter().enumerate() {
+            let d = (tx - wx).powi(2) + (tz - wz).powi(2);
+            if d < best_d {
+                best_d = d;
+                best_i = i;
+            }
+        }
+        self.progress_idx = best_i.min(self.waypoints.len().saturating_sub(2));
+    }
+
     fn compute_heading_error(
         &mut self,
         tx: f64,
@@ -220,6 +765,17 @@ impl LaneKeeperPlugin {
         speed_ms: f64,
         ctx: &PluginContext,
     ) -> f64 {
+        if let Some(err) = self.try_spline_heading_error(tx, tz, heading, speed_ms, ctx) {
+            self.was_spline_active = true;
+            return err;
+        }
+        if self.was_spline_active {
+            self.was_spline_active = false;
+            self.resync_progress_idx(tx, tz); // progress_idx auf nächsten Smoothed-Waypoint setzen
+        }
+        ctx.blackboard
+            .set("lane_keeper.lateral_source", "catmullrom_fallback");
+
         if self.waypoints.len() < 2 {
             return 0.0;
         }
@@ -353,6 +909,15 @@ impl LaneKeeperPlugin {
                 self.progress_idx = 0;
                 tracing::info!("[lane-keeper] state=Off, cleared waypoint cache");
             }
+            // Phase 2c/2d: Spline-Route-Zustand beim Disengage zurücksetzen —
+            // unconditional, NICHT im waypoints-Sub-Block (der wird übersprungen
+            // wenn waypoints schon leer). Sonst startet Re-Engage auf identischer
+            // Route (gleicher route_node_ids-Hash → kein Reset in try_spline) mit
+            // stale node_progress_idx mitten in der alten Route (Reviewer-Finding A).
+            self.node_progress_idx = 0;
+            self.was_spline_active = false;
+            self.cached_route_hash = 0;
+            self.cached_route_node_ids.clear();
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard
                 .set("lane_keeper.skip_reason", "state_not_active");
@@ -818,6 +1383,48 @@ impl Plugin for LaneKeeperPlugin {
         // Pre-populate engage_allowed=false so the state machine never sees an absent key.
         ctx.blackboard.set("lane_keeper.engage_allowed", "false");
         tracing::info!("[lane-keeper] loaded, engage_allowed=false (pre-populated)");
+
+        if let Some(shared) = &ctx.spline_index {
+            self.index = Some(Arc::clone(shared));
+            let road_n = ctx.spline_index_road_seg_count.min(shared.segments.len());
+            let mut map = HashMap::with_capacity(road_n);
+            for i in 0..road_n {
+                let s = &shared.segments[i];
+                map.insert((s.from_uid, s.to_uid), i);
+            }
+            self.seg_by_from_to = map;
+            if let Some(rg) = &ctx.graph {
+                self.router_graph = Some(Arc::clone(rg));
+            }
+            tracing::info!(
+                "[lane-keeper] shared SplineIndex: {} road segs mapped (graph={})",
+                self.seg_by_from_to.len(),
+                self.router_graph.is_some()
+            );
+            // Phase 2c/2d-Diagnose (read-only): Index-Status auch ohne stdout per
+            // blackboard-query lesbar machen.
+            ctx.blackboard
+                .set("lane_keeper.spline_index_present", "true");
+            ctx.blackboard.set(
+                "lane_keeper.seg_by_from_to_count",
+                self.seg_by_from_to.len().to_string(),
+            );
+            ctx.blackboard.set(
+                "lane_keeper.router_graph_present",
+                self.router_graph.is_some().to_string(),
+            );
+        } else {
+            tracing::warn!(
+                "[lane-keeper] no shared SplineIndex; route-following uses Catmull-Rom fallback"
+            );
+            // Phase 2c/2d-Diagnose (read-only): expliziter Negativ-Status.
+            ctx.blackboard
+                .set("lane_keeper.spline_index_present", "false");
+            ctx.blackboard
+                .set("lane_keeper.seg_by_from_to_count", "0");
+            ctx.blackboard
+                .set("lane_keeper.router_graph_present", "false");
+        }
     }
 
     fn on_unload(&mut self) {
@@ -1734,6 +2341,887 @@ mod tests {
         assert!(
             err > 0.0 && err < 0.1,
             "east road: expected small positive error (target shifted South), got {err:.4}",
+        );
+    }
+
+    // ── Phase 2c/2d: SplineIndex route-geometry tests ─────────────────────────
+    //
+    // These exercise `try_spline_heading_error` (the spline path) and its
+    // Catmull-Rom fallback dispatch in `compute_heading_error`.
+
+    use truckpilot_map_parser::build_index_with_metadata;
+    use truckpilot_map_parser::spline::{HermiteSegment, SegmentMetadata, Vec3};
+
+    /// Straight Hermite segment with chord tangents (m0=m1=p1-p0).
+    fn seg(p0: (f32, f32), p1: (f32, f32), from: u64, to: u64) -> HermiteSegment {
+        let a = Vec3::new(p0.0, 0.0, p0.1);
+        let b = Vec3::new(p1.0, 0.0, p1.1);
+        let m = b - a;
+        HermiteSegment {
+            p0: a,
+            p1: b,
+            m0: m,
+            m1: m,
+            length_m: m.length(),
+            from_uid: from,
+            to_uid: to,
+            edge_uid: from * 100 + to,
+        }
+    }
+
+    /// Road metadata: lane_offset_right_m = (lanes - 0.5) * width for non-prefab.
+    fn road_meta(lanes: u8, w: f32, prefab: bool) -> SegmentMetadata {
+        SegmentMetadata {
+            lanes_in_direction: lanes,
+            lanes_opposite: lanes,
+            lanes_total: lanes * 2,
+            lane_width_m: w,
+            lane_offset_right_m: if prefab { 0.0 } else { (lanes as f32 - 0.5) * w },
+            road_look_token: 0,
+            is_prefab: prefab,
+        }
+    }
+
+    /// Wire a plugin via on_load with the given segments/metadata, router graph and
+    /// route_node_ids JSON. `road_seg_count` is how many segments are road-derived.
+    fn wired_plugin(
+        segs: Vec<HermiteSegment>,
+        metas: Vec<Option<SegmentMetadata>>,
+        nodes: Vec<(u64, f64, f64)>,
+        edges: Vec<(u64, u64, f64)>,
+        route_json: &str,
+        road_seg_count: usize,
+    ) -> (LaneKeeperPlugin, PluginContext) {
+        let idx = Arc::new(build_index_with_metadata(segs, metas));
+        let rg = Arc::new(RouterGraph::new(nodes, edges));
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        bb.set("router.route_node_ids", route_json);
+        let mut ctx =
+            PluginContext::new("lane-keeper", bb).with_spline_index(Arc::clone(&idx), road_seg_count);
+        ctx.graph = Some(Arc::clone(&rg));
+        let mut lk = LaneKeeperPlugin::default();
+        lk.on_load(&ctx);
+        (lk, ctx)
+    }
+
+    /// Test 1: 3-lane north road → lane_offset_right_m = (3-0.5)*3.75 = 9.375,
+    /// lateral_source = "spline_road".
+    #[test]
+    fn spline_road_3lane_offset_9375() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+
+        // Truck on centerline at origin, heading North (0.0), speed 20 m/s.
+        let _err = lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "must take the spline-road path"
+        );
+        let applied = ctx
+            .blackboard
+            .get("lane_keeper.lane_offset_applied_m")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("lane_offset_applied_m must parse");
+        assert!(
+            (applied - 9.375).abs() < 0.01,
+            "expected offset ≈ 9.375, got {applied}"
+        );
+        assert!(
+            applied > 1.875,
+            "spline offset must exceed the catmull constant 1.875, got {applied}"
+        );
+    }
+
+    /// Test 2: sign check — north travel, offset shifts lookahead East (+x) →
+    /// look_x > 0 and err > 0 (steer right).
+    #[test]
+    fn spline_offset_right_of_travel_direction() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+
+        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        let look_x = ctx
+            .blackboard
+            .get("lane_keeper.look_x")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("look_x must parse");
+        assert!(look_x > 0.0, "right of North-travel = East (+x), got {look_x}");
+        assert!(err > 0.0, "target right of heading → positive error, got {err}");
+    }
+
+    /// Test 3: route hop is reversed vs. the indexed segment direction →
+    /// get((20,10)) misses → catmullrom_fallback.
+    #[test]
+    fn reversed_hop_falls_back_to_catmull() {
+        // Map segment direction is 10→20, but the route walks 20→10.
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(20u64, 10u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,10]", 1);
+        // Provide Catmull waypoints so the fallback path has geometry to chew on.
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "reversed hop has no forward segment → must fall back"
+        );
+    }
+
+    /// Test 4: route nodes not present in the segment map → catmullrom_fallback.
+    #[test]
+    fn route_miss_falls_back_to_catmull() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        // Graph has positions for 99/98 so node-advance can run, but no segment maps them.
+        let nodes = vec![(99u64, 0.0, 0.0), (98u64, 0.0, -200.0)];
+        let edges = vec![(99u64, 98u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[99,98]", 1);
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "unknown route nodes → must fall back"
+        );
+    }
+
+    /// Test 5: no SplineIndex (default plugin, no on_load wiring) → existing
+    /// Catmull-Rom behaviour, still produces a sensible error.
+    #[test]
+    fn no_index_falls_back_to_catmull() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]],
+            ..Default::default()
+        };
+        // ctx carries a route but no spline index → try_spline returns None early.
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        bb.set("router.route_node_ids", "[10,20]");
+        let ctx = PluginContext::new("lane-keeper", bb);
+
+        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "index=None → must use catmull fallback"
+        );
+        // North road, truck on centerline → small positive error toward the right lane.
+        assert!(
+            err > 0.0 && err < 0.2,
+            "fallback must still yield a sensible small positive error, got {err}"
+        );
+    }
+
+    /// Test 6: prefab hop → lateral_source = "spline_prefab", offset ≈ 0.0.
+    #[test]
+    fn prefab_hop_zero_offset_spline_prefab() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, true))]; // is_prefab=true
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_prefab"),
+            "prefab segment → spline_prefab source"
+        );
+        let applied = ctx
+            .blackboard
+            .get("lane_keeper.lane_offset_applied_m")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("lane_offset_applied_m must parse");
+        assert!(applied.abs() < 0.001, "prefab offset must be ≈ 0, got {applied}");
+    }
+
+    /// Test 7: 2 forward segments, lookahead crosses the segment boundary →
+    /// lookahead_hop_count = 1, lateral_source = "spline_road".
+    #[test]
+    fn multi_hop_walk_crosses_boundary() {
+        // Seg A: (0,0)→(0,-30) [10→20], Seg B: (0,-30)→(0,-200) [20→30].
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -30.0), 10, 20),
+            seg((0.0, -30.0), (0.0, -200.0), 20, 30),
+        ];
+        let metas = vec![
+            Some(road_meta(3, 3.75, false)),
+            Some(road_meta(3, 3.75, false)),
+        ];
+        // Node 20 sits at (0,-30): far enough (>5m) from the truck at origin that
+        // node_progress_idx does NOT advance, so the current hop stays 10→20.
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -30.0),
+            (30u64, 0.0, -200.0),
+        ];
+        let edges = vec![(10u64, 20u64, 30.0), (20u64, 30u64, 170.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
+
+        // speed 20 m/s → look_ahead = 5 + 20*3.6*0.5 = 41m > 30m seg-A length → lands on seg B.
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "multi-hop walk stays on the spline path"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.lookahead_hop_count")
+                .as_deref(),
+            Some("1"),
+            "41m lookahead must walk exactly one hop past the 30m boundary"
+        );
+    }
+
+    /// Test 8: truck 100m laterally off the segment (> MAX_HOP_PROJECTION_DIST_M=40)
+    /// → dist gate trips → catmullrom_fallback.
+    #[test]
+    fn dist_gate_far_truck_falls_back() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        // Graph node positions far from the truck so node-advance does not fire,
+        // but the route does resolve to a forward hop; the per-segment projection
+        // distance is what must trip the gate.
+        let nodes = vec![(10u64, 100.0, 0.0), (20u64, 100.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+        lk.waypoints = vec![[100.0, 0.0], [100.0, -100.0], [100.0, -200.0]];
+
+        // Truck at x=100, segment centerline at x=0 → projection distance ≈ 100m > 40m.
+        lk.compute_heading_error(100.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "projection distance > 40m must trip the dist gate → fallback"
+        );
+    }
+
+    /// Test 9 (Finding-A regression): disengage resets node_progress_idx,
+    /// was_spline_active and the cached route, so re-engage on the identical
+    /// route does not resume mid-route with a stale index.
+    #[test]
+    fn disengage_resets_node_progress() {
+        // 4-node route so node_progress can advance a couple of steps.
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -30.0), 10, 20),
+            seg((0.0, -30.0), (0.0, -60.0), 20, 30),
+            seg((0.0, -60.0), (0.0, -200.0), 30, 40),
+        ];
+        let metas = vec![
+            Some(road_meta(3, 3.75, false)),
+            Some(road_meta(3, 3.75, false)),
+            Some(road_meta(3, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -30.0),
+            (30u64, 0.0, -60.0),
+            (40u64, 0.0, -200.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 30.0),
+            (20u64, 30u64, 30.0),
+            (30u64, 40u64, 140.0),
+        ];
+        let route = "[10,20,30,40]";
+        let (mut lk, ctx) =
+            wired_plugin(segs, metas, nodes.clone(), edges, route, 3);
+        // Waypoints must be present, otherwise tick_request short-circuits at
+        // "no_waypoints" before compute_heading_error advances node_progress_idx.
+        // (In production the router writes both router.waypoints and
+        // router.route_node_ids each tick.)
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -60.0], [0.0, -200.0]];
+
+        // Drive a few Active ticks near node 20 (0,-30) then node 30 (0,-60) so
+        // node_progress_idx advances past 0.
+        let mut t = make_telemetry(20.0, 0.0);
+        // Position the truck within reach (<5m) of node 20 → advance to idx 1.
+        t.position = [0.0, 0.0, -28.0];
+        let _ = lk.tick_request(Some(&t), &ctx);
+        // Now within reach of node 30 → advance to idx 2.
+        t.position = [0.0, 0.0, -58.0];
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert!(
+            lk.node_progress_idx > 0,
+            "precondition: node_progress_idx must have advanced (got {})",
+            lk.node_progress_idx
+        );
+
+        // Disengage: state=Off tick.
+        ctx.blackboard.set("autopilot.state", "Off");
+        let off = lk.tick_request(Some(&t), &ctx);
+        assert!(off.is_none(), "Off state yields no control request");
+
+        // All spline route state must be reset.
+        assert_eq!(
+            lk.node_progress_idx, 0,
+            "node_progress_idx must reset to 0 on disengage"
+        );
+        assert!(
+            !lk.was_spline_active,
+            "was_spline_active must reset to false on disengage"
+        );
+        assert_eq!(
+            lk.cached_route_hash, 0,
+            "cached_route_hash must reset to 0 on disengage"
+        );
+        assert!(
+            lk.cached_route_node_ids.is_empty(),
+            "cached_route_node_ids must be cleared on disengage"
+        );
+
+        // Re-engage on the IDENTICAL route from the start position → fresh start.
+        ctx.blackboard.set("autopilot.state", "Active");
+        let mut t_start = make_telemetry(20.0, 0.0);
+        t_start.position = [0.0, 0.0, 0.0];
+        let _ = lk.tick_request(Some(&t_start), &ctx);
+        // At the route start, node 20 (0,-30) is 30m away (>5m) → no advance →
+        // node_progress_idx stays 0 (no stale resume into the middle of the route).
+        assert_eq!(
+            lk.node_progress_idx, 0,
+            "re-engage at start must keep node_progress_idx at 0, not resume stale"
+        );
+    }
+
+    // ── Phase 2f-B: nearest-hop re-anchor tests ───────────────────────────────
+    //
+    // Geometry convention: straight Hermite segments in ETS2 XZ (x=East, z=South-negative
+    // for northward travel). All segments are 100 m, so the second segment spans z=-100..-200.
+    //
+    //  Node 10 at (0,    0)
+    //  Seg 0 : 10→20  (0,0) → (0,-100)   length 100 m
+    //  Node 20 at (0, -100)
+    //  Seg 1 : 20→30  (0,-100) → (0,-200) length 100 m
+    //  Node 30 at (0, -200)
+
+    /// Helper: 3-node north-road route `[10,20,30]` with two 100 m straight segments.
+    /// Returns `(plugin, ctx)` wired via `on_load` (same pattern as existing spline tests).
+    fn three_node_route() -> (LaneKeeperPlugin, PluginContext) {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30),
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+        ];
+        let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
+        wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2)
+    }
+
+    /// Test R1: Re-anchor advances `node_progress_idx` when truck is longitudinally
+    /// deep on the second segment (near node 30).
+    ///
+    /// The old 5m-euclidean advance would never fire here because the truck never gets
+    /// within 5 m of the median-node positions. The re-anchor scans all hops on the
+    /// first (route_changed) tick and picks the hop whose segment is closest: that is
+    /// hop 1 (20→30) because the truck is at z=-160, far from seg 0 (z=0..-100).
+    #[test]
+    fn reanchor_advances_on_longitudinal_progress() {
+        let (mut lk, ctx) = three_node_route();
+        // Truck sits 60 m into the second segment (z = -160, well past node 20 at z=-100).
+        // On the first tick route_changed=true → full scan → seg 1 (20→30) wins.
+        lk.compute_heading_error(0.0, -160.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 1,
+            "re-anchor must select hop 1 (20→30) when truck is 60 m into the second segment; got {}",
+            lk.node_progress_idx
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("20->30"),
+            "current_hop must reflect the advanced hop"
+        );
+    }
+
+    /// Test R2: Re-anchor is not blocked by lateral offset (the core fix).
+    ///
+    /// Truck is on the second segment (hop 1, 20→30) but displaced 5.6 m laterally —
+    /// the typical right-lane offset in ETS2. The old euclidean node-advance checked
+    /// distance to the MEDIAN node (0, -100) and found >5 m → never advanced. The
+    /// re-anchor uses `project_on_segment`, which measures perpendicular distance, so
+    /// the lateral offset costs only ~5.6 m (< MAX_HOP_PROJECTION_DIST_M = 40 m) and
+    /// the second segment still wins against the first (which is ~100 m away along z).
+    #[test]
+    fn reanchor_lateral_offset_does_not_block_advance() {
+        let (mut lk, ctx) = three_node_route();
+        // Truck is longitudinally mid-second-segment (z=-150) and 5.6 m east (x=5.6).
+        // project_on_segment for seg 0 (z=0..-100): truck is ~50 m past the end → clamped at t=1,
+        // distance ≈ sqrt(5.6²+50²) ≈ 50 m.
+        // project_on_segment for seg 1 (z=-100..-200): t ≈ 0.5, distance ≈ 5.6 m → wins.
+        lk.compute_heading_error(5.6, -150.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 1,
+            "lateral offset of 5.6 m must not prevent re-anchor to hop 1 (20→30); got {}",
+            lk.node_progress_idx
+        );
+        // Confirm the spline path actually engaged (dist < 40 m gate).
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must engage despite lateral offset"
+        );
+    }
+
+    /// Test R3: Re-anchor does not jump backward on a normal (non-replan) tick.
+    ///
+    /// `node_progress_idx` is pre-set to 1 (hop 20→30). On a non-replan tick the
+    /// scan window is `[1, 1+16)` — forward-only. The truck is placed on hop 1,
+    /// so hop 1 wins the scan. The index must not drop back to 0.
+    #[test]
+    fn reanchor_does_not_jump_backward_on_normal_tick() {
+        let (mut lk, ctx) = three_node_route();
+
+        // Prime the route cache so the SECOND call is a non-replan tick.
+        // First call: route_changed=true, truck at beginning (hop 0 wins → idx stays 0).
+        lk.compute_heading_error(0.0, -50.0, 0.0, 0.0, &ctx);
+
+        // Manually advance idx to 1, then call again WITHOUT changing the route.
+        // The second call sees route_changed=false → window [1, 17) → forward-only.
+        lk.node_progress_idx = 1;
+        // Truck still on the second segment.
+        lk.compute_heading_error(0.0, -150.0, 0.0, 0.0, &ctx);
+
+        assert!(
+            lk.node_progress_idx >= 1,
+            "non-replan re-anchor must not jump backward; idx dropped to {}",
+            lk.node_progress_idx
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("20->30"),
+            "current_hop must still be 20->30 after forward-only scan"
+        );
+    }
+
+    /// Test R4: Re-anchor re-establishes position after a route change (replan).
+    ///
+    /// Simulates a replan: same geometry, but the route JSON string changes so
+    /// `cached_route_hash` differs and `route_changed=true`. The truck is positioned
+    /// deep in the route (hop 1). The full-route scan (lo=0, hi=route.len()-1) must
+    /// pick hop 1, not remain stuck at 0.
+    #[test]
+    fn reanchor_picks_truck_segment_after_route_change() {
+        let (mut lk, ctx) = three_node_route();
+
+        // First tick: establish cache with truck on hop 0.
+        lk.compute_heading_error(0.0, -50.0, 0.0, 0.0, &ctx);
+        assert_eq!(lk.node_progress_idx, 0, "precondition: truck on hop 0");
+
+        // Simulate a replan by writing a new route_node_ids JSON (same nodes, but
+        // whitespace changes the hash so cached_route_hash ≠ new hash).
+        ctx.blackboard
+            .set("router.route_node_ids", "[ 10 , 20 , 30 ]");
+
+        // Second tick: route_changed=true → full scan → truck now deep on hop 1.
+        lk.compute_heading_error(0.0, -160.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 1,
+            "after replan, full-route scan must re-anchor to hop 1 (truck at z=-160); got {}",
+            lk.node_progress_idx
+        );
+    }
+
+    // ── Phase 2g: 2D-nearest segment selection + Y-ignoring gate ───────────────
+    //
+    // These guard the Phase-2g fix in `try_spline_heading_error`:
+    //   (a) the forward scan picks the geometrically nearest route segment by 2D
+    //       (XZ) distance, NOT route[node_progress_idx]'s far segment;
+    //   (b) the gate / reported distance is 2D — node-height (Y) is ignored.
+
+    /// Straight Hermite segment with a fixed Y on both endpoints (height baked in).
+    /// Tangents are chord = p1-p0 in XZ only (Y delta 0), matching `seg`'s flat tangent.
+    fn seg_y(p0: (f32, f32), p1: (f32, f32), y: f32, from: u64, to: u64) -> HermiteSegment {
+        let a = Vec3::new(p0.0, y, p0.1);
+        let b = Vec3::new(p1.0, y, p1.1);
+        let m = Vec3::new(p1.0 - p0.0, 0.0, p1.1 - p0.1);
+        HermiteSegment {
+            p0: a,
+            p1: b,
+            m0: m,
+            m1: m,
+            length_m: (b - a).length(),
+            from_uid: from,
+            to_uid: to,
+            edge_uid: from * 100 + to,
+        }
+    }
+
+    /// Test 2g-1 (H-C core case): the lookahead must pick the route segment the
+    /// truck actually sits on, NOT route[0]'s far segment.
+    ///
+    /// Route `[10,20,30,40]`:
+    ///   hop 0 (10→20) is a segment FAR from the truck (centerline at x=200, ≈200m off)
+    ///   hop 2 (30→40) is the segment the truck sits on (≈2m off in XZ)
+    /// The old "blind route[node_progress_idx]" lookup would anchor on hop 0 and trip
+    /// the dist gate (>40m). The 2g scan must pick hop 2 → `node_progress_idx=2`,
+    /// `truck_to_segment_dist_m` < 10m, `fallback_reason="none"`, `lateral_source="spline_road"`.
+    #[test]
+    fn reanchor_picks_truck_segment_not_route0_far_segment() {
+        // hop 0/1 live way out east (x=200); hop 2 (30→40) runs north under the truck.
+        let segs = vec![
+            seg((200.0, 0.0), (200.0, -100.0), 10, 20),   // far
+            seg((200.0, -100.0), (0.0, -100.0), 20, 30),  // connector
+            seg((0.0, -100.0), (0.0, -300.0), 30, 40),    // under the truck
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 200.0, 0.0),
+            (20u64, 200.0, -100.0),
+            (30u64, 0.0, -100.0),
+            (40u64, 0.0, -300.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 200.0),
+            (30u64, 40u64, 200.0),
+        ];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30,40]", 3);
+
+        // Truck on hop 2's centerline, ~2m west of it (x=2), mid-segment (z=-200), heading North.
+        lk.compute_heading_error(2.0, -200.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 2,
+            "scan must anchor on hop 2 (30→40, under the truck), not route[0]'s far hop; got {}",
+            lk.node_progress_idx
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("30->40"),
+            "current_hop must be the nearby segment"
+        );
+        let dist = ctx
+            .blackboard
+            .get("lane_keeper.truck_to_segment_dist_m")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("truck_to_segment_dist_m must parse");
+        assert!(
+            dist < 10.0,
+            "truck-to-segment distance must be the NEAR segment's (~2m), got {dist}"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none"),
+            "near segment is well within the gate → no fallback"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must engage on the near segment"
+        );
+    }
+
+    /// Test 2g-2 (Y-2D proof): node height must be ignored when gating.
+    ///
+    /// A single segment sits ~2m (XZ) from the truck but is baked at y=37 (typical
+    /// Berlin node height). The truck is queried at y=0. The OLD 3D
+    /// `project_on_segment` distance would be ≈ sqrt(2² + 37²) ≈ 37m and — with a
+    /// taller height — would exceed the 40m gate. The 2g fix measures XZ only, so the
+    /// reported `truck_to_segment_dist_m` must be ~2m and the gate must NOT trip.
+    #[test]
+    fn gate_uses_2d_distance_ignoring_node_height() {
+        let segs = vec![seg_y((0.0, 0.0), (0.0, -200.0), 37.0, 10, 20)];
+        let metas = vec![Some(road_meta(2, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+
+        // Truck 2m east of the centerline at y=0 (implicit), mid-segment.
+        lk.compute_heading_error(2.0, -100.0, 0.0, 0.0, &ctx);
+
+        let dist = ctx
+            .blackboard
+            .get("lane_keeper.truck_to_segment_dist_m")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("truck_to_segment_dist_m must parse");
+        assert!(
+            (dist - 2.0).abs() < 0.5,
+            "reported distance must be 2D (~2m), not 3D (~37m incl. node height), got {dist}"
+        );
+        // Direct proof the Y-fix matters: the 3D distance would already exceed the gate
+        // for a taller node, and even at 37m it is far from the 2m we expect.
+        assert!(
+            dist < MAX_HOP_PROJECTION_DIST_M as f64,
+            "2D distance is below the 40m gate; height must not inflate it (got {dist})"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none"),
+            "Y height ignored → gate does not trip → spline path engages"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must engage despite the 37m node height"
+        );
+    }
+
+    /// Test 2g-3 (heading filter, U-turn): two route segments equally near the truck,
+    /// one in the truck's heading direction and one doubled back (Δ≈180°). The
+    /// heading-compatible candidate (same direction) must be chosen.
+    ///
+    /// Route `[10,20,30]`:
+    ///   hop 0 (10→20): runs NORTH (z: 0 → -100). Truck heads North → compatible.
+    ///   hop 1 (20→30): runs back SOUTH (z: -100 → 0), i.e. it folds back over hop 0.
+    /// The truck sits at z=-50 — equidistant (in 2D) from both overlapping segments —
+    /// but heading North. The heading filter (dot ≥ 0.5) must keep hop 0 and reject the
+    /// reversed hop 1, so `node_progress_idx=0` and `current_hop="10->20"`.
+    #[test]
+    fn heading_filter_prefers_aligned_segment_over_doubled_back() {
+        // Both segments occupy the SAME XZ corridor (x=0, z in [0,-100]) but opposite
+        // direction, so 2D distance alone cannot disambiguate — only heading can.
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),   // North
+            seg((0.0, -100.0), (0.0, 0.0), 20, 30),   // South (doubled back)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, 0.0),
+        ];
+        let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
+
+        // Truck mid-corridor (z=-50), heading North (0.0) → only hop 0 is heading-compatible.
+        lk.compute_heading_error(0.0, -50.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 0,
+            "heading filter must pick the North-aligned hop 0, not the doubled-back hop 1; got {}",
+            lk.node_progress_idx
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("10->20"),
+            "current_hop must be the heading-compatible segment"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must engage on the aligned segment"
+        );
+    }
+
+    // ── Phase 2g (Variante B): global-nearest + route-relevance + W1/W2 ─────────
+    //
+    // These guard the Variante-B reroute of `try_spline_heading_error`:
+    //   - the GLOBAL R-tree nearest-query (`nearest_with_heading_filter`) finds the
+    //     geometrically closest, heading-compatible segment (not a route-only scan),
+    //   - the route-relevance gate accepts it as ON-ROUTE (∃j: route[j]==F, route[j+1]==T)
+    //     or FEEDS-INTO (∃k: route[k]==T = predecessor/snap edge), else falls back,
+    //   - W1: feeds-into only if `hit.heading_filter_applied`,
+    //   - W2: feeds-into only if `(route[k],route[k+1])` is a forward hop in seg_by_from_to.
+
+    /// Test VB-1 (the real H-C case Variante b could NOT do): the truck SITS on the
+    /// predecessor/snap edge P→A whose head is route[0]=A. The first on-route hop
+    /// A→B is the far snap-endpoint hop (>40m east). The global-nearest query finds
+    /// P→A (~2m), feeds-into A=route[0], heading-compatible (W1) and A→B is a forward
+    /// hop (W2) → accepted. The route-only forward scan would have measured A→B at >40m
+    /// and tripped the dist gate.
+    ///
+    /// Route `[20,30,40]` (A=20, B=30, C=40):
+    ///   predecessor P→A = 10→20  : (0,0)→(0,-100), runs NORTH under the truck (~2m)
+    ///   hop A→B        = 20→30  : (0,-100)→(200,-100), runs EAST, FAR from the truck
+    ///   hop B→C        = 30→40  : (200,-100)→(200,-300)
+    #[test]
+    fn feeds_into_predecessor_edge_picks_snap_segment() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),       // predecessor P→A, under truck
+            seg((0.0, -100.0), (200.0, -100.0), 20, 30),  // hop A→B, far (east)
+            seg((200.0, -100.0), (200.0, -300.0), 30, 40),// hop B→C
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 200.0, -100.0),
+            (40u64, 200.0, -300.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 200.0),
+            (30u64, 40u64, 200.0),
+        ];
+        // Route does NOT contain P (=10); it starts at A (=20).
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,30,40]", 3);
+
+        // Truck on the predecessor edge P→A, 2m east of its centerline, mid-segment,
+        // heading North → heading-compatible with the North-running P→A.
+        lk.compute_heading_error(2.0, -50.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 0,
+            "feeds-into must anchor on route[0]=A (the snap endpoint); got {}",
+            lk.node_progress_idx
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("10->20"),
+            "current_hop must be the predecessor/snap edge P->A"
+        );
+        let dist = ctx
+            .blackboard
+            .get("lane_keeper.truck_to_segment_dist_m")
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("truck_to_segment_dist_m must parse");
+        assert!(
+            dist < 10.0,
+            "distance must be to the NEAR predecessor edge (~2m), not the far A->B hop, got {dist}"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none"),
+            "feeds-into accepted (W1+W2) → no fallback"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must engage on the predecessor edge"
+        );
+    }
+
+    /// Test VB-2 (off-route protection): the global-nearest segment is a PARALLEL road
+    /// X→Y that is neither on-route nor feeds into a route node. The route hops are far
+    /// away. The route-relevance gate must reject the nearest hit → off-route → Catmull.
+    ///
+    /// Route `[10,20,30]` (A→B→C), all hops far east (x=200).
+    /// Parallel road X→Y = 90→91 : (0,0)→(0,-200) directly under the truck; neither 90
+    /// nor 91 is a route node, and 91 is not the `to` of any route hop → off-route.
+    #[test]
+    fn off_route_nearest_segment_falls_back_to_catmull() {
+        let segs = vec![
+            seg((200.0, 0.0), (200.0, -100.0), 10, 20),    // route hop A->B (far east)
+            seg((200.0, -100.0), (200.0, -200.0), 20, 30), // route hop B->C (far east)
+            seg((0.0, 0.0), (0.0, -200.0), 90, 91),        // parallel road X->Y, under truck
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 200.0, 0.0),
+            (20u64, 200.0, -100.0),
+            (30u64, 200.0, -200.0),
+            (90u64, 0.0, 0.0),
+            (91u64, 0.0, -200.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 100.0),
+            (90u64, 91u64, 200.0),
+        ];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 3);
+        // Catmull fallback needs geometry to chew on.
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        // Truck on the parallel road (x=2 east of X->Y centerline), heading North.
+        // Nearest segment globally = X->Y (~2m), but it is off-route.
+        lk.compute_heading_error(2.0, -100.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("off_route"),
+            "nearest segment is a parallel road (not on-route, not feeds-into) → off_route"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "off-route nearest must NOT hijack the spline path → Catmull fallback"
+        );
+    }
+
+    /// Test VB-3 (W2 explicit): feeds-into is rejected when the first forward walk-hop
+    /// route[0]→route[1] does NOT exist as a forward segment.
+    ///
+    /// Route `[20,30]` (A=20, B=30). The truck sits on predecessor edge P→A = 10→20
+    /// (head = A = route[0] → feeds-into candidate, heading-compatible → W1 passes).
+    /// BUT the only indexed segment for the (A,B) corridor runs B→A (30→20), so
+    /// `seg_by_from_to[(20,30)]` is MISSING → W2 fails → off_route → Catmull.
+    ///
+    /// This differs from `reversed_hop_falls_back_to_catmull` (no feeds-into edge there;
+    /// the truck sits ON the reversed route corridor). Here the feeds-into branch is
+    /// entered and only W2 stops it, so the W2 guard itself is exercised.
+    #[test]
+    fn feeds_into_rejected_when_no_forward_hop() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),       // predecessor P->A, under truck
+            seg((0.0, -200.0), (0.0, -100.0), 30, 20),    // B->A only (no forward A->B)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+        ];
+        // Edge 30->20 indexed (so seg_by_from_to has (30,20) but NOT (20,30)).
+        let edges = vec![(10u64, 20u64, 100.0), (30u64, 20u64, 100.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,30]", 2);
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        // Truck on P->A (10->20), 2m east, heading North → feeds-into A=route[0],
+        // W1 passes (heading-compatible), but W2 fails: (20,30) is not a forward hop.
+        lk.compute_heading_error(2.0, -50.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("off_route"),
+            "feeds-into without a forward route[0]->route[1] hop must be rejected (W2)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_detail").as_deref(),
+            Some("feeds_into_no_forward_hop"),
+            "W2 rejection detail must indicate the missing forward hop"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "W2 rejection → Catmull fallback"
         );
     }
 }
