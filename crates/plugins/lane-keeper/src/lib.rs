@@ -114,7 +114,7 @@ const CATMULL_MAX_ROUTE_HOPS: usize = 2;
 /// (`take(N)`), KEIN Linearscan über alle Segmente.
 const ROUTE_NEAREST_CANDIDATES: usize = 24;
 
-// ── H2-Stufe-2: Stanley-Cross-Track-Term (Spline- und Catmull-Pfad) ─────────
+// ── H2-Stufe-2: Stanley-Cross-Track-Term (Spline-Pfad only) ─────────────────
 /// Stanley gain K in `xtrack = -atan(K_CT * e_lat / v_safe)`.
 /// BB-Override: `plugin.lane_keeper.crosstrack_gain`. Conservative default: kein Pendeln.
 const K_CT: f64 = 0.5;
@@ -1853,72 +1853,6 @@ impl LaneKeeperPlugin {
             err += 2.0 * std::f64::consts::PI;
         }
 
-        // ── Cross-Track-Term (Catmull-Pfad) ──────────────────────────────────
-        // Identische Stanley-Law wie Spline-Pfad: herr' = herr - atan(K_CT * e_lat / v_safe).
-        // e_lat: Truck-Normalabstand zur Catmull-Centerline (progress_idx-Segment) minus
-        // catmull_offset. Segment progress_idx→progress_idx+1 ist garantiert gültig
-        // (early-return bei progress_idx+1 >= waypoints.len() oben).
-        let truck_lat_catmull_m = {
-            let [w0x, w0z] = self.waypoints[self.progress_idx];
-            let [w1x, w1z] = self.waypoints[self.progress_idx + 1];
-            let sdx = w1x - w0x;
-            let sdz = w1z - w0z;
-            let slen = (sdx * sdx + sdz * sdz).sqrt();
-            if slen > 1e-6 {
-                // right-normal in ETS2 XZ: (-sdz, sdx)/slen  (+rechts / -links)
-                ((tx - w0x) * (-sdz) + (tz - w0z) * sdx) / slen
-            } else {
-                0.0
-            }
-        };
-        let e_lat_catmull = truck_lat_catmull_m - catmull_offset as f64;
-        let crosstrack_enabled = ctx
-            .blackboard
-            .get("plugin.lane_keeper.crosstrack_enabled")
-            .map(|v| v != "false" && v != "0")
-            .unwrap_or(true);
-        let orig_err = err;
-        let (xtrack, k_ct_used) = if crosstrack_enabled {
-            let k_ct = ctx
-                .blackboard
-                .get_f64("plugin.lane_keeper.crosstrack_gain")
-                .unwrap_or(K_CT);
-            let v_min_ct = ctx
-                .blackboard
-                .get_f64("plugin.lane_keeper.crosstrack_v_min")
-                .unwrap_or(V_MIN_CT);
-            let v_safe = speed_ms.max(v_min_ct);
-            (-(k_ct * e_lat_catmull / v_safe).atan(), k_ct)
-        } else {
-            (0.0, 0.0)
-        };
-        let e_lat_spike_m = ctx
-            .blackboard
-            .get_f64("plugin.lane_keeper.crosstrack_spike_m")
-            .unwrap_or(E_LAT_SPIKE_M);
-        self.crosstrack_iclamp_active = e_lat_catmull.abs() > e_lat_spike_m || source_changed == 1;
-        err += xtrack;
-        while err > std::f64::consts::PI {
-            err -= 2.0 * std::f64::consts::PI;
-        }
-        while err < -std::f64::consts::PI {
-            err += 2.0 * std::f64::consts::PI;
-        }
-        ctx.blackboard
-            .set("lane_keeper.crosstrack_error_m", format!("{e_lat_catmull:.4}"));
-        ctx.blackboard
-            .set("lane_keeper.truck_lat_vs_centerline_m", format!("{truck_lat_catmull_m:.3}"));
-        ctx.blackboard
-            .set("lane_keeper.truck_lat_vs_offsetline_m", format!("{e_lat_catmull:.3}"));
-        ctx.blackboard
-            .set("lane_keeper.crosstrack_term_rad", format!("{xtrack:.6}"));
-        ctx.blackboard
-            .set("lane_keeper.heading_error_orig_rad", format!("{orig_err:.6}"));
-        ctx.blackboard
-            .set("lane_keeper.crosstrack_gain_kct", format!("{k_ct_used:.4}"));
-        ctx.blackboard
-            .set("lane_keeper.e_lat_spike", (self.crosstrack_iclamp_active as u8).to_string());
-
         ctx.blackboard
             .set("lane_keeper.target_heading", format!("{target:.6}"));
         err
@@ -2854,8 +2788,7 @@ mod tests {
         };
         let ctx = fresh_ctx();
         // ETS2 heading 0.9796 ≈ 7.33° CW from North (truck nearly aligned with road).
-        // Use speed_ms=10.0 so the CT term is normalised; regression holds at any speed.
-        let err = plugin.compute_heading_error(0.0, 0.0, 0.9796, 10.0, &ctx);
+        let err = plugin.compute_heading_error(0.0, 0.0, 0.9796, 0.0, &ctx);
         // Must be near-zero (≤15° = 0.26 rad), NOT −49° (−0.852 rad).
         assert!(
             err.abs() < 0.26,
@@ -3523,10 +3456,9 @@ mod tests {
         let ctx = fresh_ctx();
         // Truck on centerline heading North → offset shifts target East (+x).
         // err > 0: must steer right toward right lane.
-        // CT term adds ~0.093 rad at 10 m/s (e_lat=-1.875, K_CT=0.5) → total ~0.11 rad.
         let err = plugin.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
         assert!(
-            err > 0.0 && err < 0.15,
+            err > 0.0 && err < 0.1,
             "north road: expected small positive error (target right of center), got {err:.4}",
         );
     }
@@ -3540,10 +3472,9 @@ mod tests {
         let ctx = fresh_ctx();
         // Truck on centerline heading East (ETS2=0.75) → offset shifts target South (+z).
         // target angle > π/2, heading_rad = π/2 → err > 0.
-        // CT term adds ~0.093 rad at 10 m/s (e_lat=-1.875, K_CT=0.5) → total ~0.11 rad.
         let err = plugin.compute_heading_error(0.0, 0.0, 0.75, 10.0, &ctx);
         assert!(
-            err > 0.0 && err < 0.15,
+            err > 0.0 && err < 0.1,
             "east road: expected small positive error (target shifted South), got {err:.4}",
         );
     }
