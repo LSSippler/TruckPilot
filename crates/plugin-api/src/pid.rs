@@ -67,6 +67,28 @@ impl Pid {
         unclamped.clamp(-self.output_limit, self.output_limit)
     }
 
+    /// Like `update` but leaves `integral` unchanged — used by the cross-track I-clamp
+    /// (Anti-Windup: freeze integral accumulation during lateral spike / source change).
+    /// P- and D-terms are computed normally; `last_i` reflects the unchanged integral.
+    pub fn update_freeze_integral(&mut self, error: f64, dt: f64) -> f64 {
+        let p = self.kp * error;
+        let i = self.ki * self.integral; // integral not modified
+        let safe_dt = dt.max(0.001);
+        let d = if self.first_update {
+            self.first_update = false;
+            0.0
+        } else {
+            self.kd * (error - self.prev_error) / safe_dt
+        };
+        self.prev_error = error;
+        let unclamped = p + i + d;
+        self.last_p = p;
+        self.last_i = i;
+        self.last_d = d;
+        self.last_unclamped = unclamped;
+        unclamped.clamp(-self.output_limit, self.output_limit)
+    }
+
     pub fn reset(&mut self) {
         self.integral = 0.0;
         self.prev_error = 0.0;

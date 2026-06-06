@@ -8,6 +8,7 @@
 //!   set-goal-pos --x --z     Set router goal by ETS2 world coords; server snaps to nearest node
 //!   set-start <uid>          Set router.start_uid (or pass --clear to use current position)
 //!   set-cruise <kmh>         Set cruise.target_kmh
+//!   set-gain <name> <value>  Set a tunable lane-keeper gain parameter live (whitelist only)
 //!   engage                   Request AutopilotEngage
 //!   disengage                Request AutopilotDisengage
 //!   reset                    Request AutopilotReset
@@ -52,6 +53,13 @@ enum Cmd {
     },
     /// Set cruise.target_kmh
     SetCruise { kmh: f32 },
+    /// Set a tunable lane-keeper gain parameter live via Blackboard (whitelist only)
+    SetGain {
+        /// Parameter name, e.g. kp, ki, kd, crosstrack_gain (see error output for full list)
+        name: String,
+        /// Value as decimal f64
+        value: f64,
+    },
     /// Request autopilot engage
     Engage {
         /// Engage in lane-only mode (no route required; steering only)
@@ -67,6 +75,60 @@ enum Cmd {
 }
 
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
+
+// ── set-gain whitelist ────────────────────────────────────────────────────────
+// Maps short parameter names to their `plugin.lane_keeper.*` Blackboard keys.
+// Extend here when adding new BB-overridable f64 parameters to lane-keeper.
+const GAIN_PARAMS: &[(&str, &str)] = &[
+    ("kp", "plugin.lane_keeper.kp"),
+    ("ki", "plugin.lane_keeper.ki"),
+    ("kd", "plugin.lane_keeper.kd"),
+    ("kink_stop_deg", "plugin.lane_keeper.kink_stop_deg"),
+    (
+        "prefab_curve_fallback_deg",
+        "plugin.lane_keeper.prefab_curve_fallback_deg",
+    ),
+    (
+        "intk_plausible_max_deg",
+        "plugin.lane_keeper.intk_plausible_max_deg",
+    ),
+    ("lane_offset_cal_m", "plugin.lane_keeper.lane_offset_cal_m"),
+    ("crosstrack_gain", "plugin.lane_keeper.crosstrack_gain"),
+    ("crosstrack_v_min", "plugin.lane_keeper.crosstrack_v_min"),
+    (
+        "crosstrack_spike_m",
+        "plugin.lane_keeper.crosstrack_spike_m",
+    ),
+    (
+        "catmull_min_look_ahead_m",
+        "plugin.lane_keeper.catmull_min_look_ahead_m",
+    ),
+    (
+        "catmull_max_route_hops",
+        "plugin.lane_keeper.catmull_max_route_hops",
+    ),
+    (
+        "slow_speed_guard_ms",
+        "plugin.lane_keeper.slow_speed_guard_ms",
+    ),
+];
+
+/// Resolve a short gain name to its Blackboard key.
+/// Returns `Ok(bb_key)` or `Err(human-readable error message)`.
+fn resolve_gain_key(name: &str) -> Result<&'static str, String> {
+    GAIN_PARAMS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, k)| *k)
+        .ok_or_else(|| {
+            let names: Vec<&str> = GAIN_PARAMS.iter().map(|(n, _)| *n).collect();
+            format!(
+                "unknown gain parameter '{}'. Allowed names: {}",
+                name,
+                names.join(", ")
+            )
+        })
+}
 
 fn open_ws(url: &str) -> Result<Ws, String> {
     connect(url).map(|(ws, _)| ws).map_err(|e| e.to_string())
@@ -177,6 +239,17 @@ fn main() {
             &UiCommand::SetCruiseTarget { kmh },
             &format!("cruise.target_kmh = {kmh}"),
         ),
+        Cmd::SetGain { name, value } => match resolve_gain_key(&name) {
+            Ok(key) => fire_and_forget(
+                &mut ws,
+                &UiCommand::SetBlackboardKey {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                },
+                &format!("{key} = {value}"),
+            ),
+            Err(msg) => Err(msg),
+        },
         Cmd::Engage { lane_only } => {
             let pre = if lane_only {
                 fire_and_forget(
@@ -209,4 +282,40 @@ fn main() {
     }
 
     let _ = ws.close(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_gain_known_param_sets_value() {
+        assert_eq!(resolve_gain_key("kp"), Ok("plugin.lane_keeper.kp"));
+        assert_eq!(resolve_gain_key("ki"), Ok("plugin.lane_keeper.ki"));
+        assert_eq!(resolve_gain_key("kd"), Ok("plugin.lane_keeper.kd"));
+        assert_eq!(
+            resolve_gain_key("crosstrack_gain"),
+            Ok("plugin.lane_keeper.crosstrack_gain")
+        );
+        assert_eq!(
+            resolve_gain_key("slow_speed_guard_ms"),
+            Ok("plugin.lane_keeper.slow_speed_guard_ms")
+        );
+    }
+
+    #[test]
+    fn set_gain_unknown_param_rejected() {
+        let err = resolve_gain_key("nonsense").unwrap_err();
+        assert!(
+            err.contains("Allowed names:"),
+            "error must list allowed names, got: {err}"
+        );
+        assert!(
+            err.contains("nonsense"),
+            "error must echo the bad name, got: {err}"
+        );
+
+        let err2 = resolve_gain_key("").unwrap_err();
+        assert!(err2.contains("Allowed names:"), "empty name: {err2}");
+    }
 }

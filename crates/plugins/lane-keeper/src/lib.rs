@@ -114,6 +114,25 @@ const CATMULL_MAX_ROUTE_HOPS: usize = 2;
 /// (`take(N)`), KEIN Linearscan über alle Segmente.
 const ROUTE_NEAREST_CANDIDATES: usize = 24;
 
+// ── H2-Stufe-2: Stanley-Cross-Track-Term (Spline-Pfad only) ─────────────────
+/// Stanley gain K in `xtrack = -atan(K_CT * e_lat / v_safe)`.
+/// BB-Override: `plugin.lane_keeper.crosstrack_gain`. Conservative default: kein Pendeln.
+const K_CT: f64 = 0.5;
+/// Mindestgeschwindigkeit im Nenner (Stillstand-Schutz).
+/// BB-Override: `plugin.lane_keeper.crosstrack_v_min`.
+const V_MIN_CT: f64 = 1.0;
+/// Lateral-Spike-Schwelle (m): bei |e_lat| > dieser Wert ODER source_changed wird der
+/// PID-Integral-Einzug für diesen Tick eingefroren (Anti-Windup gegen Naht-Sprünge).
+/// BB-Override: `plugin.lane_keeper.crosstrack_spike_m`.
+const E_LAT_SPIKE_M: f64 = 0.5;
+
+// ── Slow-Speed-Guard (Infra, kein aktiver Steuerpfad) ────────────────────────
+/// Guard-Geschwindigkeit (m/s) unterhalb derer ein 1/v-normierter Term
+/// (z.B. zukünftiger Cross-Track) explosiv werden würde. BB-Override:
+/// `plugin.lane_keeper.slow_speed_guard_ms`. Reine Infrastruktur — kein aktiver
+/// Steuerpfad nutzt diesen Guard aktuell; gesetzt als Diag-Key `steer_speed_guard_active`.
+const SLOW_SPEED_GUARD_MS: f64 = 2.0;
+
 // ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
 const DEFAULT_KI: f64 = 0.1;
@@ -235,6 +254,21 @@ pub struct LaneKeeperPlugin {
     /// Phase 2h-Befund2-Fix: interne Krümmung (Grad) zum Zeitpunkt des letzten
     /// prefab_curve_latched=true. Struct-Feld statt BB-Read (kein Stale-Risiko).
     prefab_curve_kink_deg: f64,
+
+    /// H2-Catmull-Offset-Fix: der nearest-Segment-Index (in `index.segments`), der
+    /// in `try_spline_heading_error` DIESEN Tick bestimmt wurde. `Some` nur wenn die
+    /// nearest-Query diesen Tick lief (Reset auf `None` am Funktionsanfang). Der
+    /// Catmull-Fallback liest daraus den per-Segment-`lane_offset_right_m` (statt des
+    /// festen 1.875 m). `None` (kein frisches nearest, z.B. index_none/route_miss vor
+    /// der Query) → Default-Offset 1.875 m, NICHT 0 (sonst mittig auf 1-spurig).
+    last_nearest_seg: Option<usize>,
+
+    /// H2-Stufe-2: Cross-Track-I-Clamp-Flag. Wird in `try_spline_heading_error` gesetzt
+    /// (wenn |e_lat| > E_LAT_SPIKE_M ODER source_changed), von `compute_heading_error`
+    /// auf false initialisiert. `tick_request_route_following` ruft dann
+    /// `pid.update_freeze_integral` statt `pid.update` auf — kein Integral-Aufbau
+    /// bei Segment-Sprüngen, bestehender I-Wert bleibt erhalten.
+    crosstrack_iclamp_active: bool,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -276,8 +310,16 @@ impl Default for LaneKeeperPlugin {
             kink_stuck_hop: (0, 0),
             prefab_curve_latched: false,
             prefab_curve_kink_deg: 0.0,
+            last_nearest_seg: None,
+            crosstrack_iclamp_active: false,
         }
     }
+}
+
+/// Returns true when `speed_ms` is below the steer-guard threshold.
+/// Pure predicate — no side effects. Used for Diag-Key `steer_speed_guard_active`.
+pub(crate) fn is_below_steer_guard_speed(speed_ms: f64, guard_ms: f64) -> bool {
+    speed_ms < guard_ms
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -461,6 +503,11 @@ impl LaneKeeperPlugin {
             "lane_keeper.reanchor_called_count",
             self.reanchor_called_count.to_string(),
         );
+        // H2-Catmull-Offset-Fix: Frische-Reset. Wird nur dann wieder Some, wenn die
+        // nearest-Query diesen Tick erreicht wird (siehe `self.last_nearest_seg = Some(cur_seg)`).
+        // Bricht try_spline VOR der Query ab (index_none/route_miss), bleibt es None →
+        // der Catmull-Fallback nutzt den 1.875-m-Default statt eines stale Segments.
+        self.last_nearest_seg = None;
 
         // Phase 2c/2d-Diagnose (read-only): jeder Dispatch-Pfad schreibt GENAU EINEN
         // `lane_keeper.fallback_reason` (6-Wert-Vertrag) plus eine feinere
@@ -667,6 +714,10 @@ impl LaneKeeperPlugin {
 
         let cur_seg = hit.segment_idx;
         let t_cur = hit.t;
+        // H2-Catmull-Offset-Fix: frisches nearest-Segment dieses Ticks festhalten, damit
+        // der Catmull-Fallback (falls try_spline später None liefert: off_route/dist_gate/
+        // latch/degenerate) den per-Segment-lane_offset_right_m nutzen kann.
+        self.last_nearest_seg = Some(cur_seg);
         let seg_f = index.segments[cur_seg].from_uid;
         let seg_t = index.segments[cur_seg].to_uid;
         // Phase 2h-Diag3 (read-only, Task 2): which segment the global nearest-query
@@ -1364,15 +1415,14 @@ impl LaneKeeperPlugin {
             "lane_keeper.truck_lat_vs_centerline_m",
             format!("{truck_lat_vs_centerline:.3}"),
         );
+        let e_lat = truck_lat_vs_centerline - lane_offset as f64;
         ctx.blackboard.set(
             "lane_keeper.truck_lat_vs_offsetline_m",
-            format!("{:.3}", truck_lat_vs_centerline - lane_offset as f64),
+            format!("{:.3}", e_lat),
         );
-        // Task 4: Es gibt KEINEN Cross-Track-Term. steering_out = PID(heading_error), wobei
-        // heading_error den Offset-Lookahead-Zielpunkt (look_x/look_z) nutzt. Referenz dokumentieren.
         ctx.blackboard.set(
             "lane_keeper.lat_error_reference",
-            "heading_to_offset_lookahead_no_crosstrack",
+            "heading_to_offset_lookahead_crosstrack",
         );
 
         // Diagnostik
@@ -1428,6 +1478,64 @@ impl LaneKeeperPlugin {
         while err < -std::f64::consts::PI {
             err += 2.0 * std::f64::consts::PI;
         }
+
+        // ── H2-Stufe-2: Stanley-Cross-Track-Term (nur Spline-Pfad) ──
+        // Vorzeichen-Kette (verifiziert):
+        //   e_lat = truck_lat_vs_centerline - lane_offset
+        //   e_lat > 0 = Truck zu weit RECHTS der Soll-Offset-Linie
+        //     → Korrektiv: nach LINKS = negative Korrektur zu herr
+        //     → xtrack = -atan(K_CT * e_lat / v_safe) < 0 ✓
+        //   e_lat < 0 = Truck zu weit LINKS → xtrack > 0 → mehr Rechts-Lenkung ✓
+        // atan saettigt bei ±π/2: kombiniert mit |herr|<π theoretisch bis 3π/2,
+        // aber K_CT=0.5 und normales |e_lat|<3m @ 15 km/h → |xtrack|<0.35 rad (sicher).
+        let crosstrack_enabled = ctx
+            .blackboard
+            .get("plugin.lane_keeper.crosstrack_enabled")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(true);
+        let orig_err = err;
+        let (xtrack, k_ct_used) = if crosstrack_enabled {
+            let k_ct = ctx
+                .blackboard
+                .get_f64("plugin.lane_keeper.crosstrack_gain")
+                .unwrap_or(K_CT);
+            let v_min_ct = ctx
+                .blackboard
+                .get_f64("plugin.lane_keeper.crosstrack_v_min")
+                .unwrap_or(V_MIN_CT);
+            let v_safe = speed_ms.max(v_min_ct);
+            (-(k_ct * e_lat / v_safe).atan(), k_ct)
+        } else {
+            (0.0, 0.0)
+        };
+        let e_lat_spike_m = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.crosstrack_spike_m")
+            .unwrap_or(E_LAT_SPIKE_M);
+        self.crosstrack_iclamp_active = e_lat.abs() > e_lat_spike_m || source_changed == 1;
+        err += xtrack;
+        // re-normalize after cross-track addition (|xtrack|<π/2, one wrap suffices)
+        while err > std::f64::consts::PI {
+            err -= 2.0 * std::f64::consts::PI;
+        }
+        while err < -std::f64::consts::PI {
+            err += 2.0 * std::f64::consts::PI;
+        }
+        ctx.blackboard
+            .set("lane_keeper.crosstrack_error_m", format!("{e_lat:.4}"));
+        ctx.blackboard
+            .set("lane_keeper.crosstrack_term_rad", format!("{xtrack:.6}"));
+        ctx.blackboard.set(
+            "lane_keeper.heading_error_orig_rad",
+            format!("{orig_err:.6}"),
+        );
+        ctx.blackboard
+            .set("lane_keeper.crosstrack_gain_kct", format!("{k_ct_used:.4}"));
+        ctx.blackboard.set(
+            "lane_keeper.e_lat_spike",
+            (self.crosstrack_iclamp_active as u8).to_string(),
+        );
+
         ctx.blackboard
             .set("lane_keeper.target_heading", format!("{target:.6}"));
         Some(err)
@@ -1457,6 +1565,9 @@ impl LaneKeeperPlugin {
         speed_ms: f64,
         ctx: &PluginContext,
     ) -> f64 {
+        // Reset per-tick flag; try_spline sets it true iff the spline path succeeds AND
+        // the I-clamp condition fires (|e_lat|>spike or source_changed).
+        self.crosstrack_iclamp_active = false;
         if let Some(err) = self.try_spline_heading_error(tx, tz, heading, speed_ms, ctx) {
             self.was_spline_active = true;
             return err;
@@ -1467,9 +1578,29 @@ impl LaneKeeperPlugin {
         }
         ctx.blackboard
             .set("lane_keeper.lateral_source", "catmullrom_fallback");
-        // Phase 2h-Diag: Catmull nutzt festen LANE_OFFSET_RIGHT_M (1.875), nicht spline-Offset.
-        // Logge diesen Wert + Sprung-Delta, damit der Offset-Wechsel im Log sichtbar wird.
-        let catmull_offset = LANE_OFFSET_RIGHT_M as f32;
+        // H2-Catmull-Offset-Fix: statt des festen LANE_OFFSET_RIGHT_M (1.875 m, egal ob
+        // 1-/2-/3-spurig) den per-Segment-`lane_offset_right_m` des nearest-Segments
+        // verwenden — konsistent zum Spline-Pfad (lib.rs:1297-1318). Quelle:
+        // `self.last_nearest_seg` (diesen Tick in try_spline gesetzt) → `index.metadata[idx]`.
+        // Der Kalibrierwert `cal` wird — wie im Spline-Pfad — auf road/Default addiert,
+        // NICHT auf prefab (NavCurves liegen bereits auf der Spur-Mitte).
+        //   Some(Some(m)) is_prefab=true → 0.0  (konsistent zum Spline-prefab-Arm lib.rs:1298)
+        //   Some(Some(m))                → m.lane_offset_right_m + cal (lane-count-abhängig)
+        //   _ (None / kein frisches nearest / idx out of range / metadata None)
+        //                                → 1.875 + cal Default, NICHT 0 (sonst mittig auf 1-spurig).
+        let cal = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.lane_offset_cal_m")
+            .unwrap_or(0.0) as f32;
+        let catmull_offset = match self.last_nearest_seg.and_then(|idx| {
+            self.index
+                .as_ref()
+                .and_then(|ix| ix.metadata.get(idx).copied())
+        }) {
+            Some(Some(m)) if m.is_prefab => 0.0_f32,
+            Some(Some(m)) => m.lane_offset_right_m + cal,
+            _ => LANE_OFFSET_RIGHT_M as f32 + cal,
+        };
         ctx.blackboard.set(
             "lane_keeper.lane_offset_applied_m",
             format!("{catmull_offset:.3}"),
@@ -1666,22 +1797,21 @@ impl LaneKeeperPlugin {
         let catmull_cl_x = look_x;
         let catmull_cl_z = look_z;
 
-        // Shift lookahead right by LANE_OFFSET_RIGHT_M (Rechtsfahrgebot).
-        // Right-normal in ETS2 XZ (x=East, z=South): (-dz, dx) / |d|.
+        // Shift lookahead right by `catmull_offset` (Rechtsfahrgebot, H2-Fix: lane-count-
+        // abhängig statt fix 1.875 m). Right-normal in ETS2 XZ (x=East, z=South): (-dz, dx)/|d|.
         // Mirrors lane-follower/src/lib.rs:913-918. Division safe: 1e-12 guard above.
         let len_xz = (dx * dx + dz * dz).sqrt();
-        let look_x = look_x + (-dz / len_xz) * LANE_OFFSET_RIGHT_M;
-        let look_z = look_z + (dx / len_xz) * LANE_OFFSET_RIGHT_M;
+        let off = catmull_offset as f64;
+        let look_x = look_x + (-dz / len_xz) * off;
+        let look_z = look_z + (dx / len_xz) * off;
         let dx = look_x - tx;
         let dz = look_z - tz;
 
         // ── Phase 2h-Diag6 (read-only): Catmull-Pfad-Zielgeometrie ──
-        // Der Catmull-Fallback wendet einen FESTEN LANE_OFFSET_RIGHT_M (1.875 m) an, NICHT den
-        // lane-count-abhängigen 2h-Offset (auf 2-spurig wären das ~5.6 m zur Rechtsspur). Daher
-        // sitzt der Truck auf Catmull-Strecken zu weit links (Fahrbahn-Mitte) → Befund (1).
-        // catmull_centerline = roher Waypoint-Lookahead (vor Offset); catmull_steer_target = nach
-        // 1.875m-Offset (geht in den heading_error); catmull_truck = Truck-Weltpos. Vergleich an
-        // t=29.9 (Quer-Ziel) vs t=44.9 (ok) zeigt, ob der Zielpunkt seitlich/hinter dem Truck liegt.
+        // H2-Fix: der Catmull-Fallback wendet jetzt den lane-count-abhängigen `catmull_offset`
+        // an (Quelle: nearest-Segment-Metadaten), nicht mehr fix 1.875 m. catmull_centerline =
+        // roher Waypoint-Lookahead (vor Offset); catmull_steer_target = nach Offset (geht in den
+        // heading_error); catmull_truck = Truck-Weltpos.
         ctx.blackboard.set(
             "lane_keeper.catmull_steer_target_xz",
             format!("{look_x:.2},{look_z:.2}"),
@@ -1694,7 +1824,7 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.catmull_truck_xz", format!("{tx:.2},{tz:.2}"));
         ctx.blackboard.set(
             "lane_keeper.catmull_offset_applied_m",
-            format!("{LANE_OFFSET_RIGHT_M:.3}"),
+            format!("{catmull_offset:.3}"),
         );
         // Vektor Truck→Ziel relativ zur Truck-Fahrtrichtung: Längs-/Quer-Anteil. Großer |quer|
         // bei kleinem längs ⇒ Ziel liegt seitlich ⇒ heading-only zieht quer (Befund 2).
@@ -1793,6 +1923,20 @@ impl LaneKeeperPlugin {
 
         let dt = ctx.dt_s.min(0.1);
 
+        // ── Slow-Speed-Guard (Infra-Diag, kein Einfluss auf Steuerung) ─────────
+        let guard_ms = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.slow_speed_guard_ms")
+            .unwrap_or(SLOW_SPEED_GUARD_MS);
+        ctx.blackboard.set(
+            "lane_keeper.steer_speed_guard_active",
+            if is_below_steer_guard_speed(t.speed_ms, guard_ms) {
+                "1"
+            } else {
+                "0"
+            },
+        );
+
         let err =
             self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms, ctx);
 
@@ -1854,7 +1998,14 @@ impl LaneKeeperPlugin {
             err
         };
 
-        let raw = self.pid.update(effective_err, dt).clamp(-1.0, 1.0);
+        // H2-Stufe-2 I-Clamp: bei Lateral-Spike oder Source-Wechsel kein Integral-Aufbau.
+        let raw = if self.crosstrack_iclamp_active {
+            self.pid
+                .update_freeze_integral(effective_err, dt)
+                .clamp(-1.0, 1.0)
+        } else {
+            self.pid.update(effective_err, dt).clamp(-1.0, 1.0)
+        };
 
         // ── Phase 2h-Diag2 (read-only): Steer-Herkunft aufschlüsseln ──
         // Frage A: ist 0.8281 = geklemmter Max-Wert (output_clamp_active=true,
@@ -3524,6 +3675,97 @@ mod tests {
         );
     }
 
+    // ── H2-Catmull-Offset-Fix: per-Segment lane_offset_right_m statt fix 1.875 ──────
+    //
+    // Aufbau (wie reversed_hop_falls_back_to_catmull): reversed route → der globale
+    // nearest findet das Nord-Segment (heading passt), setzt cur_seg/last_nearest_seg,
+    // dann off_route → None → Catmull-Fallback. Der Catmull-Offset stammt jetzt aus
+    // index.metadata[last_nearest_seg]. Helfer road_meta(lanes,w,false) =>
+    // lane_offset_right_m=(lanes-0.5)*w: 1-lane=1.875, 2-lane=5.625, prefab=0.
+
+    /// H2-1: 2-spuriges nearest-Segment → Catmull-Offset 5.625 m (statt fix 1.875).
+    #[test]
+    fn catmull_offset_uses_segment_lane_offset() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(2, 3.75, false))]; // 2-lane → 5.625
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(20u64, 10u64, 200.0)]; // reversed → off_route → Catmull
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,10]", 1);
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "reversed hop → Catmull-Fallback"
+        );
+        assert_eq!(
+            lk.last_nearest_seg,
+            Some(0),
+            "nearest-Segment dieses Ticks muss festgehalten sein"
+        );
+        let off = bb_f32(&ctx, "lane_keeper.lane_offset_applied_m");
+        assert!(
+            (off - 5.625).abs() < 0.01,
+            "Catmull-Offset muss der 2-lane-lane_offset_right_m (5.625) sein, got {off:.3}"
+        );
+    }
+
+    /// H2-2: nearest-Segment ist Prefab (NavCurve) → Catmull-Offset 0 (konsistent zum Spline).
+    #[test]
+    fn catmull_offset_zero_on_prefab() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(2, 3.75, true))]; // is_prefab=true → 0
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(20u64, 10u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,10]", 1);
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+        );
+        let off = bb_f32(&ctx, "lane_keeper.lane_offset_applied_m");
+        assert!(
+            off.abs() < 0.01,
+            "Prefab-nearest → Catmull-Offset 0, got {off:.3}"
+        );
+    }
+
+    /// H2-3: kein frisches nearest (index=None → try_spline bricht vor der Query ab) →
+    /// Default-Offset 1.875 m, NICHT 0 (sonst mittig auf 1-spurig).
+    #[test]
+    fn catmull_offset_default_without_segment() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]],
+            ..Default::default()
+        };
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        bb.set("router.route_node_ids", "[10,20]");
+        let ctx = PluginContext::new("lane-keeper", bb);
+
+        lk.compute_heading_error(0.0, 0.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "index=None → Catmull-Fallback"
+        );
+        assert_eq!(
+            lk.last_nearest_seg, None,
+            "index=None: nearest-Query lief nie → last_nearest_seg bleibt None"
+        );
+        let off = bb_f32(&ctx, "lane_keeper.lane_offset_applied_m");
+        assert!(
+            (off - 1.875).abs() < 0.01,
+            "ohne frisches nearest → Default 1.875 (NICHT 0), got {off:.3}"
+        );
+    }
+
     /// Test 6: prefab hop → lateral_source = "spline_prefab", offset ≈ 0.0.
     #[test]
     fn prefab_hop_zero_offset_spline_prefab() {
@@ -4777,10 +5019,11 @@ mod tests {
             fseg, 1,
             "0°-kink: lookahead must land on seg1 (index 1), not seg0 (index 0); got {fseg}"
         );
-        // Heading error must be small (truck aligned with North road).
+        // Heading error: cross-track adds ~0.14 rad (truck on centerline, 2-lane offset=5.625m).
+        // Primary intent: walk hops through (no false kink-stop), not error magnitude.
         assert!(
-            err.abs() < 0.15,
-            "0°-kink: heading error must be small, got {err:.4} rad"
+            err.abs() < 0.4,
+            "0°-kink: heading error must be modest (no extreme overshoot), got {err:.4} rad"
         );
     }
 
@@ -5866,6 +6109,226 @@ mod tests {
             ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
             Some("route_end"),
             "skip_reason must be 'route_end' when progress_idx is at last waypoint"
+        );
+    }
+
+    // ── H2-Stufe-2: Cross-Track-Term Tests ───────────────────────────────────
+    //
+    // Aufbau: straight North-Segment (0,0)→(0,-200), 1-lane@3.75m → lane_offset=1.875m.
+    // Right-Normal = (+1, 0) = East.  truck_lat_vs_centerline = tx (Truck-X).
+    // e_lat = tx - 1.875.  xtrack = -atan(K_CT * e_lat / v_safe).
+    //
+    // Jeder Test ruft `try_spline_heading_error` direkt auf und liest Diag-Keys.
+
+    /// Hilfsfunktion: einfaches Nord-Segment, 1-spur, Truck auf Route.
+    fn straight_north_plugin_ct() -> (LaneKeeperPlugin, PluginContext) {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(1, 3.75, false))]; // 1-lane → 1.875m
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        wired_plugin(segs, metas, nodes, edges, "[10,20]", 1)
+    }
+
+    /// CT-1: e_lat = 0 (Truck genau auf der Offset-Linie) → xtrack = 0 → herr' == herr.
+    #[test]
+    fn crosstrack_zero_when_on_line() {
+        let (mut lk, ctx) = straight_north_plugin_ct();
+        // 1-lane lane_offset = 1.875 m. Truck at tx=1.875 → e_lat = 1.875 - 1.875 = 0.
+        let err = lk
+            .try_spline_heading_error(1.875, -1.0, 0.0, 10.0, &ctx)
+            .expect("spline path must succeed");
+        let xtrack: f64 = ctx
+            .blackboard
+            .get("lane_keeper.crosstrack_term_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("crosstrack_term_rad must be set");
+        let orig_err: f64 = ctx
+            .blackboard
+            .get("lane_keeper.heading_error_orig_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("heading_error_orig_rad must be set");
+        assert!(
+            xtrack.abs() < 1e-6,
+            "e_lat=0 → xtrack must be ~0, got {xtrack}"
+        );
+        assert!(
+            (err - orig_err).abs() < 1e-6,
+            "herr' must equal herr when xtrack=0, got herr'={err} vs herr={orig_err}"
+        );
+    }
+
+    /// CT-2: Vorzeichen-Verifikation — e_lat > 0 (Truck zu weit rechts) → xtrack < 0 (Korrektiv links).
+    #[test]
+    fn crosstrack_sign_correct() {
+        let (mut lk, ctx) = straight_north_plugin_ct();
+        // Truck at tx=3.0 → e_lat = 3.0 - 1.875 = 1.125 > 0 (zu weit rechts).
+        // xtrack = -atan(0.5 * 1.125 / v_safe) < 0 → herr' < herr (Korrektiv nach links).
+        let err = lk
+            .try_spline_heading_error(3.0, -1.0, 0.0, 10.0, &ctx)
+            .expect("spline path must succeed");
+        let xtrack: f64 = ctx
+            .blackboard
+            .get("lane_keeper.crosstrack_term_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("crosstrack_term_rad must be set");
+        let orig_err: f64 = ctx
+            .blackboard
+            .get("lane_keeper.heading_error_orig_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("heading_error_orig_rad must be set");
+        assert!(
+            xtrack < 0.0,
+            "e_lat>0 (too far right) → xtrack must be < 0 (steer left), got {xtrack}"
+        );
+        assert!(
+            err < orig_err,
+            "herr' must be < herr when truck too far right, got herr'={err} vs herr={orig_err}"
+        );
+    }
+
+    /// CT-3: atan-Sättigung — riesiges e_lat → |xtrack| < π/2.
+    #[test]
+    fn crosstrack_saturates() {
+        // dist_gate=50m filtert Trucks weit außerhalb → try_spline gibt None.
+        // Wir testen die atan-Eigenschaft direkt (keine Plugin-Instanz nötig).
+        let large_elat = 100.0f64;
+        let v_safe = 1.0f64;
+        let xtrack = -(K_CT * large_elat / v_safe).atan();
+        assert!(
+            xtrack.abs() < std::f64::consts::FRAC_PI_2,
+            "|xtrack| must be < π/2 (atan saturation), got {xtrack}"
+        );
+        assert!(
+            xtrack.abs() > 1.0,
+            "|xtrack| must be large (>1 rad) for huge e_lat, got {xtrack}"
+        );
+    }
+
+    /// CT-4: Speed-Normierung — gleicher e_lat, höheres v → kleineres |xtrack|.
+    #[test]
+    fn crosstrack_speed_normalized() {
+        let e_lat = 2.0f64;
+        let xtrack_slow = -(K_CT * e_lat / V_MIN_CT).atan();
+        let xtrack_fast = -(K_CT * e_lat / 10.0).atan(); // 10 m/s
+        assert!(
+            xtrack_slow.abs() > xtrack_fast.abs(),
+            "higher speed → smaller |xtrack|: slow={xtrack_slow:.4}, fast={xtrack_fast:.4}"
+        );
+    }
+
+    /// CT-5: CROSSTRACK_ENABLED=false → xtrack=0, herr' == orig_err.
+    #[test]
+    fn crosstrack_disabled() {
+        let (mut lk, ctx) = straight_north_plugin_ct();
+        ctx.blackboard
+            .set("plugin.lane_keeper.crosstrack_enabled", "false");
+        // Truck at tx=3.0, normally e_lat > 0 → but disabled → xtrack=0.
+        let err = lk
+            .try_spline_heading_error(3.0, -1.0, 0.0, 10.0, &ctx)
+            .expect("spline path must succeed");
+        let xtrack: f64 = ctx
+            .blackboard
+            .get("lane_keeper.crosstrack_term_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("crosstrack_term_rad must be set");
+        let orig_err: f64 = ctx
+            .blackboard
+            .get("lane_keeper.heading_error_orig_rad")
+            .and_then(|s| s.parse().ok())
+            .expect("heading_error_orig_rad must be set");
+        assert!(
+            xtrack.abs() < 1e-9,
+            "crosstrack disabled → xtrack must be 0, got {xtrack}"
+        );
+        // `orig_err` is read from the BB where it was formatted to 6 decimal places;
+        // the actual `err` retains full f64 precision → allow 1e-5 rounding tolerance.
+        assert!(
+            (err - orig_err).abs() < 1e-5,
+            "crosstrack disabled → herr' must equal herr (±1e-5 format rounding), got herr'={err} vs herr={orig_err}"
+        );
+    }
+
+    /// CT-6: I-Clamp — bei |e_lat| > E_LAT_SPIKE_M wird `crosstrack_iclamp_active=true` gesetzt
+    /// und `update_freeze_integral` bewahrt den I-Wert.
+    #[test]
+    fn crosstrack_iclamp_on_spike() {
+        // Verify that update_freeze_integral does not modify the integral.
+        // We test the Pid method directly (integral is an observable via last_i).
+        let mut pid = truckpilot_plugin_api::pid::Pid::new(0.8, 0.1, 0.3, 2.0, 1.0);
+        // Warm up integral with a few normal updates.
+        let _ = pid.update(0.5, 0.05);
+        let _ = pid.update(0.5, 0.05);
+        let i_before = pid.last_i();
+
+        // Now freeze_integral: integral must not change.
+        let _ = pid.update_freeze_integral(0.5, 0.05);
+        let i_after = pid.last_i();
+        assert!(
+            (i_before - i_after).abs() < 1e-9,
+            "I-term must be unchanged by update_freeze_integral: before={i_before:.6}, after={i_after:.6}"
+        );
+
+        // Verify crosstrack_iclamp_active is set when |e_lat| > E_LAT_SPIKE_M.
+        // truck at tx=3.0: e_lat = 3.0 - 1.875 = 1.125 > E_LAT_SPIKE_M=0.5 → clamp active.
+        let (mut lk, ctx) = straight_north_plugin_ct();
+        let _ = lk.try_spline_heading_error(3.0, -1.0, 0.0, 10.0, &ctx);
+        assert!(
+            lk.crosstrack_iclamp_active,
+            "crosstrack_iclamp_active must be true when |e_lat|={:.3} > E_LAT_SPIKE_M={E_LAT_SPIKE_M}",
+            (3.0_f64 - 1.875_f64).abs()
+        );
+        let spike_key: u8 = ctx
+            .blackboard
+            .get("lane_keeper.e_lat_spike")
+            .and_then(|s| s.parse().ok())
+            .expect("e_lat_spike must be set");
+        assert_eq!(
+            spike_key, 1u8,
+            "e_lat_spike BB key must be 1 when clamp active"
+        );
+
+        // And NOT set when truck exactly on offset line (e_lat=0).
+        // Warm up one tick so source_changed=0 on the second call
+        // (first tick always has source_changed=1: prev_lateral_source="" → "spline_road").
+        let (mut lk2, ctx2) = straight_north_plugin_ct();
+        let _ = lk2.try_spline_heading_error(1.875, -1.0, 0.0, 10.0, &ctx2);
+        let _ = lk2.try_spline_heading_error(1.875, -1.0, 0.0, 10.0, &ctx2);
+        assert!(
+            !lk2.crosstrack_iclamp_active,
+            "crosstrack_iclamp_active must be false when e_lat=0 and source stable (< spike threshold)"
+        );
+    }
+
+    // ── Slow-Speed-Guard tests ────────────────────────────────────────────────
+
+    #[test]
+    fn slow_speed_guard_flag_below_threshold() {
+        assert!(
+            is_below_steer_guard_speed(0.0, SLOW_SPEED_GUARD_MS),
+            "standing truck (0 m/s) must be below guard"
+        );
+        assert!(
+            is_below_steer_guard_speed(1.5, SLOW_SPEED_GUARD_MS),
+            "1.5 m/s < {SLOW_SPEED_GUARD_MS} m/s guard"
+        );
+        // Custom threshold override
+        assert!(is_below_steer_guard_speed(2.5, 3.0), "2.5 < 3.0 guard");
+    }
+
+    #[test]
+    fn slow_speed_guard_flag_above_threshold() {
+        assert!(
+            !is_below_steer_guard_speed(2.0, SLOW_SPEED_GUARD_MS),
+            "exactly at guard (2.0 == 2.0) must NOT be below (strict <)"
+        );
+        assert!(
+            !is_below_steer_guard_speed(15.0, SLOW_SPEED_GUARD_MS),
+            "highway speed well above guard"
+        );
+        // Custom threshold override
+        assert!(
+            !is_below_steer_guard_speed(3.0, 3.0),
+            "3.0 == 3.0 must NOT be below"
         );
     }
 }
