@@ -61,11 +61,18 @@ pub struct RoadLookEntry {
     pub lanes_right: u8,
     /// Lane width in metres derived from the lane-type name (e.g. motorway→3.75, local→3.0).
     pub lane_width_m: f32,
+    /// Lateral median shift in metres (road_offset from the SII block).
+    pub road_offset_m: f32,
 }
 
 impl Default for RoadLookEntry {
     fn default() -> Self {
-        Self { lanes_left: 0, lanes_right: 0, lane_width_m: 3.75 }
+        Self {
+            lanes_left: 0,
+            lanes_right: 0,
+            lane_width_m: 3.75,
+            road_offset_m: 0.0,
+        }
     }
 }
 
@@ -173,7 +180,11 @@ pub fn parse_road_look_sii(data: &[u8]) -> HashMap<u64, RoadLookEntry> {
 fn extract_lane_type(line: &str) -> Option<&str> {
     let colon = line.find(':')?;
     let val = line[colon + 1..].trim().trim_matches('"');
-    if val.is_empty() { None } else { Some(val) }
+    if val.is_empty() {
+        None
+    } else {
+        Some(val)
+    }
 }
 
 fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
@@ -184,6 +195,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
     let mut lanes_left: u8 = 0;
     let mut lanes_right: u8 = 0;
     let mut current_lane_width: f32 = 3.75;
+    let mut road_offset: f32 = 0.0;
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
@@ -212,6 +224,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                     lanes_left = 0;
                     lanes_right = 0;
                     current_lane_width = 3.75;
+                    road_offset = 0.0;
                     in_block = true;
                     debug!(token = current_token, name = %current_name, stem = %stem, "road_look block start (modern)");
                 }
@@ -227,6 +240,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                     lanes_left = 0;
                     lanes_right = 0;
                     current_lane_width = 3.75;
+                    road_offset = 0.0;
                     in_block = true;
                     debug!(token = current_token, name = %current_name, stem = %stem, "road_look block start (legacy)");
                 }
@@ -240,6 +254,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                         lanes_left,
                         lanes_right,
                         lane_width_m: current_lane_width,
+                        road_offset_m: road_offset,
                     },
                 );
                 debug!(
@@ -260,6 +275,12 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                 if let Some(typ) = extract_lane_type(line) {
                     current_lane_width = lane_type_to_width(typ);
                 }
+            } else if line.starts_with("road_offset:") {
+                road_offset = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|s| s.trim().parse::<f32>().ok())
+                    .unwrap_or(0.0);
             }
         }
     }
@@ -272,6 +293,7 @@ fn parse_road_look_text(text: &str) -> HashMap<u64, RoadLookEntry> {
                 lanes_left,
                 lanes_right,
                 lane_width_m: current_lane_width,
+                road_offset_m: road_offset,
             },
         );
     }
@@ -340,10 +362,7 @@ fn walk_for_road_look(arc: &mut Box<dyn Archive>) -> Vec<String> {
 /// Returns an empty map (not an error) if no definitions are found.
 pub fn load_road_look(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, RoadLookEntry> {
     // Collect all candidate paths: seed set + directory-walk discovery.
-    let mut path_set: HashSet<String> = ROAD_LOOK_PATHS
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut path_set: HashSet<String> = ROAD_LOOK_PATHS.iter().map(|s| s.to_string()).collect();
 
     for arc in archives.iter_mut() {
         for p in walk_for_road_look(arc) {
@@ -614,7 +633,11 @@ mod tests {
         let e = map.get(&tok).expect("motorway entry must exist");
         assert_eq!(e.lanes_left, 2);
         assert_eq!(e.lanes_right, 2);
-        assert!((e.lane_width_m - 3.75).abs() < 1e-5, "motorway lane width = 3.75, got {}", e.lane_width_m);
+        assert!(
+            (e.lane_width_m - 3.75).abs() < 1e-5,
+            "motorway lane width = 3.75, got {}",
+            e.lane_width_m
+        );
     }
 
     // ── Phase-2e: trucklib_token empirical anchor ────────────────────────────
@@ -626,8 +649,11 @@ mod tests {
     /// trucklib_token algorithm is broken.
     #[test]
     fn trucklib_token_ger7_anchor() {
-        assert_eq!(trucklib_token("ger7"), 479995,
-            "empirical anchor: road.ger7 must hash to 479995 via trucklib encoding");
+        assert_eq!(
+            trucklib_token("ger7"),
+            479995,
+            "empirical anchor: road.ger7 must hash to 479995 via trucklib encoding"
+        );
     }
 
     /// trucklib_token("") must equal 0 (empty stem → no contribution).
@@ -665,17 +691,25 @@ mod tests {
             lanes_right[]: traffic_lane.road.expressway\n\
             lanes_left[]:  traffic_lane.road.expressway\n\
             lanes_left[]:  traffic_lane.road.expressway\n\
+            road_offset: 1.0\n\
             }\n}\n";
         let map = parse_road_look_text(sii);
         let token = trucklib_token("ger7");
         assert_eq!(token, 479995, "anchor token must be 479995");
-        let entry = map.get(&token).expect("road.ger7 entry must be present under trucklib_token(\"ger7\")");
+        let entry = map
+            .get(&token)
+            .expect("road.ger7 entry must be present under trucklib_token(\"ger7\")");
         assert_eq!(entry.lanes_right, 2, "lanes_right (forward) must be 2");
-        assert_eq!(entry.lanes_left,  2, "lanes_left (backward) must be 2");
+        assert_eq!(entry.lanes_left, 2, "lanes_left (backward) must be 2");
         assert!(
             (entry.lane_width_m - 3.75).abs() < 1e-5,
             "expressway lane_width_m must be 3.75, got {}",
             entry.lane_width_m
+        );
+        assert!(
+            (entry.road_offset_m - 1.0).abs() < 1e-5,
+            "road_offset_m must be 1.0, got {}",
+            entry.road_offset_m
         );
     }
 
@@ -694,14 +728,43 @@ mod tests {
             lanes_right[]: traffic_lane.road.expressway\n\
             lanes_left[]:  traffic_lane.road.expressway\n\
             lanes_left[]:  traffic_lane.road.expressway\n\
+            road_offset: 1.0\n\
             }\n}\n";
         let map = parse_road_look_text(sii);
         let token = trucklib_token("ger7");
         assert_eq!(token, 479995);
-        let entry = map.get(&token).expect("modern road_look.ger_road.ger7 must map to token 479995");
+        let entry = map
+            .get(&token)
+            .expect("modern road_look.ger_road.ger7 must map to token 479995");
         assert_eq!(entry.lanes_right, 2);
-        assert_eq!(entry.lanes_left,  2);
+        assert_eq!(entry.lanes_left, 2);
         assert!((entry.lane_width_m - 3.75).abs() < 1e-5);
+        assert!(
+            (entry.road_offset_m - 1.0).abs() < 1e-5,
+            "road_offset_m must be 1.0, got {}",
+            entry.road_offset_m
+        );
+    }
+
+    /// A road_look block with no road_offset line must default road_offset_m to 0.0.
+    #[test]
+    fn road_offset_defaults_to_zero() {
+        let sii = "SiiNunit\n{\n\
+            road_look : road.ger7 {\n\
+            lanes_right[]: traffic_lane.road.expressway\n\
+            lanes_right[]: traffic_lane.road.expressway\n\
+            lanes_left[]:  traffic_lane.road.expressway\n\
+            lanes_left[]:  traffic_lane.road.expressway\n\
+            }\n}\n";
+        let map = parse_road_look_text(sii);
+        let entry = map
+            .get(&trucklib_token("ger7"))
+            .expect("ger7 entry must be present");
+        assert!(
+            entry.road_offset_m.abs() < 1e-5,
+            "missing road_offset must default to 0.0, got {}",
+            entry.road_offset_m
+        );
     }
 
     // ── Phase-2e: expressway lane width ─────────────────────────────────────
@@ -732,12 +795,17 @@ mod tests {
             lanes_left[]: traffic_lane.road.local\n\
             }\n}\n";
         let map = parse_road_look_text(sii);
-        let entry = map.get(&trucklib_token("oneway"))
+        let entry = map
+            .get(&trucklib_token("oneway"))
             .expect("oneway entry must be present");
-        assert_eq!(entry.lanes_right, 0,
-            "CONCERN-4: road with no lanes_right[] entries must produce lanes_right=0");
-        assert_eq!(entry.lanes_left, 2,
-            "lanes_left must still be counted correctly");
+        assert_eq!(
+            entry.lanes_right, 0,
+            "CONCERN-4: road with no lanes_right[] entries must produce lanes_right=0"
+        );
+        assert_eq!(
+            entry.lanes_left, 2,
+            "lanes_left must still be counted correctly"
+        );
     }
 
     // ── Phase-2e: load_road_look merge — note on testability ─────────────────

@@ -48,9 +48,71 @@ const SPLINE_LOOKAHEAD_MAX_HOPS: usize = 64;
 /// Phase 2d: Max laterale Distanz Truck↔Hop-Segment (Centerline), bevor der
 /// Spline-Pfad auf Catmull zurückfällt (Schutz gegen verirrte Projektionen,
 /// härtet Finding A zusätzlich ab). Großzügig: korrekt in der rechten Spur
-/// liegt der Truck bis ~17m (5-spurig) von der Centerline; >40m = nicht auf
-/// diesem Hop.
-const MAX_HOP_PROJECTION_DIST_M: f32 = 40.0;
+/// liegt der Truck bis ~17m (5-spurig) von der Centerline.
+///
+/// Phase 2h-Befund3-Fix: 40 → 50 m. Diagnose an Kreuzung 1051105/1051103 zeigte:
+/// der korrekte On-Route-Hop 1051103 liegt im Eintrittsfenster (t=6.3–9.8)
+/// durchgehend bei 40.15–41.77 m — KNAPP über 40 m. Der dist-Filter verwarf ihn
+/// → Fallback auf globalen nearest → Abbieger 1051105 → off_route → Catmull. 50 m
+/// deckt die gemessenen 42 m mit Marge ab, bleibt aber moderat genug um legitime
+/// nahe Off-Route-Segmente (echter Spurwechsel) nicht zu überstimmen.
+const MAX_HOP_PROJECTION_DIST_M: f32 = 50.0;
+/// Phase 2h-Wurzelfix: max. Richtungsknick (Grad) an einem Walk-Hop-Übergang,
+/// bevor der Lookahead-Walk STOPPT statt über den Knick auf ein abknickendes
+/// Segment zu zielen. Gemessen als |Δheading| zwischen auslaufender Tangente
+/// (cur, t=1.0) und einlaufender Tangente (Kandidat, t=0.0). Normale Kurven
+/// haben an der Naht <~20° (kontinuierliche Hermite-Tangenten), Abzweig-Knicke
+/// >40° (Diag4: 66°). Per Blackboard `plugin.lane_keeper.kink_stop_deg` justierbar.
+const KINK_STOP_DEG: f32 = 35.0;
+/// Phase 2h-Wurzelfix: hält der Kink-Stop auf DEMSELBEN Hop länger als dieses
+/// Fenster an (Truck kommt nicht am Knick vorbei), fällt der Lane-Keeper auf den
+/// Catmull-Pfad zurück (geglättete Route-Waypoints runden die Kreuzung) statt
+/// dauerhaft kurz vor dem Knick zu kleben. Dead-Lock-Schutz.
+const KINK_STUCK_FALLBACK_S: f64 = 4.0;
+/// Phase 2h-Wurzelfix v2 (Richtung B): interne Krümmung (Grad, t=0→final_t) eines
+/// PREFAB-Landesegments, ab der der Lane-Keeper auf Catmull übergeht statt heading-only
+/// auf einen fernen Kurvenpunkt zu zielen (Diag5: 60–100° → herr-Spike → AutoReplan).
+/// Catmull rundet die Kreuzung (empirisch herr <0.5). Per Blackboard
+/// `plugin.lane_keeper.prefab_curve_fallback_deg` justierbar.
+const PREFAB_CURVE_FALLBACK_DEG: f32 = 40.0;
+/// Austritts-Hysterese: erst zurück auf Spline wenn die interne Krümmung wieder
+/// unter (Schwelle − Margin) liegt. Verhindert Flackern an der Schwelle.
+const PREFAB_CURVE_EXIT_MARGIN_DEG: f32 = 10.0;
+/// Phase 2h-Befund4-Fix: Plausibilitäts-Obergrenze (Grad) für den prefab_curve_latch
+/// (Latch-EINTRITT). Über diesem Wert gilt die gemessene interne Krümmung als
+/// mis-orientiertes Junction-Node-Tangenten-Artefakt (m0 = From-Node-Quaternion-
+/// Forward zeigt an Kreuzungen bis ~131° vom echten Connector-Verlauf weg). In
+/// diesem Regime feuert der Latch NICHT — das route-aware-Spline-Tracking hat das
+/// korrekte On-Route-Segment ohnehin und ist besser als Catmull (das heading-only
+/// in die Kreuzungsbeule zielt).
+///
+/// Default 100° (Reviewer-Befund4): legitime enge Connector (Kreisverkehr-Segmente,
+/// Autobahnrampen, scharfe Stadtabbieger) können intern 95–105° drehen und sollen
+/// noch per Catmull gerundet werden; das beobachtete Artefakt liegt bei 131° (>>100).
+/// Per Blackboard `plugin.lane_keeper.intk_plausible_max_deg`.
+const INTK_PLAUSIBLE_MAX_DEG: f32 = 100.0;
+/// Phase 2h-Befund4-Fix: Hysterese-Margin am Cap (Grad). Eintritt nur bis
+/// `INTK_PLAUSIBLE_MAX_DEG` (100°); ein bereits aktiver Latch wird erst über
+/// `INTK_PLAUSIBLE_MAX_DEG + diese Margin` (110°) beendet. Das Totband [100,110]°
+/// verhindert Frame-zu-Frame-Flackern (Latch↔Spline) wenn intK durch
+/// Quaternion-Rauschen (±2–5°) um den Cap oszilliert.
+const INTK_PLAUSIBLE_MAX_EXIT_MARGIN_DEG: f32 = 10.0;
+/// Phase 2h-Befund2-Fix: absolute Untergrenze für den Catmull-Kurven-Lookahead (m).
+/// Inverse-Square-Skalierung: factor = (PREFAB_CURVE_FALLBACK_DEG / internal_kink_deg)^2
+/// bei 60°: (40/60)^2=0.44 → 12.5m → ~5.5m; bei 80°: (40/80)^2=0.25 → ~3.1m.
+/// BB-Override: `plugin.lane_keeper.catmull_min_look_ahead_m`.
+const CATMULL_CURVE_MIN_LOOK_AHEAD: f64 = 3.0;
+/// Phase 2h-Befund2-Fix (Route-Hop-Limit): maximale Anzahl Route-Hops die der
+/// Catmull-Lookahead-Walk vorausschauen darf. Verhindert, dass der Walk um
+/// Kreuzungskurven herum auf Wegpunkte jenseits der Kreuzungsmitte zielt.
+/// BB-Override: `plugin.lane_keeper.catmull_max_route_hops`.
+const CATMULL_MAX_ROUTE_HOPS: usize = 2;
+/// Phase 2h-Befund3-Fix: Anzahl R-tree-kNN-Kandidaten, die der route-aware
+/// nearest-Query durchsucht, um den geometrisch nächsten ON-ROUTE-Treffer zu
+/// finden. Höher als die globale Query (8), weil der On-Route-Ast an Kreuzungen
+/// etwas weiter weg liegen kann als der geometrisch nächste Abbieger. R-tree-kNN
+/// (`take(N)`), KEIN Linearscan über alle Segmente.
+const ROUTE_NEAREST_CANDIDATES: usize = 24;
 
 // ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
@@ -60,6 +122,17 @@ const DEFAULT_KD: f64 = 0.3;
 /// Block-2: max heading error (radians) before lane-keeper suspends steering.
 /// ~80°: covers normal curves/lane-changes (≤45°) but blocks clear mismatch cases.
 pub(crate) const HEADING_MISMATCH_THRESHOLD_RAD: f64 = 1.4;
+
+/// Phase 2h-Safety: geschwindigkeits-gerampte Bremsung wenn die Lenkautorität
+/// verloren ist (Heading-Stage AutoReplan/Disengaging). brake = speed_ms * PER_MS,
+/// geklemmt — sanft bei langsamer Fahrt, stärker bei höherem Tempo. Wird der Truck
+/// unter der Bremsung langsamer, sinkt die Bremse → sauberes Ausrollen.
+const SAFETY_BRAKE_PER_MS: f64 = 0.072; // ~0.30 bei 15 km/h, ~0.60 bei 30 km/h
+const SAFETY_BRAKE_MIN: f64 = 0.15; // Halte-Bremse bis Stillstand
+const SAFETY_BRAKE_MAX: f64 = 0.80; // keine Vollbremsung (Auffahrschutz)
+/// Phase 2h-Safety: AutoReplan ist erholbar — erst nach diesem Zeitfenster ohne
+/// Erholung sauber disengagen. Disengaging (Latch) eskaliert SOFORT (kein Timeout).
+const SAFETY_AUTOREPLAN_DISENGAGE_S: f64 = 15.0;
 
 /// Block-2: max steering change per tick.
 const STEERING_MAX_DELTA_PER_TICK: f64 = 0.1;
@@ -112,6 +185,18 @@ pub struct LaneKeeperPlugin {
     seg_by_from_to: HashMap<(u64, u64), usize>,
     cached_route_node_ids: Vec<u64>,
     cached_route_hash: u64,
+    /// Phase 2h-Befund3-Fix: Menge der Segment-Indizes, die auf der aktuellen
+    /// Route-Hop-Sequenz liegen. Aus `seg_by_from_to` + `cached_route_node_ids`
+    /// gebaut, nur bei Routenwechsel neu (kein Per-Tick-Rebuild). Treibt den
+    /// route-aware nearest-Query: an Kreuzungen wird der On-Route-Ast bevorzugt
+    /// statt des geometrisch nächsten Abbiegers.
+    cached_route_seg_set: std::collections::HashSet<usize>,
+    /// Phase 2h-Befund3-Fix: Route-Hash, für den `cached_route_seg_set` gebaut
+    /// wurde. Rebuild genau dann, wenn != `cached_route_hash` (ein Rebuild pro
+    /// Routenwechsel, kein Per-Tick-Rebuild — auch nicht bei legitim leerem Set,
+    /// z.B. Ferry-Route). Bleibt stale, falls `seg_by_from_to` beim Wechsel noch
+    /// leer war (Index nicht geladen) → Rebuild greift, sobald die Quelle bereit ist.
+    cached_route_seg_hash: u64,
     node_progress_idx: usize,
     /// true solange der Spline-Pfad im letzten Tick aktiv war (für sauberen
     /// Re-Sync des Catmull-progress_idx beim Übergang Spline→Catmull).
@@ -127,6 +212,29 @@ pub struct LaneKeeperPlugin {
     /// tatsächlichen `node_progress_idx`-Schreiben (re-anchor-Scan-Write) kommt.
     /// called wächst aber reached NICHT → eine Bedingung VOR dem Scan bricht ab.
     reanchor_reached_write: u64,
+    /// Phase 2h-Diag (read-only): lane_offset_applied_m des letzten Ticks,
+    /// um den Offset-Sprung (delta) an road/prefab/Catmull-Grenzen zu messen.
+    prev_lane_offset_m: f32,
+    /// Phase 2h-Diag (read-only): lateral_source des letzten Ticks,
+    /// um Source-Wechsel (spline_road↔prefab↔catmull) pro Tick zu detektieren.
+    prev_lateral_source: String,
+
+    /// Phase 2h-Safety: Sekunden (dt-akkumuliert) seit Eintritt in AutoReplan ohne
+    /// Erholung. Tick-Rate-robust statt Frame-Zähler. Reset bei Stage-Recovery.
+    safety_autoreplan_secs: f64,
+
+    /// Phase 2h-Wurzelfix: akkumulierte Sekunden anhaltenden Kink-Stops auf demselben
+    /// Hop (dt-basiert). Reset sobald der Walk NICHT am Knick stoppt oder der Hop wechselt.
+    kink_stuck_secs: f64,
+    /// Der Hop (from,to) auf dem der Kink-Stop gerade akkumuliert.
+    kink_stuck_hop: (u64, u64),
+
+    /// Phase 2h-Wurzelfix v2: true solange der Catmull-Fallback wegen interner
+    /// Prefab-Krümmung aktiv ist (margin-basierte Hysterese). Latch über Ticks.
+    prefab_curve_latched: bool,
+    /// Phase 2h-Befund2-Fix: interne Krümmung (Grad) zum Zeitpunkt des letzten
+    /// prefab_curve_latched=true. Struct-Feld statt BB-Read (kein Stale-Risiko).
+    prefab_curve_kink_deg: f64,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -154,11 +262,20 @@ impl Default for LaneKeeperPlugin {
             seg_by_from_to: HashMap::new(),
             cached_route_node_ids: Vec::new(),
             cached_route_hash: 0,
+            cached_route_seg_set: std::collections::HashSet::new(),
+            cached_route_seg_hash: 0,
             node_progress_idx: 0,
             was_spline_active: false,
             route_miss_sample_logged: false,
             reanchor_called_count: 0,
             reanchor_reached_write: 0,
+            prev_lane_offset_m: 0.0,
+            prev_lateral_source: String::new(),
+            safety_autoreplan_secs: 0.0,
+            kink_stuck_secs: 0.0,
+            kink_stuck_hop: (0, 0),
+            prefab_curve_latched: false,
+            prefab_curve_kink_deg: 0.0,
         }
     }
 }
@@ -212,6 +329,71 @@ impl LaneKeeperPlugin {
             self.level_4_entered_at_tick = None;
             self.previous_steering_out = 0.0;
         }
+    }
+
+    /// Phase 2h-Safety: einheitliche Verzögerungs-Request bei Verlust der
+    /// Lenkautorität. `cause` = Diagnose-Label (z.B. "autoreplan", "heading_mismatch",
+    /// "disengaging"). `immediate_disengage`=true → sofort disengage anfordern (Latch-
+    /// Stage). Sonst dt-Akkumulation + Disengage nach SAFETY_AUTOREPLAN_DISENGAGE_S.
+    #[allow(clippy::too_many_arguments)]
+    fn safety_brake_request(
+        &mut self,
+        cause: &str,
+        safety_state: &str,
+        immediate_disengage: bool,
+        speed_ms: f64,
+        dt: f64,
+        err: f64,
+        ctx: &PluginContext,
+    ) -> Option<ControlRequest> {
+        let brake = (speed_ms * SAFETY_BRAKE_PER_MS).clamp(SAFETY_BRAKE_MIN, SAFETY_BRAKE_MAX);
+        self.previous_steering_out = 0.0;
+        self.pid.reset();
+
+        if immediate_disengage {
+            ctx.blackboard.set("autopilot.disengage_requested", "true");
+            tracing::warn!("[lane-keeper] {cause}: lane authority lost → immediate disengage");
+        } else {
+            self.safety_autoreplan_secs += dt;
+            if self.safety_autoreplan_secs > SAFETY_AUTOREPLAN_DISENGAGE_S {
+                ctx.blackboard.set("autopilot.disengage_requested", "true");
+                tracing::warn!(
+                    "[lane-keeper] {cause} hung {:.1}s → disengage",
+                    self.safety_autoreplan_secs
+                );
+            }
+        }
+
+        ctx.blackboard.set("lane_keeper.returned_none", "false");
+        ctx.blackboard
+            .set("lane_keeper.null_steer_cause", "safety_brake_active");
+        ctx.blackboard
+            .set("lane_keeper.skip_reason", "heading_stage");
+        ctx.blackboard.set("lane_keeper.safety_state", safety_state);
+        ctx.blackboard
+            .set("lane_keeper.safety_brake", format!("{brake:.4}"));
+        ctx.blackboard.set(
+            "lane_keeper.safety_autoreplan_secs",
+            format!("{:.2}", self.safety_autoreplan_secs),
+        );
+        ctx.blackboard
+            .set("lane_keeper.steering_suppressed", "true");
+        ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
+        ctx.blackboard
+            .set("lane_keeper.error_rad", format!("{err:.6}"));
+        ctx.blackboard.set("lane_keeper.steering_out", "0.000000");
+        ctx.blackboard.set("lane_keeper.active", "true");
+        ctx.blackboard
+            .set("lane_keeper.steering_rate_limited", "false");
+        ctx.blackboard
+            .set("lane_keeper.steering_delta_clamped", "0.0000");
+
+        Some(ControlRequest {
+            steering: None,
+            throttle: Some(0.0),
+            brake: Some(brake),
+            priority: PRIORITY_LEVEL4,
+        })
     }
 
     /// Apply the rate-limiter and return the clamped steering value.
@@ -322,6 +504,23 @@ impl LaneKeeperPlugin {
             self.node_progress_idx = 0;
             self.route_miss_sample_logged = false; // neue Route → Sample erneut erlauben
         }
+        // Phase 2h-Befund3-Fix: On-Route-Segmentmenge cachen. Rebuild genau einmal
+        // pro Routenwechsel (Hash-Tracking, kein Per-Tick-Rebuild — auch nicht bei
+        // legitim leerem Set). Jeder konsekutive Hop (route[j],route[j+1]) →
+        // segment_idx. Wenn seg_by_from_to noch leer ist (Index nicht geladen),
+        // bleibt der seg-Hash stale → Rebuild greift, sobald die Quelle bereit ist.
+        if self.cached_route_seg_hash != self.cached_route_hash {
+            let mut set = std::collections::HashSet::new();
+            for w in self.cached_route_node_ids.windows(2) {
+                if let Some(&seg) = self.seg_by_from_to.get(&(w[0], w[1])) {
+                    set.insert(seg);
+                }
+            }
+            self.cached_route_seg_set = set;
+            if !self.seg_by_from_to.is_empty() {
+                self.cached_route_seg_hash = self.cached_route_hash;
+            }
+        }
         let route = &self.cached_route_node_ids;
         if route.len() < 2 {
             ctx.blackboard
@@ -340,17 +539,149 @@ impl LaneKeeperPlugin {
         // Route (kein Abspringen auf Parallelstraßen).
         let truck_heading_deg = ((-heading) * 360.0).rem_euclid(360.0) as f32; // heading = t.heading [0..1]
         let query = Vec3::new(tx as f32, 0.0, tz as f32); // Y=0 ok: R-tree ist XZ-only
-        let Some(hit) = index.nearest_with_heading_filter(query, truck_heading_deg, 8) else {
+
+        // Phase 2h-Befund3-Fix: ROUTE-AWARE nearest. Bevorzuge den geometrisch
+        // nächsten ON-ROUTE-Treffer (innerhalb dist_gate). Nur wenn kein
+        // Route-Segment in Reichweite ist, fällt der Code auf die alte globale
+        // heading-gefilterte Query zurück. Damit schnappt der Spline an Kreuzungen
+        // nicht mehr auf den geometrisch näheren Abbieger (off-route → None →
+        // Catmull-Querziehen), sondern bleibt auf dem Route-Ast.
+        let global_hit = index.nearest_with_heading_filter(query, truck_heading_deg, 8);
+        // Info des globalen Treffers VOR dem evtl. Move sichern (für Diag).
+        let global_seg_info = global_hit.as_ref().map(|gh| {
+            let f = index.segments[gh.segment_idx].from_uid;
+            let t = index.segments[gh.segment_idx].to_uid;
+            (gh.segment_idx, f, t)
+        });
+        let route_seg_set_len = self.cached_route_seg_set.len();
+        // Phase 2h-Befund3-Diag (temporär): rohen On-Route-Treffer VOR dem Gate
+        // festhalten. So zeigen die Diag-Keys eindeutig, WARUM der route-aware-Query
+        // ggf. leer bleibt: (a) Set leer / kein On-Route-Kandidat unter den N
+        // nächsten → query_hits=0; (b) dist > Gate; (c) Heading-Gate verwirft.
+        let raw_route_hit = if self.cached_route_seg_set.is_empty() {
+            None // keine Route → altes Verhalten (globaler nearest)
+        } else {
+            let route_seg_set = &self.cached_route_seg_set;
+            index.nearest_with_projection_filtered(query, ROUTE_NEAREST_CANDIDATES, |idx, _| {
+                route_seg_set.contains(&idx)
+            })
+        };
+        let route_query_hits = u8::from(raw_route_hit.is_some());
+        let (route_best_dist, route_best_hop, route_heading_diff) = match &raw_route_hit {
+            Some(h) => {
+                let f = index.segments[h.segment_idx].from_uid;
+                let t = index.segments[h.segment_idx].to_uid;
+                let mut d = (h.heading_deg - truck_heading_deg).rem_euclid(360.0);
+                if d > 180.0 {
+                    d -= 360.0;
+                }
+                (h.dist_m, format!("{f}->{t}"), d.abs())
+            }
+            None => (-1.0f32, "none".to_string(), -1.0f32),
+        };
+        // Gate anwenden (dist ≤ MAX_HOP_PROJECTION_DIST_M UND heading ≤60°) — Logik
+        // unverändert ggü. dem deployten Stand. nearest_with_projection_filtered hat
+        // KEINEN Heading-Filter; das Gate ≤60° spiegelt dot≥0.5 der globalen Query
+        // (heading_deg und truck_heading_deg teilen dieselbe CW-von-Nord-Konvention).
+        let route_hit = raw_route_hit.filter(|h| {
+            if h.dist_m > MAX_HOP_PROJECTION_DIST_M {
+                return false;
+            }
+            let mut d = (h.heading_deg - truck_heading_deg).rem_euclid(360.0);
+            if d > 180.0 {
+                d -= 360.0;
+            }
+            d.abs() <= 60.0
+        });
+        let route_gate_rejected = u8::from(route_query_hits == 1 && route_hit.is_none());
+        // Diag-Keys IMMER setzen (vor jedem Branch/early-return), damit das
+        // t=16-23-Fenster vollständig belegt ist.
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_seg_set_size",
+            route_seg_set_len.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_query_hits",
+            route_query_hits.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_gate_rejected",
+            route_gate_rejected.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_best_dist_m",
+            format!("{route_best_dist:.2}"),
+        );
+        ctx.blackboard
+            .set("lane_keeper.nearest_route_best_hop", route_best_hop);
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_heading_diff_deg",
+            format!("{route_heading_diff:.1}"),
+        );
+        let (hit, nearest_route_filtered) = if let Some(rh) = route_hit {
+            (rh, true)
+        } else if let Some(gh) = global_hit {
+            (gh, false)
+        } else {
             ctx.blackboard
                 .set("lane_keeper.fallback_reason", "route_miss");
             ctx.blackboard
                 .set("lane_keeper.fallback_detail", "no_nearest");
+            ctx.blackboard
+                .set("lane_keeper.nearest_route_filtered", "false");
+            ctx.blackboard.set(
+                "lane_keeper.nearest_route_seg_set_size",
+                route_seg_set_len.to_string(),
+            );
             return None;
         };
+
+        // Task 3 Diag: belegen, dass der Route-Ast gewählt wurde, und welcher
+        // Off-route-Kandidat (globaler nearest) dabei verworfen wurde.
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_filtered",
+            nearest_route_filtered.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_seg_set_size",
+            route_seg_set_len.to_string(),
+        );
+        match global_seg_info {
+            Some((gseg, gf, gt)) if nearest_route_filtered && gseg != hit.segment_idx => {
+                ctx.blackboard.set(
+                    "lane_keeper.nearest_discarded_offroute_seg",
+                    gseg.to_string(),
+                );
+                ctx.blackboard.set(
+                    "lane_keeper.nearest_discarded_offroute_hop",
+                    format!("{gf}->{gt}"),
+                );
+            }
+            _ => {
+                ctx.blackboard
+                    .set("lane_keeper.nearest_discarded_offroute_seg", "none");
+                ctx.blackboard
+                    .set("lane_keeper.nearest_discarded_offroute_hop", "none");
+            }
+        }
+
         let cur_seg = hit.segment_idx;
         let t_cur = hit.t;
         let seg_f = index.segments[cur_seg].from_uid;
         let seg_t = index.segments[cur_seg].to_uid;
+        // Phase 2h-Diag3 (read-only, Task 2): which segment the global nearest-query
+        // picked when the source flips catmull→spline. A jump here (vs the prior
+        // tick) is the candidate cause of the herr spike.
+        ctx.blackboard
+            .set("lane_keeper.nearest_segment_id", cur_seg.to_string());
+        ctx.blackboard
+            .set("lane_keeper.nearest_segment_t", format!("{t_cur:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.nearest_seg_hop", format!("{seg_f}->{seg_t}"));
+        ctx.blackboard.set(
+            "lane_keeper.nearest_heading_filter_applied",
+            hit.heading_filter_applied.to_string(),
+        );
 
         // Route-Relevanz-Prüfung (Route-Constraint). Linearer Scan über die Route (~8 Knoten):
         //   on-route Hop:        ∃ j: route[j]==F && route[j+1]==T → progress=j,  end=j+1
@@ -390,13 +721,15 @@ impl LaneKeeperPlugin {
                 } else {
                     "feeds_into_no_forward_hop"
                 };
-                ctx.blackboard.set("lane_keeper.fallback_reason", "off_route");
+                ctx.blackboard
+                    .set("lane_keeper.fallback_reason", "off_route");
                 ctx.blackboard.set("lane_keeper.fallback_detail", detail);
                 return None;
             }
             (k, k)
         } else {
-            ctx.blackboard.set("lane_keeper.fallback_reason", "off_route");
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "off_route");
             ctx.blackboard
                 .set("lane_keeper.fallback_detail", "nearest_not_on_route");
             return None;
@@ -422,8 +755,10 @@ impl LaneKeeperPlugin {
         };
         ctx.blackboard
             .set("lane_keeper.reanchor_scan_window", "global");
-        ctx.blackboard
-            .set("lane_keeper.reanchor_best_idx", node_progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.reanchor_best_idx",
+            node_progress_idx.to_string(),
+        );
         ctx.blackboard
             .set("lane_keeper.reanchor_best_dist_m", format!("{dist:.2}"));
         self.reanchor_reached_write += 1;
@@ -431,8 +766,10 @@ impl LaneKeeperPlugin {
             "lane_keeper.reanchor_reached_write",
             self.reanchor_reached_write.to_string(),
         );
-        ctx.blackboard
-            .set("lane_keeper.reanchor_idx_written", node_progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.reanchor_idx_written",
+            node_progress_idx.to_string(),
+        );
 
         // seg_idx0 = cur_seg; i0/a0/b0/t_truck auf die nearest-Kante umgestellt.
         let i0 = node_progress_idx;
@@ -472,8 +809,10 @@ impl LaneKeeperPlugin {
             Some(&(nx, nz)) => ((tx - nx).powi(2) + (tz - nz).powi(2)).sqrt(),
             None => -1.0,
         };
-        ctx.blackboard
-            .set("lane_keeper.lookahead_target_dist_m", format!("{look_ahead_target:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.lookahead_target_dist_m",
+            format!("{look_ahead_target:.2}"),
+        );
         ctx.blackboard
             .set("lane_keeper.truck_to_segment_dist_m", format!("{dist:.2}"));
         ctx.blackboard
@@ -482,14 +821,20 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.projection_t", format!("{t_truck:.3}"));
         ctx.blackboard
             .set("lane_keeper.current_seg_length_m", format!("{seg_len:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.current_seg_is_prefab", seg_is_prefab.to_string());
-        ctx.blackboard
-            .set("lane_keeper.dist_to_next_node_m", format!("{dist_to_next_node:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.current_seg_is_prefab",
+            seg_is_prefab.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.dist_to_next_node_m",
+            format!("{dist_to_next_node:.2}"),
+        );
         ctx.blackboard
             .set("lane_keeper.current_hop", format!("{a0}->{b0}"));
-        ctx.blackboard
-            .set("lane_keeper.node_progress_idx", self.node_progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.node_progress_idx",
+            self.node_progress_idx.to_string(),
+        );
         ctx.blackboard.set(
             "lane_keeper.dist_gate_threshold_m",
             format!("{MAX_HOP_PROJECTION_DIST_M:.2}"),
@@ -516,29 +861,54 @@ impl LaneKeeperPlugin {
             Some(&(x, z)) => (x, z, true),
             None => (0.0, 0.0, false),
         };
-        let dxz = |ax: f64, az: f64, bx: f64, bz: f64| ((ax - bx).powi(2) + (az - bz).powi(2)).sqrt();
-        let node_a0_vs_segp0 = if na0_present { dxz(na0x, na0z, sp0x, sp0z) } else { -1.0 };
-        let node_b0_vs_segp1 = if nb0_present { dxz(nb0x, nb0z, sp1x, sp1z) } else { -1.0 };
-        let truck_to_node_a0 = if na0_present { dxz(tx, tz, na0x, na0z) } else { -1.0 };
+        let dxz =
+            |ax: f64, az: f64, bx: f64, bz: f64| ((ax - bx).powi(2) + (az - bz).powi(2)).sqrt();
+        let node_a0_vs_segp0 = if na0_present {
+            dxz(na0x, na0z, sp0x, sp0z)
+        } else {
+            -1.0
+        };
+        let node_b0_vs_segp1 = if nb0_present {
+            dxz(nb0x, nb0z, sp1x, sp1z)
+        } else {
+            -1.0
+        };
+        let truck_to_node_a0 = if na0_present {
+            dxz(tx, tz, na0x, na0z)
+        } else {
+            -1.0
+        };
         let truck_to_segp0 = dxz(tx, tz, sp0x, sp0z);
         ctx.blackboard
             .set("lane_keeper.diag_truck_xz", format!("{tx:.2},{tz:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_a0_xz", format!("{na0x:.2},{na0z:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_b0_xz", format!("{nb0x:.2},{nb0z:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_a0_xz",
+            format!("{na0x:.2},{na0z:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_b0_xz",
+            format!("{nb0x:.2},{nb0z:.2}"),
+        );
         ctx.blackboard
             .set("lane_keeper.diag_seg_p0_xz", format!("{sp0x:.2},{sp0z:.2}"));
         ctx.blackboard
             .set("lane_keeper.diag_seg_p1_xz", format!("{sp1x:.2},{sp1z:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_a0_vs_segp0_m", format!("{node_a0_vs_segp0:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_b0_vs_segp1_m", format!("{node_b0_vs_segp1:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_truck_to_node_a0_m", format!("{truck_to_node_a0:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_truck_to_segp0_m", format!("{truck_to_segp0:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_a0_vs_segp0_m",
+            format!("{node_a0_vs_segp0:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_b0_vs_segp1_m",
+            format!("{node_b0_vs_segp1:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_truck_to_node_a0_m",
+            format!("{truck_to_node_a0:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_truck_to_segp0_m",
+            format!("{truck_to_segp0:.2}"),
+        );
 
         // Task 2: Offset über mehrere Hops — globaler Frame-Versatz (H-B) oder ein einzelnes
         // falsches Mapping (H-A)? Pro Hop: dist(node(route[j]), seg.p0). Konstant ~58m → H-B;
@@ -563,22 +933,46 @@ impl LaneKeeperPlugin {
                 }
             }
         }
-        let mean_diff = if n_diff > 0 { sum_diff / n_diff as f64 } else { -1.0 };
-        ctx.blackboard
-            .set("lane_keeper.diag_node_vs_seg_maxdiff_m", format!("{max_diff:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_vs_seg_meandiff_m", format!("{mean_diff:.2}"));
-        ctx.blackboard
-            .set("lane_keeper.diag_node_vs_seg_per_hop", per_hop.trim().to_string());
+        let mean_diff = if n_diff > 0 {
+            sum_diff / n_diff as f64
+        } else {
+            -1.0
+        };
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_vs_seg_maxdiff_m",
+            format!("{max_diff:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_vs_seg_meandiff_m",
+            format!("{mean_diff:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.diag_node_vs_seg_per_hop",
+            per_hop.trim().to_string(),
+        );
 
         if dist > MAX_HOP_PROJECTION_DIST_M {
             ctx.blackboard
                 .set("lane_keeper.fallback_reason", "dist_gate");
-            ctx.blackboard.set("lane_keeper.fallback_detail", "dist_gate");
+            ctx.blackboard
+                .set("lane_keeper.fallback_detail", "dist_gate");
             return None; // Truck nicht wirklich auf diesem Hop → Catmull-Fallback
         }
 
         let look_ahead = (BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR) as f32;
+
+        // Phase 2h-Wurzelfix: Knick-Schwelle aus Blackboard (justierbar), Diag-Keys initialisieren.
+        let kink_threshold_deg = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.kink_stop_deg")
+            .map(|v| v as f32)
+            .unwrap_or(KINK_STOP_DEG);
+        ctx.blackboard.set(
+            "lane_keeper.kink_threshold_deg",
+            format!("{kink_threshold_deg:.1}"),
+        );
+        ctx.blackboard
+            .set("lane_keeper.walk_stopped_at_kink", "false");
 
         // Multi-Hop Arc-Length-Walk entlang forward Road-Hops. Startet bei cur_seg/t_cur
         // und hängt ab end_route_idx Vorwärts-Route-Hops an. Vereinheitlicht on-route &
@@ -593,12 +987,26 @@ impl LaneKeeperPlugin {
         let mut remaining = look_ahead;
         let mut next_route_idx = end_route_idx; // route-Index des END-Knotens von cur
         let mut hop_count = 0usize;
+        // Phase 2h-Wurzelfix: true wenn der Loop per Kink-Stop verlassen wurde — dann
+        // den Stuck-Zähler NICHT nullen (er muss tick-übergreifend akkumulieren).
+        let mut kink_stopped = false;
+        // Phase 2h-Diag5 (read-only): warum misst der Naht-Check 0°, obwohl fin_seg auf ein
+        // abknickendes Segment springt? Zähle geprüfte Hops + degenerierte Tangenten (Guard-
+        // Skips) + den größten gemessenen NAHT-Knick. Hypothese: der Knick liegt INNERHALB
+        // des Landesegments, nicht an der Naht → Naht-Check sieht ~0°.
+        let mut walk_hops_checked = 0u32;
+        let mut walk_kink_degenerate = 0u32;
+        let mut walk_max_kink_deg = 0.0f32;
+        let mut walk_max_kink_hop = String::new();
 
         let (final_seg, final_t) = loop {
             let arc_remaining = (cur_lut.total_length_m - arc_at).max(0.0);
             if remaining <= arc_remaining {
                 let target_arc = arc_at + remaining;
-                break (cur, t_at_arc_length(&cur_lut, &index.segments[cur], target_arc));
+                break (
+                    cur,
+                    t_at_arc_length(&cur_lut, &index.segments[cur], target_arc),
+                );
             }
             remaining -= arc_remaining;
             hop_count += 1;
@@ -611,6 +1019,63 @@ impl LaneKeeperPlugin {
             let (na, nb) = (route[next_route_idx], route[next_route_idx + 1]);
             match self.seg_by_from_to.get(&(na, nb)) {
                 Some(&ni) => {
+                    // ── Phase 2h-Wurzelfix: Knick-Erkennung am Hop-Übergang cur→ni ──
+                    let tan_cur_end = evaluate_tangent(&index.segments[cur], 1.0);
+                    let tan_ni_start = evaluate_tangent(&index.segments[ni], 0.0);
+                    let lc = (tan_cur_end.x * tan_cur_end.x + tan_cur_end.z * tan_cur_end.z).sqrt();
+                    let ln =
+                        (tan_ni_start.x * tan_ni_start.x + tan_ni_start.z * tan_ni_start.z).sqrt();
+                    walk_hops_checked += 1;
+                    if lc <= 1e-6 || ln <= 1e-6 {
+                        walk_kink_degenerate += 1;
+                    }
+                    if lc > 1e-6 && ln > 1e-6 {
+                        // atan2(x, -z): CW-Heading von Nord (konsistent mit spline.rs evaluate_heading_deg)
+                        let h_cur = tan_cur_end.x.atan2(-tan_cur_end.z);
+                        let h_ni = tan_ni_start.x.atan2(-tan_ni_start.z);
+                        let mut d = h_ni - h_cur;
+                        while d > std::f32::consts::PI {
+                            d -= std::f32::consts::TAU;
+                        }
+                        while d < -std::f32::consts::PI {
+                            d += std::f32::consts::TAU;
+                        }
+                        let kink_deg = d.abs().to_degrees();
+                        // Diag: max gemessener Knick + Hop, auch wenn kein Stop.
+                        if kink_deg > walk_max_kink_deg {
+                            walk_max_kink_deg = kink_deg;
+                            walk_max_kink_hop = format!("{na}->{nb}");
+                        }
+                        ctx.blackboard
+                            .set("lane_keeper.walk_kink_deg", format!("{kink_deg:.4}"));
+                        ctx.blackboard
+                            .set("lane_keeper.walk_kink_hop", format!("{na}->{nb}"));
+                        if kink_deg > kink_threshold_deg {
+                            ctx.blackboard
+                                .set("lane_keeper.walk_stopped_at_kink", "true");
+                            kink_stopped = true;
+                            // Dead-Lock-Schutz: zählt anhaltenden Stop auf DEMSELBEN Hop.
+                            if self.kink_stuck_hop == (na, nb) {
+                                self.kink_stuck_secs += ctx.dt_s.min(0.1);
+                            } else {
+                                self.kink_stuck_hop = (na, nb);
+                                self.kink_stuck_secs = ctx.dt_s.min(0.1);
+                            }
+                            ctx.blackboard.set(
+                                "lane_keeper.kink_stuck_secs",
+                                format!("{:.2}", self.kink_stuck_secs),
+                            );
+                            if self.kink_stuck_secs > KINK_STUCK_FALLBACK_S {
+                                // Truck kommt am Knick nicht vorbei → Catmull übernimmt (rundet die Ecke).
+                                ctx.blackboard
+                                    .set("lane_keeper.fallback_reason", "kink_stuck");
+                                ctx.blackboard
+                                    .set("lane_keeper.fallback_detail", "kink_stuck_catmull");
+                                return None;
+                            }
+                            break (cur, 1.0); // Ziel am Segmentende VOR dem Knick
+                        }
+                    }
                     cur = ni;
                     cur_lut = build_lut(&index.segments[cur]);
                     arc_at = 0.0;
@@ -620,13 +1085,219 @@ impl LaneKeeperPlugin {
             }
         };
 
+        // Phase 2h-Wurzelfix: NUR wenn der Walk OHNE Kink-Stop durchlief, den Stuck-Zähler
+        // nullen. Bei Kink-Stop muss er tick-übergreifend akkumulieren (sonst greift der
+        // KINK_STUCK_FALLBACK_S-Dead-Lock-Schutz nie). Sobald der Truck am Knick vorbei
+        // ist, läuft der nächste Tick sauber bis hierher und der Zähler wird zurückgesetzt.
+        if !kink_stopped {
+            self.kink_stuck_secs = 0.0;
+            self.kink_stuck_hop = (0, 0);
+        }
+
+        // ── Phase 2h-Diag5 (read-only): Naht-Check-Statistik + INTERNER Knick des
+        // Landesegments. Diskriminator:
+        //   walk_max_kink_deg ≈ 0 (Naht stetig) ABER final_internal_kink_deg groß
+        //     → der Knick liegt INNERHALB von final_seg (Prefab/NavCurve dreht von
+        //       t=0 bis final_t) → Naht-only-Check ist blind dafür → Fix muss die
+        //       Segment-INTERNE Krümmung bis final_t prüfen, nicht nur die Naht.
+        //   walk_kink_degenerate > 0 → Tangenten degeneriert → Guard übersprang Stop.
+        ctx.blackboard.set(
+            "lane_keeper.walk_hops_checked",
+            walk_hops_checked.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.walk_kink_degenerate",
+            walk_kink_degenerate.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.walk_max_kink_deg",
+            format!("{walk_max_kink_deg:.4}"),
+        );
+        ctx.blackboard
+            .set("lane_keeper.walk_max_kink_hop", walk_max_kink_hop.clone());
+        // ── Alternative A: interner Knick ab TRUCK-Position statt ab t=0 ──
+        // Befund: evaluate_tangent(final_seg, 0.0) == m0 (From-Node-Quaternion-Forward)
+        // ist an Junction-Knoten ~131–136° mis-orientiert. Die "Beule" sitzt damit am
+        // SEGMENT-ANFANG (t=0); der Truck erfährt sie ab seiner realen Position kaum.
+        // Wir messen die interne Krümmung daher über [t_start_intk, final_t]:
+        //   final_seg == cur_seg → Truck ist auf dem Landesegment → t_start = t_cur
+        //     (echte Projektion). Die m0-Anomalie bei t=0 fällt aus der Latch-
+        //     Entscheidung heraus; der Latch reagiert nur noch auf Krümmung, die der
+        //     Truck ab seiner Position tatsächlich fährt.
+        //   final_seg != cur_seg → Truck fährt final_seg NOCH NICHT (Lookahead reicht
+        //     über den aktuellen Hop hinaus). intK := 0, KEIN Latch (Task-1.b/Option 1):
+        //     die m0-Anomalie eines Lookahead-End-Segments darf die Latch-Entscheidung
+        //     nicht verfälschen. Sobald der Truck auf final_seg projiziert (final_seg
+        //     wird cur_seg), greift die Messung pro Tick neu.
+        let f_tt = evaluate_tangent(&index.segments[final_seg], final_t);
+        let f_lt = (f_tt.x * f_tt.x + f_tt.z * f_tt.z).sqrt();
+        let intk_on_truck_seg = final_seg == cur_seg;
+        let t_start_intk = if intk_on_truck_seg { t_cur } else { 0.0 };
+        let final_internal_kink_deg = if !intk_on_truck_seg {
+            0.0 // Truck fährt final_seg noch nicht → keine intK-getriebene Latch-Entscheidung
+        } else {
+            let f_t0 = evaluate_tangent(&index.segments[final_seg], t_start_intk);
+            let f_l0 = (f_t0.x * f_t0.x + f_t0.z * f_t0.z).sqrt();
+            // Längen-Guards (>1e-6) + atan2((x,-z))-Normierung [0,180] beibehalten.
+            // Leeres Intervall (t_start_intk == final_t, Truck am Segmentende): beide
+            // Tangenten ~gleich → d≈0 → intK≈0 → kein Latch (panik-sicher durch Guards).
+            if f_l0 > 1e-6 && f_lt > 1e-6 {
+                let h0 = f_t0.x.atan2(-f_t0.z);
+                let ht = f_tt.x.atan2(-f_tt.z);
+                let mut d = ht - h0;
+                while d > std::f32::consts::PI {
+                    d -= std::f32::consts::TAU;
+                }
+                while d < -std::f32::consts::PI {
+                    d += std::f32::consts::TAU;
+                }
+                d.abs().to_degrees()
+            } else {
+                -1.0 // degeneriert
+            }
+        };
+        // Heading der Tangente AM Zielpunkt (final_t) — gegen Truck-Heading vergleichbar.
+        let final_tangent_heading_deg = if f_lt > 1e-6 {
+            f_tt.x.atan2(-f_tt.z).to_degrees().rem_euclid(360.0)
+        } else {
+            -1.0
+        };
+        let final_is_prefab = index
+            .metadata
+            .get(final_seg)
+            .and_then(|m| m.as_ref())
+            .map(|m| m.is_prefab)
+            .unwrap_or(false);
+        ctx.blackboard.set(
+            "lane_keeper.final_internal_kink_deg",
+            format!("{final_internal_kink_deg:.4}"),
+        );
+        // Alternative-A-Diag (read-only): ab welcher t und ob auf dem Truck-Segment
+        // gemessen wurde. final_seg != cur_seg → intk_on_truck_seg=false, intK=0.
+        ctx.blackboard
+            .set("lane_keeper.intk_t_start", format!("{t_start_intk:.3}"));
+        ctx.blackboard.set(
+            "lane_keeper.intk_on_truck_seg",
+            intk_on_truck_seg.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.final_tangent_heading_deg",
+            format!("{final_tangent_heading_deg:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.final_seg_is_prefab",
+            final_is_prefab.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.final_seg_length_m",
+            format!("{:.2}", index.segments[final_seg].length_m),
+        );
+
+        // ── Phase 2h-Wurzelfix v2 (Richtung B): interner Krümmungs-Knick → Catmull ──
+        // Diag5/Diag6-Befund: die hohe interne Krümmung tritt NICHT nur auf NavCurve-Prefabs
+        // auf, sondern auch auf ROAD-Segmenten (Edge spannt über eine Kurve/Kreuzung; die
+        // Quaternion-Tangenten von From-/To-Node laufen ~60–100° auseinander). Im SplineIndex
+        // liegen Road-Segmente vor den angehängten NavCurves → das Spike-Segment 1051105 ist
+        // ein Road-Edge mit is_prefab=false. Der Auslöser ist daher die interne Krümmung ALLEIN,
+        // unabhängig vom is_prefab-Flag. `final_is_prefab` wird nur noch zur Diagnose geloggt.
+        let prefab_curve_threshold_deg = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.prefab_curve_fallback_deg")
+            .map(|v| v as f32)
+            .unwrap_or(PREFAB_CURVE_FALLBACK_DEG);
+        // Phase 2h-Befund4-Fix: Plausibilitäts-Obergrenze. Über diesem Wert gilt der
+        // intK als mis-orientiertes Junction-Tangenten-Artefakt (m0 = From-Node-
+        // Quaternion-Forward), KEIN Latch → route-aware-Spline trackt weiter.
+        let intk_plausible_max_deg = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.intk_plausible_max_deg")
+            .map(|v| v as f32)
+            .unwrap_or(INTK_PLAUSIBLE_MAX_DEG);
+        // Hysterese-Totband am Cap (Reviewer-Befund4): EINTRITT nur bis
+        // intk_plausible_max_deg (100°); ein bereits aktiver Latch wird erst über
+        // (cap + Margin) (110°) beendet. Verhindert Frame-zu-Frame-Flackern, wenn
+        // intK durch Quaternion-Rauschen um den Cap oszilliert.
+        let over_cap_entry = final_internal_kink_deg > intk_plausible_max_deg;
+        let over_cap_exit =
+            final_internal_kink_deg > intk_plausible_max_deg + INTK_PLAUSIBLE_MAX_EXIT_MARGIN_DEG;
+        // Eintritt nur im plausiblen Band (threshold, cap]. Austritt unter
+        // (Schwelle − Margin), degeneriert, oder über (cap + Margin).
+        let curve_over = final_internal_kink_deg >= 0.0
+            && final_internal_kink_deg > prefab_curve_threshold_deg
+            && !over_cap_entry;
+        if self.prefab_curve_latched {
+            // Austritt bei: degeneriert, ODER Überschreiten von (cap + Margin),
+            // ODER unter (Schwelle − Margin). Der over_cap_exit-Austritt ist bewusst
+            // (Task-1.3-Entscheidung): steigt intK aus dem legitimen Band (z.B. 85°)
+            // über (cap + Margin) (131° > 110°), verlässt der Latch das Catmull-Regime
+            // SOFORT, statt im Artefakt hängen zu bleiben — der Spline ist dort die
+            // bessere Mechanik, und der route-aware-nearest hat das richtige Segment.
+            // Im Totband [100,110]° HÄLT ein aktiver Latch (kein Flackern).
+            let exit_ok = final_internal_kink_deg < 0.0 // degeneriert → raus
+                || over_cap_exit // Artefakt-Regime (> cap + Margin) → raus
+                || final_internal_kink_deg
+                    < (prefab_curve_threshold_deg - PREFAB_CURVE_EXIT_MARGIN_DEG);
+            if exit_ok {
+                self.prefab_curve_latched = false;
+                self.prefab_curve_kink_deg = 0.0;
+            }
+        } else if curve_over {
+            self.prefab_curve_latched = true;
+            self.prefab_curve_kink_deg = final_internal_kink_deg as f64;
+        }
+        ctx.blackboard.set(
+            "lane_keeper.internal_kink_over_threshold",
+            curve_over.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.prefab_curve_threshold_deg",
+            format!("{prefab_curve_threshold_deg:.1}"),
+        );
+        // Task 2 Diag: true wenn intK über der Plausibilitäts-Obergrenze (Cap) liegt,
+        // also Eintritt blockiert / als Junction-Tangenten-Artefakt behandelt wird.
+        ctx.blackboard.set(
+            "lane_keeper.final_internal_kink_capped",
+            over_cap_entry.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.intk_plausible_max_deg",
+            format!("{intk_plausible_max_deg:.1}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.prefab_curve_fallback",
+            self.prefab_curve_latched.to_string(),
+        );
+        if self.prefab_curve_latched {
+            // Catmull rundet die Kurve (bewährt). compute_heading_error fällt bei None auf Catmull.
+            ctx.blackboard
+                .set("lane_keeper.fallback_reason", "prefab_curve");
+            ctx.blackboard.set(
+                "lane_keeper.fallback_detail",
+                format!("internal_curve_{final_internal_kink_deg:.0}deg"),
+            );
+            return None;
+        }
+
         // Lane-Offset aus Metadaten des Lande-Segments.
+        // Phase 2h: empirische Kalibrier-Konstante additiv NUR auf road-Segmente,
+        // nicht auf prefab (NavCurves liegen bereits auf der Spur-Mitte).
+        let cal = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.lane_offset_cal_m")
+            .unwrap_or(0.0) as f32;
         let seg = &index.segments[final_seg];
+        // Phase 2h-Diag3 (read-only, Task 2): the segment the lookahead-walk
+        // landed on (where the steer target is taken). Differs from
+        // nearest_segment_id once the arc-walk hops forward.
+        ctx.blackboard
+            .set("lane_keeper.lookahead_final_seg_id", final_seg.to_string());
+        ctx.blackboard
+            .set("lane_keeper.lookahead_final_t", format!("{final_t:.3}"));
         let look_point = evaluate(seg, final_t);
         let (lane_offset, source): (f32, &str) = match index.metadata[final_seg] {
             Some(m) if m.is_prefab => (0.0, "spline_prefab"),
-            Some(m) => (m.lane_offset_right_m, "spline_road"),
-            None => (LANE_OFFSET_RIGHT_M as f32, "spline_road"),
+            Some(m) => (m.lane_offset_right_m + cal, "spline_road"),
+            None => (LANE_OFFSET_RIGHT_M as f32 + cal, "spline_road"),
         };
 
         // Right-Normal an der lokalen Tangente (Fahrtrichtung = p0→p1, nur forward-Hops): n=(-tz,tx)/|t|.
@@ -652,8 +1323,10 @@ impl LaneKeeperPlugin {
         let steer_dx = look_x - look_point.x as f64;
         let steer_dz = look_z - look_point.z as f64;
         let steer_target_minus_centerline = (steer_dx * steer_dx + steer_dz * steer_dz).sqrt();
-        ctx.blackboard
-            .set("lane_keeper.steer_target_xz", format!("{look_x:.2},{look_z:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.steer_target_xz",
+            format!("{look_x:.2},{look_z:.2}"),
+        );
         ctx.blackboard.set(
             "lane_keeper.spline_centerline_xz",
             format!("{:.2},{:.2}", look_point.x, look_point.z),
@@ -679,8 +1352,10 @@ impl LaneKeeperPlugin {
         };
         ctx.blackboard
             .set("lane_keeper.right_normal_xz", format!("{n_x:.3},{n_z:.3}"));
-        ctx.blackboard
-            .set("lane_keeper.offset_direction_check", format!("{offset_direction_check:.0}"));
+        ctx.blackboard.set(
+            "lane_keeper.offset_direction_check",
+            format!("{offset_direction_check:.0}"),
+        );
         // Task 3: Truck-IST-Versatz gegen Centerline und gegen die Soll-Offset-Linie.
         //   truck_lat_vs_centerline ≈ 0    → Truck fährt MITTIG (Kette greift nicht)
         //   truck_lat_vs_centerline ≈ +5.6 → Truck auf der Soll-Spur (visuell evtl. fehlinterpretiert)
@@ -702,14 +1377,31 @@ impl LaneKeeperPlugin {
 
         // Diagnostik
         ctx.blackboard.set("lane_keeper.lateral_source", source);
+        ctx.blackboard.set(
+            "lane_keeper.lane_offset_applied_m",
+            format!("{lane_offset:.3}"),
+        );
+        // Phase 2h-Diag: Offset-Sprung an road/prefab/Catmull-Grenzen sichtbar machen.
+        let offset_delta = lane_offset - self.prev_lane_offset_m;
+        let source_changed = if source != self.prev_lateral_source.as_str() {
+            1u8
+        } else {
+            0u8
+        };
         ctx.blackboard
-            .set("lane_keeper.lane_offset_applied_m", format!("{lane_offset:.3}"));
+            .set("lane_keeper.offset_delta_m", format!("{offset_delta:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.source_changed", source_changed.to_string());
+        self.prev_lane_offset_m = lane_offset;
+        self.prev_lateral_source = source.to_string();
         ctx.blackboard
             .set("lane_keeper.lookahead_hop_count", hop_count.to_string());
         ctx.blackboard
             .set("lane_keeper.current_hop", format!("{a0}->{b0}"));
-        ctx.blackboard
-            .set("lane_keeper.node_progress_idx", self.node_progress_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.node_progress_idx",
+            self.node_progress_idx.to_string(),
+        );
         ctx.blackboard
             .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
         ctx.blackboard
@@ -775,6 +1467,25 @@ impl LaneKeeperPlugin {
         }
         ctx.blackboard
             .set("lane_keeper.lateral_source", "catmullrom_fallback");
+        // Phase 2h-Diag: Catmull nutzt festen LANE_OFFSET_RIGHT_M (1.875), nicht spline-Offset.
+        // Logge diesen Wert + Sprung-Delta, damit der Offset-Wechsel im Log sichtbar wird.
+        let catmull_offset = LANE_OFFSET_RIGHT_M as f32;
+        ctx.blackboard.set(
+            "lane_keeper.lane_offset_applied_m",
+            format!("{catmull_offset:.3}"),
+        );
+        let offset_delta = catmull_offset - self.prev_lane_offset_m;
+        let source_changed = if "catmullrom_fallback" != self.prev_lateral_source.as_str() {
+            1u8
+        } else {
+            0u8
+        };
+        ctx.blackboard
+            .set("lane_keeper.offset_delta_m", format!("{offset_delta:.3}"));
+        ctx.blackboard
+            .set("lane_keeper.source_changed", source_changed.to_string());
+        self.prev_lane_offset_m = catmull_offset;
+        self.prev_lateral_source = "catmullrom_fallback".to_string();
 
         if self.waypoints.len() < 2 {
             return 0.0;
@@ -807,26 +1518,114 @@ impl LaneKeeperPlugin {
         let [nx, nz] = self.waypoints[self.progress_idx + 1];
         let advance_check_dist = ((tx - nx).powi(2) + (tz - nz).powi(2)).sqrt();
 
-        let look_ahead = BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR;
+        let base_look_ahead = BASE_LOOK_AHEAD + speed_ms * 3.6 * SPEED_FACTOR;
+        // Phase 2h-Befund2-Fix: bei Catmull-Fallback und hoher interner Krümmung
+        // Lookahead inverse-square skalieren. Nutzt Struct-Felder (self.prefab_curve_latched,
+        // self.prefab_curve_kink_deg) statt BB-Reads, um Stale-Werte zu vermeiden.
+        let curve_factor = if self.prefab_curve_latched && self.prefab_curve_kink_deg >= 1.0 {
+            let threshold = ctx
+                .blackboard
+                .get_f64("plugin.lane_keeper.prefab_curve_fallback_deg")
+                .unwrap_or(PREFAB_CURVE_FALLBACK_DEG as f64);
+            if self.prefab_curve_kink_deg > threshold {
+                (threshold / self.prefab_curve_kink_deg).powi(2).min(1.0)
+            } else {
+                1.0f64
+            }
+        } else {
+            1.0f64
+        };
+        let look_ahead = if self.prefab_curve_latched {
+            let min_la = ctx
+                .blackboard
+                .get_f64("plugin.lane_keeper.catmull_min_look_ahead_m")
+                .unwrap_or(CATMULL_CURVE_MIN_LOOK_AHEAD);
+            (base_look_ahead * curve_factor).max(min_la)
+        } else {
+            base_look_ahead
+        };
+
+        // Phase 2h-Befund2-Fix (Route-Hop-Limit): Walk auf die nächsten N Route-Hops
+        // begrenzen (Option 3A, progress_idx-Rückrechnung). Verhindert dass der Walk
+        // um Kreuzungskurven auf Waypoints jenseits der Kreuzungsmitte zielt.
+        // Fallback auf unbegrenzt wenn cached_route_node_ids < 2 (kein Routing aktiv).
+        let max_hops = ctx
+            .blackboard
+            .get_f64("plugin.lane_keeper.catmull_max_route_hops")
+            .map(|v| v as usize)
+            .unwrap_or(CATMULL_MAX_ROUTE_HOPS);
+        let route_len = self.cached_route_node_ids.len();
+        let walk_end = if route_len >= 2 {
+            let current_route_idx = (self.progress_idx + self.subdivisions / 2) / self.subdivisions;
+            let max_route_idx = (current_route_idx + max_hops).min(route_len - 1);
+            // walk_end ist exklusive Obergrenze (wie waypoints.len() im Fallback-Ast).
+            // max_route_idx * subdivisions ist der INKLUSIVE Waypoint-Index des Ziel-Knotens;
+            // +1 macht daraus die exklusive Grenze für den Slice [walk_start..walk_end].
+            (max_route_idx * self.subdivisions + 1).min(self.waypoints.len())
+        } else {
+            // Kein Routing → altes Verhalten (unbegrenzt).
+            self.waypoints.len()
+        };
+        let walk_start = self.progress_idx + 1;
 
         let mut look_x = tx;
         let mut look_z = tz;
         let mut accumulated = 0.0;
         let mut walk_iterations: usize = 0;
 
-        for &[px, pz] in &self.waypoints[(self.progress_idx + 1)..] {
-            let seg = ((px - look_x).powi(2) + (pz - look_z).powi(2)).sqrt();
-            accumulated += seg;
-            walk_iterations += 1;
-            look_x = px;
-            look_z = pz;
-            if accumulated >= look_ahead {
-                break;
+        if walk_start < walk_end {
+            for &[px, pz] in &self.waypoints[walk_start..walk_end] {
+                let seg = ((px - look_x).powi(2) + (pz - look_z).powi(2)).sqrt();
+                accumulated += seg;
+                walk_iterations += 1;
+                look_x = px;
+                look_z = pz;
+                if accumulated >= look_ahead {
+                    break;
+                }
             }
         }
 
         ctx.blackboard
             .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.catmull_effective_look_ahead_m",
+            format!("{look_ahead:.2}"),
+        );
+        if self.prefab_curve_latched {
+            ctx.blackboard.set(
+                "lane_keeper.catmull_curve_factor",
+                format!("{curve_factor:.3}"),
+            );
+        }
+        // Phase 2h-Befund2 Diag-Keys (Route-Hop-Limit, read-only).
+        ctx.blackboard
+            .set("lane_keeper.catmull_max_hops", max_hops.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.catmull_current_route_idx",
+            if route_len >= 2 {
+                let i = (self.progress_idx + self.subdivisions / 2) / self.subdivisions;
+                i.to_string()
+            } else {
+                "n/a".to_string()
+            },
+        );
+        // catmull_max_waypoint_idx: inklusiver letzter erreichbarer Waypoint-Index
+        // (= walk_end - 1 wenn Route aktiv). catmull_walk_end ist die exklusive Grenze.
+        ctx.blackboard.set(
+            "lane_keeper.catmull_max_waypoint_idx",
+            if route_len >= 2 {
+                walk_end.saturating_sub(1).to_string()
+            } else {
+                "n/a".to_string()
+            },
+        );
+        ctx.blackboard
+            .set("lane_keeper.catmull_walk_end", walk_end.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.catmull_total_waypoints",
+            self.waypoints.len().to_string(),
+        );
         ctx.blackboard
             .set("lane_keeper.look_x", format!("{look_x:.2}"));
         ctx.blackboard
@@ -863,6 +1662,10 @@ impl LaneKeeperPlugin {
             return 0.0;
         }
 
+        // Phase 2h-Diag6 (read-only): rohe Waypoint-Centerline VOR dem Offset festhalten.
+        let catmull_cl_x = look_x;
+        let catmull_cl_z = look_z;
+
         // Shift lookahead right by LANE_OFFSET_RIGHT_M (Rechtsfahrgebot).
         // Right-normal in ETS2 XZ (x=East, z=South): (-dz, dx) / |d|.
         // Mirrors lane-follower/src/lib.rs:913-918. Division safe: 1e-12 guard above.
@@ -872,12 +1675,46 @@ impl LaneKeeperPlugin {
         let dx = look_x - tx;
         let dz = look_z - tz;
 
+        // ── Phase 2h-Diag6 (read-only): Catmull-Pfad-Zielgeometrie ──
+        // Der Catmull-Fallback wendet einen FESTEN LANE_OFFSET_RIGHT_M (1.875 m) an, NICHT den
+        // lane-count-abhängigen 2h-Offset (auf 2-spurig wären das ~5.6 m zur Rechtsspur). Daher
+        // sitzt der Truck auf Catmull-Strecken zu weit links (Fahrbahn-Mitte) → Befund (1).
+        // catmull_centerline = roher Waypoint-Lookahead (vor Offset); catmull_steer_target = nach
+        // 1.875m-Offset (geht in den heading_error); catmull_truck = Truck-Weltpos. Vergleich an
+        // t=29.9 (Quer-Ziel) vs t=44.9 (ok) zeigt, ob der Zielpunkt seitlich/hinter dem Truck liegt.
+        ctx.blackboard.set(
+            "lane_keeper.catmull_steer_target_xz",
+            format!("{look_x:.2},{look_z:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.catmull_centerline_xz",
+            format!("{catmull_cl_x:.2},{catmull_cl_z:.2}"),
+        );
+        ctx.blackboard
+            .set("lane_keeper.catmull_truck_xz", format!("{tx:.2},{tz:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.catmull_offset_applied_m",
+            format!("{LANE_OFFSET_RIGHT_M:.3}"),
+        );
+        // Vektor Truck→Ziel relativ zur Truck-Fahrtrichtung: Längs-/Quer-Anteil. Großer |quer|
+        // bei kleinem längs ⇒ Ziel liegt seitlich ⇒ heading-only zieht quer (Befund 2).
+        let h_cw = (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
+        let fwd_x = h_cw.sin();
+        let fwd_z = -h_cw.cos();
+        let along = dx * fwd_x + dz * fwd_z;
+        let lateral = dx * (-fwd_z) + dz * fwd_x; // +rechts / -links
+        ctx.blackboard
+            .set("lane_keeper.catmull_target_along_m", format!("{along:.2}"));
+        ctx.blackboard.set(
+            "lane_keeper.catmull_target_lateral_m",
+            format!("{lateral:.2}"),
+        );
+
         let target = dx.atan2(-dz);
         // t.heading (Telemetry) is ETS2 SDK format: [0..1] CCW from North.
         // Convert to CW radians (0=N, π/2=E) to match target's convention.
         // Formula mirrors lane-follower: (-raw * 2π).rem_euclid(2π).
-        let heading_rad =
-            (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
+        let heading_rad = (-heading * std::f64::consts::TAU).rem_euclid(std::f64::consts::TAU);
         let mut err = target - heading_rad;
         while err > std::f64::consts::PI {
             err -= 2.0 * std::f64::consts::PI;
@@ -918,6 +1755,13 @@ impl LaneKeeperPlugin {
             self.was_spline_active = false;
             self.cached_route_hash = 0;
             self.cached_route_node_ids.clear();
+            // Phase 2h-Safety: Re-Engage sauber starten.
+            self.safety_autoreplan_secs = 0.0;
+            // Phase 2h-Wurzelfix: Kink-Stuck-Zähler bei Off/Disengage zurücksetzen.
+            self.kink_stuck_secs = 0.0;
+            self.kink_stuck_hop = (0, 0);
+            // Phase 2h-Wurzelfix v2: Prefab-Curve-Latch bei Off/Disengage zurücksetzen.
+            self.prefab_curve_latched = false;
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard
                 .set("lane_keeper.skip_reason", "state_not_active");
@@ -931,14 +1775,19 @@ impl LaneKeeperPlugin {
         if t.engine_rpm < 100.0 {
             self.pid.reset();
             self.previous_steering_out = 0.0;
+            self.safety_autoreplan_secs = 0.0;
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard.set("lane_keeper.skip_reason", "engine_off");
+            ctx.blackboard.set("lane_keeper.safety_state", "normal");
             return None;
         }
 
         if self.waypoints.is_empty() {
-            ctx.blackboard.set("lane_keeper.skip_reason", "no_waypoints");
+            self.safety_autoreplan_secs = 0.0;
+            ctx.blackboard
+                .set("lane_keeper.skip_reason", "no_waypoints");
             ctx.blackboard.set("lane_keeper.active", "false");
+            ctx.blackboard.set("lane_keeper.safety_state", "normal");
             return None;
         }
 
@@ -948,40 +1797,46 @@ impl LaneKeeperPlugin {
             self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms, ctx);
 
         if err.abs() > HEADING_MISMATCH_THRESHOLD_RAD {
-            ctx.blackboard
-                .set("lane_keeper.skip_reason", "heading_mismatch");
-            ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
-            ctx.blackboard
-                .set("lane_keeper.error_rad", format!("{err:.6}"));
-            ctx.blackboard.set("lane_keeper.steering_out", "0.000000");
-            ctx.blackboard.set("lane_keeper.active", "true");
-            ctx.blackboard
-                .set("lane_keeper.steering_rate_limited", "false");
-            ctx.blackboard
-                .set("lane_keeper.steering_delta_clamped", "0.0000");
-            self.previous_steering_out = 0.0;
-            self.pid.reset();
-            return None;
+            // Phase 2h-Safety: heading_mismatch (>1.4 rad / >80°) is the most
+            // dangerous situation — must brake, not coast silently. Recoverable,
+            // so accumulate time like AutoReplan.
+            return self.safety_brake_request(
+                "heading_mismatch",
+                "decelerating_heading_mismatch",
+                false,
+                t.speed_ms,
+                dt,
+                err,
+                ctx,
+            );
         }
         ctx.blackboard.set("lane_keeper.heading_mismatch", "false");
 
         let stage = self.heading_stage.as_deref().unwrap_or("Normal");
+        // Phase 2h-Diag3 (read-only): which heading-stage the lane-keeper acted on
+        // this tick. AutoReplan/Disengaging ⇒ steering nulled below.
+        ctx.blackboard.set("lane_keeper.stage_seen", stage);
 
-        if matches!(stage, "AutoReplan" | "Disengaging") {
-            ctx.blackboard
-                .set("lane_keeper.skip_reason", "heading_stage");
-            ctx.blackboard.set("lane_keeper.heading_mismatch", "true");
-            ctx.blackboard
-                .set("lane_keeper.error_rad", format!("{err:.6}"));
-            ctx.blackboard.set("lane_keeper.steering_out", "0.000000");
-            ctx.blackboard.set("lane_keeper.active", "true");
-            ctx.blackboard
-                .set("lane_keeper.steering_rate_limited", "false");
-            ctx.blackboard
-                .set("lane_keeper.steering_delta_clamped", "0.0000");
-            self.previous_steering_out = 0.0;
-            self.pid.reset();
-            return None;
+        // Copy flags before `&mut self` borrow in safety_brake_request.
+        let is_autoreplan = stage == "AutoReplan";
+        let is_disengaging = stage == "Disengaging";
+        let stage_owned = stage.to_owned();
+        if is_autoreplan || is_disengaging {
+            let immediate = is_disengaging;
+            let state = if immediate {
+                "disengaging_lane_authority_lost"
+            } else {
+                "decelerating_lane_authority_lost"
+            };
+            return self.safety_brake_request(
+                &stage_owned,
+                state,
+                immediate,
+                t.speed_ms,
+                dt,
+                err,
+                ctx,
+            );
         }
 
         let stage_changed = self.previous_heading_stage != self.heading_stage;
@@ -1001,6 +1856,42 @@ impl LaneKeeperPlugin {
 
         let raw = self.pid.update(effective_err, dt).clamp(-1.0, 1.0);
 
+        // ── Phase 2h-Diag2 (read-only): Steer-Herkunft aufschlüsseln ──
+        // Frage A: ist 0.8281 = geklemmter Max-Wert (output_clamp_active=true,
+        // unclamped > 1.0) oder echter Regler-Output (steer_p+steer_i+steer_d
+        // ≈ 0.828, unclamped < 1.0)? Bei kp=0.8, ki=0.1, integral_limit=2.0 ergibt
+        // ein konstanter heading_error≈0.785 rad: p≈0.628, i_sat≈0.2, d≈0 → 0.828
+        // OHNE Clamp → dann ist der ferne Lookahead (heading-only ohne Cross-Track)
+        // die Wurzel, nicht ein Clamp.
+        ctx.blackboard
+            .set("lane_keeper.heading_error_rad", format!("{err:.6}"));
+        ctx.blackboard.set(
+            "lane_keeper.effective_err_rad",
+            format!("{effective_err:.6}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.steer_p_term",
+            format!("{:.6}", self.pid.last_p()),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.steer_i_term",
+            format!("{:.6}", self.pid.last_i()),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.steer_d_term",
+            format!("{:.6}", self.pid.last_d()),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.steer_unclamped",
+            format!("{:.6}", self.pid.last_unclamped()),
+        );
+        ctx.blackboard
+            .set("lane_keeper.steer_raw", format!("{raw:.6}"));
+        ctx.blackboard.set(
+            "lane_keeper.steer_output_clamp_active",
+            self.pid.last_output_clamped().to_string(),
+        );
+
         let delta_raw = raw - self.previous_steering_out;
         let delta_clamped =
             delta_raw.clamp(-STEERING_MAX_DELTA_PER_TICK, STEERING_MAX_DELTA_PER_TICK);
@@ -1017,6 +1908,18 @@ impl LaneKeeperPlugin {
             format!("{:.4}", delta_raw - delta_clamped),
         );
 
+        // Phase 2h-Diag3 (read-only): this tick DID emit a steering opinion
+        // (Some) → distinguishes a real drive tick from a frozen/stale one.
+        ctx.blackboard.set("lane_keeper.returned_none", "false");
+        ctx.blackboard.set("lane_keeper.null_steer_cause", "none");
+        // Phase 2h-Safety: Stage recovery → reset accumulator and clear safety keys.
+        self.safety_autoreplan_secs = 0.0;
+        ctx.blackboard.set("lane_keeper.safety_state", "normal");
+        ctx.blackboard
+            .set("lane_keeper.steering_suppressed", "false");
+        ctx.blackboard.set("lane_keeper.safety_brake", "0.0000");
+        ctx.blackboard
+            .set("lane_keeper.safety_autoreplan_secs", "0.00");
         ctx.blackboard.set("lane_keeper.active", "true");
         ctx.blackboard
             .set("lane_keeper.error_rad", format!("{err:.6}"));
@@ -1420,8 +2323,7 @@ impl Plugin for LaneKeeperPlugin {
             // Phase 2c/2d-Diagnose (read-only): expliziter Negativ-Status.
             ctx.blackboard
                 .set("lane_keeper.spline_index_present", "false");
-            ctx.blackboard
-                .set("lane_keeper.seg_by_from_to_count", "0");
+            ctx.blackboard.set("lane_keeper.seg_by_from_to_count", "0");
             ctx.blackboard
                 .set("lane_keeper.router_graph_present", "false");
         }
@@ -1609,7 +2511,10 @@ mod tests {
         let ctx = fresh_ctx();
         let err = lk.compute_heading_error(0.0, 0.0, 0.0, 10.0, &ctx);
         // After offset: lookahead shifts East → target slightly right of North → err > 0.
-        assert!(err > 0.0, "truck on centerline, target right → positive error, got {err}");
+        assert!(
+            err > 0.0,
+            "truck on centerline, target right → positive error, got {err}"
+        );
     }
 
     #[test]
@@ -1670,7 +2575,10 @@ mod tests {
         let req = lk.tick_request(Some(&t), &ctx).unwrap();
         let s = req.steering.unwrap();
         // After offset: truck on centerline → small positive steering toward right lane.
-        assert!(s > 0.0 && s < 0.2, "positive steering toward right lane expected, got {s}");
+        assert!(
+            s > 0.0 && s < 0.2,
+            "positive steering toward right lane expected, got {s}"
+        );
     }
 
     #[test]
@@ -1682,7 +2590,10 @@ mod tests {
         let ctx = fresh_ctx();
         let err = plugin.compute_heading_error(0.0, 0.0, 0.0, 13.88, &ctx);
         // After offset: lookahead shifts East → err > 0 (turn right toward right lane).
-        assert!(err > 0.0, "truck on centerline, target right → positive error, got {err}");
+        assert!(
+            err > 0.0,
+            "truck on centerline, target right → positive error, got {err}"
+        );
     }
 
     #[test]
@@ -1696,7 +2607,10 @@ mod tests {
         let err = plugin.compute_heading_error(0.0, 0.0, 0.75, 13.88, &ctx);
         // After offset: truck heads East, right lane is South (+z) → target shifts South
         // → target angle > π/2, heading_rad = π/2 → err > 0.
-        assert!(err > 0.0, "truck on centerline heading East, target shifted South → err > 0, got {err}");
+        assert!(
+            err > 0.0,
+            "truck on centerline heading East, target shifted South → err > 0, got {err}"
+        );
     }
 
     #[test]
@@ -1885,17 +2799,36 @@ mod tests {
     }
 
     #[test]
-    fn heading_mismatch_above_threshold_returns_none() {
+    fn heading_mismatch_above_threshold_returns_brake() {
+        // Phase 2h-Safety: err > 1.4 rad must now emit a safety brake request,
+        // not return None silently (Blocker 1 fix).
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [0.0, 100.0]],
             ..Default::default()
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        let req = lk.tick_request(Some(&t), &ctx);
+        assert!(
+            req.is_some(),
+            "heading_mismatch > 1.4 rad must emit a brake ControlRequest"
+        );
+        let req = req.unwrap();
+        assert!(
+            req.steering.is_none(),
+            "steering must be None during heading_mismatch brake"
+        );
+        assert!(
+            req.brake.is_some(),
+            "brake must be Some during heading_mismatch brake"
+        );
+        assert!(
+            req.brake.unwrap() >= SAFETY_BRAKE_MIN,
+            "brake >= SAFETY_BRAKE_MIN"
+        );
         assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_mismatch")
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("decelerating_heading_mismatch")
         );
     }
 
@@ -1999,6 +2932,9 @@ mod tests {
 
     #[test]
     fn auto_replan_stage_returns_none() {
+        // Phase 2h-Safety: AutoReplan now emits a brake request (Some) instead of
+        // None. Verify it returns Some with steering=None, brake>0, and the
+        // correct blackboard keys.
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             heading_stage: Some("AutoReplan".to_string()),
@@ -2006,15 +2942,35 @@ mod tests {
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        let req = lk.tick_request(Some(&t), &ctx);
+        assert!(
+            req.is_some(),
+            "AutoReplan should emit a brake ControlRequest"
+        );
+        let req = req.unwrap();
+        assert!(
+            req.steering.is_none(),
+            "steering must remain None during AutoReplan"
+        );
+        assert!(req.brake.is_some(), "brake must be Some during AutoReplan");
+        assert!(
+            req.brake.unwrap() >= SAFETY_BRAKE_MIN,
+            "brake >= SAFETY_BRAKE_MIN"
+        );
         assert_eq!(
             ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
             Some("heading_stage")
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("decelerating_lane_authority_lost")
         );
     }
 
     #[test]
     fn disengaging_stage_returns_none() {
+        // Phase 2h-Safety: Disengaging now emits a brake request (Some) and sets
+        // autopilot.disengage_requested, instead of returning None silently.
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
             heading_stage: Some("Disengaging".to_string()),
@@ -2022,10 +2978,30 @@ mod tests {
         };
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
-        assert!(lk.tick_request(Some(&t), &ctx).is_none());
+        let req = lk.tick_request(Some(&t), &ctx);
+        assert!(
+            req.is_some(),
+            "Disengaging should emit a brake ControlRequest"
+        );
+        let req = req.unwrap();
+        assert!(
+            req.steering.is_none(),
+            "steering must remain None during Disengaging"
+        );
+        assert!(req.brake.is_some(), "brake must be Some during Disengaging");
         assert_eq!(
             ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
             Some("heading_stage")
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("disengaging_lane_authority_lost")
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true")
         );
     }
 
@@ -2059,6 +3035,8 @@ mod tests {
 
     #[test]
     fn phase_6_5p_guard_takes_priority_over_heading_stage() {
+        // Phase 2h-Safety: heading_mismatch gate now returns a brake request (not None).
+        // The gate still fires BEFORE the stage gate — safety_state = decelerating_heading_mismatch.
         let mut lk = LaneKeeperPlugin {
             waypoints: vec![[0.0, 0.0], [0.0, 100.0]],
             heading_stage: Some("Normal".to_string()),
@@ -2067,10 +3045,16 @@ mod tests {
         let t = make_telemetry(20.0, 0.0);
         let ctx = ctx_with_state("Active");
         let result = lk.tick_request(Some(&t), &ctx);
-        assert!(result.is_none());
+        assert!(
+            result.is_some(),
+            "heading_mismatch gate must emit brake request"
+        );
+        let result = result.unwrap();
+        assert!(result.steering.is_none());
+        assert!(result.brake.is_some());
         assert_eq!(
-            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
-            Some("heading_mismatch")
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("decelerating_heading_mismatch")
         );
     }
 
@@ -2376,7 +3360,12 @@ mod tests {
             lanes_opposite: lanes,
             lanes_total: lanes * 2,
             lane_width_m: w,
-            lane_offset_right_m: if prefab { 0.0 } else { (lanes as f32 - 0.5) * w },
+            lane_offset_right_m: if prefab {
+                0.0
+            } else {
+                (lanes as f32 - 0.5) * w
+            },
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: prefab,
         }
@@ -2397,8 +3386,8 @@ mod tests {
         let bb = SharedBlackboard::new();
         bb.set("autopilot.state", "Active");
         bb.set("router.route_node_ids", route_json);
-        let mut ctx =
-            PluginContext::new("lane-keeper", bb).with_spline_index(Arc::clone(&idx), road_seg_count);
+        let mut ctx = PluginContext::new("lane-keeper", bb)
+            .with_spline_index(Arc::clone(&idx), road_seg_count);
         ctx.graph = Some(Arc::clone(&rg));
         let mut lk = LaneKeeperPlugin::default();
         lk.on_load(&ctx);
@@ -2455,8 +3444,14 @@ mod tests {
             .get("lane_keeper.look_x")
             .and_then(|s| s.parse::<f64>().ok())
             .expect("look_x must parse");
-        assert!(look_x > 0.0, "right of North-travel = East (+x), got {look_x}");
-        assert!(err > 0.0, "target right of heading → positive error, got {err}");
+        assert!(
+            look_x > 0.0,
+            "right of North-travel = East (+x), got {look_x}"
+        );
+        assert!(
+            err > 0.0,
+            "target right of heading → positive error, got {err}"
+        );
     }
 
     /// Test 3: route hop is reversed vs. the indexed segment direction →
@@ -2550,7 +3545,10 @@ mod tests {
             .get("lane_keeper.lane_offset_applied_m")
             .and_then(|s| s.parse::<f64>().ok())
             .expect("lane_offset_applied_m must parse");
-        assert!(applied.abs() < 0.001, "prefab offset must be ≈ 0, got {applied}");
+        assert!(
+            applied.abs() < 0.001,
+            "prefab offset must be ≈ 0, got {applied}"
+        );
     }
 
     /// Test 7: 2 forward segments, lookahead crosses the segment boundary →
@@ -2568,11 +3566,7 @@ mod tests {
         ];
         // Node 20 sits at (0,-30): far enough (>5m) from the truck at origin that
         // node_progress_idx does NOT advance, so the current hop stays 10→20.
-        let nodes = vec![
-            (10u64, 0.0, 0.0),
-            (20u64, 0.0, -30.0),
-            (30u64, 0.0, -200.0),
-        ];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -30.0), (30u64, 0.0, -200.0)];
         let edges = vec![(10u64, 20u64, 30.0), (20u64, 30u64, 170.0)];
         let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
 
@@ -2593,7 +3587,7 @@ mod tests {
         );
     }
 
-    /// Test 8: truck 100m laterally off the segment (> MAX_HOP_PROJECTION_DIST_M=40)
+    /// Test 8: truck 100m laterally off the segment (> MAX_HOP_PROJECTION_DIST_M=50)
     /// → dist gate trips → catmullrom_fallback.
     #[test]
     fn dist_gate_far_truck_falls_back() {
@@ -2613,7 +3607,7 @@ mod tests {
         assert_eq!(
             ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
             Some("catmullrom_fallback"),
-            "projection distance > 40m must trip the dist gate → fallback"
+            "projection distance > 50m must trip the dist gate → fallback"
         );
     }
 
@@ -2645,8 +3639,7 @@ mod tests {
             (30u64, 40u64, 140.0),
         ];
         let route = "[10,20,30,40]";
-        let (mut lk, ctx) =
-            wired_plugin(segs, metas, nodes.clone(), edges, route, 3);
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes.clone(), edges, route, 3);
         // Waypoints must be present, otherwise tick_request short-circuits at
         // "no_waypoints" before compute_heading_error advances node_progress_idx.
         // (In production the router writes both router.waypoints and
@@ -2767,7 +3760,7 @@ mod tests {
     /// the typical right-lane offset in ETS2. The old euclidean node-advance checked
     /// distance to the MEDIAN node (0, -100) and found >5 m → never advanced. The
     /// re-anchor uses `project_on_segment`, which measures perpendicular distance, so
-    /// the lateral offset costs only ~5.6 m (< MAX_HOP_PROJECTION_DIST_M = 40 m) and
+    /// the lateral offset costs only ~5.6 m (< MAX_HOP_PROJECTION_DIST_M = 50 m) and
     /// the second segment still wins against the first (which is ~100 m away along z).
     #[test]
     fn reanchor_lateral_offset_does_not_block_advance() {
@@ -2889,9 +3882,9 @@ mod tests {
     fn reanchor_picks_truck_segment_not_route0_far_segment() {
         // hop 0/1 live way out east (x=200); hop 2 (30→40) runs north under the truck.
         let segs = vec![
-            seg((200.0, 0.0), (200.0, -100.0), 10, 20),   // far
-            seg((200.0, -100.0), (0.0, -100.0), 20, 30),  // connector
-            seg((0.0, -100.0), (0.0, -300.0), 30, 40),    // under the truck
+            seg((200.0, 0.0), (200.0, -100.0), 10, 20),  // far
+            seg((200.0, -100.0), (0.0, -100.0), 20, 30), // connector
+            seg((0.0, -100.0), (0.0, -300.0), 30, 40),   // under the truck
         ];
         let metas = vec![
             Some(road_meta(2, 3.75, false)),
@@ -3005,18 +3998,14 @@ mod tests {
         // Both segments occupy the SAME XZ corridor (x=0, z in [0,-100]) but opposite
         // direction, so 2D distance alone cannot disambiguate — only heading can.
         let segs = vec![
-            seg((0.0, 0.0), (0.0, -100.0), 10, 20),   // North
-            seg((0.0, -100.0), (0.0, 0.0), 20, 30),   // South (doubled back)
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // North
+            seg((0.0, -100.0), (0.0, 0.0), 20, 30), // South (doubled back)
         ];
         let metas = vec![
             Some(road_meta(2, 3.75, false)),
             Some(road_meta(2, 3.75, false)),
         ];
-        let nodes = vec![
-            (10u64, 0.0, 0.0),
-            (20u64, 0.0, -100.0),
-            (30u64, 0.0, 0.0),
-        ];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -100.0), (30u64, 0.0, 0.0)];
         let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
         let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
 
@@ -3064,9 +4053,9 @@ mod tests {
     #[test]
     fn feeds_into_predecessor_edge_picks_snap_segment() {
         let segs = vec![
-            seg((0.0, 0.0), (0.0, -100.0), 10, 20),       // predecessor P→A, under truck
-            seg((0.0, -100.0), (200.0, -100.0), 20, 30),  // hop A→B, far (east)
-            seg((200.0, -100.0), (200.0, -300.0), 30, 40),// hop B→C
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // predecessor P→A, under truck
+            seg((0.0, -100.0), (200.0, -100.0), 20, 30), // hop A→B, far (east)
+            seg((200.0, -100.0), (200.0, -300.0), 30, 40), // hop B→C
         ];
         let metas = vec![
             Some(road_meta(2, 3.75, false)),
@@ -3132,9 +4121,9 @@ mod tests {
     #[test]
     fn off_route_nearest_segment_falls_back_to_catmull() {
         let segs = vec![
-            seg((200.0, 0.0), (200.0, -100.0), 10, 20),    // route hop A->B (far east)
+            seg((200.0, 0.0), (200.0, -100.0), 10, 20), // route hop A->B (far east)
             seg((200.0, -100.0), (200.0, -200.0), 20, 30), // route hop B->C (far east)
-            seg((0.0, 0.0), (0.0, -200.0), 90, 91),        // parallel road X->Y, under truck
+            seg((0.0, 0.0), (0.0, -200.0), 90, 91),     // parallel road X->Y, under truck
         ];
         let metas = vec![
             Some(road_meta(2, 3.75, false)),
@@ -3187,8 +4176,8 @@ mod tests {
     #[test]
     fn feeds_into_rejected_when_no_forward_hop() {
         let segs = vec![
-            seg((0.0, 0.0), (0.0, -100.0), 10, 20),       // predecessor P->A, under truck
-            seg((0.0, -200.0), (0.0, -100.0), 30, 20),    // B->A only (no forward A->B)
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // predecessor P->A, under truck
+            seg((0.0, -200.0), (0.0, -100.0), 30, 20), // B->A only (no forward A->B)
         ];
         let metas = vec![
             Some(road_meta(2, 3.75, false)),
@@ -3222,6 +4211,1661 @@ mod tests {
             ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
             Some("catmullrom_fallback"),
             "W2 rejection → Catmull fallback"
+        );
+    }
+
+    // ── Phase 2h-Befund3: route-aware nearest ────────────────────────────────
+    //
+    // These guard the route-aware nearest fix: at a junction the spline must stay
+    // on the route hop instead of snapping to the geometrically nearer off-route
+    // turn-off (which previously triggered off_route → None → Catmull cross-pull).
+
+    /// Test RAN-1: at a junction an OFF-ROUTE turn-off is geometrically NEARER than
+    /// the on-route hop. The route-aware nearest must still pick the ON-ROUTE hop
+    /// and engage the spline, recording the discarded off-route candidate.
+    ///
+    /// Route `[10,20,30]` runs North along x=0.
+    ///   on-route A->B = 10->20 : (0,0)->(0,-100)
+    ///   on-route B->C = 20->30 : (0,-100)->(0,-200)
+    ///   off-route T   = 20->90 : (2,-100)->(2,-300)  (parallel east at x=2, NOT on route)
+    /// Truck at (1.5,-150) heading North: off-route x=2 line is 0.5m away, on-route
+    /// x=0 line is 1.5m away → the GLOBAL query would pick 20->90, the route-aware
+    /// query must pick 20->30.
+    #[test]
+    fn route_aware_nearest_prefers_on_route_over_nearer_turnoff() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // on-route A->B (idx 0)
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30), // on-route B->C (idx 1)
+            seg((2.0, -100.0), (2.0, -300.0), 20, 90), // off-route turn-off (idx 2), nearer
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+            (90u64, 2.0, -300.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 100.0),
+            (20u64, 90u64, 200.0),
+        ];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 3);
+
+        lk.compute_heading_error(1.5, -150.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_filtered")
+                .as_deref(),
+            Some("true"),
+            "route-aware nearest must engage (on-route hop in range)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("20->30"),
+            "must anchor on the ON-ROUTE hop 20->30, not the nearer off-route turn-off"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_discarded_offroute_hop")
+                .as_deref(),
+            Some("20->90"),
+            "the geometrically-nearest off-route turn-off must be recorded as discarded"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline must engage on the route hop (no Catmull cross-pull)"
+        );
+    }
+
+    /// Test RAN-2: when NO route segment is mappable (route hops not in the index →
+    /// cached_route_seg_set empty), the query falls back to the global geometric
+    /// nearest (nearest_route_filtered=false), preserving the pre-fix behaviour.
+    ///
+    /// Route `[10,20]` but the only indexed segment runs 20->10 (reversed), so
+    /// seg_by_from_to has (20,10) not (10,20) → route_seg_set is empty.
+    #[test]
+    fn route_aware_nearest_falls_back_without_route_segments() {
+        let segs = vec![seg((0.0, -200.0), (0.0, 0.0), 20, 10)]; // reversed hop only
+        let metas = vec![Some(road_meta(2, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(20u64, 10u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+
+        lk.compute_heading_error(0.0, -100.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_filtered")
+                .as_deref(),
+            Some("false"),
+            "empty route_seg_set → route-aware branch skipped, global nearest used"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_seg_set_size")
+                .as_deref(),
+            Some("0"),
+            "no route hop maps to an indexed segment → set size 0"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("catmullrom_fallback"),
+            "reversed-hop route still degrades to Catmull (unchanged from pre-fix)"
+        );
+    }
+
+    /// Test RAN-3: normal straight on-route road — route-aware and global agree, the
+    /// spline engages on the route hop, no off-route candidate is discarded.
+    /// Guards against regression on the common case.
+    #[test]
+    fn route_aware_nearest_normal_road_unchanged() {
+        let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
+        let metas = vec![Some(road_meta(3, 3.75, false))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 200.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20]", 1);
+
+        lk.compute_heading_error(0.0, -100.0, 0.0, 20.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_filtered")
+                .as_deref(),
+            Some("true"),
+            "single on-route road: route-aware nearest engages"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("10->20"),
+            "must anchor on the only route hop"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_discarded_offroute_seg")
+                .as_deref(),
+            Some("none"),
+            "global and route-aware agree → nothing discarded"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "normal road must keep the spline path"
+        );
+    }
+
+    /// Test RAN-4: heading gate. At an on-route TURN, the outgoing turn hop is
+    /// geometrically NEARER than the incoming hop but ~90° off the truck heading.
+    /// The route-aware nearest must NOT snap to the misaligned turn hop (which would
+    /// force a premature turn-in); the heading gate rejects it → fall back to the
+    /// aligned incoming hop via the global query.
+    ///
+    /// Route `[10,20,30]`:
+    ///   incoming A->B = 10->20 : (0,0)->(0,-100)   North
+    ///   turn     B->C = 20->30 : (0,-100)->(100,-100)  East (90° turn at B)
+    /// Truck at (3,-100) heading North: the East turn hop is 0m away, the North
+    /// incoming hop 3m away — but the turn hop is 90° off heading.
+    #[test]
+    fn route_aware_nearest_heading_gate_rejects_misaligned_turn() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // incoming North (idx 0)
+            seg((0.0, -100.0), (100.0, -100.0), 20, 30), // turn East (idx 1), nearer
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 100.0, -100.0),
+        ];
+        let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
+
+        // Truck heading North (0.0), 3m east of B, where the East turn hop is nearer.
+        lk.compute_heading_error(3.0, -100.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_filtered")
+                .as_deref(),
+            Some("false"),
+            "heading gate must reject the 90°-off turn hop → fall back to global"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.current_hop").as_deref(),
+            Some("10->20"),
+            "must stay on the aligned incoming hop, not snap to the turn hop 20->30"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "aligned incoming hop is on-route → spline engages (no Catmull)"
+        );
+    }
+
+    // ── Phase 2h-Safety: dedicated tests ─────────────────────────────────────
+
+    /// Helper: Active plugin in AutoReplan stage with a straight north path.
+    fn autoreplan_plugin() -> LaneKeeperPlugin {
+        LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("AutoReplan".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// Test S1: brake value is ramped with speed and clamped correctly.
+    ///
+    /// - slow speed (4.17 m/s ≈ 15 km/h): 4.17 * 0.072 = 0.300 → ≈ 0.30
+    /// - high speed (13.9 m/s ≈ 50 km/h): 13.9 * 0.072 = 1.001 → clamped to SAFETY_BRAKE_MAX (0.80)
+    /// - very low speed (1.0 m/s):         1.0  * 0.072 = 0.072 → clamped to SAFETY_BRAKE_MIN (0.15)
+    #[test]
+    fn safety_brake_ramps_with_speed_and_clamps() {
+        // Slow: ≈ 0.30
+        let mut lk = autoreplan_plugin();
+        let t_slow = make_telemetry(4.17, 0.0);
+        let ctx = ctx_with_state("Active");
+        let req = lk
+            .tick_request(Some(&t_slow), &ctx)
+            .expect("AutoReplan must emit brake");
+        let brake_slow = req.brake.expect("brake must be Some");
+        assert!(
+            (brake_slow - 0.30).abs() < 0.02,
+            "slow speed: expected brake ≈ 0.30, got {brake_slow:.4}"
+        );
+
+        // High: should hit SAFETY_BRAKE_MAX
+        let mut lk2 = autoreplan_plugin();
+        let t_fast = make_telemetry(13.9, 0.0);
+        let ctx2 = ctx_with_state("Active");
+        let req2 = lk2
+            .tick_request(Some(&t_fast), &ctx2)
+            .expect("must emit brake");
+        let brake_fast = req2.brake.expect("brake must be Some");
+        assert_eq!(
+            brake_fast, SAFETY_BRAKE_MAX,
+            "high speed: brake must be clamped to SAFETY_BRAKE_MAX ({SAFETY_BRAKE_MAX}), got {brake_fast}"
+        );
+
+        // Very low: should hit SAFETY_BRAKE_MIN
+        let mut lk3 = autoreplan_plugin();
+        let t_crawl = make_telemetry(1.0, 0.0);
+        let ctx3 = ctx_with_state("Active");
+        let req3 = lk3
+            .tick_request(Some(&t_crawl), &ctx3)
+            .expect("must emit brake");
+        let brake_crawl = req3.brake.expect("brake must be Some");
+        assert_eq!(
+            brake_crawl, SAFETY_BRAKE_MIN,
+            "very low speed: brake must be clamped to SAFETY_BRAKE_MIN ({SAFETY_BRAKE_MIN}), got {brake_crawl}"
+        );
+    }
+
+    /// Test S2: recovery from AutoReplan back to Normal stage produces steering
+    /// (not a brake-request), resets safety_autoreplan_secs to 0 and sets
+    /// safety_state = "normal".
+    #[test]
+    fn recovery_from_autoreplan_to_normal_produces_steering_and_resets_accumulator() {
+        let mut lk = autoreplan_plugin();
+        let t = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+
+        // Tick 1: in AutoReplan — accumulates time, emits brake.
+        let brake_req = lk
+            .tick_request(Some(&t), &ctx)
+            .expect("must emit brake in AutoReplan");
+        assert!(brake_req.brake.is_some(), "AutoReplan tick must have brake");
+        // Accumulator must have grown.
+        assert!(
+            lk.safety_autoreplan_secs > 0.0,
+            "accumulator must grow during AutoReplan, got {}",
+            lk.safety_autoreplan_secs
+        );
+
+        // Tick 2: stage recovers to Normal with heading-aligned waypoints.
+        lk.heading_stage = Some("Normal".to_string());
+        // Give a heading-aligned straight path to ensure err < 1.4 rad.
+        lk.waypoints = vec![[0.0, 0.0], [0.0, -100.0], [0.0, -200.0]];
+        let steer_req = lk
+            .tick_request(Some(&t), &ctx)
+            .expect("recovery tick must emit a ControlRequest");
+        assert!(
+            steer_req.steering.is_some(),
+            "recovery tick must produce a steering output, not brake"
+        );
+        assert!(
+            steer_req.brake.is_none() || steer_req.brake == Some(0.0),
+            "no brake expected after recovery, got {:?}",
+            steer_req.brake
+        );
+        assert_eq!(
+            lk.safety_autoreplan_secs, 0.0,
+            "safety_autoreplan_secs must reset to 0 on recovery"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("normal"),
+            "safety_state must be 'normal' after recovery"
+        );
+    }
+
+    /// Test S3: AutoReplan accumulates time across ticks; disengage is NOT
+    /// requested before 15 s, but IS requested after >15 s.
+    ///
+    /// dt is capped at 0.1 s inside the function, so we need >150 iterations
+    /// to cross the 15 s threshold. We run 151 to guarantee one tick past the
+    /// boundary. The blackboard key `autopilot.disengage_requested` must
+    /// remain absent (or not "true") before tick 150 and be "true" after tick 151.
+    #[test]
+    fn autoreplan_timeout_escalates_to_disengage_after_15s() {
+        let mut lk = autoreplan_plugin();
+        let t = make_telemetry(10.0, 0.0);
+
+        // Each tick uses dt = default 0.02 s, capped to min(0.02, 0.1) = 0.02 inside.
+        // We need >15 / 0.02 = 750 ticks. Use with_dt(0.1) so each tick adds 0.1 s
+        // and we cross after >150 ticks.
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        let ctx = PluginContext::new("lane-keeper", bb).with_dt(0.1);
+
+        // Run 150 ticks — must NOT yet have triggered disengage.
+        for _ in 0..150 {
+            let _ = lk.tick_request(Some(&t), &ctx);
+        }
+        assert_ne!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "must NOT disengage before 15 s (got {} s accumulated)",
+            lk.safety_autoreplan_secs
+        );
+
+        // Tick 151 (≥ 15 s) — disengage must now be requested.
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "must disengage after >15 s in AutoReplan (got {} s)",
+            lk.safety_autoreplan_secs
+        );
+    }
+
+    /// Test S4: a single tick in Disengaging stage immediately sets
+    /// `autopilot.disengage_requested = "true"` — no accumulation needed.
+    #[test]
+    fn disengaging_escalates_immediately_on_first_tick() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Disengaging".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+
+        // A single tick must immediately set disengage_requested.
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "Disengaging must set disengage_requested on the very first tick"
+        );
+        // safety_autoreplan_secs must NOT have grown (immediate path, no accumulation).
+        assert_eq!(
+            lk.safety_autoreplan_secs, 0.0,
+            "Disengaging must not accumulate into safety_autoreplan_secs (got {})",
+            lk.safety_autoreplan_secs
+        );
+    }
+
+    /// Test S6: waypoints cleared mid-AutoReplan resets the accumulator and
+    /// safety_state back to "normal" (the no_waypoints early-return path).
+    ///
+    /// Also serves as a regression guard for the engine_off path (analogous
+    /// reset): if the no_waypoints path resets, the pattern is symmetric.
+    #[test]
+    fn no_waypoints_resets_autoreplan_accumulator() {
+        let mut lk = autoreplan_plugin();
+        let t = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+
+        // Accumulate some AutoReplan time.
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert!(
+            lk.safety_autoreplan_secs > 0.0,
+            "precondition: accumulator must have grown"
+        );
+
+        // Clear waypoints — triggers the no_waypoints early-return.
+        lk.waypoints.clear();
+        let _ = lk.tick_request(Some(&t), &ctx);
+
+        assert_eq!(
+            lk.safety_autoreplan_secs, 0.0,
+            "no_waypoints path must reset safety_autoreplan_secs to 0"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("normal"),
+            "no_waypoints path must write safety_state = 'normal'"
+        );
+    }
+
+    /// Test S6b: engine_off early-return also resets safety_autoreplan_secs
+    /// and writes safety_state = "normal".
+    #[test]
+    fn engine_off_resets_autoreplan_accumulator() {
+        let mut lk = autoreplan_plugin();
+        let t_running = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+
+        // Accumulate some AutoReplan time.
+        let _ = lk.tick_request(Some(&t_running), &ctx);
+        assert!(
+            lk.safety_autoreplan_secs > 0.0,
+            "precondition: accumulator must have grown"
+        );
+
+        // Engine off — triggers the engine_off early-return.
+        let mut t_off = make_telemetry(10.0, 0.0);
+        t_off.engine_rpm = 0.0;
+        let _ = lk.tick_request(Some(&t_off), &ctx);
+
+        assert_eq!(
+            lk.safety_autoreplan_secs, 0.0,
+            "engine_off path must reset safety_autoreplan_secs to 0"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.safety_state").as_deref(),
+            Some("normal"),
+            "engine_off path must write safety_state = 'normal'"
+        );
+    }
+
+    // ── Phase 2h-Wurzelfix: Kink-Stop-Tests ──────────────────────────────────
+    //
+    // Geometry convention: all segments run in the XZ-plane (y=0).
+    // The kink is measured at the hop boundary between seg0 (cur) and seg1 (ni):
+    //   kink_deg = |heading(seg0.m1) - heading(seg1.m0)| in degrees
+    //
+    // For a Hermite segment, evaluate_tangent(seg, 0.0) == seg.m0
+    //                    and evaluate_tangent(seg, 1.0) == seg.m1.
+    //
+    // Setup: seg0 = short (~20 m, North); seg1 = long (200 m, some direction).
+    // Truck at the near end of seg0 (z ≈ -2) heading North; speed = 20 m/s so
+    // look_ahead = 5 + 20*3.6*0.5 = 41 m > 20 m (seg0 length) → arc-walk MUST
+    // attempt the seg0→seg1 hop.
+
+    /// Build a Hermite segment with explicit m0 / m1 tangent vectors (not chord).
+    ///
+    /// `p0`/`p1` are (x, z) in ETS2 XZ.  `m0_xz`/`m1_xz` are the entry and exit
+    /// tangent directions (scaled so that length_m matches the chord, which is
+    /// sufficient for `build_lut` to produce a reasonable arc-length table).
+    fn seg_custom(
+        p0: (f32, f32),
+        p1: (f32, f32),
+        m0_xz: (f32, f32),
+        m1_xz: (f32, f32),
+        from: u64,
+        to: u64,
+    ) -> HermiteSegment {
+        let a = Vec3::new(p0.0, 0.0, p0.1);
+        let b = Vec3::new(p1.0, 0.0, p1.1);
+        let chord = b - a;
+        let scale = chord.length(); // keep tangent magnitude comparable to chord
+        let m0 = Vec3::new(m0_xz.0 * scale, 0.0, m0_xz.1 * scale);
+        let m1 = Vec3::new(m1_xz.0 * scale, 0.0, m1_xz.1 * scale);
+        HermiteSegment {
+            p0: a,
+            p1: b,
+            m0,
+            m1,
+            length_m: chord.length(),
+            from_uid: from,
+            to_uid: to,
+            edge_uid: from * 100 + to,
+        }
+    }
+
+    /// Build a wired plugin for a two-segment kink scenario.
+    ///
+    /// seg0: straight North (0,0)→(0,-20), m0=m1=(0,-1) [North unit dir].
+    /// seg1: starts at (0,-20), m0 given by `ni_m0_xz` (controls kink), ends far South.
+    /// Truck placed at (0, -2) heading North; speed_ms passed to compute_heading_error.
+    ///
+    /// Returns `(plugin, ctx)` ready for `compute_heading_error(0.0, -2.0, 0.0, speed_ms, &ctx)`.
+    fn kink_plugin(ni_m0_xz: (f32, f32), ni_p1: (f32, f32)) -> (LaneKeeperPlugin, PluginContext) {
+        // seg0: North, 20 m, from 10→20.  m0=m1=(0,-1) unit-vector → scaled by length 20.
+        let seg0 = seg_custom((0.0, 0.0), (0.0, -20.0), (0.0, -1.0), (0.0, -1.0), 10, 20);
+        // seg1: from (0,-20) to ni_p1, with the given entry tangent and chord exit.
+        let chord1_x = ni_p1.0;
+        let chord1_z = ni_p1.1 - (-20.0);
+        let len1 = (chord1_x * chord1_x + chord1_z * chord1_z).sqrt();
+        let m1_xz = if len1 > 1e-6 {
+            (chord1_x / len1, chord1_z / len1)
+        } else {
+            (0.0, -1.0)
+        };
+        let seg1 = seg_custom((0.0, -20.0), ni_p1, ni_m0_xz, m1_xz, 20, 30);
+
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -20.0),
+            (30u64, ni_p1.0 as f64, ni_p1.1 as f64),
+        ];
+        let edges = vec![(10u64, 20u64, 20.0), (20u64, 30u64, len1 as f64)];
+        wired_plugin(vec![seg0, seg1], metas, nodes, edges, "[10,20,30]", 2)
+    }
+
+    /// Helper: read `walk_stopped_at_kink` blackboard key.
+    fn walk_stopped(ctx: &PluginContext) -> bool {
+        ctx.blackboard
+            .get("lane_keeper.walk_stopped_at_kink")
+            .as_deref()
+            == Some("true")
+    }
+
+    /// Helper: read `lookahead_final_seg_id` blackboard key (0-based index).
+    fn final_seg_id(ctx: &PluginContext) -> Option<usize> {
+        ctx.blackboard
+            .get("lane_keeper.lookahead_final_seg_id")
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Test K1: two collinear (0°-kink) hops → walk runs through, no kink stop.
+    ///
+    /// seg0 exits North; seg1 enters North → Δheading = 0° < 35° → walk hops to seg1.
+    /// Expected: walk_stopped_at_kink=false, final_seg=1 (the second segment),
+    ///           heading error small.
+    #[test]
+    fn kink_walk_straight_no_stop() {
+        // Both segments head North: m1 of seg0 = (0,-1), m0 of seg1 = (0,-1).
+        let (mut lk, ctx) = kink_plugin((0.0, -1.0), (0.0, -220.0));
+
+        // speed=20 m/s → look_ahead=41 m > 20 m seg0 → must hop.
+        let err = lk.compute_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            !walk_stopped(&ctx),
+            "0°-kink: walk must NOT stop at kink (walk_stopped_at_kink=false)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must have engaged"
+        );
+        // The lookahead landed on seg1 (index 1), not seg0 (index 0).
+        let fseg = final_seg_id(&ctx).expect("lookahead_final_seg_id must be set");
+        assert_eq!(
+            fseg, 1,
+            "0°-kink: lookahead must land on seg1 (index 1), not seg0 (index 0); got {fseg}"
+        );
+        // Heading error must be small (truck aligned with North road).
+        assert!(
+            err.abs() < 0.15,
+            "0°-kink: heading error must be small, got {err:.4} rad"
+        );
+    }
+
+    /// Test K2: mild 20°-kink (< 35° default threshold) → walk still hops through.
+    ///
+    /// seg1 enters at 20° CW from North; Δheading ≈ 20° < 35° → no stop.
+    #[test]
+    fn kink_walk_mild_curve_no_stop() {
+        // 20° CW from North: x=sin(20°), z=-cos(20°)
+        let kink_rad = 20.0f32.to_radians();
+        let ni_m0 = (kink_rad.sin(), -kink_rad.cos());
+        // seg1 heads ~20° SE
+        let ni_p1 = (200.0 * kink_rad.sin(), -20.0 - 200.0 * kink_rad.cos());
+        let (mut lk, ctx) = kink_plugin(ni_m0, ni_p1);
+
+        lk.compute_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            !walk_stopped(&ctx),
+            "20°-kink (<35° threshold): walk must NOT stop at kink"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "spline path must remain active"
+        );
+        let fseg = final_seg_id(&ctx).expect("lookahead_final_seg_id must be set");
+        assert_eq!(
+            fseg, 1,
+            "20°-kink: lookahead must hop to seg1 (index 1); got {fseg}"
+        );
+    }
+
+    /// Test K3: sharp 66°-kink (> 35° default threshold) → walk stops before the hop.
+    ///
+    /// seg1 enters at 66° CW from North. The kink check fires → break (cur=seg0, t=1.0).
+    /// Expected: walk_stopped_at_kink=true, final_seg=0 (seg0, before the kink),
+    ///           heading error small (target at end of seg0 = straight North).
+    #[test]
+    fn kink_walk_sharp_turn_stops() {
+        // 66° CW from North: x=sin(66°), z=-cos(66°)
+        let kink_rad = 66.0f32.to_radians();
+        let ni_m0 = (kink_rad.sin(), -kink_rad.cos());
+        let ni_p1 = (200.0 * kink_rad.sin(), -20.0 - 200.0 * kink_rad.cos());
+        let (mut lk, ctx) = kink_plugin(ni_m0, ni_p1);
+
+        let err = lk.compute_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            walk_stopped(&ctx),
+            "66°-kink (>35° threshold): walk must stop at kink (walk_stopped_at_kink=true)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
+            Some("spline_road"),
+            "kink-stop still returns a spline result (not Catmull fallback)"
+        );
+        // final_seg must be seg0 (index 0) — the segment BEFORE the kink.
+        let fseg = final_seg_id(&ctx).expect("lookahead_final_seg_id must be set");
+        assert_eq!(
+            fseg, 0,
+            "66°-kink: kink-stop must target the end of seg0 (index 0), not hop to seg1; got {fseg}"
+        );
+        // The walk broke at t=1.0 on seg0 (= North end of seg0); truck heads North.
+        // Target is the lane-offset-shifted end of seg0 → heading error < ~0.5 rad.
+        // (The lane offset shifts the target ~3.75 m east of the North end; at ~18 m
+        // distance the atan gives ≈ 0.20–0.30 rad, well within the 0.5 rad margin.)
+        assert!(
+            err.abs() < 0.5,
+            "66°-kink: target at end of seg0 is ahead → heading error < 0.5 rad, got {err:.4} rad"
+        );
+    }
+
+    /// Test K4: threshold override via Blackboard key `plugin.lane_keeper.kink_stop_deg`.
+    ///
+    /// Set threshold to 20°; Δheading ≈ 25° (would NOT stop with default 35°) → now stops.
+    #[test]
+    fn kink_walk_threshold_from_blackboard() {
+        // 25° kink: just above the custom 20° threshold but below the default 35°.
+        let kink_rad = 25.0f32.to_radians();
+        let ni_m0 = (kink_rad.sin(), -kink_rad.cos());
+        let ni_p1 = (200.0 * kink_rad.sin(), -20.0 - 200.0 * kink_rad.cos());
+        let (mut lk, ctx) = kink_plugin(ni_m0, ni_p1);
+
+        // Override: lower threshold to 20° so 25° now triggers a kink stop.
+        ctx.blackboard
+            .set("plugin.lane_keeper.kink_stop_deg", "20.0");
+
+        lk.compute_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        // With default 35°, this would NOT stop; with 20° override it MUST stop.
+        assert!(
+            walk_stopped(&ctx),
+            "25°-kink with override threshold=20°: walk must stop (kink_stop_deg override not applied?)"
+        );
+        let fseg = final_seg_id(&ctx).expect("lookahead_final_seg_id must be set");
+        assert_eq!(
+            fseg, 0,
+            "override-threshold kink: lookahead must land on seg0 (before kink); got {fseg}"
+        );
+        // Verify the threshold was actually read from blackboard (Diag key).
+        let thr = ctx
+            .blackboard
+            .get("lane_keeper.kink_threshold_deg")
+            .and_then(|s| s.parse::<f32>().ok())
+            .expect("kink_threshold_deg must be set");
+        assert!(
+            (thr - 20.0).abs() < 0.5,
+            "kink_threshold_deg must reflect the blackboard override (20°), got {thr}"
+        );
+    }
+
+    /// Test K5: a persistent kink-stop on the SAME hop accumulates `kink_stuck_secs`
+    /// across ticks (the post-loop reset is guarded — it only fires on a clean walk,
+    /// not after a kink-stop break). Once the accumulator exceeds `KINK_STUCK_FALLBACK_S`
+    /// (4.0 s), `try_spline_heading_error` returns `None` with `fallback_reason="kink_stuck"`,
+    /// handing navigation to the Catmull path (which rounds the corner). Dead-lock guard.
+    ///
+    ///   - dt = 0.1 s → tick n accumulates ≈ n·0.1 s.
+    ///   - ticks 1..=39 (≤ 3.9 s): kink-stop returns Some (target on cur), accumulating.
+    ///   - tick 40: forty IEEE754 0.1-adds sum to 4.0000000000000036 > 4.0 → None,
+    ///     fallback_reason="kink_stuck". (FP overshoot is deterministic across platforms.)
+    #[test]
+    fn kink_walk_stuck_falls_back_to_catmull() {
+        // 66°-kink: reliably above the 35° threshold.
+        let kink_rad = 66.0f32.to_radians();
+        let ni_m0 = (kink_rad.sin(), -kink_rad.cos());
+        let ni_p1 = (200.0 * kink_rad.sin(), -20.0 - 200.0 * kink_rad.cos());
+        let (mut lk, ctx) = kink_plugin(ni_m0, ni_p1);
+
+        let bb = ctx.blackboard.clone();
+        let idx = ctx
+            .spline_index
+            .clone()
+            .expect("spline_index must be wired");
+        let rg = ctx.graph.clone().expect("router_graph must be wired");
+        let mut new_ctx = PluginContext::new("lane-keeper", bb)
+            .with_spline_index(idx, 2)
+            .with_dt(0.1);
+        new_ctx.graph = Some(rg);
+
+        // ticks 1..=39 (≤ 3.9 s): kink-stop returns Some, accumulator builds.
+        for i in 1..=39 {
+            let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &new_ctx);
+            assert!(
+                result.is_some(),
+                "tick {i}: below the 4.0 s stuck window the walk still kink-stops (Some)"
+            );
+            let expected = i as f64 * 0.1;
+            assert!(
+                (lk.kink_stuck_secs - expected).abs() < 1e-6,
+                "tick {i}: kink_stuck_secs must accumulate to {expected:.2}, got {:.2}",
+                lk.kink_stuck_secs
+            );
+            assert_ne!(
+                new_ctx
+                    .blackboard
+                    .get("lane_keeper.fallback_reason")
+                    .as_deref(),
+                Some("kink_stuck"),
+                "tick {i}: kink_stuck fallback must NOT fire before 4.0 s"
+            );
+        }
+
+        // tick 40: accumulator crosses 4.0 s → Catmull fallback (None + reason).
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &new_ctx);
+        assert!(
+            result.is_none(),
+            "tick 40: stuck > 4.0 s must hand off to Catmull (None)"
+        );
+        assert_eq!(
+            new_ctx
+                .blackboard
+                .get("lane_keeper.fallback_reason")
+                .as_deref(),
+            Some("kink_stuck"),
+            "tick 40: fallback_reason must be kink_stuck"
+        );
+    }
+
+    /// Test K6: the post-loop reset (`kink_stuck_secs = 0.0`) fires both on clean walks
+    /// AND on kink-stop breaks. This test confirms the clean-walk case specifically.
+    ///
+    /// If `kink_stuck_secs` and `kink_stuck_hop` are non-zero entering `try_spline_heading_error`
+    /// and the walk completes without a kink-stop (clean walk), both fields must be 0/(0,0)
+    /// after the call — the reset at line 804 fires.
+    #[test]
+    fn kink_stuck_resets_on_clean_walk() {
+        // Build a straight-scenario plugin (0°-kink, walk always succeeds without stop).
+        let (mut lk_straight, ctx_straight) = kink_plugin((0.0, -1.0), (0.0, -220.0));
+
+        // Pre-load non-zero kink_stuck state as if a previous kink-stop had set it
+        // (e.g. on a different route before transitioning to this straight road).
+        lk_straight.kink_stuck_secs = 2.5;
+        lk_straight.kink_stuck_hop = (20, 30);
+
+        let bb = ctx_straight.blackboard.clone();
+        let idx = ctx_straight.spline_index.clone().unwrap();
+        let rg = ctx_straight.graph.clone().unwrap();
+        let mut ctx = PluginContext::new("lane-keeper", bb)
+            .with_spline_index(idx, 2)
+            .with_dt(0.1);
+        ctx.graph = Some(rg);
+
+        // One clean-walk tick (0°-kink, walk hops to seg1 without any kink-stop break).
+        let result = lk_straight.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+        assert!(result.is_some(), "clean walk must return Some");
+        assert!(
+            !walk_stopped(&ctx),
+            "clean walk must NOT set walk_stopped_at_kink"
+        );
+
+        // Post-loop reset must have fired: both fields cleared.
+        assert_eq!(
+            lk_straight.kink_stuck_secs, 0.0,
+            "clean walk must reset kink_stuck_secs to 0.0 (post-loop reset); got {:.2}",
+            lk_straight.kink_stuck_secs
+        );
+        assert_eq!(
+            lk_straight.kink_stuck_hop,
+            (0, 0),
+            "clean walk must reset kink_stuck_hop to (0,0)"
+        );
+    }
+
+    // ── Alternative A: Prefab-/Curve-Fallback-Tests (intK ab Truck-Position) ──────
+    //
+    // Geometry: EIN Kurvensegment, auf dessen ANFANG der Truck sitzt.
+    //
+    //   seg0: Kurve (oder Road, je nach Test), 20 m, uid 10→20.
+    //         p0 = (0,-2) == Truck-Position → Projektion t_cur ≈ 0.
+    //         m0 = North (0,-1) [echte Einfahrt, KEINE m0-Anomalie].
+    //         m1 = exit_deg_cw° CW von North → interner Knick ≈ exit_deg_cw.
+    //
+    // Truck at p0=(0,-2) heading North, speed = 20 (bzw. 40) m/s.
+    //   look_ahead = 5 + v*3.6*0.5 ≥ 41 m > seg-Länge (20 m), und es gibt KEINEN
+    //   weiteren Forward-Hop (route=[10,20]) → der Walk klemmt bei (seg0, 1.0).
+    //   → final_seg == cur_seg == seg0  (intk_on_truck_seg = true).
+    //   → t_start_intk = t_cur ≈ 0 → final_internal_kink_deg == exit_deg_cw EXAKT
+    //     (Hermite: P'(0)=m0=North, P'(1)=m1=exit).
+    //
+    // Wichtig (Alternative A): weil final_seg == cur_seg, läuft die intK-Messung über das
+    // Truck-Segment — genau der Pfad, den der Fix einführt. Die Latch-State-Machine
+    // (Cap/Hysterese/Schwelle) wird so präzise getestet; die eigentliche t_cur>0-Anomalie-
+    // Unterdrückung prüfen die intk_from_truck_*-Tests separat.
+
+    /// Build a curve test fixture (single curve segment, truck at its start).
+    ///
+    /// `exit_deg_cw` — internal kink of the curve: exit tangent rotated this many ° CW from North.
+    /// `seg_is_prefab` — whether the curve segment carries `is_prefab=true` metadata.
+    /// `custom_threshold` — if Some, set `plugin.lane_keeper.prefab_curve_fallback_deg` on the BB.
+    ///
+    /// Returns `(plugin, ctx)` ready for `try_spline_heading_error(0.0, -2.0, 0.0, v, &ctx)`.
+    fn prefab_curve_plugin(
+        exit_deg_cw: f32,
+        seg_is_prefab: bool,
+        custom_threshold: Option<f64>,
+    ) -> (LaneKeeperPlugin, PluginContext) {
+        // Alternative A: EIN Kurvensegment, der Truck sitzt an seinem ANFANG (p0).
+        // m0 = North (echte Einfahrt, KEINE m0-Anomalie), m1 = exit_deg_cw° CW.
+        let exit_rad = exit_deg_cw.to_radians();
+        let m1_x = exit_rad.sin();
+        let m1_z = -exit_rad.cos();
+        let p0 = (0.0f32, -2.0f32); // == Truck-Position der Aufrufer → t_cur ≈ 0
+        let p1 = (p0.0 + 20.0 * m1_x, p0.1 + 20.0 * m1_z); // p1 folgt m1 für 20 m
+        let seg0 = seg_custom(p0, p1, (0.0, -1.0), (m1_x, m1_z), 10, 20);
+
+        let metas = vec![Some(road_meta(2, 3.75, seg_is_prefab))];
+        let nodes = vec![
+            (10u64, p0.0 as f64, p0.1 as f64),
+            (20u64, p1.0 as f64, p1.1 as f64),
+        ];
+        let edges = vec![(10u64, 20u64, 20.0)];
+
+        let (mut lk, ctx) = wired_plugin(vec![seg0], metas, nodes, edges, "[10,20]", 1);
+
+        if let Some(thr) = custom_threshold {
+            ctx.blackboard.set(
+                "plugin.lane_keeper.prefab_curve_fallback_deg",
+                thr.to_string(),
+            );
+        }
+
+        // Catmull-Stützpunkte für den Fallback-Pfad (falls None zurückkommt).
+        lk.waypoints = vec![
+            [p0.0 as f64, p0.1 as f64],
+            [((p0.0 + p1.0) * 0.5) as f64, ((p0.1 + p1.1) * 0.5) as f64],
+            [p1.0 as f64, p1.1 as f64],
+        ];
+
+        (lk, ctx)
+    }
+
+    /// Helper: read `prefab_curve_fallback` blackboard key (the latch bool).
+    fn prefab_curve_latched_key(ctx: &PluginContext) -> bool {
+        ctx.blackboard
+            .get("lane_keeper.prefab_curve_fallback")
+            .as_deref()
+            == Some("true")
+    }
+
+    /// Helper: read `internal_kink_over_threshold` blackboard key.
+    fn kink_over_threshold(ctx: &PluginContext) -> bool {
+        ctx.blackboard
+            .get("lane_keeper.internal_kink_over_threshold")
+            .as_deref()
+            == Some("true")
+    }
+
+    /// Helper: read `prefab_curve_threshold_deg` blackboard key.
+    fn prefab_threshold_deg(ctx: &PluginContext) -> Option<f32> {
+        ctx.blackboard
+            .get("lane_keeper.prefab_curve_threshold_deg")
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Test PC1: Prefab segment with internal kink ~66° (> 40° default threshold).
+    ///
+    /// Expected: `try_spline_heading_error` returns `None`, `fallback_reason="prefab_curve"`,
+    /// `prefab_curve_latched=true`, `prefab_curve_fallback="true"`,
+    /// `internal_kink_over_threshold="true"`.
+    ///
+    /// This is the Diag5 scenario: walk lands on a prefab curve segment whose heading
+    /// rotates 66° internally, causing herr-spike → lane-keeper now correctly falls back
+    /// to Catmull-Rom.
+    #[test]
+    fn prefab_curve_over_threshold_falls_back() {
+        let (mut lk, ctx) = prefab_curve_plugin(66.0, true, None);
+
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            result.is_none(),
+            "Prefab seg with 66° internal kink must return None (Catmull fallback)"
+        );
+        assert!(
+            lk.prefab_curve_latched,
+            "prefab_curve_latched field must be true after 66° internal kink on prefab"
+        );
+        assert!(
+            prefab_curve_latched_key(&ctx),
+            "prefab_curve_fallback BB key must be 'true'"
+        );
+        assert!(
+            kink_over_threshold(&ctx),
+            "internal_kink_over_threshold must be 'true' (66° > 40°)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "fallback_reason must be 'prefab_curve'"
+        );
+    }
+
+    /// Test PC2 (THE GAP — critical): Prefab segment with internal kink ~35° (< 40° threshold).
+    ///
+    /// Expected: NO fallback — `try_spline_heading_error` returns `Some`, `prefab_curve_latched=false`,
+    /// `prefab_curve_fallback="false"`.
+    ///
+    /// This test prevents fahrbare (drivable) Prefab segments from being incorrectly
+    /// sent to Catmull-Rom. The threshold must only block genuinely curved segments
+    /// (≥ 40°), not mildly curved ones (< 40°).
+    #[test]
+    fn prefab_curve_under_threshold_no_fallback() {
+        let (mut lk, ctx) = prefab_curve_plugin(35.0, true, None);
+
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            result.is_some(),
+            "Prefab seg with 35° internal kink (< 40° threshold) must return Some (no Catmull fallback)"
+        );
+        assert!(
+            !lk.prefab_curve_latched,
+            "prefab_curve_latched must be false for 35° internal kink (below threshold)"
+        );
+        assert!(
+            !prefab_curve_latched_key(&ctx),
+            "prefab_curve_fallback BB key must be 'false'"
+        );
+        assert!(
+            !kink_over_threshold(&ctx),
+            "internal_kink_over_threshold must be 'false' (35° < 40°)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none"),
+            "fallback_reason must be 'none' (spline path active)"
+        );
+    }
+
+    /// Test PC3: Road segment (is_prefab=false) with internal kink > 40°.
+    ///
+    /// Expected: NO prefab_curve fallback — the prefab-curve guard is prefab-only.
+    /// The spline path remains active (returns Some). Confirms that road segments
+    /// with gentle internal curves (e.g. sweeping motorway arcs) are not incorrectly
+    /// forced to Catmull-Rom.
+    #[test]
+    fn road_segment_internal_curve_also_falls_back() {
+        // Phase 2h v2-Fix: der Auslöser ist die interne Krümmung ALLEIN, unabhängig vom
+        // is_prefab-Flag. Ein ROAD-Segment (is_prefab=false) mit 66° interner Krümmung muss
+        // jetzt EBENFALLS auf Catmull fallbacken (das Spike-Segment 1051105 ist ein Road-Edge).
+        let (mut lk, ctx) = prefab_curve_plugin(66.0, false, None);
+
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            result.is_none(),
+            "Road seg with 66° internal kink must trigger the curve fallback (returns None)"
+        );
+        assert!(
+            lk.prefab_curve_latched,
+            "curve fallback must latch on a road segment too (is_prefab no longer gates)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "road segment with high internal curvature: fallback_reason must be 'prefab_curve'"
+        );
+        assert!(
+            kink_over_threshold(&ctx),
+            "internal_kink_over_threshold must be 'true' for 66° regardless of is_prefab"
+        );
+    }
+
+    /// Test PC4: Hysteresis — latch activates at ~50°, remains latched at ~35° (between
+    /// exit threshold of 30° and entry threshold of 40°), only releases below 30°.
+    ///
+    /// Sequence:
+    ///   tick 1 — 50° prefab (> 40°)    → latch ON  (curve_over=true)
+    ///   tick 2 — 35° prefab (30°–40°)  → latch STAYS ON (exit requires < 30°)
+    ///   tick 3 — 25° prefab (< 30°)    → latch OFF  (exit threshold crossed)
+    ///
+    /// This tests the `PREFAB_CURVE_EXIT_MARGIN_DEG = 10.0` hysteresis window.
+    /// Note: each tick uses a different plugin fixture with the appropriate internal kink.
+    /// The latch field is transferred manually between ticks to simulate the tick-over-tick
+    /// persistence.
+    #[test]
+    fn prefab_curve_hysteresis() {
+        // Tick 1: 50°, prefab → latch ON.
+        let (mut lk_50, ctx_50) = prefab_curve_plugin(50.0, true, None);
+        let r1 = lk_50.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx_50);
+        assert!(r1.is_none(), "tick1 50°: must fall back (latch ON)");
+        assert!(lk_50.prefab_curve_latched, "tick1: latch must be ON");
+
+        // Tick 2: 35° prefab — between 30° and 40° → still within hysteresis band → stays latched.
+        // Transfer latch state to a new 35°-fixture.
+        let (mut lk_35, ctx_35) = prefab_curve_plugin(35.0, true, None);
+        lk_35.prefab_curve_latched = true; // carry latch from tick 1
+        let r2 = lk_35.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx_35);
+        assert!(
+            r2.is_none(),
+            "tick2 35° (still latched): hysteresis band 30°–40° must keep latch ON (returns None)"
+        );
+        assert!(
+            lk_35.prefab_curve_latched,
+            "tick2 35°: latch must remain true inside hysteresis window"
+        );
+
+        // Tick 3: 25° prefab — below exit threshold (40° − 10° = 30°) → latch OFF.
+        let (mut lk_25, ctx_25) = prefab_curve_plugin(25.0, true, None);
+        lk_25.prefab_curve_latched = true; // carry latch from tick 2
+        let r3 = lk_25.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx_25);
+        assert!(
+            r3.is_some(),
+            "tick3 25° (< 30° exit threshold): latch must release → returns Some"
+        );
+        assert!(
+            !lk_25.prefab_curve_latched,
+            "tick3 25°: latch must be OFF after exit threshold crossed"
+        );
+    }
+
+    /// Test PC5: Custom threshold via Blackboard.
+    ///
+    /// `plugin.lane_keeper.prefab_curve_fallback_deg = 20.0` is set.
+    /// Prefab segment internal kink ~25° → would NOT fall back with default 40°, but
+    /// MUST fall back with the custom 20° threshold.
+    /// Also verifies `prefab_curve_threshold_deg` BB key reflects the override.
+    #[test]
+    fn prefab_curve_blackboard_threshold() {
+        // 25° internal kink: above custom 20°, below default 40°.
+        let (mut lk, ctx) = prefab_curve_plugin(25.0, true, Some(20.0));
+
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        assert!(
+            result.is_none(),
+            "25° prefab with custom threshold 20°: must fall back (None)"
+        );
+        assert!(
+            lk.prefab_curve_latched,
+            "prefab_curve_latched must be true (25° > custom 20° threshold)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "fallback_reason must be 'prefab_curve' with custom threshold"
+        );
+
+        let thr = prefab_threshold_deg(&ctx).expect("prefab_curve_threshold_deg must be set");
+        assert!(
+            (thr - 20.0).abs() < 0.5,
+            "prefab_curve_threshold_deg must reflect the BB override (20°), got {thr:.1}"
+        );
+    }
+
+    /// Test PC6: Degenerate tangent → `final_internal_kink_deg = -1.0` → NO latch.
+    ///
+    /// A segment whose m0 tangent has near-zero magnitude produces a degenerate
+    /// internal kink calculation (returns -1.0). The guard `final_internal_kink_deg >= 0.0`
+    /// in `curve_over` prevents the latch from activating. Degeneracy must NOT cause
+    /// a spurious Catmull fallback.
+    ///
+    /// Construction (Alternative A): single segment whose m0 ≈ (0,0,0). The truck sits at
+    /// p0=(0,-2) → t_cur≈0 → evaluate_tangent at t_start≈0 == m0 ≈ 0 → f_l0 < 1e-6 →
+    /// final_internal_kink_deg = -1.0 → guard blocks the latch.
+    #[test]
+    fn prefab_curve_degenerate_no_fallback() {
+        // Single prefab curve at the truck's start with degenerate m0 (zero tangent at t=0).
+        let seg0 = HermiteSegment {
+            p0: Vec3::new(0.0, 0.0, -2.0),
+            p1: Vec3::new(0.0, 0.0, -22.0),
+            m0: Vec3::new(0.0, 0.0, 0.0), // degenerate: zero tangent at t=0
+            m1: Vec3::new(0.0, 0.0, -20.0),
+            length_m: 20.0,
+            from_uid: 10,
+            to_uid: 20,
+            edge_uid: 1020,
+        };
+        let metas = vec![Some(road_meta(2, 3.75, true))]; // prefab
+        let nodes = vec![(10u64, 0.0, -2.0), (20u64, 0.0, -22.0)];
+        let edges = vec![(10u64, 20u64, 20.0)];
+        let (mut lk, ctx) = wired_plugin(vec![seg0], metas, nodes, edges, "[10,20]", 1);
+
+        let _result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 20.0, &ctx);
+
+        // The degenerate tangent should produce final_internal_kink_deg = -1.0,
+        // which the guard `final_internal_kink_deg >= 0.0` blocks → no latch.
+        assert!(
+            !lk.prefab_curve_latched,
+            "degenerate tangent (intK=-1.0) must NOT set prefab_curve_latched"
+        );
+        assert!(
+            !kink_over_threshold(&ctx),
+            "internal_kink_over_threshold must be false when tangent is degenerate"
+        );
+        // The function may return Some or None (degenerate tangent could also trip the
+        // `degenerate_tangent` fallback at the lookahead-evaluation step if final_t
+        // evaluation returns a zero tangent there — that is also correct behaviour).
+        // What must NOT happen: fallback_reason = "prefab_curve".
+        assert_ne!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "degenerate tangent must NOT produce a prefab_curve fallback"
+        );
+        // Verify the BB key is set (even if result is None for another reason).
+        let intk: f32 = ctx
+            .blackboard
+            .get("lane_keeper.final_internal_kink_deg")
+            .and_then(|s| s.parse().ok())
+            .expect("final_internal_kink_deg must be set");
+        assert!(
+            intk < 0.0,
+            "degenerate tangent must produce final_internal_kink_deg < 0, got {intk:.4}"
+        );
+    }
+
+    // ── Alternative A: intK ab Truck-Position statt ab t=0 ───────────────────────
+    //
+    // Kern des Fixes: final_internal_kink_deg wird über [t_truck, final_t] gemessen
+    // (Start-Tangens = evaluate_tangent(final_seg, t_cur)) statt über [0, final_t]
+    // (== m0, dem mis-orientierten Junction-Quaternion-Forward am Segment-ANFANG).
+
+    /// Read a float blackboard key (helper for the Alternative-A tests).
+    fn bb_f32(ctx: &PluginContext, key: &str) -> f32 {
+        ctx.blackboard
+            .get(key)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("BB key '{key}' must be set & parse"))
+    }
+
+    /// AA1: m0-Anomalie am Segment-ANFANG, Truck weiter hinten (t_cur > 0).
+    /// Das Segment ist geometrisch gerade (p0→p1 North, m1 = North), aber m0 ist ~135°
+    /// fehlorientiert (Junction-Quaternion-Artefakt). Gemessen ab t=0 ergäbe das ~135°;
+    /// gemessen ab der realen Truck-Position (t≈0.4) ist die Restkrümmung klein → KEIN
+    /// Latch, der route-aware-Spline trackt weiter.
+    #[test]
+    fn intk_from_truck_ignores_start_anomaly() {
+        // p0→p1 gerade nach North; m0 zeigt ~135° CW (fehlorientiert), m1 = North.
+        let m0_anom = (135f32.to_radians().sin(), -135f32.to_radians().cos()); // (0.707, 0.707)
+        let seg0 = seg_custom((0.0, 0.0), (0.0, -40.0), m0_anom, (0.0, -1.0), 10, 20);
+        // Truck an die reale Position bei t≈0.4 setzen (weit hinter der m0-Beule).
+        let tp = evaluate(&seg0, 0.4);
+
+        let metas = vec![Some(road_meta(2, 3.75, true))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -40.0)];
+        let edges = vec![(10u64, 20u64, 40.0)];
+        let (mut lk, ctx) = wired_plugin(vec![seg0], metas, nodes, edges, "[10,20]", 1);
+
+        let _ = lk.try_spline_heading_error(tp.x as f64, tp.z as f64, 0.0, 20.0, &ctx);
+
+        // Messung lief über das Truck-Segment, ab einer echten Position > Segment-Anfang.
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.intk_on_truck_seg")
+                .as_deref(),
+            Some("true"),
+            "final_seg == cur_seg → Messung über das Truck-Segment"
+        );
+        let t_start = bb_f32(&ctx, "lane_keeper.intk_t_start");
+        assert!(
+            t_start > 0.1,
+            "Start-t muss die reale Truck-Projektion sein (>0.1), got {t_start:.3}"
+        );
+        let intk = bb_f32(&ctx, "lane_keeper.final_internal_kink_deg");
+        assert!(
+            (0.0..40.0).contains(&intk),
+            "ab Truck-Position fällt die m0-Anomalie raus → kleine Restkrümmung (<40°), got {intk:.2}"
+        );
+        assert!(
+            !lk.prefab_curve_latched,
+            "m0-Anomalie am Anfang darf KEINEN Latch auslösen"
+        );
+        assert_ne!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "kein prefab_curve-Fallback bei reiner Start-Anomalie"
+        );
+    }
+
+    /// AA2: echte Kurve ab Truck-Position. Chord = North, m0 = North (saubere Einfahrt),
+    /// m1 = 60° CW — die Krümmung liegt verteilt/spät, sodass auch ab t≈0.3 die
+    /// Restkrümmung bis final_t groß bleibt (> 40°-Eintrittsschwelle) → Latch feuert →
+    /// Catmull rundet. Belegt, dass die Ab-Truck-Messung echte enge Prefabs NICHT
+    /// unterschätzt.
+    #[test]
+    fn intk_from_truck_detects_real_curve() {
+        let exit = 60f32.to_radians();
+        let (m1x, m1z) = (exit.sin(), -exit.cos());
+        // Chord nach North (0,-40); nur die EXIT-Tangente dreht auf 60° → die Krümmung
+        // sitzt nicht am Anfang, sondern wird bis final_t gefahren.
+        let seg0 = seg_custom((0.0, 0.0), (0.0, -40.0), (0.0, -1.0), (m1x, m1z), 10, 20);
+        let tp = evaluate(&seg0, 0.3);
+
+        let metas = vec![Some(road_meta(2, 3.75, true))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -40.0)];
+        let edges = vec![(10u64, 20u64, 40.0)];
+        let (mut lk, ctx) = wired_plugin(vec![seg0], metas, nodes, edges, "[10,20]", 1);
+
+        let result = lk.try_spline_heading_error(tp.x as f64, tp.z as f64, 0.0, 20.0, &ctx);
+
+        let t_start = bb_f32(&ctx, "lane_keeper.intk_t_start");
+        assert!(
+            t_start > 0.1,
+            "Truck sitzt mitten auf der Kurve (t>0.1), got {t_start:.3}"
+        );
+        let intk = bb_f32(&ctx, "lane_keeper.final_internal_kink_deg");
+        assert!(
+            intk > 40.0,
+            "echte Kurve ab Truck-Position muss > 40°-Schwelle liefern, got {intk:.2}"
+        );
+        assert!(
+            result.is_none() && lk.prefab_curve_latched,
+            "echte Kurve → Latch feuert → Catmull (None)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "echte Kurve erzeugt prefab_curve-Fallback"
+        );
+    }
+
+    /// AA3: leeres Intervall [t_truck, final_t] (Truck am Segment-ENDE, t_cur == final_t).
+    /// Muss intK ≈ 0 liefern (kein Latch) und darf NICHT paniken.
+    #[test]
+    fn intk_empty_interval_safe() {
+        // Gerades Segment; Truck exakt am Endpunkt p1 → t_cur ≈ 1.0, final_t = 1.0.
+        let seg0 = seg((0.0, 0.0), (0.0, -20.0), 10, 20);
+        let metas = vec![Some(road_meta(2, 3.75, true))];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -20.0)];
+        let edges = vec![(10u64, 20u64, 20.0)];
+        let (mut lk, ctx) = wired_plugin(vec![seg0], metas, nodes, edges, "[10,20]", 1);
+
+        // Truck am Segment-Ende (0,-20), heading North. Darf nicht paniken.
+        let _ = lk.try_spline_heading_error(0.0, -20.0, 0.0, 20.0, &ctx);
+
+        let intk = bb_f32(&ctx, "lane_keeper.final_internal_kink_deg");
+        assert!(
+            intk.abs() < 1.0,
+            "leeres/degeneriertes Intervall → intK ≈ 0, got {intk:.4}"
+        );
+        assert!(
+            !lk.prefab_curve_latched,
+            "leeres Intervall darf keinen Latch setzen"
+        );
+    }
+
+    // ── Phase 2h-Befund4: Plausibilitäts-Cap für den prefab_curve_latch ──────────
+    //
+    // Alle nutzen speed=40 m/s → look_ahead = 5 + 40*3.6*0.5 = 77 m. Mit dem einen
+    // Kurvensegment (route=[10,20]) erreicht der Lookahead-Walk das Routenende → klemmt
+    // bei (seg0, 1.0). Truck sitzt bei p0 → t_cur≈0 → final_internal_kink_deg ==
+    // exit-Winkel EXAKT (intk_on_truck_seg = true, Messung über das Truck-Segment).
+
+    /// Test PC8 (Befund4): Latch feuert für intK im plausiblen Band (≤ Cap).
+    /// 55° ist eine legitime scharfe Kurve (40 < 55 ≤ 90) → Latch → Catmull.
+    #[test]
+    fn latch_fires_in_plausible_range() {
+        let (mut lk, ctx) = prefab_curve_plugin(55.0, false, None);
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 40.0, &ctx);
+        assert!(
+            result.is_none(),
+            "55° (plausibles Band) muss latchen → Catmull → None"
+        );
+        assert!(lk.prefab_curve_latched, "Latch muss bei intK=55° feuern");
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.final_internal_kink_capped")
+                .as_deref(),
+            Some("false"),
+            "55° liegt unter dem 90°-Cap → nicht capped"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "Latch im plausiblen Band erzeugt prefab_curve-Fallback"
+        );
+    }
+
+    /// Test PC9 (Befund4): Latch UNTERDRÜCKT für intK über dem Cap (Junction-
+    /// Tangenten-Artefakt). 131° > 90° → kein Latch, capped=true, Spline trackt weiter.
+    #[test]
+    fn latch_suppressed_above_cap() {
+        let (mut lk, ctx) = prefab_curve_plugin(131.0, false, None);
+        let result = lk.try_spline_heading_error(0.0, -2.0, 0.0, 40.0, &ctx);
+        assert!(
+            !lk.prefab_curve_latched,
+            "131° > 90°-Cap → Latch muss unterdrückt werden (Junction-Artefakt)"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.final_internal_kink_capped")
+                .as_deref(),
+            Some("true"),
+            "131° > Cap → final_internal_kink_capped=true"
+        );
+        assert_ne!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("prefab_curve"),
+            "capped intK darf KEINEN prefab_curve-Fallback erzeugen"
+        );
+        assert!(
+            result.is_some(),
+            "mit unterdrücktem Latch engaged der Spline-Pfad (liefert Heading-Error)"
+        );
+    }
+
+    /// Test PC10 (Befund4, Task 1.3): ein bereits im plausiblen Band (85°) aktiver
+    /// Latch muss BEENDET werden, wenn intK über den Cap steigt (→131°), statt im
+    /// Artefakt-Regime hängen zu bleiben.
+    #[test]
+    fn latch_exits_when_crossing_cap() {
+        // 131°-Geometrie; simuliere den Latch, der zuvor bei 85° eingerastet war.
+        let (mut lk, ctx) = prefab_curve_plugin(131.0, false, None);
+        lk.prefab_curve_latched = true;
+        lk.prefab_curve_kink_deg = 85.0;
+        let _ = lk.try_spline_heading_error(0.0, -2.0, 0.0, 40.0, &ctx);
+        assert!(
+            !lk.prefab_curve_latched,
+            "intK 85°→131° (über Cap) muss den Latch BEENDEN (Task 1.3)"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.final_internal_kink_capped")
+                .as_deref(),
+            Some("true"),
+            "Over-Cap-Austritt muss capped=true melden"
+        );
+    }
+
+    /// Test PC11 (Befund4, Hysterese-Totband): intK im Totband [cap, cap+Margin]
+    /// = [100, 110]°. Ein bereits aktiver Latch HÄLT (kein Flacker-Exit); ein
+    /// frischer (nicht gelatchter) Zustand tritt NICHT ein (Entry blockiert > cap).
+    /// Belegt die Anti-Flacker-Hysterese am oberen Cap.
+    #[test]
+    fn latch_cap_deadband_holds_state() {
+        // 105° liegt im Totband (> cap 100, < cap+Margin 110).
+        // (a) Bereits gelatcht → bleibt gelatcht (kein Exit).
+        let (mut lk_held, ctx_held) = prefab_curve_plugin(105.0, false, None);
+        lk_held.prefab_curve_latched = true;
+        lk_held.prefab_curve_kink_deg = 85.0;
+        let _ = lk_held.try_spline_heading_error(0.0, -2.0, 0.0, 40.0, &ctx_held);
+        assert!(
+            lk_held.prefab_curve_latched,
+            "105° im Totband [100,110] → aktiver Latch HÄLT (kein Flacker-Exit)"
+        );
+
+        // (b) Frisch / nicht gelatcht → KEIN Eintritt (Entry > cap blockiert).
+        let (mut lk_fresh, ctx_fresh) = prefab_curve_plugin(105.0, false, None);
+        let _ = lk_fresh.try_spline_heading_error(0.0, -2.0, 0.0, 40.0, &ctx_fresh);
+        assert!(
+            !lk_fresh.prefab_curve_latched,
+            "105° > cap 100 → frischer Eintritt blockiert (kein neuer Latch)"
+        );
+    }
+
+    /// Test PC7: Latch resets on disengage (ctx.is_active() = false).
+    ///
+    /// When `tick_request_route_following` is called with the autopilot in a non-Active
+    /// state, `prefab_curve_latched` must be reset to false (Disengage path).
+    ///
+    /// Scenario: manually set `prefab_curve_latched = true`, then call
+    /// `tick_request_route_following` via the public `tick_request` entry with
+    /// `autopilot.state = "Idle"` → the disengage branch must clear the latch.
+    #[test]
+    fn prefab_curve_reset_on_disengage() {
+        // Build a minimal plugin with a latch already active.
+        let mut lk = LaneKeeperPlugin {
+            prefab_curve_latched: true,
+            waypoints: vec![[0.0, 0.0], [0.0, -100.0]],
+            ..Default::default()
+        };
+        assert!(
+            lk.prefab_curve_latched,
+            "precondition: latch must start as true"
+        );
+
+        // ctx.is_active() = false: autopilot state is NOT "Active".
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Idle");
+        let ctx = PluginContext::new("lane-keeper", bb);
+
+        let t = make_telemetry(10.0, 0.0);
+        let _ = lk.tick_request(Some(&t), &ctx);
+
+        assert!(
+            !lk.prefab_curve_latched,
+            "prefab_curve_latched must be false after disengage (state != Active)"
+        );
+    }
+
+    /// Phase 2h-Befund2-Fix: bei hoher interner Krümmung (intK > threshold)
+    /// muss der Catmull-Lookahead kürzer sein als der Basis-Lookahead.
+    #[test]
+    fn catmull_curve_factor_reduces_lookahead() {
+        let threshold = PREFAB_CURVE_FALLBACK_DEG as f64; // 40°
+        let internal_kink = 80.0f64;
+        let base = BASE_LOOK_AHEAD; // 5.0 at 0 m/s
+        let curve_factor = (threshold / internal_kink).powi(2);
+        let scaled = base * curve_factor;
+        let effective = scaled.max(CATMULL_CURVE_MIN_LOOK_AHEAD);
+        assert!(
+            effective < base,
+            "effective lookahead {effective:.2} must be < base {base:.2} when intK=80°"
+        );
+        assert!(
+            effective >= CATMULL_CURVE_MIN_LOOK_AHEAD,
+            "must not go below floor {CATMULL_CURVE_MIN_LOOK_AHEAD}"
+        );
+        assert!(
+            curve_factor < 0.5,
+            "curve_factor {curve_factor:.3} should be < 0.5 at intK=80°"
+        );
+    }
+
+    /// Keine Änderung wenn kein Catmull-Fallback (intK = 0).
+    #[test]
+    fn catmull_curve_factor_unchanged_at_zero_kink() {
+        let base = BASE_LOOK_AHEAD + 15.0 * 3.6 * SPEED_FACTOR;
+        let threshold = PREFAB_CURVE_FALLBACK_DEG as f64;
+        let internal_kink = 0.0f64;
+        let curve_factor = if internal_kink <= threshold || internal_kink < 1.0 {
+            1.0f64
+        } else {
+            (threshold / internal_kink).powi(2)
+        };
+        let scaled = base * curve_factor;
+        let effective = scaled.max(CATMULL_CURVE_MIN_LOOK_AHEAD);
+        assert!(
+            (effective - base).abs() < 1e-9,
+            "effective {effective:.2} must equal base {base:.2} when intK=0"
+        );
+    }
+
+    // ── Phase 2h-Befund2-Fix: Route-Hop-Limit Tests ──────────────────────────
+    //
+    // These verify the walk_end calculation in compute_heading_error (Catmull path).
+    // The formula (same code as in production) — walk_end is an EXCLUSIVE upper bound:
+    //   current_route_idx = (progress_idx + subdivisions / 2) / subdivisions
+    //   max_route_idx     = (current_route_idx + max_hops).min(route_len - 1)
+    //   walk_end          = (max_route_idx * subdivisions + 1).min(waypoints.len())
+    // with max_hops = CATMULL_MAX_ROUTE_HOPS = 2, subdivisions = 4 (Default).
+    //
+    // Since walk_end is a local variable inside compute_heading_error, we verify it
+    // indirectly via the "lane_keeper.catmull_walk_end" blackboard key that the
+    // production code writes unconditionally on the Catmull path.
+
+    /// Test CHR-1: 5-node route, Truck at progress_idx=4 (Node 1 of route).
+    ///
+    /// Setup:
+    ///   - 5 route nodes  → cached_route_node_ids has 5 entries → route_len = 5
+    ///   - subdivisions   = 4 (Default)
+    ///   - waypoints      = 17 entries [(5-1)*4+1 = 17]
+    ///   - progress_idx   = 4
+    ///   - max_hops       = 2 (CATMULL_MAX_ROUTE_HOPS)
+    ///
+    /// Formula:
+    ///   current_route_idx = (4 + 2) / 4 = 1
+    ///   max_route_idx     = min(1 + 2, 4) = 3
+    ///   walk_end          = min(3 * 4 + 1, 17) = min(13, 17) = 13
+    ///   walk_start        = 4 + 1 = 5
+    ///
+    /// Expected: walk_end = 13 < waypoints.len() (17) — the hop-limit caps the walk.
+    #[test]
+    fn catmull_route_hop_limit_caps_walk_end() {
+        // Verify the formula independently (no plugin side-effects needed here).
+        let progress_idx: usize = 4;
+        let subdivisions: usize = 4;
+        let route_len: usize = 5;
+        let max_hops: usize = CATMULL_MAX_ROUTE_HOPS;
+        let waypoints_len: usize = (route_len - 1) * subdivisions + 1; // = 17
+
+        let current_route_idx = (progress_idx + subdivisions / 2) / subdivisions;
+        let max_route_idx = (current_route_idx + max_hops).min(route_len - 1);
+        let walk_end = (max_route_idx * subdivisions + 1).min(waypoints_len);
+        let walk_start = progress_idx + 1;
+
+        assert_eq!(current_route_idx, 1, "current_route_idx must be 1");
+        assert_eq!(max_route_idx, 3, "max_route_idx must be 3");
+        assert_eq!(walk_end, 13, "walk_end must be capped at 13 by hop-limit");
+        assert_eq!(walk_start, 5, "walk_start must be progress_idx + 1 = 5");
+        assert!(
+            walk_end < waypoints_len,
+            "hop-limit must cap walk_end ({walk_end}) below total waypoints ({waypoints_len})"
+        );
+
+        // Also verify via the blackboard key that the running plugin emits.
+        // Waypoints spaced 50m apart in -z direction so the advance-loop does NOT
+        // swallow them (truck at (0,0), dist to waypoint[5] = 250m >> WAYPOINT_REACH_M=5m).
+        let wps: Vec<[f64; 2]> = (0..waypoints_len)
+            .map(|i| [0.0, -(i as f64) * 50.0])
+            .collect();
+        let mut lk = LaneKeeperPlugin {
+            waypoints: wps,
+            progress_idx,
+            subdivisions,
+            cached_route_node_ids: vec![10u64, 11, 12, 13, 14],
+            ..Default::default()
+        };
+        // Force catmull path: no spline index wired → try_spline returns None.
+        let ctx = fresh_ctx();
+        lk.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
+
+        let bb_walk_end: usize = ctx
+            .blackboard
+            .get("lane_keeper.catmull_walk_end")
+            .and_then(|s| s.parse().ok())
+            .expect("catmull_walk_end must be set on the Catmull path");
+        assert_eq!(
+            bb_walk_end, 13,
+            "catmull_walk_end BB key must be 13 (hop-limit), got {bb_walk_end}"
+        );
+        assert!(
+            bb_walk_end < waypoints_len,
+            "catmull_walk_end ({bb_walk_end}) must be < total waypoints ({waypoints_len})"
+        );
+    }
+
+    /// Test CHR-2: No route (cached_route_node_ids empty) → walk_end = waypoints.len().
+    ///
+    /// When no routing is active (route_len < 2), the Catmull path must fall back to
+    /// the old unlimited-walk behaviour: walk_end = waypoints.len().
+    ///
+    /// Setup:
+    ///   - cached_route_node_ids empty → route_len = 0 < 2 → no hop-limit
+    ///   - waypoints = 20 entries
+    ///   - progress_idx = 4 → walk_start = 5
+    ///
+    /// Expected: walk_end = 20 = waypoints.len() — complete walk, same as before the fix.
+    #[test]
+    fn catmull_route_hop_limit_noop_without_route() {
+        let waypoints_len: usize = 20;
+        let progress_idx: usize = 4;
+
+        // Formula guard: route_len < 2 → walk_end = waypoints.len() (old behaviour).
+        let route_len: usize = 0;
+        let walk_end_expected = waypoints_len; // unlimited
+        let walk_start = progress_idx + 1;
+
+        assert!(route_len < 2, "precondition: no routing active");
+        assert_eq!(
+            walk_end_expected, waypoints_len,
+            "unlimited walk must cover all waypoints"
+        );
+        assert_eq!(walk_start, 5, "walk_start must be 5");
+
+        // Verify via plugin + blackboard.
+        // Waypoints spaced 50m apart so the advance-loop does NOT swallow them all.
+        let wps: Vec<[f64; 2]> = (0..waypoints_len)
+            .map(|i| [0.0, -(i as f64) * 50.0])
+            .collect();
+        let mut lk = LaneKeeperPlugin {
+            waypoints: wps,
+            progress_idx,
+            cached_route_node_ids: vec![], // empty → route_len < 2
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        lk.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
+
+        let bb_walk_end: usize = ctx
+            .blackboard
+            .get("lane_keeper.catmull_walk_end")
+            .and_then(|s| s.parse().ok())
+            .expect("catmull_walk_end must be set");
+        assert_eq!(
+            bb_walk_end, waypoints_len,
+            "no-route: walk_end must equal waypoints.len() ({waypoints_len}), got {bb_walk_end}"
+        );
+    }
+
+    /// Test CHR-3: Truck at the very last waypoint → walk_start >= walk_end → no walk, no panic.
+    ///
+    /// Setup:
+    ///   - 3 route nodes   → route_len = 3
+    ///   - subdivisions = 4 → waypoints_len = (3-1)*4+1 = 9
+    ///   - progress_idx = 8 (= waypoints.len()-1, last index)
+    ///
+    /// Formula:
+    ///   current_route_idx = (8 + 2) / 4 = 2
+    ///   max_route_idx     = min(2 + 2, 2) = 2
+    ///   max_waypoint_idx  = min(2 * 4, 8) = 8
+    ///   walk_end          = min(8, 9) = 8
+    ///   walk_start        = 8 + 1 = 9
+    ///
+    /// walk_start (9) > walk_end (8) → the walk-loop body is skipped entirely.
+    /// Must not panic; heading error must return 0.0 (route_end guard fires first).
+    #[test]
+    fn catmull_route_hop_limit_empty_range_safe() {
+        let subdivisions: usize = 4;
+        let route_len: usize = 3;
+        let waypoints_len: usize = (route_len - 1) * subdivisions + 1; // = 9
+        let progress_idx: usize = waypoints_len - 1; // = 8 (last index)
+        let max_hops: usize = CATMULL_MAX_ROUTE_HOPS;
+
+        // Verify formula produces the empty range.
+        let current_route_idx = (progress_idx + subdivisions / 2) / subdivisions;
+        let max_route_idx = (current_route_idx + max_hops).min(route_len - 1);
+        let max_waypoint_idx = (max_route_idx * subdivisions).min(waypoints_len - 1);
+        let walk_end = max_waypoint_idx.min(waypoints_len);
+        let walk_start = progress_idx + 1;
+
+        assert_eq!(current_route_idx, 2, "current_route_idx must be 2");
+        assert_eq!(
+            max_route_idx, 2,
+            "max_route_idx must be clamped to route_len-1=2"
+        );
+        assert_eq!(max_waypoint_idx, 8, "max_waypoint_idx must be 8");
+        assert_eq!(walk_end, 8, "walk_end must be 8");
+        assert_eq!(walk_start, 9, "walk_start must be 9 (past end)");
+        assert!(
+            walk_start > walk_end,
+            "walk_start ({walk_start}) must exceed walk_end ({walk_end}) → empty range"
+        );
+
+        // Verify the plugin does NOT panic and returns 0.0 (route_end guard).
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0]; waypoints_len],
+            progress_idx,
+            subdivisions,
+            cached_route_node_ids: vec![10u64, 11, 12],
+            ..Default::default()
+        };
+        let ctx = fresh_ctx();
+        // Must not panic.
+        let err = lk.compute_heading_error(0.0, 0.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            err, 0.0,
+            "at route end, heading error must be 0.0 (route_end guard), got {err}"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.skip_reason").as_deref(),
+            Some("route_end"),
+            "skip_reason must be 'route_end' when progress_idx is at last waypoint"
         );
     }
 }

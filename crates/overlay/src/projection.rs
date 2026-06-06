@@ -34,7 +34,11 @@ impl CameraIntrinsics {
     /// Build from horizontal FOV angle and screen dimensions.
     pub fn from_hfov(fov_h_deg: f32, w: f32, h: f32) -> Self {
         let f = (w / 2.0) / (fov_h_deg.to_radians() / 2.0).tan();
-        Self { f_x: f, cx: w / 2.0, cy: h / 2.0 }
+        Self {
+            f_x: f,
+            cx: w / 2.0,
+            cy: h / 2.0,
+        }
     }
 }
 
@@ -92,11 +96,7 @@ pub fn world_to_screen(
 /// Both input points are **already in camera space** (result of `cam_rot.inverse() * delta`).
 /// Returns `None` when the whole segment is behind `near`.
 /// When one endpoint is behind, linearly interpolates to the near plane.
-pub fn clip_segment_to_near(
-    p0: Vec3,
-    p1: Vec3,
-    near: f32,
-) -> Option<(Vec3, Vec3)> {
+pub fn clip_segment_to_near(p0: Vec3, p1: Vec3, near: f32) -> Option<(Vec3, Vec3)> {
     let p0_behind = p0.z < near;
     let p1_behind = p1.z < near;
 
@@ -152,7 +152,10 @@ mod tests {
         // Point above camera centre (+Y) at depth 10 m → pixel Y < cy (above centre)
         let pt = Vec3::new(0.0, 1.0, 10.0);
         let (_, py) = world_to_screen(pt, cam_pos, cam_rot, &k(), NEAR).unwrap();
-        assert!(py < H / 2.0, "point above cam should project above cy, got py={py}");
+        assert!(
+            py < H / 2.0,
+            "point above cam should project above cy, got py={py}"
+        );
     }
 
     #[test]
@@ -172,7 +175,11 @@ mod tests {
         let p1 = Vec3::new(1.0, 0.0, 10.0);
         let (a, b) = clip_segment_to_near(p0, p1, NEAR).unwrap();
         // Clipped a.z should equal near
-        assert!((a.z - NEAR).abs() < 1e-5, "clipped z should be near={NEAR}, got {}", a.z);
+        assert!(
+            (a.z - NEAR).abs() < 1e-5,
+            "clipped z should be near={NEAR}, got {}",
+            a.z
+        );
         // b unchanged
         assert!((b - p1).length() < 1e-5, "far endpoint unchanged");
     }
@@ -190,7 +197,8 @@ mod tests {
         let q = ets2_heading_to_quat(0.0, 0.0, 0.0);
         assert!(
             (q.length() - 1.0).abs() < 1e-5,
-            "quaternion must be unit, length={}", q.length()
+            "quaternion must be unit, length={}",
+            q.length()
         );
     }
 
@@ -200,8 +208,14 @@ mod tests {
         // cam_rot * [0,0,1] should give the look-at direction = [0,0,−1].
         let q = ets2_heading_to_quat(0.0, 0.0, 0.0);
         let look_at = q.mul_vec3(glam::Vec3::Z);
-        assert!(look_at.z < -0.99, "heading=0 should look North (−Z), got {look_at:?}");
-        assert!(look_at.x.abs() < 0.01, "heading=0 should have no X component, got {look_at:?}");
+        assert!(
+            look_at.z < -0.99,
+            "heading=0 should look North (−Z), got {look_at:?}"
+        );
+        assert!(
+            look_at.x.abs() < 0.01,
+            "heading=0 should have no X component, got {look_at:?}"
+        );
     }
 
     #[test]
@@ -209,8 +223,14 @@ mod tests {
         // heading=0.75 = East = (+1, 0, 0).
         let q = ets2_heading_to_quat(0.75, 0.0, 0.0);
         let look_at = q.mul_vec3(glam::Vec3::Z);
-        assert!(look_at.x > 0.99, "heading=0.75 should look East (+X), got {look_at:?}");
-        assert!(look_at.z.abs() < 0.01, "heading=0.75 should have no Z component");
+        assert!(
+            look_at.x > 0.99,
+            "heading=0.75 should look East (+X), got {look_at:?}"
+        );
+        assert!(
+            look_at.z.abs() < 0.01,
+            "heading=0.75 should have no Z component"
+        );
     }
 
     #[test]

@@ -108,7 +108,12 @@ fn read_f32x3(cur: &mut Cursor<&[u8]>) -> Result<[f32; 3], ParseError> {
 }
 
 fn read_f32x4(cur: &mut Cursor<&[u8]>) -> Result<[f32; 4], ParseError> {
-    Ok([read_f32(cur)?, read_f32(cur)?, read_f32(cur)?, read_f32(cur)?])
+    Ok([
+        read_f32(cur)?,
+        read_f32(cur)?,
+        read_f32(cur)?,
+        read_f32(cur)?,
+    ])
 }
 
 fn read_i32x4(cur: &mut Cursor<&[u8]>) -> Result<[i32; 4], ParseError> {
@@ -236,7 +241,8 @@ fn read_ppd_header(data: &[u8]) -> Result<PpdHeader, ParseError> {
     let off_data = &data[off_start..];
     if off_data.len() < 48 {
         return Err(ParseError::Binary(format!(
-            "PPD too short for offsets: {} bytes total", len
+            "PPD too short for offsets: {} bytes total",
+            len
         )));
     }
     for (i, slot) in section_offsets.iter_mut().enumerate() {
@@ -338,7 +344,14 @@ fn read_nav_curve(cur: &mut Cursor<&[u8]>) -> Result<NavCurve, ParseError> {
     let end_position = read_f32x3(cur)?;
     let start_rotation = read_f32x4(cur)?;
     let end_rotation = read_f32x4(cur)?;
-    let length = { let v = read_f32(cur)?; if v.is_finite() { v.max(0.0) } else { 0.0 } };
+    let length = {
+        let v = read_f32(cur)?;
+        if v.is_finite() {
+            v.max(0.0)
+        } else {
+            0.0
+        }
+    };
     let next_lines = read_i32x4(cur)?;
     let prev_lines = read_i32x4(cur)?;
     let next_used = read_u32(cur)?;
@@ -396,7 +409,14 @@ fn read_nav_node(cur: &mut Cursor<&[u8]>) -> Result<NavNode, ParseError> {
     let mut connections = Vec::with_capacity(actual_count);
     for _ in 0..actual_count {
         let target_node_index = read_u16(cur)?;
-        let length = { let v = read_f32(cur)?; if v.is_finite() { v.max(0.0) } else { 0.0 } };
+        let length = {
+            let v = read_f32(cur)?;
+            if v.is_finite() {
+                v.max(0.0)
+            } else {
+                0.0
+            }
+        };
         let curve_count = read_u8(cur)? as usize;
         let actual_cc = curve_count.min(8);
         let mut curve_indices = Vec::with_capacity(actual_cc);
@@ -471,11 +491,7 @@ fn read_spawn_point(cur: &mut Cursor<&[u8]>, version: u32) -> Result<SpawnPoint,
         position: read_f32x3(cur)?,
         rotation: read_f32x4(cur)?,
         spawn_type: read_u32(cur)?,
-        flags: if version >= 0x18 {
-            read_u32(cur)?
-        } else {
-            0
-        },
+        flags: if version >= 0x18 { read_u32(cur)? } else { 0 },
     })
 }
 
@@ -626,13 +642,7 @@ pub fn parse_ppd(data: &[u8]) -> Result<PrefabDescriptor, ParseError> {
     )?;
 
     // 3. Signs
-    let signs = read_section_array(
-        &mut cur,
-        offsets[2],
-        counts.sign_count,
-        52,
-        read_ppd_sign,
-    )?;
+    let signs = read_section_array(&mut cur, offsets[2], counts.sign_count, 52, read_ppd_sign)?;
 
     // 4. Semaphores — 84 B (v19) / 68 B (v15-18)
     let sem_size: u32 = if version >= 0x19 { 84 } else { 68 };
@@ -787,7 +797,9 @@ impl NavCurve {
 // Blinker enum
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, bincode::Encode, bincode::Decode,
+)]
 pub enum Blinker {
     None,
     Left,
@@ -880,8 +892,8 @@ mod tests {
 
         // 12 offsets
         let offsets: [u32; 12] = [
-            off_nodes, off_curves, off_signs, off_sems, off_sp, off_tp_pos, off_tp_nor,
-            off_tp_var, off_mp, off_trig, off_int, off_nav,
+            off_nodes, off_curves, off_signs, off_sems, off_sp, off_tp_pos, off_tp_nor, off_tp_var,
+            off_mp, off_trig, off_int, off_nav,
         ];
         for o in &offsets {
             buf.extend_from_slice(&o.to_le_bytes());
@@ -1005,14 +1017,8 @@ mod tests {
     #[test]
     fn test_blinker_from_flags() {
         assert_eq!(Blinker::from_nav_curve_flags(0x0000_0000), Blinker::None);
-        assert_eq!(
-            Blinker::from_nav_curve_flags(0x0000_0008),
-            Blinker::Right
-        );
-        assert_eq!(
-            Blinker::from_nav_curve_flags(0x0000_000C),
-            Blinker::Left
-        );
+        assert_eq!(Blinker::from_nav_curve_flags(0x0000_0008), Blinker::Right);
+        assert_eq!(Blinker::from_nav_curve_flags(0x0000_000C), Blinker::Left);
     }
 
     #[test]

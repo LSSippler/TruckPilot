@@ -25,7 +25,15 @@ use crate::graph::{GraphEdge, MapGraph};
 pub const TANGENT_SCALE: f32 = 1.0;
 
 /// ETS2 forward direction in local space (SCS SDK: heading 0 = North = -Z world).
-pub const FORWARD: Vec3 = Vec3 { x: 0.0, y: 0.0, z: -1.0 };
+pub const FORWARD: Vec3 = Vec3 {
+    x: 0.0,
+    y: 0.0,
+    z: -1.0,
+};
+
+/// Default-Zielspur-Index gezaehlt vom rechten Fahrbahnrand (0 = aeusserste Rechtsspur).
+/// 0 = Rechtsfahrgebot. Spaeterer Spurwechsel setzt diesen Wert >0 (weiter links).
+const TARGET_LANE_FROM_RIGHT: u32 = 0;
 
 // ---------------------------------------------------------------------------
 // Datenmodell
@@ -251,6 +259,9 @@ pub struct SegmentMetadata {
     pub lane_width_m: f32,
     /// Right-of-centreline offset in metres. Always `0.0` for prefab NavCurve segments.
     pub lane_offset_right_m: f32,
+    /// Median shift in metres carried from the road-look (`road_offset`, 0.0 for prefab).
+    #[serde(default)]
+    pub road_offset_m: f32,
     /// Road-look token64 (0 for prefab NavCurves).
     pub road_look_token: u64,
     /// `true` for PrefabAiPath NavCurve segments; `false` for road edges.
@@ -266,18 +277,19 @@ pub struct SegmentMetadata {
 /// alle anderen `None`.
 pub fn build_splines_ex(
     graph: &MapGraph,
-) -> (Vec<HermiteSegment>, Vec<Option<SegmentMetadata>>, SplineStats) {
+) -> (
+    Vec<HermiteSegment>,
+    Vec<Option<SegmentMetadata>>,
+    SplineStats,
+) {
     let node_map: HashMap<u64, Vec3> = graph
         .nodes
         .iter()
         .map(|n| (n.uid, Vec3::new(n.x as f32, n.y as f32, n.z as f32)))
         .collect();
 
-    let rotation_map: HashMap<u64, [f32; 4]> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.uid, n.rotation))
-        .collect();
+    let rotation_map: HashMap<u64, [f32; 4]> =
+        graph.nodes.iter().map(|n| (n.uid, n.rotation)).collect();
 
     let adj = build_adjacency(&node_map, &graph.edges);
     let neighbor_degree = build_neighbor_degree(&graph.edges);
@@ -357,12 +369,18 @@ pub fn build_splines_ex(
         let seg_meta = match edge.direction.as_str() {
             "forward" | "backward" | "bidirectional_unknown" => {
                 let lanes = edge.lanes.max(1);
+                // lanes ist hier bereits .max(1). Lane-Index 0-basiert, hoeherer Index = weiter
+                // vom Median = weiter rechts. Aeusserste Rechtsspur = lanes-1. TARGET_LANE_FROM_RIGHT
+                // zaehlt vom rechten Rand nach links.
+                let target_lane = (lanes as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
+                let lane_center = (target_lane as f32 + 0.5) * edge.lane_width_m;
                 Some(SegmentMetadata {
                     lanes_in_direction: lanes,
                     lanes_opposite: edge.lanes_opposite,
                     lanes_total: lanes.saturating_add(edge.lanes_opposite),
                     lane_width_m: edge.lane_width_m,
-                    lane_offset_right_m: (lanes as f32 - 0.5) * edge.lane_width_m,
+                    lane_offset_right_m: lane_center + edge.road_offset_m,
+                    road_offset_m: edge.road_offset_m,
                     road_look_token: edge.road_look_token,
                     is_prefab: false,
                 })
@@ -397,11 +415,8 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
         .collect();
 
     // Rotation-Map: uid → [qw, qx, qy, qz] (alle Nodes, Lookup miss = zero sentinel)
-    let rotation_map: HashMap<u64, [f32; 4]> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.uid, n.rotation))
-        .collect();
+    let rotation_map: HashMap<u64, [f32; 4]> =
+        graph.nodes.iter().map(|n| (n.uid, n.rotation)).collect();
 
     // Filtere Edges: beide Nodes in BBox
     let bbox_edges: Vec<_> = graph
@@ -901,6 +916,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 2,
@@ -916,6 +932,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 3,
@@ -931,6 +948,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -962,6 +980,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 2,
@@ -977,6 +996,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 3,
@@ -992,6 +1012,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 4,
@@ -1007,6 +1028,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -1036,6 +1058,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
             GraphEdge {
                 uid: 2,
@@ -1051,6 +1074,7 @@ mod tests {
                 road_look_token: 0,
                 lanes_opposite: 0,
                 lane_width_m: 3.75,
+                road_offset_m: 0.0,
             },
         ];
         let deg = build_neighbor_degree(&edges);
@@ -1075,7 +1099,11 @@ mod tests {
         let result = quat_rotate_vec(q, FORWARD * 10.0);
         assert!((result.x).abs() < 1e-4, "x≈0, got {}", result.x);
         assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
-        assert!((result.z + 10.0).abs() < 1e-4, "z≈-10 (North), got {}", result.z);
+        assert!(
+            (result.z + 10.0).abs() < 1e-4,
+            "z≈-10 (North), got {}",
+            result.z
+        );
     }
 
     #[test]
@@ -1084,7 +1112,11 @@ mod tests {
         let s = (2.0f32).sqrt() / 2.0;
         let q = [s, 0.0, -s, 0.0];
         let result = quat_rotate_vec(q, FORWARD * 10.0);
-        assert!((result.x - 10.0).abs() < 1e-4, "x≈10 (East), got {}", result.x);
+        assert!(
+            (result.x - 10.0).abs() < 1e-4,
+            "x≈10 (East), got {}",
+            result.x
+        );
         assert!((result.y).abs() < 1e-4, "y≈0, got {}", result.y);
         assert!((result.z).abs() < 1e-4, "z≈0, got {}", result.z);
     }
@@ -1097,15 +1129,36 @@ mod tests {
         let s = (2.0f32).sqrt() / 2.0;
         let graph = MapGraph {
             nodes: vec![
-                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [s, 0.0, -s, 0.0] },
-                GraphNode { uid: 2, x: 0.0, y: 0.0, z: -10.0, rotation: [1.0, 0.0, 0.0, 0.0] },
+                GraphNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [s, 0.0, -s, 0.0],
+                },
+                GraphNode {
+                    uid: 2,
+                    x: 0.0,
+                    y: 0.0,
+                    z: -10.0,
+                    rotation: [1.0, 0.0, 0.0, 0.0],
+                },
             ],
             edges: vec![GraphEdge {
-                uid: 10, from: 1, to: 2,
-                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                uid: 10,
+                from: 1,
+                to: 2,
+                distance_m: 10.0,
+                speed_limit_kmh: None,
+                lanes: 1,
                 direction: "forward".to_string(),
-                dlc_guard: 0, is_hidden: false, gps_avoid: false,
-                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
+                road_offset_m: 0.0,
             }],
             ..MapGraph::default()
         };
@@ -1113,13 +1166,20 @@ mod tests {
         assert_eq!(segs.len(), 1);
         let seg = &segs[0];
         // m0 from East quaternion → positive x, near-zero z
-        assert!(seg.m0.x > 0.1, "m0.x should be positive (East), got {}", seg.m0.x);
+        assert!(
+            seg.m0.x > 0.1,
+            "m0.x should be positive (East), got {}",
+            seg.m0.x
+        );
         assert!(
             seg.m0.z.abs() < seg.m0.x.abs() * 0.1,
             "m0.z should be near zero, got {}",
             seg.m0.z
         );
-        assert_eq!(stats.quat_tangents, 2, "both endpoints should use quaternion");
+        assert_eq!(
+            stats.quat_tangents, 2,
+            "both endpoints should use quaternion"
+        );
         assert_eq!(stats.fallback_tangents, 0);
     }
 
@@ -1129,16 +1189,36 @@ mod tests {
         use crate::graph::GraphNode;
         MapGraph {
             nodes: vec![
-                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
-                GraphNode { uid: 2, x: 100.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+                GraphNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
+                GraphNode {
+                    uid: 2,
+                    x: 100.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
             ],
             edges: vec![GraphEdge {
-                uid: 1, from: 1, to: 2,
-                distance_m: 100.0, speed_limit_kmh: None,
+                uid: 1,
+                from: 1,
+                to: 2,
+                distance_m: 100.0,
+                speed_limit_kmh: None,
                 lanes: lanes_fwd,
                 direction: direction.to_string(),
-                dlc_guard: 0, is_hidden: false, gps_avoid: false,
-                road_look_token: 42, lanes_opposite: lanes_bwd, lane_width_m: lane_width,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_look_token: 42,
+                lanes_opposite: lanes_bwd,
+                lane_width_m: lane_width,
+                road_offset_m: 0.0,
             }],
             ..MapGraph::default()
         }
@@ -1146,25 +1226,35 @@ mod tests {
 
     #[test]
     fn ds8_motorway_3lane_offset() {
-        // 3-lane motorway, 3.75m: offset = (3 − 0.5) × 3.75 = 9.375m
+        // 3-lane motorway, 3.75m: offset = (target_lane + 0.5) × 3.75 = 9.375m
+        // where target_lane = lanes − 1 = 2, so (2 + 0.5) × 3.75 = 9.375m
         let graph = make_road_graph(3, 3, 3.75, "forward");
         let (_, meta, _) = build_splines_ex(&graph);
         assert_eq!(meta.len(), 1);
         let m = meta[0].expect("forward edge must have metadata");
         assert_eq!(m.lanes_in_direction, 3);
         assert_eq!(m.lane_width_m, 3.75);
-        assert!((m.lane_offset_right_m - 9.375).abs() < 1e-4, "expected 9.375, got {}", m.lane_offset_right_m);
+        assert!(
+            (m.lane_offset_right_m - 9.375).abs() < 1e-4,
+            "expected 9.375, got {}",
+            m.lane_offset_right_m
+        );
     }
 
     #[test]
     fn ds8_city_1lane_offset() {
-        // 1-lane city road, 3.0m: offset = (1 − 0.5) × 3.0 = 1.5m
+        // 1-lane city road, 3.0m: offset = (target_lane + 0.5) × 3.0 = 1.5m
+        // where target_lane = lanes − 1 = 0, so (0 + 0.5) × 3.0 = 1.5m
         let graph = make_road_graph(1, 1, 3.0, "forward");
         let (_, meta, _) = build_splines_ex(&graph);
         let m = meta[0].expect("forward edge must have metadata");
         assert_eq!(m.lanes_in_direction, 1);
         assert_eq!(m.lane_width_m, 3.0);
-        assert!((m.lane_offset_right_m - 1.5).abs() < 1e-4, "expected 1.5, got {}", m.lane_offset_right_m);
+        assert!(
+            (m.lane_offset_right_m - 1.5).abs() < 1e-4,
+            "expected 1.5, got {}",
+            m.lane_offset_right_m
+        );
     }
 
     #[test]
@@ -1172,15 +1262,36 @@ mod tests {
         use crate::graph::GraphNode;
         let graph = MapGraph {
             nodes: vec![
-                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
-                GraphNode { uid: 2, x: 10.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
+                GraphNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
+                GraphNode {
+                    uid: 2,
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
             ],
             edges: vec![GraphEdge {
-                uid: 1, from: 1, to: 2,
-                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                uid: 1,
+                from: 1,
+                to: 2,
+                distance_m: 10.0,
+                speed_limit_kmh: None,
+                lanes: 1,
                 direction: "prefab".to_string(),
-                dlc_guard: 0, is_hidden: false, gps_avoid: false,
-                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
+                road_offset_m: 0.0,
             }],
             ..MapGraph::default()
         };
@@ -1195,9 +1306,120 @@ mod tests {
         let graph = make_road_graph(1, 0, 3.75, "forward");
         let (_, meta, _) = build_splines_ex(&graph);
         let m = meta[0].expect("forward edge must have metadata");
-        assert!((m.lane_width_m - 3.75).abs() < 1e-4, "default width = 3.75, got {}", m.lane_width_m);
+        assert!(
+            (m.lane_width_m - 3.75).abs() < 1e-4,
+            "default width = 3.75, got {}",
+            m.lane_width_m
+        );
         // (1 − 0.5) × 3.75 = 1.875m — QW1 baseline
-        assert!((m.lane_offset_right_m - 1.875).abs() < 1e-4, "offset = 1.875m, got {}", m.lane_offset_right_m);
+        assert!(
+            (m.lane_offset_right_m - 1.875).abs() < 1e-4,
+            "offset = 1.875m, got {}",
+            m.lane_offset_right_m
+        );
+    }
+
+    // --- Phase 2h: right-lane target + road_offset ---
+
+    fn make_road_graph_offset(
+        lanes_fwd: u8,
+        lanes_bwd: u8,
+        lane_width: f32,
+        road_offset: f32,
+        direction: &str,
+    ) -> MapGraph {
+        use crate::graph::GraphNode;
+        MapGraph {
+            nodes: vec![
+                GraphNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
+                GraphNode {
+                    uid: 2,
+                    x: 100.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
+            ],
+            edges: vec![GraphEdge {
+                uid: 1,
+                from: 1,
+                to: 2,
+                distance_m: 100.0,
+                speed_limit_kmh: None,
+                lanes: lanes_fwd,
+                direction: direction.to_string(),
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_look_token: 42,
+                lanes_opposite: lanes_bwd,
+                lane_width_m: lane_width,
+                road_offset_m: road_offset,
+            }],
+            ..MapGraph::default()
+        }
+    }
+
+    /// Phase 2h (a): ger7 case — lanes=2, width=3.75, road_offset=1.0.
+    /// TARGET_LANE_FROM_RIGHT=0 ⇒ target_lane = 2-1-0 = 1 (outermost right).
+    /// lane_center = (1+0.5)*3.75 = 5.625; +road_offset 1.0 = 6.625.
+    #[test]
+    fn ph2h_ger7_right_lane_with_offset() {
+        assert_eq!(
+            TARGET_LANE_FROM_RIGHT, 0,
+            "this test assumes right-most lane target"
+        );
+        let graph = make_road_graph_offset(2, 2, 3.75, 1.0, "forward");
+        let (_, meta, _) = build_splines_ex(&graph);
+        let m = meta[0].expect("forward edge must have metadata");
+        // target_lane must be the outermost right lane = lanes-1 = 1.
+        let target_lane = (m.lanes_in_direction as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
+        assert_eq!(target_lane, 1, "ger7 lanes=2 → target_lane 1 (right-most)");
+        assert!(
+            (m.road_offset_m - 1.0).abs() < 1e-4,
+            "road_offset must plumb through, got {}",
+            m.road_offset_m
+        );
+        assert!(
+            (m.lane_offset_right_m - 6.625).abs() < 1e-4,
+            "expected 6.625 (5.625 lane_center + 1.0 offset), got {}",
+            m.lane_offset_right_m
+        );
+    }
+
+    /// Phase 2h (b): 3-lane road — target must be the right-most lane (index 2),
+    /// NOT the inner-most (index 0). lane_center = (2+0.5)*width, plus offset.
+    #[test]
+    fn ph2h_three_lane_targets_rightmost_not_inner() {
+        assert_eq!(TARGET_LANE_FROM_RIGHT, 0);
+        let width = 3.75_f32;
+        let offset = 0.5_f32;
+        let graph = make_road_graph_offset(3, 0, width, offset, "forward");
+        let (_, meta, _) = build_splines_ex(&graph);
+        let m = meta[0].expect("forward edge must have metadata");
+        let target_lane = (m.lanes_in_direction as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
+        assert_eq!(target_lane, 2, "3-lane → right-most index 2");
+        let expected = 2.5 * width + offset;
+        assert!(
+            (m.lane_offset_right_m - expected).abs() < 1e-4,
+            "expected {} (2.5*width + offset), got {}",
+            expected,
+            m.lane_offset_right_m
+        );
+        // Must NOT be the inner-most lane center (0.5*width + offset).
+        let inner = 0.5 * width + offset;
+        assert!(
+            (m.lane_offset_right_m - inner).abs() > 1e-3,
+            "must NOT target inner-most lane ({}), got {}",
+            inner,
+            m.lane_offset_right_m
+        );
     }
 
     #[test]
@@ -1206,15 +1428,36 @@ mod tests {
         use crate::graph::GraphNode;
         let graph = MapGraph {
             nodes: vec![
-                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [0.0; 4] },
-                GraphNode { uid: 2, x: 0.0, y: 0.0, z: -10.0, rotation: [0.0; 4] },
+                GraphNode {
+                    uid: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    rotation: [0.0; 4],
+                },
+                GraphNode {
+                    uid: 2,
+                    x: 0.0,
+                    y: 0.0,
+                    z: -10.0,
+                    rotation: [0.0; 4],
+                },
             ],
             edges: vec![GraphEdge {
-                uid: 10, from: 1, to: 2,
-                distance_m: 10.0, speed_limit_kmh: None, lanes: 1,
+                uid: 10,
+                from: 1,
+                to: 2,
+                distance_m: 10.0,
+                speed_limit_kmh: None,
+                lanes: 1,
                 direction: "forward".to_string(),
-                dlc_guard: 0, is_hidden: false, gps_avoid: false,
-                road_look_token: 0, lanes_opposite: 0, lane_width_m: 3.75,
+                dlc_guard: 0,
+                is_hidden: false,
+                gps_avoid: false,
+                road_look_token: 0,
+                lanes_opposite: 0,
+                lane_width_m: 3.75,
+                road_offset_m: 0.0,
             }],
             ..MapGraph::default()
         };
@@ -1222,9 +1465,16 @@ mod tests {
         assert_eq!(segs.len(), 1);
         let seg = &segs[0];
         // Fallback: edge direction is (0,0,-10) = North → m0.z should be negative
-        assert!(seg.m0.z < -0.1, "m0.z should be negative (North), got {}", seg.m0.z);
+        assert!(
+            seg.m0.z < -0.1,
+            "m0.z should be negative (North), got {}",
+            seg.m0.z
+        );
         assert!(seg.m0.x.abs() < 0.01, "m0.x should be ~0, got {}", seg.m0.x);
         assert_eq!(stats.quat_tangents, 0);
-        assert_eq!(stats.fallback_tangents, 2, "both endpoints should use fallback");
+        assert_eq!(
+            stats.fallback_tangents, 2,
+            "both endpoints should use fallback"
+        );
     }
 }

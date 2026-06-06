@@ -57,8 +57,8 @@ pub struct HudData {
     pub junction: Junction,
     pub bias: BiasStatus,
     pub nearby_segments: Vec<SegmentSnapshot>,
-    pub ds14_target: Option<(f32, f32)>,  // world (x, z) des DS14-Zielpunkts
-    pub lateral_source: String,           // "navcurve" | "road_offset" | "road_center" | ""
+    pub ds14_target: Option<(f32, f32)>, // world (x, z) des DS14-Zielpunkts
+    pub lateral_source: String,          // "navcurve" | "road_offset" | "road_center" | ""
 }
 
 impl HudData {
@@ -120,13 +120,22 @@ impl HudState {
         let mut inner = self.inner.lock().unwrap();
         let d = &mut inner.data;
 
-        if let Some(v) = values.get("lane_follower.truck_x").and_then(|s| s.parse().ok()) {
+        if let Some(v) = values
+            .get("lane_follower.truck_x")
+            .and_then(|s| s.parse().ok())
+        {
             d.pose.x = v;
         }
-        if let Some(v) = values.get("lane_follower.truck_y").and_then(|s| s.parse().ok()) {
+        if let Some(v) = values
+            .get("lane_follower.truck_y")
+            .and_then(|s| s.parse().ok())
+        {
             d.pose.y = v;
         }
-        if let Some(v) = values.get("lane_follower.truck_z").and_then(|s| s.parse().ok()) {
+        if let Some(v) = values
+            .get("lane_follower.truck_z")
+            .and_then(|s| s.parse().ok())
+        {
             d.pose.z = v;
         }
         if let Some(v) = values
@@ -202,8 +211,12 @@ impl HudState {
             .get("lane_follower.lateral_source")
             .cloned()
             .unwrap_or_default();
-        let off_x = values.get("lane_follower.lookahead_offset_x").and_then(|s| s.parse::<f32>().ok());
-        let off_z = values.get("lane_follower.lookahead_offset_z").and_then(|s| s.parse::<f32>().ok());
+        let off_x = values
+            .get("lane_follower.lookahead_offset_x")
+            .and_then(|s| s.parse::<f32>().ok());
+        let off_z = values
+            .get("lane_follower.lookahead_offset_z")
+            .and_then(|s| s.parse::<f32>().ok());
         d.ds14_target = match (off_x, off_z) {
             (Some(x), Some(z)) => Some((x, z)),
             _ => None,
@@ -279,7 +292,10 @@ mod tests {
     // ------------------------------------------------------------------ //
 
     fn bb(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     /// road_offset + beide Offsets -> ds14_target Some, gate liefert Some.
@@ -297,7 +313,10 @@ mod tests {
         assert_eq!(snap.lateral_source, "road_offset");
         assert!(snap.ds14_target.is_some(), "ds14_target sollte Some sein");
         let (x, z) = snap.ds14_target.unwrap();
-        assert!((x - 10152.345_f32).abs() < 0.01, "x={x} erwartet ~10152.345");
+        assert!(
+            (x - 10152.345_f32).abs() < 0.01,
+            "x={x} erwartet ~10152.345"
+        );
         assert!((z - (-3.75_f32)).abs() < 0.001, "z={z} erwartet ~-3.75");
         assert_eq!(snap.ds14_target_to_draw(), snap.ds14_target);
     }
@@ -315,7 +334,10 @@ mod tests {
         let snap = state.snapshot();
 
         assert_eq!(snap.lateral_source, "road_offset");
-        assert_eq!(snap.ds14_target, None, "ohne z-Offset muss ds14_target None sein");
+        assert_eq!(
+            snap.ds14_target, None,
+            "ohne z-Offset muss ds14_target None sein"
+        );
         assert_eq!(snap.ds14_target_to_draw(), None);
     }
 
@@ -350,7 +372,11 @@ mod tests {
         assert_eq!(snap.lateral_source, "navcurve");
         // ds14_target wird gesetzt (Parsing ok), aber Gate sperrt
         assert_eq!(snap.ds14_target, Some((1.0, 2.0)));
-        assert_eq!(snap.ds14_target_to_draw(), None, "navcurve: gate muss None liefern");
+        assert_eq!(
+            snap.ds14_target_to_draw(),
+            None,
+            "navcurve: gate muss None liefern"
+        );
     }
 
     /// lateral_source-Key fehlt komplett -> leerer String, gate None.
@@ -365,7 +391,10 @@ mod tests {
         state.apply_blackboard(&map);
         let snap = state.snapshot();
 
-        assert_eq!(snap.lateral_source, "", "fehlender Key muss leeren String ergeben");
+        assert_eq!(
+            snap.lateral_source, "",
+            "fehlender Key muss leeren String ergeben"
+        );
         assert_eq!(snap.ds14_target_to_draw(), None);
     }
 
@@ -393,7 +422,10 @@ mod tests {
         state.apply_blackboard(&map);
         let snap = state.snapshot();
 
-        assert_eq!(snap.ds14_target, None, "ungültiger x-Wert muss ds14_target None lassen");
+        assert_eq!(
+            snap.ds14_target, None,
+            "ungültiger x-Wert muss ds14_target None lassen"
+        );
         assert_eq!(snap.ds14_target_to_draw(), None);
     }
 
@@ -411,12 +443,13 @@ mod tests {
         assert_eq!(state.snapshot().lateral_source, "road_offset");
 
         // Zweiter Aufruf: navcurve, Offsets fehlen
-        state.apply_blackboard(&bb(&[
-            ("lane_follower.lateral_source", "navcurve"),
-        ]));
+        state.apply_blackboard(&bb(&[("lane_follower.lateral_source", "navcurve")]));
         let snap = state.snapshot();
         assert_eq!(snap.lateral_source, "navcurve");
-        assert_eq!(snap.ds14_target, None, "nach zweitem Aufruf ohne Offsets muss ds14_target None sein");
+        assert_eq!(
+            snap.ds14_target, None,
+            "nach zweitem Aufruf ohne Offsets muss ds14_target None sein"
+        );
         assert_eq!(snap.ds14_target_to_draw(), None);
     }
 }

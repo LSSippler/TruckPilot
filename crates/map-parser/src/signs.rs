@@ -89,7 +89,13 @@ mod tests {
     use super::*;
 
     fn node(uid: u64, x: f64, z: f64) -> GraphNode {
-        GraphNode { uid, x, y: 0.0, z, rotation: [0.0; 4] }
+        GraphNode {
+            uid,
+            x,
+            y: 0.0,
+            z,
+            rotation: [0.0; 4],
+        }
     }
 
     fn sign(uid: u64, x: f32, z: f32, kind: u32, value: f32) -> RawSign {

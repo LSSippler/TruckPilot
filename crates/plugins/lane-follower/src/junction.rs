@@ -146,7 +146,11 @@ fn heading_spread(headings: &[f64]) -> f64 {
     for i in 0..headings.len() {
         for j in (i + 1)..headings.len() {
             let diff = (headings[i] - headings[j]).abs();
-            let diff = if diff > std::f64::consts::PI { std::f64::consts::TAU - diff } else { diff };
+            let diff = if diff > std::f64::consts::PI {
+                std::f64::consts::TAU - diff
+            } else {
+                diff
+            };
             if diff > max {
                 max = diff;
             }
@@ -166,7 +170,12 @@ mod tests {
 
     /// Y-fork: node 1 at (50,0) has 2 exits — one left, one right (~90° spread).
     fn make_y_fork() -> RouterGraph {
-        let nodes = vec![(0u64, 0.0, 0.0), (1, 50.0, 0.0), (2, 80.0, 30.0), (3, 80.0, -30.0)];
+        let nodes = vec![
+            (0u64, 0.0, 0.0),
+            (1, 50.0, 0.0),
+            (2, 80.0, 30.0),
+            (3, 80.0, -30.0),
+        ];
         let edges = vec![(0, 1, 50.0), (1, 2, 36.0), (1, 3, 36.0)];
         RouterGraph::new(nodes, edges)
     }
@@ -174,7 +183,12 @@ mod tests {
     /// Straight road: node 1 at (50,0) has 2 exits only 10° apart — not a real junction.
     fn make_near_parallel() -> RouterGraph {
         // dz = 30 * tan(5°) ≈ 2.625 per side → 10° total spread
-        let nodes = vec![(0u64, 0.0, 0.0), (1, 50.0, 0.0), (2, 80.0, 2.63), (3, 80.0, -2.63)];
+        let nodes = vec![
+            (0u64, 0.0, 0.0),
+            (1, 50.0, 0.0),
+            (2, 80.0, 2.63),
+            (3, 80.0, -2.63),
+        ];
         let edges = vec![(0, 1, 50.0), (1, 2, 30.1), (1, 3, 30.1)];
         RouterGraph::new(nodes, edges)
     }
@@ -206,14 +220,21 @@ mod tests {
     fn p31_no_junction_below_spread_threshold() {
         let graph = make_near_parallel();
         let det = detect_junction(&graph, 45.0, 0.0);
-        assert!(!det.is_junction, "near-parallel exits (10° spread) must not be detected as junction");
+        assert!(
+            !det.is_junction,
+            "near-parallel exits (10° spread) must not be detected as junction"
+        );
     }
 
     #[test]
     fn p31_hysteresis_coast_holds_active() {
         let graph = make_y_fork();
         let det_on = detect_junction(&graph, 45.0, 0.0);
-        let det_off = JunctionDetection { is_junction: false, max_degree: 0, distance_m: None };
+        let det_off = JunctionDetection {
+            is_junction: false,
+            max_degree: 0,
+            distance_m: None,
+        };
 
         let mut detector = JunctionDetector::default();
         // Stabilise (3 active frames)
@@ -224,7 +245,11 @@ mod tests {
         for i in 1..=5 {
             let (a, p) = detector.tick(&det_off);
             assert!(a, "coast tick {i}: should still be active");
-            assert_eq!(p, JunctionPhase::Exiting, "coast tick {i}: phase must be Exiting");
+            assert_eq!(
+                p,
+                JunctionPhase::Exiting,
+                "coast tick {i}: phase must be Exiting"
+            );
         }
         // 6th tick: coast exhausted
         let (a, p) = detector.tick(&det_off);
@@ -237,15 +262,28 @@ mod tests {
         // Exactly 30° spread: NOT detected (threshold is STRICT >)
         // Exits at +15° and -15° from the x-axis:
         // tan(15°)*30 ≈ 8.036
-        let nodes_30 = vec![(0u64, 0.0, 0.0), (1, 50.0, 0.0), (2, 80.0, 8.036), (3, 80.0, -8.036)];
+        let nodes_30 = vec![
+            (0u64, 0.0, 0.0),
+            (1, 50.0, 0.0),
+            (2, 80.0, 8.036),
+            (3, 80.0, -8.036),
+        ];
         let edges_30 = vec![(0, 1, 50.0), (1, 2, 30.0), (1, 3, 30.0)];
         let graph_30 = RouterGraph::new(nodes_30, edges_30);
         let det = detect_junction(&graph_30, 45.0, 0.0);
-        assert!(!det.is_junction, "exactly 30° spread must NOT be detected (strict >)");
+        assert!(
+            !det.is_junction,
+            "exactly 30° spread must NOT be detected (strict >)"
+        );
 
         // Just over 30° spread: exits at +16° and -16°:
         // tan(16°)*30 ≈ 8.594
-        let nodes_31 = vec![(0u64, 0.0, 0.0), (1, 50.0, 0.0), (2, 80.0, 8.594), (3, 80.0, -8.594)];
+        let nodes_31 = vec![
+            (0u64, 0.0, 0.0),
+            (1, 50.0, 0.0),
+            (2, 80.0, 8.594),
+            (3, 80.0, -8.594),
+        ];
         let edges_31 = vec![(0, 1, 50.0), (1, 2, 30.0), (1, 3, 30.0)];
         let graph_31 = RouterGraph::new(nodes_31, edges_31);
         let det = detect_junction(&graph_31, 45.0, 0.0);

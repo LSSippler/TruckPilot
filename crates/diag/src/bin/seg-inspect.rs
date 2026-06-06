@@ -159,8 +159,7 @@ fn main() {
     let (segments, stats) = build_splines(&graph);
     eprintln!(
         "Splines: {} segments built ({} skipped — missing nodes)",
-        stats.total_segments,
-        stats.skipped_missing_node
+        stats.total_segments, stats.skipped_missing_node
     );
 
     let tx = args.truck_x;
@@ -180,17 +179,33 @@ fn main() {
         println!("=== Task 1: Segment {} Inspection ===", idx);
 
         if idx >= segments.len() {
-            println!("ERROR: idx {} out of range (total={})!", idx, segments.len());
+            println!(
+                "ERROR: idx {} out of range (total={})!",
+                idx,
+                segments.len()
+            );
         } else {
             let seg = &segments[idx];
             println!("  from_uid  : {}", seg.from_uid);
             println!("  to_uid    : {}", seg.to_uid);
             println!("  edge_uid  : {}", seg.edge_uid);
             println!("  length_m  : {:.3}", seg.length_m);
-            println!("  P0        : ({:.3}, {:.3}, {:.3})", seg.p0.x, seg.p0.y, seg.p0.z);
-            println!("  P1        : ({:.3}, {:.3}, {:.3})", seg.p1.x, seg.p1.y, seg.p1.z);
-            println!("  M0 (tang) : ({:.4}, {:.4}, {:.4})", seg.m0.x, seg.m0.y, seg.m0.z);
-            println!("  M1 (tang) : ({:.4}, {:.4}, {:.4})", seg.m1.x, seg.m1.y, seg.m1.z);
+            println!(
+                "  P0        : ({:.3}, {:.3}, {:.3})",
+                seg.p0.x, seg.p0.y, seg.p0.z
+            );
+            println!(
+                "  P1        : ({:.3}, {:.3}, {:.3})",
+                seg.p1.x, seg.p1.y, seg.p1.z
+            );
+            println!(
+                "  M0 (tang) : ({:.4}, {:.4}, {:.4})",
+                seg.m0.x, seg.m0.y, seg.m0.z
+            );
+            println!(
+                "  M1 (tang) : ({:.4}, {:.4}, {:.4})",
+                seg.m1.x, seg.m1.y, seg.m1.z
+            );
 
             // Task 2: Compare spline P0/P1 with graph node positions.
             println!();
@@ -201,9 +216,18 @@ fn main() {
                 let dy = seg.p0.y as f64 - ny;
                 let dz = seg.p0.z as f64 - nz;
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                println!("  from_uid {} node pos = ({:.3}, {:.3}, {:.3})", seg.from_uid, nx, ny, nz);
-                println!("  seg.P0               = ({:.3}, {:.3}, {:.3})", seg.p0.x, seg.p0.y, seg.p0.z);
-                println!("  P0 delta             = ({:.4}, {:.4}, {:.4}) => dist={:.4}m", dx, dy, dz, dist);
+                println!(
+                    "  from_uid {} node pos = ({:.3}, {:.3}, {:.3})",
+                    seg.from_uid, nx, ny, nz
+                );
+                println!(
+                    "  seg.P0               = ({:.3}, {:.3}, {:.3})",
+                    seg.p0.x, seg.p0.y, seg.p0.z
+                );
+                println!(
+                    "  P0 delta             = ({:.4}, {:.4}, {:.4}) => dist={:.4}m",
+                    dx, dy, dz, dist
+                );
                 if dist < 0.01 {
                     println!("  MATCH: P0 == node position (OK)");
                 } else {
@@ -218,9 +242,18 @@ fn main() {
                 let dy = seg.p1.y as f64 - ny;
                 let dz = seg.p1.z as f64 - nz;
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                println!("  to_uid {} node pos   = ({:.3}, {:.3}, {:.3})", seg.to_uid, nx, ny, nz);
-                println!("  seg.P1               = ({:.3}, {:.3}, {:.3})", seg.p1.x, seg.p1.y, seg.p1.z);
-                println!("  P1 delta             = ({:.4}, {:.4}, {:.4}) => dist={:.4}m", dx, dy, dz, dist);
+                println!(
+                    "  to_uid {} node pos   = ({:.3}, {:.3}, {:.3})",
+                    seg.to_uid, nx, ny, nz
+                );
+                println!(
+                    "  seg.P1               = ({:.3}, {:.3}, {:.3})",
+                    seg.p1.x, seg.p1.y, seg.p1.z
+                );
+                println!(
+                    "  P1 delta             = ({:.4}, {:.4}, {:.4}) => dist={:.4}m",
+                    dx, dy, dz, dist
+                );
                 if dist < 0.01 {
                     println!("  MATCH: P1 == node position (OK)");
                 } else {
@@ -235,8 +268,14 @@ fn main() {
                 println!();
                 println!("=== Edge {} in Graph ===", seg.edge_uid);
                 println!("  from={} to={}", edge.from, edge.to);
-                println!("  distance_m={:.2}  speed_kmh={:?}  lanes={}", edge.distance_m, edge.speed_limit_kmh, edge.lanes);
-                println!("  direction={}  dlc_guard={}  gps_avoid={}", edge.direction, edge.dlc_guard, edge.gps_avoid);
+                println!(
+                    "  distance_m={:.2}  speed_kmh={:?}  lanes={}",
+                    edge.distance_m, edge.speed_limit_kmh, edge.lanes
+                );
+                println!(
+                    "  direction={}  dlc_guard={}  gps_avoid={}",
+                    edge.direction, edge.dlc_guard, edge.gps_avoid
+                );
             } else {
                 println!("  Edge uid {} not found in graph.edges!", seg.edge_uid);
             }
@@ -248,8 +287,14 @@ fn main() {
             let d1 = dist_xz(tx, tz, p1x, p1z);
             println!();
             println!("=== Segment {} Distance to Truck ===", idx);
-            println!("  dist(truck, P0) = {:.2}m  [P0=({:.1},{:.1})]", d0, p0x, p0z);
-            println!("  dist(truck, P1) = {:.2}m  [P1=({:.1},{:.1})]", d1, p1x, p1z);
+            println!(
+                "  dist(truck, P0) = {:.2}m  [P0=({:.1},{:.1})]",
+                d0, p0x, p0z
+            );
+            println!(
+                "  dist(truck, P1) = {:.2}m  [P1=({:.1},{:.1})]",
+                d1, p1x, p1z
+            );
             println!("  Truck is {}m from nearest endpoint", d0.min(d1));
         }
     }
@@ -259,7 +304,10 @@ fn main() {
     // -----------------------------------------------------------------------
 
     println!();
-    println!("=== Task 3: Top {} Nearest Graph Nodes to Truck ===", args.top_n);
+    println!(
+        "=== Task 3: Top {} Nearest Graph Nodes to Truck ===",
+        args.top_n
+    );
     println!("  Query: ({:.3}, {:.3})", tx, tz);
 
     let mut node_dists: Vec<(f64, u64, f64, f64, f64)> = graph
@@ -277,7 +325,14 @@ fn main() {
         let inc = edges_by_to.get(&uid).map_or(0, |v| v.len());
         println!(
             "  #{:02}  dist={:7.2}m  uid={:>22}  pos=({:.1}, {:.1}, {:.1})  edges_out={} in={}",
-            rank + 1, d, uid, nx, ny, nz, out, inc
+            rank + 1,
+            d,
+            uid,
+            nx,
+            ny,
+            nz,
+            out,
+            inc
         );
     }
 
@@ -286,7 +341,10 @@ fn main() {
     // -----------------------------------------------------------------------
 
     println!();
-    println!("=== Task 3b: Edges within {:.0}m of Truck ===", args.radius_m);
+    println!(
+        "=== Task 3b: Edges within {:.0}m of Truck ===",
+        args.radius_m
+    );
 
     let mut near_edges: Vec<(f64, usize)> = Vec::new();
     for (i, seg) in segments.iter().enumerate() {
@@ -305,9 +363,16 @@ fn main() {
     near_edges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
     if near_edges.is_empty() {
-        println!("  NO segments within {:.0}m — truck is in gap area!", args.radius_m);
+        println!(
+            "  NO segments within {:.0}m — truck is in gap area!",
+            args.radius_m
+        );
     } else {
-        println!("  {} segments found within {:.0}m:", near_edges.len(), args.radius_m);
+        println!(
+            "  {} segments found within {:.0}m:",
+            near_edges.len(),
+            args.radius_m
+        );
         for &(d, i) in near_edges.iter().take(20) {
             let seg = &segments[i];
             let (p0x, p0z) = seg_p0_xz(seg);
@@ -333,7 +398,10 @@ fn main() {
     // sector index = floor((x + 32768) / 4096) etc. But simpler:
     let sector_x = (tx / 4096.0).floor() as i32;
     let sector_z = (tz / 4096.0).floor() as i32;
-    println!("  ETS2 sector grid (4096m cells): sector_x={}, sector_z={}", sector_x, sector_z);
+    println!(
+        "  ETS2 sector grid (4096m cells): sector_x={}, sector_z={}",
+        sector_x, sector_z
+    );
     // Also check nearest node UIDs for sector hints (upper 32 bits).
     if let Some(&(_, uid, _, _, _)) = node_dists.first() {
         let high32 = (uid >> 32) as u32;
@@ -350,13 +418,26 @@ fn main() {
         println!("  (No --seg specified; skipped segment inspection)");
     }
     if node_dists.first().map_or(999.0, |v| v.0) > args.radius_m {
-        println!("  FINDING: No graph node within {:.0}m. Truck is in unmapped gap.", args.radius_m);
+        println!(
+            "  FINDING: No graph node within {:.0}m. Truck is in unmapped gap.",
+            args.radius_m
+        );
     } else {
-        println!("  Nearest graph node is {:.2}m away from truck.", node_dists.first().map_or(0.0, |v| v.0));
+        println!(
+            "  Nearest graph node is {:.2}m away from truck.",
+            node_dists.first().map_or(0.0, |v| v.0)
+        );
     }
     if near_edges.is_empty() {
-        println!("  FINDING: No spline segment within {:.0}m. SplineIndex gap confirmed.", args.radius_m);
+        println!(
+            "  FINDING: No spline segment within {:.0}m. SplineIndex gap confirmed.",
+            args.radius_m
+        );
     } else {
-        println!("  {} spline segments within {:.0}m.", near_edges.len(), args.radius_m);
+        println!(
+            "  {} spline segments within {:.0}m.",
+            near_edges.len(),
+            args.radius_m
+        );
     }
 }

@@ -69,7 +69,9 @@ fn main() {
                 i += 2;
             }
             "-h" | "--help" => {
-                println!("usage: truckpilot-road-look-probe --ets2-dir <PATH> [--graph graph.json]");
+                println!(
+                    "usage: truckpilot-road-look-probe --ets2-dir <PATH> [--graph graph.json]"
+                );
                 return;
             }
             other => {
@@ -159,7 +161,10 @@ fn main() {
     if !map.is_empty() {
         let mut keys: Vec<u64> = map.keys().copied().collect();
         keys.sort_unstable();
-        println!("first {} entries (key  lanes_left/right  width):", keys.len().min(10));
+        println!(
+            "first {} entries (key  lanes_left/right  width):",
+            keys.len().min(10)
+        );
         for k in keys.iter().take(10) {
             let e = map[k];
             println!(
@@ -171,7 +176,10 @@ fn main() {
 
     // Cross-check against the real production entry point.
     let prod_map = load_road_look(&mut archives);
-    println!("load_road_look() (production path) entries: {}", prod_map.len());
+    println!(
+        "load_road_look() (production path) entries: {}",
+        prod_map.len()
+    );
 
     // ── Task 4: Berlin token resolution ──
     println!("\n-- Task 4: Berlin road_look_token {BERLIN_TOKEN} resolution --");
@@ -209,7 +217,10 @@ fn main() {
     // ════════════════════════════════════════════════════════════════════════
 
     // ── Task 1: collect real binary road_type_token values from graph.json ──
-    println!("\n-- Schema/Task 1: binary road_type_token set from {} --", graph_path.display());
+    println!(
+        "\n-- Schema/Task 1: binary road_type_token set from {} --",
+        graph_path.display()
+    );
     let binary_tokens = load_binary_tokens(&graph_path);
     if binary_tokens.is_empty() {
         println!("(no graph.json tokens loaded — skipping schema match; run with --graph <path>)");
@@ -217,7 +228,10 @@ fn main() {
         let mut sample: Vec<u64> = binary_tokens.iter().copied().collect();
         sample.sort_unstable();
         println!("{} distinct non-zero binary tokens", binary_tokens.len());
-        println!("contains Berlin token {BERLIN_TOKEN}: {}", binary_tokens.contains(&BERLIN_TOKEN));
+        println!(
+            "contains Berlin token {BERLIN_TOKEN}: {}",
+            binary_tokens.contains(&BERLIN_TOKEN)
+        );
         println!("first 20 (dec / hex):");
         for t in sample.iter().take(20) {
             println!("  {t:<22} 0x{t:x}");
@@ -227,7 +241,10 @@ fn main() {
     // ── Task 2: extract the 32 SII unit names in clear text ──
     let text = std::str::from_utf8(&bytes).unwrap_or("");
     let names = extract_road_look_names(text);
-    println!("\n-- Schema/Task 2: {} road_look unit names --", names.len());
+    println!(
+        "\n-- Schema/Task 2: {} road_look unit names --",
+        names.len()
+    );
     for (full, unit) in &names {
         println!("  full=\"{full}\"   unit_part=\"{unit}\"");
     }
@@ -244,7 +261,10 @@ fn main() {
     ];
 
     println!("\n-- Schema/Task 3: candidate tokens per name (key variants) --");
-    println!("{:<26} {:>22} {:>22} {:>22} {:>22}", "unit_part", "trucklib(unit)", "scs(unit)", "trucklib(full)", "scs(full)");
+    println!(
+        "{:<26} {:>22} {:>22} {:>22} {:>22}",
+        "unit_part", "trucklib(unit)", "scs(unit)", "trucklib(full)", "scs(full)"
+    );
     for (full, unit) in &names {
         println!(
             "{:<26} {:>22} {:>22} {:>22} {:>22}",
@@ -276,10 +296,14 @@ fn main() {
                 let tok = hf(pval);
                 if binary_tokens.contains(&tok) {
                     let key = format!("{hlabel} | {plabel}");
-                    let e = tally.entry(key.clone()).or_insert_with(|| (HashSet::new(), 0));
+                    let e = tally
+                        .entry(key.clone())
+                        .or_insert_with(|| (HashSet::new(), 0));
                     e.0.insert(tok);
                     e.1 += 1;
-                    println!("MATCH: name='{full}' via {key} -> token={tok} == binary road_type_token");
+                    println!(
+                        "MATCH: name='{full}' via {key} -> token={tok} == binary road_type_token"
+                    );
                     if tok == BERLIN_TOKEN && berlin_hit.is_none() {
                         berlin_hit = Some(format!("{key}  (name='{full}', part='{pval}')"));
                     }
@@ -288,7 +312,9 @@ fn main() {
         }
     }
 
-    println!("\n-- Schema/Task 4 summary (variant -> distinct binary tokens hit / names matched) --");
+    println!(
+        "\n-- Schema/Task 4 summary (variant -> distinct binary tokens hit / names matched) --"
+    );
     let mut ranked: Vec<(&String, &(HashSet<u64>, usize))> = tally.iter().collect();
     ranked.sort_by_key(|b| std::cmp::Reverse(b.1 .0.len()));
     if ranked.is_empty() {
@@ -349,7 +375,10 @@ fn main() {
             };
             let txt = String::from_utf8_lossy(&bytes);
             let nm = extract_road_look_names(&txt);
-            let modern = nm.iter().filter(|(_, u)| !u.starts_with("road.look")).count();
+            let modern = nm
+                .iter()
+                .filter(|(_, u)| !u.starts_with("road.look"))
+                .count();
             let inc = txt
                 .lines()
                 .filter(|l| l.trim_start().starts_with("@include"))
@@ -383,7 +412,11 @@ fn main() {
         .filter(|p| !ROAD_LOOK_PATHS.contains(&p.as_str()))
         .cloned()
         .collect();
-    println!("discovered {} road_look path(s) via dir-walk; {} beyond ROAD_LOOK_PATHS:", discovered.len(), extra.len());
+    println!(
+        "discovered {} road_look path(s) via dir-walk; {} beyond ROAD_LOOK_PATHS:",
+        discovered.len(),
+        extra.len()
+    );
     for p in &extra {
         let data = archives.iter_mut().rev().find_map(|a| a.read_path(p).ok());
         let Some(bytes) = data else {
@@ -392,8 +425,15 @@ fn main() {
         };
         let txt = String::from_utf8_lossy(&bytes);
         let nm = extract_road_look_names(&txt);
-        let modern = nm.iter().filter(|(_, u)| !u.starts_with("road.look")).count();
-        println!("  {p}: {}B, {} blocks, {modern} modern-named", bytes.len(), nm.len());
+        let modern = nm
+            .iter()
+            .filter(|(_, u)| !u.starts_with("road.look"))
+            .count();
+        println!(
+            "  {p}: {}B, {} blocks, {modern} modern-named",
+            bytes.len(),
+            nm.len()
+        );
         for (full, unit) in nm.iter().take(8) {
             println!("      block: full=\"{full}\" unit=\"{unit}\"");
         }
@@ -413,7 +453,11 @@ fn main() {
         .collect();
 
     // Dump the tiny def/world/road.sii verbatim (likely an @include hub / road defs).
-    if let Some(bytes) = archives.iter_mut().rev().find_map(|a| a.read_path("def/world/road.sii").ok()) {
+    if let Some(bytes) = archives
+        .iter_mut()
+        .rev()
+        .find_map(|a| a.read_path("def/world/road.sii").ok())
+    {
         let txt = String::from_utf8_lossy(&bytes);
         println!("def/world/road.sii ({}B) verbatim:", bytes.len());
         for l in txt.lines().take(20) {
@@ -454,13 +498,23 @@ fn main() {
             def_files.insert(p);
         }
     }
-    println!("scanning {} def/* .sii/.sui files for {} stems …", def_files.len(), stem_names.len());
+    println!(
+        "scanning {} def/* .sii/.sui files for {} stems …",
+        def_files.len(),
+        stem_names.len()
+    );
     let mut file_hits: Vec<(String, usize)> = Vec::new();
     for path in &def_files {
-        let data = archives.iter_mut().rev().find_map(|a| a.read_path(path).ok());
+        let data = archives
+            .iter_mut()
+            .rev()
+            .find_map(|a| a.read_path(path).ok());
         let Some(bytes) = data else { continue };
         let txt = String::from_utf8_lossy(&bytes);
-        let n = stem_names.iter().filter(|s| stem_defined_in(&txt, s)).count();
+        let n = stem_names
+            .iter()
+            .filter(|s| stem_defined_in(&txt, s))
+            .count();
         if n > 0 {
             file_hits.push((path.clone(), n));
         }
@@ -511,7 +565,11 @@ fn main() {
         binary_tokens.len()
     );
     for (t, name) in decoded.iter().take(40) {
-        let star = if *t == BERLIN_TOKEN { "  <-- BERLIN" } else { "" };
+        let star = if *t == BERLIN_TOKEN {
+            "  <-- BERLIN"
+        } else {
+            ""
+        };
         println!("  {t:<22} = trucklib_token(\"{name}\"){star}");
     }
     let berlin_decoded = decoded.iter().find(|(t, _)| *t == BERLIN_TOKEN).cloned();
@@ -533,7 +591,10 @@ fn main() {
     ];
     let want: HashSet<u64> = BERLIN.iter().copied().collect();
     let positions = load_node_positions(&graph_path, &want);
-    println!("resolved {}/7 Berlin node positions from graph.json", positions.len());
+    println!(
+        "resolved {}/7 Berlin node positions from graph.json",
+        positions.len()
+    );
 
     // Candidate sectors: floor(pos/4096) ± 1 neighbour (roads may live in adjacent).
     let mut sects: BTreeSet<(i32, i32)> = BTreeSet::new();
@@ -568,7 +629,9 @@ fn main() {
     // Cross-ref: trucklib_token(unit name + each segment) → road_look unit label.
     let mut unit_by_token: HashMap<u64, String> = HashMap::new();
     for (_src, unit) in &all_stems {
-        unit_by_token.entry(trucklib_token(unit)).or_insert_with(|| unit.clone());
+        unit_by_token
+            .entry(trucklib_token(unit))
+            .or_insert_with(|| unit.clone());
         for seg in unit.split('.') {
             if !seg.is_empty() {
                 unit_by_token
@@ -585,7 +648,11 @@ fn main() {
             break;
         }
         let path = sec_path(*sx, *sz);
-        let Some(bytes) = archives.iter_mut().rev().find_map(|a| a.read_path(&path).ok()) else {
+        let Some(bytes) = archives
+            .iter_mut()
+            .rev()
+            .find_map(|a| a.read_path(&path).ok())
+        else {
             continue;
         };
         let ver = if bytes.len() >= 4 {
@@ -633,14 +700,21 @@ fn main() {
         }
     }
     if dumped == 0 {
-        println!("  (no Berlin road items located in {} candidate sectors)", sects.len());
+        println!(
+            "  (no Berlin road items located in {} candidate sectors)",
+            sects.len()
+        );
     }
 
     // ── Gap B/Task 2: lane data for the Berlin road_type stems ──
     println!("\n-- Gap B/Task 2: road_look unit + lane data for road_type tokens --");
     let rt_stems: Vec<(u64, String)> = berlin_road_types
         .iter()
-        .filter_map(|&t| decode_trucklib(t).filter(|s| trucklib_token(s) == t).map(|s| (t, s)))
+        .filter_map(|&t| {
+            decode_trucklib(t)
+                .filter(|s| trucklib_token(s) == t)
+                .map(|s| (t, s))
+        })
         .collect();
     let mut rl_files: BTreeSet<String> = discovered.clone();
     for p in ROAD_LOOK_PATHS {
@@ -648,10 +722,16 @@ fn main() {
     }
     let mut gapb_resolved = 0usize;
     for (t, stem) in &rt_stems {
-        println!("road_type {t} = trucklib(\"{stem}\")  → road_look-Unit (last-seg == \"{stem}\"):");
+        println!(
+            "road_type {t} = trucklib(\"{stem}\")  → road_look-Unit (last-seg == \"{stem}\"):"
+        );
         let mut hit = false;
         for path in &rl_files {
-            let Some(bytes) = archives.iter_mut().rev().find_map(|a| a.read_path(path).ok()) else {
+            let Some(bytes) = archives
+                .iter_mut()
+                .rev()
+                .find_map(|a| a.read_path(path).ok())
+            else {
                 continue;
             };
             let txt = String::from_utf8_lossy(&bytes);
@@ -672,10 +752,14 @@ fn main() {
 
     // ── FINAL VERDICT (Gap A + Gap B) ──
     println!("\n========================================");
-    println!("GAP A: road_look_id steht @ header+0x39 (`road_type`; = ts-map +0x3D inkl. 4B item_type).");
+    println!(
+        "GAP A: road_look_id steht @ header+0x39 (`road_type`; = ts-map +0x3D inkl. 4B item_type)."
+    );
     println!("       Code nutzt aktuell @ header+0x99 (`right_look`) → FALSCHES FELD, MUSS geändert werden.");
     println!("       Berlin-Roads: road_type@0x39 = 479995 = trucklib(\"ger7\") → road_look-Unit road.ger7;");
-    println!("       right_look@0x99 = 6241555 = \"ger_1\" (Look-Variante, KEINE Unit/keine Spurdaten).");
+    println!(
+        "       right_look@0x99 = 6241555 = \"ger_1\" (Look-Variante, KEINE Unit/keine Spurdaten)."
+    );
     println!(
         "GAP B: Units heißen `road.<stem>` (z.B. road.ger7). Korrekte Stem-Extraktion = NACH LETZTEM Punkt;"
     );
@@ -688,8 +772,12 @@ fn main() {
         gapb_resolved,
         rt_stems.len()
     );
-    println!("HINWEIS: die 185 graph.json-Tokens (Abschnitt oben) sind allesamt `right_look`-Werte (das");
-    println!("       falsche Feld) → daher 0/185 Abdeckung. Nach Feld-Wechsel auf road_type@0x39 +");
+    println!(
+        "HINWEIS: die 185 graph.json-Tokens (Abschnitt oben) sind allesamt `right_look`-Werte (das"
+    );
+    println!(
+        "       falsche Feld) → daher 0/185 Abdeckung. Nach Feld-Wechsel auf road_type@0x39 +"
+    );
     println!("       Key=trucklib(last_seg) + Laden von road_look.template*.sii ist 2e vollständig spezifiziert.");
     println!("========================================");
 
@@ -713,7 +801,8 @@ fn main() {
             e.lane_width_m
         );
     } else {
-        let variant = hash_hit.unwrap_or_else(|| "UNKNOWN (not road.look0..63 scs/city)".to_string());
+        let variant =
+            hash_hit.unwrap_or_else(|| "UNKNOWN (not road.look0..63 scs/city)".to_string());
         println!(
             "VERDIKT: Mode 2 (parsed {} entries, token {BERLIN_TOKEN} UNRESOLVED, correct hash variant = {variant}) — text parses but the key scheme/name set does not match the binary token. 2e is a hash/name-mapping fix, not a binary decoder.",
             map.len()
@@ -864,11 +953,14 @@ fn stem_defined_in(text: &str, stem: &str) -> bool {
     let mut i = 0;
     while let Some(rel) = text[i..].find(stem) {
         let pos = i + rel;
-        let before_ok = pos == 0
-            || matches!(bytes[pos - 1], b'.' | b':' | b' ' | b'\t' | b'\n' | b'"');
+        let before_ok =
+            pos == 0 || matches!(bytes[pos - 1], b'.' | b':' | b' ' | b'\t' | b'\n' | b'"');
         let after = pos + s.len();
         let after_ok = after >= bytes.len()
-            || matches!(bytes[after], b' ' | b'\t' | b'\n' | b'{' | b':' | b'"' | b'.' | b'\r');
+            || matches!(
+                bytes[after],
+                b' ' | b'\t' | b'\n' | b'{' | b':' | b'"' | b'.' | b'\r'
+            );
         if before_ok && after_ok {
             return true;
         }
@@ -924,7 +1016,8 @@ fn block_for_stem(text: &str, stem: &str) -> Option<Vec<String>> {
 
 /// Read a little-endian u64 at `off` from a byte slice (None if out of range).
 fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
-    b.get(off..off + 8).map(|s| u64::from_le_bytes(s.try_into().unwrap()))
+    b.get(off..off + 8)
+        .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
 }
 
 /// Build the sector path `map/europe/sec±XXXX±YYYY.base` (4-digit signed coords).

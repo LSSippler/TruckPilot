@@ -35,9 +35,9 @@ const TELEMETRY_LOSS: u64 = 25; // 500 ms
 const ENGINE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before EngineStopped fault
 const PRECONDITION_GLITCH_TOLERANCE: u64 = 10; // 200 ms at 50 Hz daemon tick rate
 const ZERO_SPEED_MS: f64 = 0.028; // ≈ 0.1 km/h
-const ROUTE_TO_LANE_TICKS: u64 = 150;    // 3s at 50 Hz
-const LANE_TO_ROUTE_TICKS: u64 = 100;    // 2s at 50 Hz
-const TO_DEGRADED_TICKS: u64 = 250;      // 5s at 50 Hz
+const ROUTE_TO_LANE_TICKS: u64 = 150; // 3s at 50 Hz
+const LANE_TO_ROUTE_TICKS: u64 = 100; // 2s at 50 Hz
+const TO_DEGRADED_TICKS: u64 = 250; // 5s at 50 Hz
 const DEGRADED_RECOVERY_TICKS: u64 = 100; // 2s at 50 Hz
 const DEGRADED_TIMEOUT_TICKS: u64 = 1500; // 30s at 50 Hz
 
@@ -538,8 +538,7 @@ impl AutopilotStateMachine {
         match (self.state, &event) {
             (AutopilotState::Off, AutopilotEvent::UserEngage) => {
                 // Lane-only engage: bypass route/cruise preconditions.
-                let lane_only =
-                    bb.get("autopilot.requested_mode").as_deref() == Some("lane_only");
+                let lane_only = bb.get("autopilot.requested_mode").as_deref() == Some("lane_only");
                 bb.remove("autopilot.requested_mode");
 
                 if lane_only {
@@ -1003,7 +1002,10 @@ impl AutopilotStateMachine {
             bb.set("state.engage_precondition_truck_on_route", "true");
             bb.set("state.engage_precondition_heading_aligned", "true");
             bb.set("state.engage_precondition_heading_ok_for_engage", "true");
-            bb.set("state.engage_precondition_lane_keeper_engage_allowed", "true");
+            bb.set(
+                "state.engage_precondition_lane_keeper_engage_allowed",
+                "true",
+            );
         }
         bb.set("state.engage_ready", pre.hard_blockers_met().to_string());
         bb.set("state.engage_all_ok", pre.all_met().to_string());
@@ -1042,11 +1044,7 @@ impl AutopilotStateMachine {
     }
 
     fn transition_engage_mode(&mut self, new_mode: EngageMode, bb: &SharedBlackboard) {
-        tracing::info!(
-            "[engage_mode] {:?} -> {:?}",
-            self.engage_mode,
-            new_mode
-        );
+        tracing::info!("[engage_mode] {:?} -> {:?}", self.engage_mode, new_mode);
         self.engage_mode = new_mode;
         self.reset_engage_mode_timers();
         if matches!(new_mode, EngageMode::Lane | EngageMode::Route) {
@@ -2030,10 +2028,7 @@ mod tests {
         assert!(compute_heading_aligned(&t, &bb));
 
         // heading 0.5 (South, ETS2 0..1): fw=(0,1), dot=0 → false
-        let t2 = Telemetry {
-            heading: 0.5,
-            ..t
-        };
+        let t2 = Telemetry { heading: 0.5, ..t };
         assert!(!compute_heading_aligned(&t2, &bb));
     }
 
@@ -2484,11 +2479,20 @@ mod tests {
             heading: 0.75,
             ..mock_running()
         };
-        assert!(compute_heading_aligned(&t_east, &bb), "east heading, east waypoint → aligned");
+        assert!(
+            compute_heading_aligned(&t_east, &bb),
+            "east heading, east waypoint → aligned"
+        );
 
         // South (0.5) facing east waypoint → dot=0 → not aligned
-        let t_south = Telemetry { heading: 0.5, ..t_east };
-        assert!(!compute_heading_aligned(&t_south, &bb), "south heading, east waypoint → not aligned");
+        let t_south = Telemetry {
+            heading: 0.5,
+            ..t_east
+        };
+        assert!(
+            !compute_heading_aligned(&t_south, &bb),
+            "south heading, east waypoint → not aligned"
+        );
     }
 
     #[test]
@@ -2496,12 +2500,18 @@ mod tests {
         let bb = SharedBlackboard::new();
         // South (0.5): fw=(0,1). Waypoint south at (0,100) → ahead
         bb.set("router.waypoints", "[[0.0,0.0],[0.0,100.0]]");
-        assert!(waypoint_ahead_of_truck(&bb, 0.0, 0.0, 0.5), "south heading, south waypoint → ahead");
+        assert!(
+            waypoint_ahead_of_truck(&bb, 0.0, 0.0, 0.5),
+            "south heading, south waypoint → ahead"
+        );
 
         let bb2 = SharedBlackboard::new();
         // North (0.0): fw=(0,-1). Waypoint south at (0,100) → behind
         bb2.set("router.waypoints", "[[0.0,0.0],[0.0,100.0]]");
-        assert!(!waypoint_ahead_of_truck(&bb2, 0.0, 0.0, 0.0), "north heading, south waypoint → behind");
+        assert!(
+            !waypoint_ahead_of_truck(&bb2, 0.0, 0.0, 0.0),
+            "north heading, south waypoint → behind"
+        );
     }
 
     #[test]
@@ -2515,7 +2525,10 @@ mod tests {
             ..mock_running()
         };
         let diff = heading_diff_degrees(&t, &bb).expect("should return Some");
-        assert!((diff - 180.0).abs() < 0.01, "south heading vs north waypoint → 180° diff, got {diff}");
+        assert!(
+            (diff - 180.0).abs() < 0.01,
+            "south heading vs north waypoint → 180° diff, got {diff}"
+        );
     }
 
     // ---- Phase 6.5q.2: Fix 3 — start_node_unknown advisory ------------------
@@ -2896,7 +2909,11 @@ mod tests {
         for _ in 0..1500 {
             sm.evaluate(Some(&running), &bb);
         }
-        assert_eq!(sm.state(), AutopilotState::Off, "degraded timeout must disengage");
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Off,
+            "degraded timeout must disengage"
+        );
     }
 
     #[test]
@@ -3004,7 +3021,7 @@ mod tests {
     fn lane_only_engage_bypasses_router_active() {
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_lane_only(); // no router.active
-        // Must succeed without router.active
+                                 // Must succeed without router.active
         activate_sm_lane_only(&mut sm, &bb);
         assert_eq!(sm.state(), AutopilotState::Active);
     }
@@ -3066,11 +3083,11 @@ mod tests {
     fn normal_engage_still_requires_router_active() {
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_lane_only(); // no router.active
-        // state.engage_ready not set → should default-allow (engage_ready != "false")
-        // But router_active=false → preconditions fail → times out in Engaging
+                                 // state.engage_ready not set → should default-allow (engage_ready != "false")
+                                 // But router_active=false → preconditions fail → times out in Engaging
         let running = mock_running();
         sm.evaluate(Some(&running), &bb); // populate last_telemetry
-        // Normal engage (no lane_only key)
+                                          // Normal engage (no lane_only key)
         sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
         // Run until engage timeout (> ENGAGE_TIMEOUT ticks)
         for _ in 0..600 {
@@ -3092,7 +3109,10 @@ mod tests {
         let bb = bb_lane_only();
         // Waypoints going north (-Z): south-facing truck → heading_aligned=false, heading_ok=false
         bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
-        let south_truck = Telemetry { heading: 0.5, ..mock_running() };
+        let south_truck = Telemetry {
+            heading: 0.5,
+            ..mock_running()
+        };
         sm.evaluate(Some(&south_truck), &bb);
         bb.set("autopilot.requested_mode", "lane_only");
         sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
@@ -3102,7 +3122,8 @@ mod tests {
         assert_eq!(sm.state(), AutopilotState::Active);
         assert_eq!(bb.get("autopilot.engage_mode").as_deref(), Some("lane"));
         assert_eq!(
-            bb.get("state.engage_precondition_heading_aligned").as_deref(),
+            bb.get("state.engage_precondition_heading_aligned")
+                .as_deref(),
             Some("true"),
             "heading_aligned must be bypassed to true for lane_only"
         );
@@ -3115,7 +3136,10 @@ mod tests {
         bb.set("autopilot.requested_mode", "lane_only");
         // No evaluate() call → last_telemetry is None
         let result = sm.handle_event(AutopilotEvent::UserEngage, &bb);
-        assert!(result.is_err(), "lane_only engage must fail when no telemetry");
+        assert!(
+            result.is_err(),
+            "lane_only engage must fail when no telemetry"
+        );
         assert_eq!(sm.state(), AutopilotState::Off);
     }
 
@@ -3180,7 +3204,11 @@ mod tests {
         sm.evaluate(Some(&running), &bb);
         bb.set("autopilot.requested_mode", "lane_only");
         sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
-        assert_eq!(sm.state(), AutopilotState::Engaging, "should be Engaging after UserEngage");
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Engaging,
+            "should be Engaging after UserEngage"
+        );
         // Run 1 tick — still Engaging (PRECONDITION_STABLE=50 ticks)
         sm.evaluate(Some(&running), &bb);
         assert_eq!(

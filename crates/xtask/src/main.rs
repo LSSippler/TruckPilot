@@ -179,7 +179,10 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
         });
     let dst_dir = PathBuf::from(&dst_dir);
     if !dst_dir.exists() {
-        eprintln!("Destination directory does not exist: {}", dst_dir.display());
+        eprintln!(
+            "Destination directory does not exist: {}",
+            dst_dir.display()
+        );
         std::process::exit(1);
     }
 
@@ -232,7 +235,11 @@ fn daemon_is_running() -> bool {
 /// Returns true if `path` cannot be opened for writing (locked by another process).
 /// On Windows, os error 32 = ERROR_SHARING_VIOLATION.
 fn dll_is_locked(path: &Path) -> bool {
-    match std::fs::OpenOptions::new().write(true).create(false).open(path) {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(false)
+        .open(path)
+    {
         Err(e) => e.raw_os_error() == Some(32),
         Ok(_) => false,
     }
@@ -608,7 +615,9 @@ mod tests {
 
     #[test]
     fn dll_is_locked_false_for_nonexistent() {
-        assert!(!dll_is_locked(Path::new("C:\\nonexistent_dll_path_12345_xtask.dll")));
+        assert!(!dll_is_locked(Path::new(
+            "C:\\nonexistent_dll_path_12345_xtask.dll"
+        )));
     }
 
     #[test]

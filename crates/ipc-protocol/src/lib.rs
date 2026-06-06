@@ -598,9 +598,15 @@ mod tests {
 
     #[test]
     fn ui_command_set_router_goal_by_position_round_trip() {
-        let cmd = UiCommand::SetRouterGoalByPosition { x: -16400.0, z: -3200.0 };
+        let cmd = UiCommand::SetRouterGoalByPosition {
+            x: -16400.0,
+            z: -3200.0,
+        };
         let s = serde_json::to_string(&cmd).unwrap();
-        assert!(s.contains(r#""type":"set_router_goal_by_position""#), "wire form: {s}");
+        assert!(
+            s.contains(r#""type":"set_router_goal_by_position""#),
+            "wire form: {s}"
+        );
         assert!(s.contains(r#"-16400"#), "wire form: {s}");
         let back: UiCommand = serde_json::from_str(&s).unwrap();
         match back {

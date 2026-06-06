@@ -54,6 +54,7 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 | `stats_logger.db_path` | UI/config | stats-logger (on_load) | path string | `"stats.db"` | persistent |
 | `stats_logger.tick_log_hz` | UI/config (external WIP) | stats-logger | f64 Hz | `10.0` | persistent |
 | `plugin.lane_keeper.{kp,ki,kd}` | core/ipc (PID profile update) | lane-keeper apply_gain_overrides | f64 | absent | persistent |
+| `plugin.lane_keeper.lane_offset_cal_m` | core/main (seed from `[steering]`) | lane-keeper (spline_road offset, additiv) | f64 m | `0.0` | persistent |
 | `plugin.speed_controller.{kp,ki,kd}` | core/ipc | speed-controller apply_gain_overrides | f64 | absent | persistent |
 | `pid_tuning.lane_keeper.{kp,ki,kd}` | lane-keeper (echo, external WIP) | (pending stats-logger pid_tuning_log) | f64 | absent | per-change |
 | `pid_tuning.speed_controller.{kp,ki,kd}` | speed-controller (echo) | (pending) | f64 | absent | per-change |
@@ -113,6 +114,64 @@ zu unterscheiden. `hop_projection_dist_m` == `truck_to_segment_dist_m` ==
 > NICHT separat emittiert — Prefab-Hops fehlen in der road-only `seg_by_from_to`
 > und erscheinen daher als `route_miss`/`from_to_miss` (der Dispatch unterscheidet
 > sie nicht). Der Task-3-Sample-Log deckt die tatsaechlichen (from,to)-UIDs auf.
+
+## Lane-Keeper Phase 2h-Wurzelfix-Keys (Kink-Stop)
+
+Hinzugefuegt 2026-06-04. Knick-Erkennung am Lookahead-Arc-Walk-Übergang.
+Writer: lane-keeper (route-following tick, `try_spline_heading_error`).
+
+| Key | Owner (Writer) | Format | Werte / Default | Lifetime |
+|---|---|---|---|---|
+| `lane_keeper.walk_stopped_at_kink` | lane-keeper | `"true"`/`"false"` | `true` wenn Walk an einem Knick über Schwelle gestoppt; `false` sonst | per-aktiv-tick |
+| `lane_keeper.walk_kink_deg` | lane-keeper | f32 Grad `"{:.4}"` | gemessener Knickwinkel am letzten Hop-Übergang (auch wenn kein Stop). **Hinweis: dieser Key wird nur bei Walk-Ticks MIT Hop-Prüfung aktualisiert (d.h. wenn der Loop mindestens einen `seg_by_from_to`-Treffer verarbeitet); sonst bleibt der zuletzt gemessene Wert stehen (stale).** | per-aktiv-tick (sobald Hop stattfand) |
+| `lane_keeper.walk_kink_hop` | lane-keeper | string `"A->B"` | NodeUID-Paar des letzten gemessenen Hop-Übergangs. **Wie `walk_kink_deg`: nur bei Walk-Ticks mit Hop-Prüfung aktualisiert, sonst stale.** | per-aktiv-tick (sobald Hop stattfand) |
+| `lane_keeper.kink_threshold_deg` | lane-keeper | f32 Grad `"{:.1}"` | aktiver Schwellwert (Default 35.0°, justierbar via `plugin.lane_keeper.kink_stop_deg`) | per-aktiv-tick |
+| `lane_keeper.kink_stuck_secs` | lane-keeper | f64 `"{:.2}"` | akkumulierte Sekunden anhaltenden Kink-Stops auf DEMSELBEN Hop (dt-basiert). Reset sobald der Walk kinkfrei durchläuft oder der Hop wechselt. Überschreitet der Wert `KINK_STUCK_FALLBACK_S` (4.0 s), fällt die Funktion auf `None` zurück → Catmull-Fallback (Dead-Lock-Schutz, Phase 2h-Wurzelfix). | per-aktiv-tick (sobald Kink-Stop aktiv) |
+
+Konfigurations-Key (Input):
+
+| Key | Owner (Writer) | Format | Default | Lifetime |
+|---|---|---|---|---|
+| `plugin.lane_keeper.kink_stop_deg` | UI/config | f64 Grad | `35.0` (Konstante `KINK_STOP_DEG`) | persistent |
+
+## Lane-Keeper Phase 2h-Wurzelfix v2-Keys (Prefab-Curve-Fallback)
+
+Hinzugefuegt 2026-06-04. Interne Segment-Kruemmung als Catmull-Fallback-Trigger
+(Richtung B). Writer: lane-keeper (route-following tick, `try_spline_heading_error`).
+Erweiterung von Diag5: `final_internal_kink_deg` / `final_seg_is_prefab` bleiben unveraendert
+(vgl. vorheriger Abschnitt), die neuen Keys bauen darauf auf.
+
+HINWEIS (v2-Fix): Der Ausloeser ist `final_internal_kink_deg > Schwelle` ALLEIN, UNABHAENGIG vom
+`is_prefab`-Flag. Grund: die hohe interne Kruemmung tritt auch auf ROAD-Segmenten auf (Edge spannt
+ueber Kurve/Kreuzung; Quaternion-Tangenten der Endknoten laufen auseinander). Das Spike-Segment
+1051105 ist ein Road-Edge (is_prefab=false). Die Key-Namen behalten aus Kontinuitaet das
+`prefab_curve`-Praefix, gelten aber fuer beliebige Segmente.
+
+| Key | Owner (Writer) | Format | Werte / Default | Lifetime |
+|---|---|---|---|---|
+| `lane_keeper.prefab_curve_fallback` | lane-keeper | `"true"`/`"false"` | Latch aktiv: `true` solange interne Kruemmung ueber Schwelle (margin-basierte Hysterese, is_prefab-unabhaengig). Reset bei Off/Disengage. | per-aktiv-tick |
+| `lane_keeper.internal_kink_over_threshold` | lane-keeper | `"true"`/`"false"` | Momentanwert: `true` wenn `final_internal_kink_deg > Schwelle` (is_prefab egal). Kein Latch. | per-aktiv-tick |
+| `lane_keeper.prefab_curve_threshold_deg` | lane-keeper | f32 Grad `"{:.1}"` | Aktiver Schwellwert (Default 40.0°, justierbar via `plugin.lane_keeper.prefab_curve_fallback_deg`) | per-aktiv-tick |
+
+Konfigurations-Key (Input):
+
+| Key | Owner (Writer) | Format | Default | Lifetime |
+|---|---|---|---|---|
+| `plugin.lane_keeper.prefab_curve_fallback_deg` | UI/config | f64 Grad | `40.0` (Konstante `PREFAB_CURVE_FALLBACK_DEG`). Austritts-Hysterese: `PREFAB_CURVE_EXIT_MARGIN_DEG` = 10°. | persistent |
+
+Verweis auf bestehende Diag5-Keys: `lane_keeper.final_internal_kink_deg` (f32 Grad, -1.0 bei degenerierten Tangenten) und `lane_keeper.final_seg_is_prefab` (bool).
+
+## Lane-Keeper Phase 2h-Safety-Keys
+
+Hinzugefuegt 2026-06-04. Sicherheitszustand bei Verlust der Lenkautoritaet
+(Heading-Stage AutoReplan/Disengaging). Writer: lane-keeper (route-following tick).
+
+| Key | Owner (Writer) | Format | Werte / Default | Lifetime |
+|---|---|---|---|---|
+| `lane_keeper.safety_state` | lane-keeper | string | `normal` / `decelerating_lane_authority_lost` / `disengaging_lane_authority_lost` | per-aktiv-tick |
+| `lane_keeper.safety_brake` | lane-keeper | f64 `"{:.4}"` | Bremswert [0..1] waehrend Safety-Bremsung; absent im Normalbetrieb | per-aktiv-tick (nur im Gate) |
+| `lane_keeper.safety_autoreplan_secs` | lane-keeper | f64 `"{:.2}"` | akkumulierte Sekunden in AutoReplan ohne Erholung; 0.0 nach Recovery | per-aktiv-tick (nur im Gate) |
+| `lane_keeper.steering_suppressed` | lane-keeper | `"true"`/`"false"` | `true` wenn Steering=None durch Safety-Gate erzwungen | per-aktiv-tick |
 
 ## Konflikte
 

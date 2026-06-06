@@ -59,16 +59,13 @@ fn parse_args() -> Args {
 
 struct RouterGraph {
     adj: HashMap<u64, Vec<(u64, f64, u64)>>, // node → [(neighbor, dist, edge_uid)]
-    positions: HashMap<u64, (f64, f64)>,       // node_uid → (x, z)
+    positions: HashMap<u64, (f64, f64)>,     // node_uid → (x, z)
 }
 
 impl RouterGraph {
     fn build(graph: &MapGraph) -> Self {
-        let positions: HashMap<u64, (f64, f64)> = graph
-            .nodes
-            .iter()
-            .map(|n| (n.uid, (n.x, n.z)))
-            .collect();
+        let positions: HashMap<u64, (f64, f64)> =
+            graph.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
 
         let mut adj: HashMap<u64, Vec<(u64, f64, u64)>> = HashMap::new();
         for e in &graph.edges {
@@ -136,8 +133,8 @@ fn main() {
     let args = parse_args();
 
     eprintln!("loading {} …", args.graph.display());
-    let bytes = std::fs::read(&args.graph)
-        .unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
+    let bytes =
+        std::fs::read(&args.graph).unwrap_or_else(|e| panic!("read {}: {e}", args.graph.display()));
     let graph: MapGraph = serde_json::from_slice(&bytes)
         .unwrap_or_else(|e| panic!("parse {}: {e}", args.graph.display()));
     eprintln!(
@@ -181,9 +178,7 @@ fn main() {
     let mut by_direction: HashMap<String, BucketStats> = HashMap::new();
 
     for edge in &graph.edges {
-        let bucket = by_direction
-            .entry(edge.direction.clone())
-            .or_default();
+        let bucket = by_direction.entry(edge.direction.clone()).or_default();
         bucket.total += 1;
 
         let key = (edge.from, edge.to);
@@ -204,11 +199,8 @@ fn main() {
     let mut road_directions = ["forward", "backward", "bidirectional_unknown"];
     let mut mismatch_forensics: Vec<String> = Vec::new();
 
-    let node_pos: HashMap<u64, (f64, f64)> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.uid, (n.x, n.z)))
-        .collect();
+    let node_pos: HashMap<u64, (f64, f64)> =
+        graph.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
 
     let mut mismatch_count = 0usize;
     'outer: for edge in &graph.edges {
@@ -242,10 +234,7 @@ fn main() {
             .keys()
             .filter(|(f, _)| *f == edge.from)
             .count();
-        let to_match = seg_by_from_to
-            .keys()
-            .filter(|(_, t)| *t == edge.to)
-            .count();
+        let to_match = seg_by_from_to.keys().filter(|(_, t)| *t == edge.to).count();
 
         // Search for reversed direction
         let reversed_exists = seg_by_from_to.contains_key(&(edge.to, edge.from));
@@ -315,7 +304,7 @@ fn main() {
     let test_routes: &[(&str, (f64, f64), (f64, f64))] = &[
         ("berlin_short", (10530.0, -10766.0), (10542.0, -10870.0)),
         ("berlin_medium", (10530.0, -10766.0), (10600.0, -11000.0)),
-        ("berlin_wider",  (10400.0, -10600.0), (10700.0, -11200.0)),
+        ("berlin_wider", (10400.0, -10600.0), (10700.0, -11200.0)),
     ];
 
     let mut route_results: Vec<String> = Vec::new();
@@ -374,7 +363,11 @@ fn main() {
         total_route_matched += matched;
         total_route_unmatched += unmatched;
 
-        let match_rate = if hops > 0 { 100.0 * matched as f64 / hops as f64 } else { 100.0 };
+        let match_rate = if hops > 0 {
+            100.0 * matched as f64 / hops as f64
+        } else {
+            100.0
+        };
         let unmatched_dir_str: String = unmatched_dirs
             .iter()
             .map(|(k, v)| format!("{k}:{v}"))
@@ -383,8 +376,15 @@ fn main() {
 
         route_results.push(format!(
             "- {label}: {} hops, matched={} ({:.1}%), unmatched={} [{}]",
-            hops, matched, match_rate, unmatched,
-            if unmatched_dir_str.is_empty() { "—".into() } else { unmatched_dir_str }
+            hops,
+            matched,
+            match_rate,
+            unmatched,
+            if unmatched_dir_str.is_empty() {
+                "—".into()
+            } else {
+                unmatched_dir_str
+            }
         ));
     }
 
@@ -392,13 +392,15 @@ fn main() {
     // Aufgabe 4: NavCurve-Stichprobe (optional — Spec 5.2)
     // ---------------------------------------------------------------------------
 
-    let navcurve_seg_count = graph
-        .prefab_ai_paths
-        .len();
+    let navcurve_seg_count = graph.prefab_ai_paths.len();
     let (navcurve_segs, navcurve_meta) = graph.prefab_hermite_segments_with_metadata();
     let navcurve_zero_offset = navcurve_meta
         .iter()
-        .filter(|m| m.as_ref().map(|m| m.lane_offset_right_m == 0.0).unwrap_or(false))
+        .filter(|m| {
+            m.as_ref()
+                .map(|m| m.lane_offset_right_m == 0.0)
+                .unwrap_or(false)
+        })
         .count();
     let navcurve_is_prefab = navcurve_meta
         .iter()
@@ -419,13 +421,14 @@ fn main() {
     }
 
     // Sample: are there NavCurve segs for junction we drove?
-    let navcurve_by_from_to: HashMap<(u64, u64), usize> = navcurve_segs
-        .iter()
-        .enumerate()
-        .fold(HashMap::new(), |mut m, (i, seg)| {
-            m.entry((seg.from_uid, seg.to_uid)).or_insert(i);
-            m
-        });
+    let navcurve_by_from_to: HashMap<(u64, u64), usize> =
+        navcurve_segs
+            .iter()
+            .enumerate()
+            .fold(HashMap::new(), |mut m, (i, seg)| {
+                m.entry((seg.from_uid, seg.to_uid)).or_insert(i);
+                m
+            });
 
     // ---------------------------------------------------------------------------
     // Multi-match analysis (Spec 5.1 — uniqueness of from/to lookup)
@@ -494,7 +497,8 @@ fn main() {
 
     report.push_str("### HermiteSegment.edge_uid — identisch durch Konstruktion\n\n");
     report.push_str("```\n");
-    report.push_str("spline.rs:354  edge_uid: edge.uid,  // direktes Kopieren des Sequenzzählers\n");
+    report
+        .push_str("spline.rs:354  edge_uid: edge.uid,  // direktes Kopieren des Sequenzzählers\n");
     report.push_str("```\n\n");
     report.push_str("`HermiteSegment.edge_uid` = `GraphEdge.uid` — innerhalb eines Builds konsistent. Aber: kein stabiler Identifier über Builds hinweg.\n\n");
 
@@ -507,7 +511,9 @@ fn main() {
 
     report.push_str("### Aktueller SplineIndex (main.rs)\n\n");
     report.push_str("```\n");
-    report.push_str("main.rs:547  build_splines_ex(map_graph)   // NUR road/prefab-clique-Segmente\n");
+    report.push_str(
+        "main.rs:547  build_splines_ex(map_graph)   // NUR road/prefab-clique-Segmente\n",
+    );
     report.push_str("// prefab_hermite_segments_with_metadata() wird NICHT aufgerufen!\n");
     report.push_str("```\n\n");
     report.push_str("**NavCurve-Segmente fehlen im aktuellen HUD-SplineIndex.** Die echte Spurgeometrie aus NavCurves ist NICHT indexiert.\n\n");
@@ -525,7 +531,11 @@ fn main() {
     dirs.sort();
     for dir in dirs {
         let b = &by_direction[dir];
-        let rate = if b.total > 0 { 100.0 * b.matched as f64 / b.total as f64 } else { 100.0 };
+        let rate = if b.total > 0 {
+            100.0 * b.matched as f64 / b.total as f64
+        } else {
+            100.0
+        };
         report.push_str(&format!(
             "| {} | {} | {} | {} | {:.2}% | {} |\n",
             dir, b.total, b.matched, b.unmatched, rate, b.multi_match
@@ -552,7 +562,11 @@ fn main() {
         "**Gesamt Route-Hops:** {} | matched: {} ({:.1}%) | unmatched: {}\n\n",
         total_route_hops,
         total_route_matched,
-        if total_route_hops > 0 { 100.0 * total_route_matched as f64 / total_route_hops as f64 } else { 100.0 },
+        if total_route_hops > 0 {
+            100.0 * total_route_matched as f64 / total_route_hops as f64
+        } else {
+            100.0
+        },
         total_route_unmatched
     ));
 
@@ -560,7 +574,9 @@ fn main() {
     if mismatch_forensics.is_empty() {
         report.push_str("Keine Road-Edge-Mismatches gefunden — vollständige Abdeckung.\n\n");
     } else {
-        report.push_str(&format!("Gesamt Road-Mismatches: {total_road_mismatches}\n\n"));
+        report.push_str(&format!(
+            "Gesamt Road-Mismatches: {total_road_mismatches}\n\n"
+        ));
         for f in &mismatch_forensics {
             report.push_str(f);
             report.push('\n');
@@ -574,7 +590,9 @@ fn main() {
         "Bidirektionale Edges (lanes=0): {} | mit SplineSegment: {} ({:.1}%)\n\n",
         bidir_edges.len(),
         bidir_bucket.map_or(0, |b| b.matched),
-        if bidir_edges.is_empty() { 100.0 } else {
+        if bidir_edges.is_empty() {
+            100.0
+        } else {
             100.0 * bidir_bucket.map_or(0, |b| b.matched) as f64 / bidir_edges.len() as f64
         }
     ));
@@ -605,17 +623,24 @@ Der Lane-Keeper müsste für solche Edges anhand der Truck-Fahrtrichtung (Headin
     report.push_str(&format!(
         "NavCurve-Segmente mit lane_offset_right_m=0.0: {} ({:.1}%)\n",
         navcurve_zero_offset,
-        if navcurve_segs.is_empty() { 100.0 } else { 100.0 * navcurve_zero_offset as f64 / navcurve_segs.len() as f64 }
+        if navcurve_segs.is_empty() {
+            100.0
+        } else {
+            100.0 * navcurve_zero_offset as f64 / navcurve_segs.len() as f64
+        }
     ));
     report.push_str(&format!(
         "NavCurve-Segmente mit is_prefab=true: {} ({:.1}%)\n",
         navcurve_is_prefab,
-        if navcurve_segs.is_empty() { 100.0 } else { 100.0 * navcurve_is_prefab as f64 / navcurve_segs.len() as f64 }
+        if navcurve_segs.is_empty() {
+            100.0
+        } else {
+            100.0 * navcurve_is_prefab as f64 / navcurve_segs.len() as f64
+        }
     ));
     report.push_str(&format!(
         "NavCurve-Segmente mit (from,to) im RouterGraph: {} | NICHT im RouterGraph: {}\n\n",
-        navcurve_in_router,
-        navcurve_not_in_router
+        navcurve_in_router, navcurve_not_in_router
     ));
 
     if navcurve_segs.is_empty() {
@@ -629,8 +654,7 @@ Für Opt-2 müsste der SplineIndex um NavCurve-Segmente erweitert werden.\n\n");
     report.push_str("## 7. Eindeutigkeit der (from_uid, to_uid)-Suche\n\n");
     report.push_str(&format!(
         "Road-Edges mit >1 Segment für gleiche (from,to): {} (max {})\n\n",
-        dup_road_pairs,
-        dup_road_max
+        dup_road_pairs, dup_road_max
     ));
     if dup_road_pairs == 0 {
         report.push_str("**BEFUND:** Keine Duplikate — (from_uid, to_uid)-Lookup ist für Road-Edges eindeutig. ✓\n\n");
@@ -652,18 +676,29 @@ Für Opt-2 müsste der SplineIndex um NavCurve-Segmente erweitert werden.\n\n");
     ));
     report.push_str(&format!(
         "- Route-Sampling-Match-Rate: **{:.1}%** ({}/{} Hops)\n",
-        if total_route_hops > 0 { 100.0 * total_route_matched as f64 / total_route_hops as f64 } else { 100.0 },
+        if total_route_hops > 0 {
+            100.0 * total_route_matched as f64 / total_route_hops as f64
+        } else {
+            100.0
+        },
         total_route_matched,
         total_route_hops
     ));
     report.push_str(&format!(
         "- (from_uid, to_uid)-Eindeutigkeit: **{}**\n",
-        if dup_road_pairs == 0 { "eindeutig" } else { "DUPLIKATE vorhanden" }
+        if dup_road_pairs == 0 {
+            "eindeutig"
+        } else {
+            "DUPLIKATE vorhanden"
+        }
     ));
     report.push_str(&format!(
         "- NavCurve-Segmente im SplineIndex: **{}** (werden für Opt-2 gebraucht)\n\n",
-        if navcurve_segs.is_empty() { "NICHT VORHANDEN (graph.json ohne PPD)" }
-        else { "vorhanden aber NICHT INDEXIERT (main.rs muss erweitert werden)" }
+        if navcurve_segs.is_empty() {
+            "NICHT VORHANDEN (graph.json ohne PPD)"
+        } else {
+            "vorhanden aber NICHT INDEXIERT (main.rs muss erweitert werden)"
+        }
     ));
 
     report.push_str("### Konsequenzen für Phase 2b\n\n");

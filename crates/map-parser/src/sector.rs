@@ -1058,7 +1058,7 @@ fn parse_prefab(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<()
     let uid = read_u64(cur)?;
     skip(cur, 45)?; // bounds(40) + flags(4) + view_dist(1)
 
-    let model_token = read_u64(cur)?;    // field A: offset 53
+    let model_token = read_u64(cur)?; // field A: offset 53
     let _variant_token = read_u64(cur)?; // field B: offset 61
 
     // additionalParts: count(u32) + n×uid(u64)

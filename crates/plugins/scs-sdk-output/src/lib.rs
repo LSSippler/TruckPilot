@@ -393,6 +393,15 @@ impl ScsSdkOutputPlugin {
         ctx.blackboard.set("scs_sdk_output.active", "true");
         ctx.blackboard
             .set("scs_sdk_output.last_write_tick", ctx.tick_count.to_string());
+        // Phase 2h-Diag2 (read-only): publish the FINAL arbitrated steer that is
+        // actually written to the game SHM. Resolves which steering plugin wins
+        // arbitration each tick (lane-keeper @ prio 50 vs lane-follower @ prio 0).
+        ctx.blackboard
+            .set("scs_sdk_output.steer_written", format!("{steer:.6}"));
+        ctx.blackboard
+            .set("scs_sdk_output.throttle_written", format!("{throttle:.6}"));
+        ctx.blackboard
+            .set("scs_sdk_output.brake_written", format!("{brake:.6}"));
     }
 
     fn write_idle(&mut self, ctx: &PluginContext) {

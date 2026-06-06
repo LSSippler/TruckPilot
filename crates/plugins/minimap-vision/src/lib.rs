@@ -171,11 +171,7 @@ fn pixel_to_world(
 ) -> Vec3 {
     let dx = (px - roi_cx) * meters_per_pixel;
     let dz = (py - roi_cy) * meters_per_pixel; // south = positive Z
-    Vec3::new(
-        truck_x as f32 + dx,
-        truck_y as f32,
-        truck_z as f32 + dz,
-    )
+    Vec3::new(truck_x as f32 + dx, truck_y as f32, truck_z as f32 + dz)
 }
 
 // ── temporal confidence (VMM-5) ───────────────────────────────────────────────
@@ -186,7 +182,9 @@ struct TemporalConfidence {
 
 impl TemporalConfidence {
     fn new() -> Self {
-        Self { window: VecDeque::with_capacity(TEMPORAL_WINDOW) }
+        Self {
+            window: VecDeque::with_capacity(TEMPORAL_WINDOW),
+        }
     }
 
     fn push(&mut self, raw: f32) -> f32 {
@@ -218,7 +216,11 @@ pub struct MinimapVisionPlugin {
 
 impl MinimapVisionPlugin {
     pub fn with_settings(settings: Settings) -> Self {
-        Self { settings, temporal: TemporalConfidence::new(), ..Self::default() }
+        Self {
+            settings,
+            temporal: TemporalConfidence::new(),
+            ..Self::default()
+        }
     }
 
     #[doc(hidden)]
@@ -370,7 +372,10 @@ impl Plugin for MinimapVisionPlugin {
                 let apparent_age_ms = now_ms.saturating_sub(frame.header.timestamp_ms);
                 if apparent_age_ms > self.settings.stale_after_ms {
                     ctx.blackboard.set("minimap.detected", "false");
-                    ctx.blackboard.set("minimap.last_capture_ms", frame.header.timestamp_ms.to_string());
+                    ctx.blackboard.set(
+                        "minimap.last_capture_ms",
+                        frame.header.timestamp_ms.to_string(),
+                    );
                     self.last_published_seq = frame.header.seq;
                     return;
                 }
@@ -381,9 +386,14 @@ impl Plugin for MinimapVisionPlugin {
                 let n_points = frame.points.len();
                 let detected = n_points >= 2 && temporal_conf > 0.1;
 
-                ctx.blackboard.set("minimap.detected", if detected { "true" } else { "false" });
-                ctx.blackboard.set("minimap.confidence", format!("{temporal_conf:.4}"));
-                ctx.blackboard.set("minimap.last_capture_ms", frame.header.timestamp_ms.to_string());
+                ctx.blackboard
+                    .set("minimap.detected", if detected { "true" } else { "false" });
+                ctx.blackboard
+                    .set("minimap.confidence", format!("{temporal_conf:.4}"));
+                ctx.blackboard.set(
+                    "minimap.last_capture_ms",
+                    frame.header.timestamp_ms.to_string(),
+                );
 
                 if detected {
                     // Pixel → world transform (VMM-3).
@@ -398,9 +408,13 @@ impl Plugin for MinimapVisionPlugin {
                         .iter()
                         .map(|(px, py)| {
                             pixel_to_world(
-                                *px, *py,
-                                roi_cx, roi_cy,
-                                tx, ty, tz,
+                                *px,
+                                *py,
+                                roi_cx,
+                                roi_cy,
+                                tx,
+                                ty,
+                                tz,
                                 self.settings.meters_per_pixel,
                             )
                         })
@@ -412,7 +426,8 @@ impl Plugin for MinimapVisionPlugin {
 
                     let json = serde_json::to_string(&segs).unwrap_or_else(|_| "[]".into());
                     ctx.blackboard.set("minimap.spline_json", json);
-                    ctx.blackboard.set("minimap.spline_points_count", seg_count.to_string());
+                    ctx.blackboard
+                        .set("minimap.spline_points_count", seg_count.to_string());
                 } else {
                     ctx.blackboard.set("minimap.spline_json", "[]");
                     ctx.blackboard.set("minimap.spline_points_count", "0");
@@ -433,7 +448,8 @@ impl Plugin for MinimapVisionPlugin {
                 ctx.blackboard.set("minimap.detected", "false");
                 if self.consecutive_misses >= MISS_THRESHOLD {
                     ctx.blackboard.set("minimap.healthy", "false");
-                    ctx.blackboard.set("minimap.source.last_error", "sequence-lock exhausted");
+                    ctx.blackboard
+                        .set("minimap.source.last_error", "sequence-lock exhausted");
                 }
             }
 
@@ -445,7 +461,8 @@ impl Plugin for MinimapVisionPlugin {
                 );
                 ctx.blackboard.set("minimap.healthy", "false");
                 ctx.blackboard.set("minimap.detected", "false");
-                ctx.blackboard.set("minimap.source.last_error", "invalid header");
+                ctx.blackboard
+                    .set("minimap.source.last_error", "invalid header");
             }
 
             ReadOutcome::PayloadOverflow => {
@@ -456,7 +473,8 @@ impl Plugin for MinimapVisionPlugin {
                 );
                 ctx.blackboard.set("minimap.healthy", "false");
                 ctx.blackboard.set("minimap.detected", "false");
-                ctx.blackboard.set("minimap.source.last_error", "payload overflow");
+                ctx.blackboard
+                    .set("minimap.source.last_error", "payload overflow");
             }
         }
     }

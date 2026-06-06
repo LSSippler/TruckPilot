@@ -11,6 +11,16 @@ pub struct Pid {
     integral: f64,
     prev_error: f64,
     first_update: bool,
+
+    // ── Diagnostics (read-only; recorded each `update`, no control effect) ──
+    /// Last proportional term `kp * error`.
+    last_p: f64,
+    /// Last integral term `ki * integral`.
+    last_i: f64,
+    /// Last derivative term `kd * d(error)/dt`.
+    last_d: f64,
+    /// Last summed output BEFORE the `output_limit` clamp (`p + i + d`).
+    last_unclamped: f64,
 }
 
 impl Pid {
@@ -24,6 +34,10 @@ impl Pid {
             integral: 0.0,
             prev_error: 0.0,
             first_update: true,
+            last_p: 0.0,
+            last_i: 0.0,
+            last_d: 0.0,
+            last_unclamped: 0.0,
         }
     }
 
@@ -43,13 +57,42 @@ impl Pid {
         };
         self.prev_error = error;
 
-        (p + i + d).clamp(-self.output_limit, self.output_limit)
+        let unclamped = p + i + d;
+        // Record terms for read-only diagnostics — does not affect the returned value.
+        self.last_p = p;
+        self.last_i = i;
+        self.last_d = d;
+        self.last_unclamped = unclamped;
+
+        unclamped.clamp(-self.output_limit, self.output_limit)
     }
 
     pub fn reset(&mut self) {
         self.integral = 0.0;
         self.prev_error = 0.0;
         self.first_update = true;
+    }
+
+    // ── Read-only diagnostic accessors (last `update` term breakdown) ──
+    /// Proportional term from the most recent `update`.
+    pub fn last_p(&self) -> f64 {
+        self.last_p
+    }
+    /// Integral term from the most recent `update`.
+    pub fn last_i(&self) -> f64 {
+        self.last_i
+    }
+    /// Derivative term from the most recent `update`.
+    pub fn last_d(&self) -> f64 {
+        self.last_d
+    }
+    /// Summed output before the `output_limit` clamp (`p + i + d`).
+    pub fn last_unclamped(&self) -> f64 {
+        self.last_unclamped
+    }
+    /// True if the most recent `update` hit the `output_limit` clamp.
+    pub fn last_output_clamped(&self) -> bool {
+        self.last_unclamped.abs() > self.output_limit + 1e-12
     }
 
     pub fn set_kp(&mut self, kp: f64) {

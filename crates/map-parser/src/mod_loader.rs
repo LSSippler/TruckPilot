@@ -499,7 +499,10 @@ fn load_ppd_descriptors(
         }
     }
 
-    let sii_hits = tokens.iter().filter(|t| token_to_path.contains_key(t)).count();
+    let sii_hits = tokens
+        .iter()
+        .filter(|t| token_to_path.contains_key(t))
+        .count();
     info!(
         "PPD discovery: {} paths indexed, {}/{} tokens matched",
         token_to_path.len(),

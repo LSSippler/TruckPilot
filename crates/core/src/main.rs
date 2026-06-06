@@ -30,6 +30,17 @@ use plugin_manager::PluginManager;
 struct AppConfig {
     #[serde(default)]
     plugins: std::collections::HashMap<String, PluginConfig>,
+    #[serde(default)]
+    steering: SteeringConfig,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone)]
+struct SteeringConfig {
+    /// Empirical lane-offset calibration constant in metres, added on top of the
+    /// per-segment `lane_offset_right_m` by the lane-keeper. Seeded into the
+    /// blackboard at startup; can be re-tuned at runtime without a graph rebuild.
+    #[serde(default)]
+    lane_offset_cal_m: f64,
 }
 
 #[derive(Debug, serde::Deserialize, Clone)]
@@ -567,7 +578,6 @@ fn build_spline_index_for_hud(
     Some((index, road_seg_count))
 }
 
-
 fn angle_diff(a: f64, b: f64) -> f64 {
     let mut d = a - b;
     while d > std::f64::consts::PI {
@@ -626,6 +636,8 @@ async fn run_daemon() {
 
     // Load config before anything else so plugin enable-flags are available.
     let app_config = load_config();
+    // Capture the steering calibration constant before the config is consumed below.
+    let lane_offset_cal_m = app_config.steering.lane_offset_cal_m;
     // Keep the set of configured plugin names before consuming the map so we
     // can warn about unknown plugin keys after load_all() completes.
     let config_plugin_names: std::collections::HashSet<String> =
@@ -676,6 +688,14 @@ async fn run_daemon() {
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     info!("Loaded {} plugin(s)", manager.list().len());
+
+    // Phase 2h: seed the lane-keeper offset calibration constant from [steering].
+    // The lane-keeper reads `plugin.lane_keeper.lane_offset_cal_m` per tick and
+    // adds it to the per-segment lane offset; runtime re-tuning needs no rebuild.
+    manager.blackboard.set(
+        "plugin.lane_keeper.lane_offset_cal_m",
+        lane_offset_cal_m.to_string(),
+    );
 
     // Warn for every config key that does not match any loaded plugin name.
     {
@@ -820,7 +840,11 @@ async fn run_daemon() {
             }
 
             // P0.2: consume heading_stage_reset_requested from engage_mode transitions
-            if blackboard.get("state.heading_stage_reset_requested").as_deref() == Some("true") {
+            if blackboard
+                .get("state.heading_stage_reset_requested")
+                .as_deref()
+                == Some("true")
+            {
                 blackboard.set("state.heading_stage_reset_requested", "false");
                 heading_stage_mgr.reset();
             }

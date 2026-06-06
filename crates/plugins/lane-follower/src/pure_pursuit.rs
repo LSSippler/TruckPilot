@@ -35,14 +35,20 @@ mod tests {
     #[test]
     fn straight_ahead_north_returns_zero() {
         let cmd = compute_steering((0.0, 0.0), 0.0, (0.0, -15.0), WHEELBASE_M);
-        assert!(cmd.abs() < 1e-9, "straight North ahead: expected 0, got {cmd}");
+        assert!(
+            cmd.abs() < 1e-9,
+            "straight North ahead: expected 0, got {cmd}"
+        );
     }
 
     #[test]
     fn straight_ahead_east_returns_zero() {
         // Truck facing East (h=90°), lookahead directly East
         let cmd = compute_steering((0.0, 0.0), 90.0, (15.0, 0.0), WHEELBASE_M);
-        assert!(cmd.abs() < 1e-9, "straight East ahead: expected 0, got {cmd}");
+        assert!(
+            cmd.abs() < 1e-9,
+            "straight East ahead: expected 0, got {cmd}"
+        );
     }
 
     #[test]
@@ -62,20 +68,29 @@ mod tests {
     fn east_facing_truck_south_lookahead_is_right() {
         // East-facing (h=90°), South = positive z = right of truck
         let cmd = compute_steering((0.0, 0.0), 90.0, (10.0, 5.0), WHEELBASE_M);
-        assert!(cmd > 0.0, "South of East-truck should be positive, got {cmd}");
+        assert!(
+            cmd > 0.0,
+            "South of East-truck should be positive, got {cmd}"
+        );
     }
 
     #[test]
     fn east_facing_truck_north_lookahead_is_left() {
         let cmd = compute_steering((0.0, 0.0), 90.0, (10.0, -5.0), WHEELBASE_M);
-        assert!(cmd < 0.0, "North of East-truck should be negative, got {cmd}");
+        assert!(
+            cmd < 0.0,
+            "North of East-truck should be negative, got {cmd}"
+        );
     }
 
     #[test]
     fn symmetry_left_right() {
         let right = compute_steering((0.0, 0.0), 0.0, (3.0, -10.0), WHEELBASE_M);
         let left = compute_steering((0.0, 0.0), 0.0, (-3.0, -10.0), WHEELBASE_M);
-        assert!((right + left).abs() < 1e-9, "symmetry: right={right}, left={left}");
+        assert!(
+            (right + left).abs() < 1e-9,
+            "symmetry: right={right}, left={left}"
+        );
         assert!(right > 0.0);
         assert!(left < 0.0);
     }
@@ -119,6 +134,9 @@ mod tests {
     fn non_origin_truck_position_right_offset() {
         // Truck at (100, -200), North, lookahead 5m right and 15m ahead
         let cmd = compute_steering((100.0, -200.0), 0.0, (105.0, -215.0), WHEELBASE_M);
-        assert!(cmd > 0.0, "right offset from non-origin truck must be positive");
+        assert!(
+            cmd > 0.0,
+            "right offset from non-origin truck must be positive"
+        );
     }
 }

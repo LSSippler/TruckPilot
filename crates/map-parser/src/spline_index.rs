@@ -224,7 +224,11 @@ pub struct HeadingFilteredHit {
 fn angular_diff_rad(a: f32, b: f32) -> f32 {
     use std::f32::consts::PI;
     let d = (a - b).abs() % (2.0 * PI);
-    if d > PI { 2.0 * PI - d } else { d }
+    if d > PI {
+        2.0 * PI - d
+    } else {
+        d
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +264,11 @@ pub fn build_index_with_metadata(
         })
         .collect();
     let tree = RTree::bulk_load(entries);
-    SplineIndex { segments, metadata, tree }
+    SplineIndex {
+        segments,
+        metadata,
+        tree,
+    }
 }
 
 /// Baut einen SplineIndex aus einem Segment-Vec (alle Metadaten `None`).
@@ -431,7 +439,11 @@ impl SplineIndex {
             .collect();
 
         // Sort ascending by dist_m, return top 8
-        hits.sort_by(|a, b| a.dist_m.partial_cmp(&b.dist_m).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            a.dist_m
+                .partial_cmp(&b.dist_m)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(8);
         hits
     }
@@ -955,6 +967,7 @@ mod tests {
             lanes_total: 1,
             lane_width_m: 3.75,
             lane_offset_right_m: 0.0,
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: true,
         })
@@ -967,6 +980,7 @@ mod tests {
             lanes_total: 1,
             lane_width_m: 3.75,
             lane_offset_right_m: 1.875,
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: false,
         })
@@ -989,7 +1003,11 @@ mod tests {
             .nearest_with_projection_filtered(query, 32, |_, m| m.is_some_and(|m| m.is_prefab))
             .expect("must find prefab hit");
         assert_eq!(hit.segment_idx, 1, "prefab segment is at index 1");
-        assert!(hit.dist_m < 0.5, "query is on prefab → dist ≈ 0, got {}", hit.dist_m);
+        assert!(
+            hit.dist_m < 0.5,
+            "query is on prefab → dist ≈ 0, got {}",
+            hit.dist_m
+        );
     }
 
     /// DS13d TASK 6b: Filter returns None when no prefab in candidate range.
@@ -1005,8 +1023,9 @@ mod tests {
         let idx = build_index_with_metadata(segs, meta);
 
         let query = Vec3::new(10.0, 0.0, 0.0); // on the road segment
-        // With a tight candidates=1, the tree returns only the closest (road), prefab is skipped.
-        let hit = idx.nearest_with_projection_filtered(query, 1, |_, m| m.is_some_and(|m| m.is_prefab));
+                                               // With a tight candidates=1, the tree returns only the closest (road), prefab is skipped.
+        let hit =
+            idx.nearest_with_projection_filtered(query, 1, |_, m| m.is_some_and(|m| m.is_prefab));
         assert!(hit.is_none(), "no prefab within candidate window → None");
     }
 
@@ -1022,8 +1041,13 @@ mod tests {
         let idx = build_index_with_metadata(segs, meta);
 
         let query = Vec3::new(10.0, 0.0, -2.0); // 2m from road
-        let hit = idx.nearest_with_projection(query, 8).expect("must find hit");
-        assert_eq!(hit.segment_idx, 0, "road is closer → unfiltered query picks road");
+        let hit = idx
+            .nearest_with_projection(query, 8)
+            .expect("must find hit");
+        assert_eq!(
+            hit.segment_idx, 0,
+            "road is closer → unfiltered query picks road"
+        );
         assert!(hit.dist_m < 3.0, "dist should be ~2m, got {}", hit.dist_m);
     }
 
@@ -1041,10 +1065,7 @@ mod tests {
         );
         // All returned indices must be valid
         for (seg_idx, seg, _meta) in &results {
-            assert!(
-                *seg_idx < idx.segments.len(),
-                "idx {seg_idx} out of bounds"
-            );
+            assert!(*seg_idx < idx.segments.len(), "idx {seg_idx} out of bounds");
             // The returned reference must match the indexed segment
             assert!(
                 std::ptr::eq(*seg, &idx.segments[*seg_idx]),
@@ -1203,7 +1224,8 @@ mod tests {
 
         // Out-of-bounds segment index → None.
         assert!(
-            idx.project_on_segment(7, Vec3::new(5.0, 0.0, 2.0)).is_none(),
+            idx.project_on_segment(7, Vec3::new(5.0, 0.0, 2.0))
+                .is_none(),
             "OOB seg_idx must return None"
         );
     }

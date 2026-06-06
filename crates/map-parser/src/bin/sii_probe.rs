@@ -82,7 +82,10 @@ fn main() {
         archives.len()
     );
     let map = load_prefab_sii_defs(&mut archives);
-    eprintln!("[sii_probe] RESULT: {} token→path entries loaded", map.len());
+    eprintln!(
+        "[sii_probe] RESULT: {} token→path entries loaded",
+        map.len()
+    );
 
     // Print a sample of the entries
     eprintln!("[sii_probe] sample entries (first 20):");
@@ -102,12 +105,17 @@ fn main() {
     // field B (variant, @61): 0x0000000003052735, 0x00000000862939C5
     // field A (model, @53):   0x0004D1B6A37B76AD, 0x0004C1E5710EF2AD
     let observed_targets: [u64; 4] = [
-        0x0000000003052735u64, 0x00000000862939C5u64,
-        0x0004D1B6A37B76ADu64, 0x0004C1E5710EF2ADu64,
+        0x0000000003052735u64,
+        0x00000000862939C5u64,
+        0x0004D1B6A37B76ADu64,
+        0x0004C1E5710EF2ADu64,
     ];
 
     eprintln!("\n[sii_probe] --- hash-variant brute-force ---");
-    eprintln!("[sii_probe] targets: {:?}", observed_targets.map(|v| format!("0x{v:016X}")));
+    eprintln!(
+        "[sii_probe] targets: {:?}",
+        observed_targets.map(|v| format!("0x{v:016X}"))
+    );
 
     // Re-open archives for the pairs call
     let mut archives2: Vec<Box<dyn Archive>> = Vec::new();
@@ -117,7 +125,10 @@ fn main() {
         }
     }
     let pairs = load_prefab_sii_pairs(&mut archives2);
-    eprintln!("[sii_probe] {} raw (unit_name, ppd_path) pairs loaded", pairs.len());
+    eprintln!(
+        "[sii_probe] {} raw (unit_name, ppd_path) pairs loaded",
+        pairs.len()
+    );
 
     // Build variant map: variant_u64 → (variant_tag, unit_name, ppd_path)
     let mut variant_map: std::collections::HashMap<u64, (&str, &str, &str)> =
@@ -136,48 +147,61 @@ fn main() {
         let ppd_stem_underscore = ppd_stem.replace('-', "_");
 
         let variants: &[(&str, &str)] = &[
-            ("unit_name:u64",         unit_name.as_str()),
-            ("dot_suffix:u64",        dot_suffix),
-            ("ppd_stem:u64",          ppd_stem),
-            ("ppd_stem_under:u64",    ppd_stem_underscore.as_str()),
+            ("unit_name:u64", unit_name.as_str()),
+            ("dot_suffix:u64", dot_suffix),
+            ("ppd_stem:u64", ppd_stem),
+            ("ppd_stem_under:u64", ppd_stem_underscore.as_str()),
         ];
 
         for &(tag, input) in variants {
             let h64 = scs_token_hash(input);
             let h32 = (h64 & 0xFFFF_FFFF) as u64;
             let tag32 = Box::leak(tag.replace(":u64", ":u32").into_boxed_str());
-            variant_map.entry(h64).or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
-            variant_map.entry(h32).or_insert((tag32, unit_name.as_str(), ppd_path.as_str()));
+            variant_map
+                .entry(h64)
+                .or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
+            variant_map
+                .entry(h32)
+                .or_insert((tag32, unit_name.as_str(), ppd_path.as_str()));
         }
 
         // u32-native variant: same polynomial but with u32 wrapping throughout
         for (tag, input) in &[
-            ("unit_name:u32native",      unit_name.as_str()),
-            ("dot_suffix:u32native",     dot_suffix),
-            ("ppd_stem:u32native",       ppd_stem),
+            ("unit_name:u32native", unit_name.as_str()),
+            ("dot_suffix:u32native", dot_suffix),
+            ("ppd_stem:u32native", ppd_stem),
             ("ppd_stem_under:u32native", ppd_stem_underscore.as_str()),
         ] {
             let h = scs_token_hash_u32(input) as u64;
-            variant_map.entry(h).or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
+            variant_map
+                .entry(h)
+                .or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
         }
 
         // TruckLib little-endian token: sum(charIndex[i] * 38^i)
         // charset: 0-9=1-10, a-z=11-36, _=37
         for (tag, input) in &[
-            ("unit_name:trucklib",      unit_name.as_str()),
-            ("dot_suffix:trucklib",     dot_suffix),
-            ("ppd_stem:trucklib",       ppd_stem),
+            ("unit_name:trucklib", unit_name.as_str()),
+            ("dot_suffix:trucklib", dot_suffix),
+            ("ppd_stem:trucklib", ppd_stem),
             ("ppd_stem_under:trucklib", ppd_stem_underscore.as_str()),
         ] {
             let h64 = trucklib_token(input);
             let h32 = h64 & 0xFFFF_FFFF;
             let tag32 = Box::leak(format!("{}_u32", tag).into_boxed_str());
-            variant_map.entry(h64).or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
-            variant_map.entry(h32).or_insert((tag32, unit_name.as_str(), ppd_path.as_str()));
+            variant_map
+                .entry(h64)
+                .or_insert((tag, unit_name.as_str(), ppd_path.as_str()));
+            variant_map
+                .entry(h32)
+                .or_insert((tag32, unit_name.as_str(), ppd_path.as_str()));
         }
     }
 
-    eprintln!("[sii_probe] variant map: {} distinct values", variant_map.len());
+    eprintln!(
+        "[sii_probe] variant map: {} distinct values",
+        variant_map.len()
+    );
 
     let mut any_match = false;
     for &target in &observed_targets {
@@ -191,7 +215,9 @@ fn main() {
         }
     }
     if !any_match {
-        eprintln!("[sii_probe] CONCLUSION: none of the ~10 hash variants matched either observed token");
+        eprintln!(
+            "[sii_probe] CONCLUSION: none of the ~10 hash variants matched either observed token"
+        );
         eprintln!("[sii_probe]   → the token is likely computed from a DIFFERENT string (not SII unit_name or ppd_stem)");
         eprintln!("[sii_probe]   → or the SII files are all binary (BSII) and were not parsed");
     }
@@ -200,13 +226,17 @@ fn main() {
     // BINARY SCAN: check BOTH scs_token_hash AND TruckLib tokens vs sector data.
     // -----------------------------------------------------------------------
     // Build TruckLib token set from the same 4145 pairs.
-    let mut trucklib_keys: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    let mut trucklib_keys: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
     for (unit_name, ppd_path) in &pairs {
         let dot_suffix = unit_name.rsplit('.').next().unwrap_or(unit_name.as_str());
         let tok = trucklib_token(dot_suffix);
         trucklib_keys.insert(tok, ppd_path.clone());
     }
-    eprintln!("[sii_probe] TruckLib dot-suffix token set: {} keys", trucklib_keys.len());
+    eprintln!(
+        "[sii_probe] TruckLib dot-suffix token set: {} keys",
+        trucklib_keys.len()
+    );
 
     let sii_keys: std::collections::HashSet<u64> = map.into_keys().collect();
     // Known observed token candidates from parse_prefab debug output:
@@ -215,9 +245,15 @@ fn main() {
         0x00000000862939C5u64,
         0x0004D1B6A37B76ADu64,
         0x0004C1E5710EF2ADu64,
-    ].iter().copied().collect();
+    ]
+    .iter()
+    .copied()
+    .collect();
 
-    eprintln!("\n[sii_probe] --- binary scan: {} SII keys, up to 50 sectors ---", sii_keys.len());
+    eprintln!(
+        "\n[sii_probe] --- binary scan: {} SII keys, up to 50 sectors ---",
+        sii_keys.len()
+    );
     let mut sectors_scanned = 0usize;
     let mut sectors_with_observed = 0usize;
     let mut total_sii_matches = 0usize;
@@ -228,8 +264,12 @@ fn main() {
             if let Ok(dir_bytes) = arc.read_path(sector_path_candidate) {
                 if let Ok(items) = parse_directory_listing(&dir_bytes) {
                     for item in &items {
-                        if item.is_dir { continue; }
-                        if !item.name.to_ascii_lowercase().ends_with(".base") { continue; }
+                        if item.is_dir {
+                            continue;
+                        }
+                        if !item.name.to_ascii_lowercase().ends_with(".base") {
+                            continue;
+                        }
                         let full_path = format!("{}/{}", sector_path_candidate, item.name);
                         let sector_bytes = match arc.read_path(&full_path) {
                             Ok(b) => b,
@@ -241,8 +281,10 @@ fn main() {
                         let mut obs_count = 0usize;
                         let n = sector_bytes.len().saturating_sub(7);
                         for i in (0..n).step_by(1) {
-                            if i + 8 > sector_bytes.len() { break; }
-                            let v = u64::from_le_bytes(sector_bytes[i..i+8].try_into().unwrap());
+                            if i + 8 > sector_bytes.len() {
+                                break;
+                            }
+                            let v = u64::from_le_bytes(sector_bytes[i..i + 8].try_into().unwrap());
                             if v != 0 {
                                 if sii_keys.contains(&v) {
                                     sii_count += 1;
@@ -267,7 +309,9 @@ fn main() {
                             total_observed_matches += obs_count;
                             eprintln!("[sii_probe] sector {full_path} ({} bytes): {sii_count} SII-hash matches, {tl_count} TruckLib-token matches, {obs_count} observed-token matches", sector_bytes.len());
                         }
-                        if sectors_scanned >= 50 { break 'sector_scan; }
+                        if sectors_scanned >= 50 {
+                            break 'sector_scan;
+                        }
                     }
                 }
             }
@@ -325,7 +369,9 @@ fn open_archive(path: &Path) -> Option<Box<dyn Archive>> {
     if let Ok(arc) = HashFsArchive::open(path) {
         return Some(Box::new(arc));
     }
-    ZipArchive::open(path).ok().map(|a| Box::new(a) as Box<dyn Archive>)
+    ZipArchive::open(path)
+        .ok()
+        .map(|a| Box::new(a) as Box<dyn Archive>)
 }
 
 fn parse_scs_dir(args: &[String]) -> PathBuf {

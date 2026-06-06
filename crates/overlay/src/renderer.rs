@@ -211,9 +211,7 @@ pub fn run(state: Arc<HudState>, pose: Arc<RwLock<TruckPose>>) -> Result<()> {
 
         // ── READ-ONLY projection diagnostics (1 Hz, AR/Both, fresh telemetry) ──
         // Pure observation alongside the render; no effect on drawing or autopilot.
-        if !calibrating
-            && matches!(mode, RenderMode::AR | RenderMode::Both)
-            && pose_snap.is_fresh()
+        if !calibrating && matches!(mode, RenderMode::AR | RenderMode::Both) && pose_snap.is_fresh()
         {
             crate::diag::log_ar_frame(&pose_snap, &data, fov_h, screen_w, screen_h);
         }
@@ -237,14 +235,10 @@ pub fn run(state: Arc<HudState>, pose: Arc<RwLock<TruckPose>>) -> Result<()> {
                     draw_minimap_frame(&mut overlay, &data, connected, origin);
                 }
                 RenderMode::AR => {
-                    render_ar(
-                        &mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h,
-                    );
+                    render_ar(&mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h);
                 }
                 RenderMode::Both => {
-                    render_ar(
-                        &mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h,
-                    );
+                    render_ar(&mut overlay, &pose_snap, &data, fov_h, screen_w, screen_h);
                     let origin = minimap_origin(screen_w);
                     draw_minimap_frame(&mut overlay, &data, connected, origin);
                 }
@@ -288,12 +282,7 @@ fn draw_mode_badge(overlay: &mut Overlay, mode: RenderMode, screen_w: f32) {
 
 // ── The minimap draw function (verbatim from old renderer.rs) ─────────────────
 
-fn draw_minimap_frame(
-    overlay: &mut Overlay,
-    data: &HudData,
-    connected: bool,
-    origin: (f32, f32),
-) {
+fn draw_minimap_frame(overlay: &mut Overlay, data: &HudData, connected: bool, origin: (f32, f32)) {
     let ox = origin.0;
     let oy = origin.1;
     let scale = coords::DEFAULT_SCALE;
@@ -308,14 +297,31 @@ fn draw_minimap_frame(
     } else {
         Color::rgba(100, 100, 100, 80)
     };
-    draw_dashed_circle(overlay, ox + center.0, oy + center.1, junction_r_px, zone_color, 16);
+    draw_dashed_circle(
+        overlay,
+        ox + center.0,
+        oy + center.1,
+        junction_r_px,
+        zone_color,
+        16,
+    );
 
     for seg in &data.nearby_segments {
         let (sx, sy) = coords::world_to_pixel(
-            seg.start_x, seg.start_z, data.pose.x, data.pose.z, scale, center,
+            seg.start_x,
+            seg.start_z,
+            data.pose.x,
+            data.pose.z,
+            scale,
+            center,
         );
         let (ex, ey) = coords::world_to_pixel(
-            seg.end_x, seg.end_z, data.pose.x, data.pose.z, scale, center,
+            seg.end_x,
+            seg.end_z,
+            data.pose.x,
+            data.pose.z,
+            scale,
+            center,
         );
         let range = -50.0..=(HUD_W + 50.0);
         if !range.contains(&sx) && !range.contains(&ex) {
@@ -333,8 +339,12 @@ fn draw_minimap_frame(
         overlay.line(ox + sx, oy + sy, ox + ex, oy + ey, thickness, color);
         if is_accepted {
             overlay.line(
-                ox + sx, oy + sy, ox + ex, oy + ey,
-                thickness + 2.0, Color::rgba(50, 200, 50, 200),
+                ox + sx,
+                oy + sy,
+                ox + ex,
+                oy + ey,
+                thickness + 2.0,
+                Color::rgba(50, 200, 50, 200),
             );
         }
     }
@@ -345,8 +355,20 @@ fn draw_minimap_frame(
     let arrow_dz = -heading_rad.cos() * arrow_len;
     let tx = ox + center.0;
     let ty = oy + center.1;
-    overlay.line(tx, ty, tx + arrow_dx, ty + arrow_dz, 2.5, Color::rgba(255, 255, 255, 255));
-    overlay.circle_filled(tx + arrow_dx, ty + arrow_dz, 2.5, Color::rgba(255, 255, 255, 255));
+    overlay.line(
+        tx,
+        ty,
+        tx + arrow_dx,
+        ty + arrow_dz,
+        2.5,
+        Color::rgba(255, 255, 255, 255),
+    );
+    overlay.circle_filled(
+        tx + arrow_dx,
+        ty + arrow_dz,
+        2.5,
+        Color::rgba(255, 255, 255, 255),
+    );
     overlay.circle_filled(tx, ty, 4.0, Color::rgba(0, 0, 0, 255));
     overlay.circle(tx, ty, 4.0, Color::rgba(255, 255, 255, 255));
 
@@ -356,14 +378,32 @@ fn draw_minimap_frame(
     let tp_h = 100.0_f32;
     let line_h = 16.0_f32;
     let font_size = 13.0_f32;
-    overlay.rect_filled(tp_x - 2.0, tp_y - 2.0, tp_w, tp_h, Color::rgba(0, 0, 0, 180));
-    overlay.rect(tp_x - 2.0, tp_y - 2.0, tp_w, tp_h, Color::rgba(60, 60, 60, 200));
+    overlay.rect_filled(
+        tp_x - 2.0,
+        tp_y - 2.0,
+        tp_w,
+        tp_h,
+        Color::rgba(0, 0, 0, 180),
+    );
+    overlay.rect(
+        tp_x - 2.0,
+        tp_y - 2.0,
+        tp_w,
+        tp_h,
+        Color::rgba(60, 60, 60, 200),
+    );
 
     let line1 = format!(
         "lateral={:.2}m  steer={:.3}",
         data.lane.lateral_dist_signed, data.lane.steering_filtered
     );
-    overlay.text(tp_x, tp_y, &line1, font_size, Color::rgba(200, 220, 200, 255));
+    overlay.text(
+        tp_x,
+        tp_y,
+        &line1,
+        font_size,
+        Color::rgba(200, 220, 200, 255),
+    );
 
     let line2 = format!(
         "bias: zone={} att={} acc={} {}",
@@ -376,7 +416,13 @@ fn draw_minimap_frame(
             format!("({})", &data.bias.rejected_reason)
         }
     );
-    overlay.text(tp_x, tp_y + line_h, &line2, font_size, Color::rgba(200, 200, 220, 255));
+    overlay.text(
+        tp_x,
+        tp_y + line_h,
+        &line2,
+        font_size,
+        Color::rgba(200, 200, 220, 255),
+    );
 
     let dist_str = data
         .junction
@@ -386,7 +432,11 @@ fn draw_minimap_frame(
     let line3 = format!(
         "junc: dist={} phase={}",
         dist_str,
-        if data.junction.phase.is_empty() { "none" } else { &data.junction.phase }
+        if data.junction.phase.is_empty() {
+            "none"
+        } else {
+            &data.junction.phase
+        }
     );
     let junc_color = if data.junction.detected {
         Color::rgba(255, 180, 60, 255)
@@ -406,26 +456,48 @@ fn draw_minimap_frame(
         bool_char(data.lane.nearest_seg_is_prefab),
         data.lane.nearest_seg_ai_path_uid
     );
-    overlay.text(tp_x, tp_y + line_h * 3.0, &line4, font_size, Color::rgba(180, 180, 255, 255));
+    overlay.text(
+        tp_x,
+        tp_y + line_h * 3.0,
+        &line4,
+        font_size,
+        Color::rgba(180, 180, 255, 255),
+    );
 
     let line5 = format!(
         "pos=({:.0},{:.0}) hdg={:.1}°",
         data.pose.x, data.pose.z, data.pose.heading_deg
     );
-    overlay.text(tp_x, tp_y + line_h * 4.0, &line5, font_size, Color::rgba(160, 160, 160, 255));
+    overlay.text(
+        tp_x,
+        tp_y + line_h * 4.0,
+        &line5,
+        font_size,
+        Color::rgba(160, 160, 160, 255),
+    );
 
     if !connected {
         let msg = "DAEMON DISCONNECTED";
         let bx = ox + 10.0;
         let by = oy + HUD_H / 2.0 - 12.0;
-        overlay.rect_filled(bx - 4.0, by - 4.0, HUD_W - 20.0, 28.0, Color::rgba(180, 0, 0, 200));
+        overlay.rect_filled(
+            bx - 4.0,
+            by - 4.0,
+            HUD_W - 20.0,
+            28.0,
+            Color::rgba(180, 0, 0, 200),
+        );
         overlay.text(bx, by, msg, 16.0, Color::rgba(255, 255, 255, 255));
     }
 }
 
 fn draw_dashed_circle(
     overlay: &mut Overlay,
-    cx: f32, cy: f32, radius: f32, color: Color, n_dashes: usize,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: Color,
+    n_dashes: usize,
 ) {
     use std::f32::consts::TAU;
     let step = TAU / (n_dashes as f32 * 2.0);
@@ -433,15 +505,24 @@ fn draw_dashed_circle(
         let t0 = i as f32 * TAU / n_dashes as f32;
         let t1 = t0 + step;
         overlay.line(
-            cx + radius * t0.cos(), cy + radius * t0.sin(),
-            cx + radius * t1.cos(), cy + radius * t1.sin(),
-            1.0, color,
+            cx + radius * t0.cos(),
+            cy + radius * t0.sin(),
+            cx + radius * t1.cos(),
+            cy + radius * t1.sin(),
+            1.0,
+            color,
         );
     }
 }
 
 #[inline]
-fn bool_char(b: bool) -> char { if b { 'T' } else { 'F' } }
+fn bool_char(b: bool) -> char {
+    if b {
+        'T'
+    } else {
+        'F'
+    }
+}
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

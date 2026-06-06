@@ -75,8 +75,12 @@ pub fn render_ar(
         let margin = 200.0_f32;
         let in_x = |v: f32| v > -margin && v < screen_w + margin;
         let in_y = |v: f32| v > -margin && v < screen_h + margin;
-        if !in_x(px0) && !in_x(px1) { continue; }
-        if !in_y(py0) && !in_y(py1) { continue; }
+        if !in_x(px0) && !in_x(px1) {
+            continue;
+        }
+        if !in_y(py0) && !in_y(py1) {
+            continue;
+        }
 
         // ── Choose colour ────────────────────────────────────────────────────
         let is_nearest = nearest_idx == Some(seg.idx);
@@ -100,7 +104,14 @@ pub fn render_ar(
 
         // Extra highlight stroke for bias-accepted segments.
         if is_accepted {
-            overlay.line(px0, py0, px1, py1, width + 2.0, Color::rgba(50, 230, 50, 180));
+            overlay.line(
+                px0,
+                py0,
+                px1,
+                py1,
+                width + 2.0,
+                Color::rgba(50, 230, 50, 180),
+            );
         }
     }
 
@@ -146,7 +157,8 @@ pub fn render_ar(
     }
     if seg_count == 0 && pose.is_fresh() {
         overlay.text(
-            10.0, 30.0,
+            10.0,
+            30.0,
             "No segments — daemon offline or WS not connected",
             13.0,
             Color::rgba(255, 160, 40, 220),
@@ -170,8 +182,22 @@ pub fn render_calibration(
 
     // ── Cross-hair at screen centre ──────────────────────────────────────────
     const LEN: f32 = 24.0;
-    overlay.line(cx - LEN, cy, cx + LEN, cy, 1.5, Color::rgba(255, 255, 0, 220));
-    overlay.line(cx, cy - LEN, cx, cy + LEN, 1.5, Color::rgba(255, 255, 0, 220));
+    overlay.line(
+        cx - LEN,
+        cy,
+        cx + LEN,
+        cy,
+        1.5,
+        Color::rgba(255, 255, 0, 220),
+    );
+    overlay.line(
+        cx,
+        cy - LEN,
+        cx,
+        cy + LEN,
+        1.5,
+        Color::rgba(255, 255, 0, 220),
+    );
     overlay.circle(cx, cy, 6.0, Color::rgba(255, 255, 0, 200));
 
     // ── Reference marker: 15 m ahead at ground level ─────────────────────────
@@ -184,24 +210,33 @@ pub fn render_calibration(
     let h_rad = pose.heading * 2.0 * std::f32::consts::PI;
     let ref_world = Vec3::new(
         pose.truck_x - h_rad.sin() * 15.0,
-        0.0,                                  // ground level
+        0.0, // ground level
         pose.truck_z - h_rad.cos() * 15.0,
     );
 
     if let Some((rx, ry)) = world_to_screen(ref_world, cam_pos, cam_rot, &k, 0.5) {
         overlay.circle(rx, ry, 12.0, Color::rgba(255, 120, 0, 255));
         overlay.circle(rx, ry, 4.0, Color::rgba(255, 255, 0, 255));
-        overlay.line(
-            cx, cy, rx, ry, 1.0,
-            Color::rgba(255, 255, 0, 100),
-        );
+        overlay.line(cx, cy, rx, ry, 1.0, Color::rgba(255, 255, 0, 100));
     }
 
     // ── FOV info panel ───────────────────────────────────────────────────────
     let panel_x = cx - 180.0;
     let panel_y = 60.0;
-    overlay.rect_filled(panel_x - 4.0, panel_y - 4.0, 380.0, 80.0, Color::rgba(0, 0, 0, 200));
-    overlay.rect(panel_x - 4.0, panel_y - 4.0, 380.0, 80.0, Color::rgba(255, 200, 0, 180));
+    overlay.rect_filled(
+        panel_x - 4.0,
+        panel_y - 4.0,
+        380.0,
+        80.0,
+        Color::rgba(0, 0, 0, 200),
+    );
+    overlay.rect(
+        panel_x - 4.0,
+        panel_y - 4.0,
+        380.0,
+        80.0,
+        Color::rgba(255, 200, 0, 180),
+    );
 
     overlay.text(
         panel_x,

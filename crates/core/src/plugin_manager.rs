@@ -349,6 +349,10 @@ impl PluginManager {
         // API write here. Reset every tick so stale values don't stick.
         let mut legacy = ControlOutput::default();
         let mut requests: Vec<ControlRequest> = Vec::new();
+        // Phase 2h-Diag3 (read-only): track which plugin offered a STEERING
+        // opinion (name, priority) so we can name the arbitration winner and
+        // detect the dangerous "no steering opinion → legacy 0" fallback.
+        let mut steer_offers: Vec<(String, i32)> = Vec::new();
 
         // Output plugins (PostPhase) must observe the FINAL arbitrated output,
         // not intermediate legacy values. Collect their indices here, skip them
@@ -407,7 +411,12 @@ impl PluginManager {
             let req_result =
                 catch_unwind(AssertUnwindSafe(|| p.plugin.tick_request(telemetry, &ctx)));
             match req_result {
-                Ok(Some(req)) => requests.push(req),
+                Ok(Some(req)) => {
+                    if req.steering.is_some() {
+                        steer_offers.push((p.name.clone(), req.priority));
+                    }
+                    requests.push(req);
+                }
                 Ok(None) => {}
                 Err(panic) => {
                     log_plugin_panic(&p.name, "tick_request", panic);
@@ -432,6 +441,37 @@ impl PluginManager {
         }
 
         *output = arbitrate(legacy, &requests);
+
+        // Phase 2h-Diag3 (read-only): publish the steering-arbitration outcome.
+        // Winner = highest priority among steering offers, ties → later (mirrors
+        // `arbitrate`). Empty → no plugin had a steering opinion this tick, so
+        // `output.steering` is the legacy default (0.0): the truck drives
+        // UNSTEERED. This is exactly the dangerous "steerO/shm=0" case.
+        // `max_by_key` returns the LAST max element on ties → matches
+        // `arbitrate`'s "later request wins" tie-break.
+        let steer_winner: Option<&(String, i32)> = steer_offers.iter().max_by_key(|(_, pri)| *pri);
+        match steer_winner {
+            Some((name, pri)) => {
+                self.blackboard
+                    .set("arbitration.steering_winner_plugin", name);
+                self.blackboard
+                    .set("arbitration.steering_winner_priority", pri.to_string());
+            }
+            None => {
+                self.blackboard
+                    .set("arbitration.steering_winner_plugin", "none_legacy_default");
+                self.blackboard
+                    .set("arbitration.steering_winner_priority", "-2147483648");
+            }
+        }
+        self.blackboard.set(
+            "arbitration.steering_offer_count",
+            steer_offers.len().to_string(),
+        );
+        self.blackboard.set(
+            "arbitration.steering_value",
+            format!("{:.6}", output.steering),
+        );
 
         // Tick all PostPhase (output) plugins with the final arbitrated value.
         // Output plugins must not submit ControlRequests, so tick_request is

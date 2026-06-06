@@ -172,7 +172,13 @@ fn parse_city_text(text: &str) -> HashMap<String, CityEntry> {
                     debug!(unit = %unit_name, city = %city_name, x, z, "city.sii block end");
                     map.insert(
                         unit_name.clone(),
-                        CityEntry { unit_name: unit_name.clone(), city_name: city_name.clone(), country: country.clone(), x, z },
+                        CityEntry {
+                            unit_name: unit_name.clone(),
+                            city_name: city_name.clone(),
+                            country: country.clone(),
+                            x,
+                            z,
+                        },
                     );
                 } else {
                     warn!("city.sii block '{}' has no position — skipped", unit_name);
@@ -189,7 +195,10 @@ fn parse_city_text(text: &str) -> HashMap<String, CityEntry> {
                             cur_x = Some(x);
                             cur_z = Some(z);
                         } else {
-                            warn!("city.sii block '{}': could not parse position '{val}'", unit_name);
+                            warn!(
+                                "city.sii block '{}': could not parse position '{val}'",
+                                unit_name
+                            );
                         }
                     }
                     _ => {} // other fields (population, map_x_offsets, …) are ignored
@@ -201,7 +210,16 @@ fn parse_city_text(text: &str) -> HashMap<String, CityEntry> {
     // Handle an unclosed block at EOF (malformed file — save if coords present).
     if in_block {
         if let (Some(x), Some(z)) = (cur_x, cur_z) {
-            map.insert(unit_name.clone(), CityEntry { unit_name, city_name, country, x, z });
+            map.insert(
+                unit_name.clone(),
+                CityEntry {
+                    unit_name,
+                    city_name,
+                    country,
+                    x,
+                    z,
+                },
+            );
         }
     }
 
@@ -241,10 +259,7 @@ fn discover_city_sii_paths(archive: &mut Box<dyn Archive>) -> Vec<String> {
     if let Ok(bytes) = archive.read_path("def") {
         if let Ok(items) = parse_directory_listing(&bytes) {
             for item in items {
-                if !item.is_dir
-                    && item.name.starts_with("city.")
-                    && item.name.ends_with(".sii")
-                {
+                if !item.is_dir && item.name.starts_with("city.") && item.name.ends_with(".sii") {
                     paths.push(format!("def/{}", item.name));
                 }
             }
@@ -276,12 +291,17 @@ fn discover_city_sii_paths(archive: &mut Box<dyn Archive>) -> Vec<String> {
 /// Diagnostic lines go to stderr so they are visible in release builds
 /// even without a tracing subscriber.
 pub fn load_city_sii(archives: &mut [Box<dyn Archive>]) -> HashMap<String, CityEntry> {
-    eprintln!("[city.sii] scanning {} archive(s) for city definitions", archives.len());
+    eprintln!(
+        "[city.sii] scanning {} archive(s) for city definitions",
+        archives.len()
+    );
     let mut merged: HashMap<String, CityEntry> = HashMap::new();
     let mut any_found = false;
 
     for archive in archives.iter_mut() {
-        let arc_label = archive.path().file_name()
+        let arc_label = archive
+            .path()
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
 
@@ -289,12 +309,25 @@ pub fn load_city_sii(archives: &mut [Box<dyn Archive>]) -> HashMap<String, CityE
         for path in &paths {
             if let Ok(bytes) = archive.read_path(path) {
                 any_found = true;
-                info!("city.sii: loading '{}' from {} ({} bytes)", path, arc_label, bytes.len());
+                info!(
+                    "city.sii: loading '{}' from {} ({} bytes)",
+                    path,
+                    arc_label,
+                    bytes.len()
+                );
                 let entries = parse_city_sii(&bytes);
                 if entries.is_empty() {
-                    eprintln!("[city.sii] '{}' ({}): 0 entries (stub or BSII) — skipped", path, arc_label);
+                    eprintln!(
+                        "[city.sii] '{}' ({}): 0 entries (stub or BSII) — skipped",
+                        path, arc_label
+                    );
                 } else {
-                    eprintln!("[city.sii] '{}' ({}): {} entries", path, arc_label, entries.len());
+                    eprintln!(
+                        "[city.sii] '{}' ({}): {} entries",
+                        path,
+                        arc_label,
+                        entries.len()
+                    );
                     merged.extend(entries);
                 }
             }
@@ -309,7 +342,10 @@ pub fn load_city_sii(archives: &mut [Box<dyn Archive>]) -> HashMap<String, CityE
         warn!("city.sii: all candidate files yielded 0 entries — city coordinates unavailable");
     } else {
         eprintln!("[city.sii] {} total city entries loaded", merged.len());
-        info!("city.sii: {} total entries after archive merge", merged.len());
+        info!(
+            "city.sii: {} total entries after archive merge",
+            merged.len()
+        );
     }
 
     merged

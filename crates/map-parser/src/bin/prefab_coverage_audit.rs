@@ -131,12 +131,12 @@ impl InstanceResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum CoverageBucket {
-    Zero,       // 0%
-    Low,        // 1–24%
-    Quarter,    // 25–49%
-    Half,       // 50–74%
-    High,       // 75–99%
-    Full,       // 100%
+    Zero,    // 0%
+    Low,     // 1–24%
+    Quarter, // 25–49%
+    Half,    // 50–74%
+    High,    // 75–99%
+    Full,    // 100%
 }
 
 impl CoverageBucket {
@@ -210,8 +210,7 @@ impl TokenStats {
 
 fn compute(graph: &MapGraph, region: Option<&RegionFilter>) -> Vec<InstanceResult> {
     // All node_uids that appear in any PrefabAiPath (from OR to).
-    let mut covered_nodes: HashSet<u64> =
-        HashSet::with_capacity(graph.prefab_ai_paths.len() * 2);
+    let mut covered_nodes: HashSet<u64> = HashSet::with_capacity(graph.prefab_ai_paths.len() * 2);
     for path in &graph.prefab_ai_paths {
         covered_nodes.insert(path.from_node_uid);
         covered_nodes.insert(path.to_node_uid);
@@ -274,10 +273,23 @@ fn print_histogram(results: &[InstanceResult], label: &str) {
 
     println!("{label}");
     println!("  Instanzen total          : {total}");
-    println!("  Voll abgedeckt (100%)    : {full:>7}  ({:.1}%)", 100.0 * full as f32 / total as f32);
-    println!("  Teil-Coverage (1-99%)    : {partial:>7}  ({:.1}%)", 100.0 * partial as f32 / total as f32);
-    println!("  Keine NavCurves (0%)     : {zero:>7}  ({:.1}%)", 100.0 * zero as f32 / total as f32);
-    println!("  Avg coverage_ratio       : {:.3}  ({:.1}%)", avg_ratio, avg_ratio * 100.0);
+    println!(
+        "  Voll abgedeckt (100%)    : {full:>7}  ({:.1}%)",
+        100.0 * full as f32 / total as f32
+    );
+    println!(
+        "  Teil-Coverage (1-99%)    : {partial:>7}  ({:.1}%)",
+        100.0 * partial as f32 / total as f32
+    );
+    println!(
+        "  Keine NavCurves (0%)     : {zero:>7}  ({:.1}%)",
+        100.0 * zero as f32 / total as f32
+    );
+    println!(
+        "  Avg coverage_ratio       : {:.3}  ({:.1}%)",
+        avg_ratio,
+        avg_ratio * 100.0
+    );
     println!();
     println!("  Histogramm:");
 
@@ -306,14 +318,21 @@ fn print_histogram(results: &[InstanceResult], label: &str) {
 fn token_analysis(results: &[InstanceResult]) -> Vec<TokenStats> {
     let mut by_token: HashMap<u64, Vec<f32>> = HashMap::new();
     for r in results {
-        by_token.entry(r.token).or_default().push(r.coverage_ratio());
+        by_token
+            .entry(r.token)
+            .or_default()
+            .push(r.coverage_ratio());
     }
 
     let mut stats: Vec<TokenStats> = by_token
         .into_iter()
         .map(|(token, ratios)| {
             let instance_count = ratios.len();
-            TokenStats { token, instance_count, ratios }
+            TokenStats {
+                token,
+                instance_count,
+                ratios,
+            }
         })
         .collect();
 
@@ -329,7 +348,11 @@ fn print_token_table(stats: &[TokenStats], n: usize, label: &str) {
         "token", "instances", "avg%", "min%", "max%", "systematic?"
     );
     for ts in stats.iter().take(n) {
-        let systematic = if ts.is_systematic_partial() { "PARTIAL" } else { "ok" };
+        let systematic = if ts.is_systematic_partial() {
+            "PARTIAL"
+        } else {
+            "ok"
+        };
         println!(
             "  {:>20}  {:>9}  {:>8.1}  {:>8.1}  {:>8.1}  {:>12}",
             ts.token,
@@ -378,8 +401,10 @@ fn main() {
     // TASK 2: Token-level analysis (global)
     // -----------------------------------------------------------------------
     let token_stats = token_analysis(&global_results);
-    let systematic_tokens: Vec<&TokenStats> =
-        token_stats.iter().filter(|t| t.is_systematic_partial()).collect();
+    let systematic_tokens: Vec<&TokenStats> = token_stats
+        .iter()
+        .filter(|t| t.is_systematic_partial())
+        .collect();
 
     println!("=== TOKEN-LEVEL ANALYSE (global) ===");
     println!();
@@ -405,7 +430,14 @@ fn main() {
         println!("  avg coverage : {:.1}%", ts.avg() * 100.0);
         println!("  min coverage : {:.1}%", ts.min() * 100.0);
         println!("  max coverage : {:.1}%", ts.max() * 100.0);
-        println!("  Systematisch : {}", if ts.is_systematic_partial() { "JA (Template-Bug)" } else { "nein" });
+        println!(
+            "  Systematisch : {}",
+            if ts.is_systematic_partial() {
+                "JA (Template-Bug)"
+            } else {
+                "nein"
+            }
+        );
         println!();
     } else {
         println!("Token 1960238657931 nicht in globalen Ergebnissen gefunden.");
@@ -445,7 +477,10 @@ fn main() {
         .filter(|r| r.total_approaches == 0)
         .count();
     if zero_node > 0 {
-        println!("HINWEIS: {} Instanzen mit 0 node_uids (keine Approaches registriert)", zero_node);
+        println!(
+            "HINWEIS: {} Instanzen mit 0 node_uids (keine Approaches registriert)",
+            zero_node
+        );
         println!();
     }
 
@@ -465,15 +500,30 @@ fn main() {
         .iter()
         .filter(|r| r.coverage_ratio() <= 0.0)
         .count();
-    let avg_global = global_results.iter().map(|r| r.coverage_ratio()).sum::<f32>()
+    let avg_global = global_results
+        .iter()
+        .map(|r| r.coverage_ratio())
+        .sum::<f32>()
         / total.max(1) as f32;
 
     eprintln!();
     eprintln!("=== VERDICT ===");
     eprintln!("Total Instanzen : {total}");
-    eprintln!("Voll (100%)     : {full}  ({:.1}%)", 100.0 * full as f32 / total as f32);
-    eprintln!("Teil (1-99%)    : {partial}  ({:.1}%)", 100.0 * partial as f32 / total as f32);
-    eprintln!("Null (0%)       : {zero}  ({:.1}%)", 100.0 * zero as f32 / total as f32);
+    eprintln!(
+        "Voll (100%)     : {full}  ({:.1}%)",
+        100.0 * full as f32 / total as f32
+    );
+    eprintln!(
+        "Teil (1-99%)    : {partial}  ({:.1}%)",
+        100.0 * partial as f32 / total as f32
+    );
+    eprintln!(
+        "Null (0%)       : {zero}  ({:.1}%)",
+        100.0 * zero as f32 / total as f32
+    );
     eprintln!("Avg ratio       : {:.1}%", avg_global * 100.0);
-    eprintln!("Systematische Teil-Coverage Tokens: {}", systematic_tokens.len());
+    eprintln!(
+        "Systematische Teil-Coverage Tokens: {}",
+        systematic_tokens.len()
+    );
 }

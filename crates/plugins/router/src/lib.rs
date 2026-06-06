@@ -375,12 +375,21 @@ fn router_worker_loop(
         // Snap truck position to the nearest graph node.
         // First try edge-snap (projects truck onto nearest road segment, then picks
         // the direction-aligned endpoint); fall back to node-snap for sparse areas.
-        let edge_snap =
-            graph.find_nearest_on_edge(req.truck_x, req.truck_z, req.truck_heading, EDGE_SNAP_RADIUS_M);
+        let edge_snap = graph.find_nearest_on_edge(
+            req.truck_x,
+            req.truck_z,
+            req.truck_heading,
+            EDGE_SNAP_RADIUS_M,
+        );
         let (snap_result, snap_method) = match edge_snap {
             Some(r) => (Some(r), "edge"),
             None => (
-                graph.find_nearest_with_heading(req.truck_x, req.truck_z, req.truck_heading, SNAP_RADIUS_M),
+                graph.find_nearest_with_heading(
+                    req.truck_x,
+                    req.truck_z,
+                    req.truck_heading,
+                    SNAP_RADIUS_M,
+                ),
                 "node",
             ),
         };
@@ -1173,7 +1182,10 @@ mod tests {
 
         // First tick: submits route request.
         p.tick(Some(&t), &mut out, &ctx);
-        assert!(p.pending_request, "request should be pending after first tick");
+        assert!(
+            p.pending_request,
+            "request should be pending after first tick"
+        );
 
         // Let the worker complete A*.
         std::thread::sleep(Duration::from_millis(300));
@@ -1211,8 +1223,7 @@ mod tests {
 
         // The first element must NOT be the goal — path must not be reversed.
         assert_ne!(
-            ids[0],
-            3u64,
+            ids[0], 3u64,
             "first element must not be the goal; route would be reversed: {:?}",
             ids
         );

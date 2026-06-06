@@ -158,8 +158,14 @@ mod tests {
     fn head_pos_east_adds_forward_positive_x() {
         // Heading=0.75 (East = +X): forward offset should increase X
         let (hx, _hy, hz) = compute_head_pos(0.0, 0.0, 0.0, 0.75);
-        assert!(hx > 0.0, "heading=0.75 (East): hx should be positive, got {hx}");
-        assert!(hz.abs() < 0.1, "heading=0.75 (East): hz near zero, got {hz}");
+        assert!(
+            hx > 0.0,
+            "heading=0.75 (East): hx should be positive, got {hx}"
+        );
+        assert!(
+            hz.abs() < 0.1,
+            "heading=0.75 (East): hz near zero, got {hz}"
+        );
     }
 
     #[test]

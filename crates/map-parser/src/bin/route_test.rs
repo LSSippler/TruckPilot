@@ -39,12 +39,12 @@ use std::collections::{BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use truckpilot_map_parser::archive::Archive;
 use truckpilot_map_parser::city_sii::{
     build_display_name_index, load_city_sii, normalize_name, CityEntry,
 };
 use truckpilot_map_parser::graph::MapGraph;
 use truckpilot_map_parser::{HashFsArchive, ZipArchive};
-use truckpilot_map_parser::archive::Archive;
 
 // Snap radii (metres).
 const SNAP_RADIUS_SII_PRIMARY_M: f64 = 5_000.0;
@@ -83,7 +83,9 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "--scs-dir" => {
-                scs_dir = Some(PathBuf::from(argv.get(i + 1).expect("--scs-dir needs value")));
+                scs_dir = Some(PathBuf::from(
+                    argv.get(i + 1).expect("--scs-dir needs value"),
+                ));
                 i += 2;
             }
             "-h" | "--help" => {
@@ -98,7 +100,11 @@ fn parse_args() -> Args {
             }
         }
     }
-    Args { graph, cities, scs_dir }
+    Args {
+        graph,
+        cities,
+        scs_dir,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +134,11 @@ fn read_cities(path: &PathBuf) -> Vec<TomlCity> {
         z: &mut Option<f64>,
     ) {
         if let (Some(n), Some(xv), Some(zv)) = (name.take(), x.take(), z.take()) {
-            list.push(TomlCity { name: n, x: xv, z: zv });
+            list.push(TomlCity {
+                name: n,
+                x: xv,
+                z: zv,
+            });
         }
     }
 
@@ -195,7 +205,11 @@ fn open_archives_from_dir(scs_dir: &Path) -> Vec<Box<dyn Archive>> {
         archives.push(arc);
     }
 
-    eprintln!("city.sii: opened {} archive(s) from {:?}", archives.len(), scs_dir);
+    eprintln!(
+        "city.sii: opened {} archive(s) from {:?}",
+        archives.len(),
+        scs_dir
+    );
     archives
 }
 
@@ -259,8 +273,7 @@ fn resolve_cities(
     sii_map: Option<&HashMap<String, CityEntry>>,
 ) -> Vec<ResolvedCity> {
     // Build display-name index once (O(N)), not once per city (O(N²)).
-    let display_idx_owned: Option<HashMap<String, String>> =
-        sii_map.map(build_display_name_index);
+    let display_idx_owned: Option<HashMap<String, String>> = sii_map.map(build_display_name_index);
     let display_idx_ref = display_idx_owned.as_ref();
 
     toml_cities
@@ -271,20 +284,26 @@ fn resolve_cities(
             let (Some(sii_map), Some(display_idx)) = (sii_map, display_idx_ref) else {
                 return ResolvedCity {
                     name: city.name.clone(),
-                    x: toml_x, z: toml_z,
+                    x: toml_x,
+                    z: toml_z,
                     source: CoordSource::TomlOnly,
-                    toml_x, toml_z,
-                    sii_x: None, sii_z: None,
+                    toml_x,
+                    toml_z,
+                    sii_x: None,
+                    sii_z: None,
                 };
             };
 
             match find_city_entry(&city.name, sii_map, display_idx) {
                 None => ResolvedCity {
                     name: city.name.clone(),
-                    x: toml_x, z: toml_z,
+                    x: toml_x,
+                    z: toml_z,
                     source: CoordSource::TomlFallback,
-                    toml_x, toml_z,
-                    sii_x: None, sii_z: None,
+                    toml_x,
+                    toml_z,
+                    sii_x: None,
+                    sii_z: None,
                 },
                 Some(entry) => {
                     let (sx, sz) = (entry.x, entry.z);
@@ -296,19 +315,25 @@ fn resolve_cities(
                         // STOP condition: delta too large — keep toml coords.
                         ResolvedCity {
                             name: city.name.clone(),
-                            x: toml_x, z: toml_z,
+                            x: toml_x,
+                            z: toml_z,
                             source: CoordSource::SiiStop,
-                            toml_x, toml_z,
-                            sii_x: Some(sx), sii_z: Some(sz),
+                            toml_x,
+                            toml_z,
+                            sii_x: Some(sx),
+                            sii_z: Some(sz),
                         }
                     } else {
                         // Auto-overwrite with city.sii coords.
                         ResolvedCity {
                             name: city.name.clone(),
-                            x: sx, z: sz,
+                            x: sx,
+                            z: sz,
                             source: CoordSource::CitySii,
-                            toml_x, toml_z,
-                            sii_x: Some(sx), sii_z: Some(sz),
+                            toml_x,
+                            toml_z,
+                            sii_x: Some(sx),
+                            sii_z: Some(sz),
                         }
                     }
                 }
@@ -348,16 +373,32 @@ fn snap_city(city: &ResolvedCity, graph: &MapGraph) -> SnapResult {
     let dist = best_d2.sqrt();
 
     if dist <= primary_r {
-        SnapResult { uid: best_uid, dist_m: dist, tier: "primary" }
+        SnapResult {
+            uid: best_uid,
+            dist_m: dist,
+            tier: "primary",
+        }
     } else if let Some(fb) = fallback_r {
         if dist <= fb {
-            SnapResult { uid: best_uid, dist_m: dist, tier: "fallback" }
+            SnapResult {
+                uid: best_uid,
+                dist_m: dist,
+                tier: "fallback",
+            }
         } else {
-            SnapResult { uid: None, dist_m: dist, tier: "miss" }
+            SnapResult {
+                uid: None,
+                dist_m: dist,
+                tier: "miss",
+            }
         }
     } else {
         // Global fallback (toml-only behaviour).
-        SnapResult { uid: best_uid, dist_m: dist, tier: "global" }
+        SnapResult {
+            uid: best_uid,
+            dist_m: dist,
+            tier: "global",
+        }
     }
 }
 
@@ -375,8 +416,16 @@ fn snap_toml(toml_x: f64, toml_z: f64, graph: &MapGraph) -> SnapResult {
         }
     }
     let dist = best_d2.sqrt();
-    let tier = if dist <= SNAP_RADIUS_TOML_M { "20km" } else { "global" };
-    SnapResult { uid: best_uid, dist_m: dist, tier }
+    let tier = if dist <= SNAP_RADIUS_TOML_M {
+        "20km"
+    } else {
+        "global"
+    };
+    SnapResult {
+        uid: best_uid,
+        dist_m: dist,
+        tier,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +461,10 @@ fn main() {
     let sii_map_owned: Option<HashMap<String, CityEntry>> = args.scs_dir.as_ref().map(|dir| {
         let mut archives = open_archives_from_dir(dir);
         if archives.is_empty() {
-            eprintln!("WARN: no archives opened from {:?} — falling back to toml coords", dir);
+            eprintln!(
+                "WARN: no archives opened from {:?} — falling back to toml coords",
+                dir
+            );
             return HashMap::new();
         }
         load_city_sii(&mut archives)
@@ -482,10 +534,7 @@ fn main() {
 // Output
 // ---------------------------------------------------------------------------
 
-fn print_city_source(
-    snapped: &[(ResolvedCity, SnapResult, SnapResult)],
-    sii_loaded: bool,
-) {
+fn print_city_source(snapped: &[(ResolvedCity, SnapResult, SnapResult)], sii_loaded: bool) {
     if !sii_loaded {
         println!("=== CITY COORDINATES (toml-only, no --scs-dir) ===");
         println!(
@@ -494,8 +543,15 @@ fn print_city_source(
         );
         println!("  {}", "-".repeat(70));
         for (c, _pre, post) in snapped {
-            let uid_str = post.uid.map(|u| format!("0x{u:016X}[{}]", post.tier)).unwrap_or_else(|| "MISS".to_string());
-            let dist_str = if post.uid.is_some() { format!("{:>6.0}", post.dist_m) } else { " MISS".to_string() };
+            let uid_str = post
+                .uid
+                .map(|u| format!("0x{u:016X}[{}]", post.tier))
+                .unwrap_or_else(|| "MISS".to_string());
+            let dist_str = if post.uid.is_some() {
+                format!("{:>6.0}", post.dist_m)
+            } else {
+                " MISS".to_string()
+            };
             println!(
                 "  {:<12}  ({:>9.0},{:>9.0})  {}  {}",
                 c.name, c.toml_x, c.toml_z, uid_str, dist_str
@@ -508,8 +564,7 @@ fn print_city_source(
     println!("=== CITY SOURCE (city.sii A/B) ===");
     println!(
         "  {:<12}  {:<8}  {:>22}  {:>22}  {:>8}  {:>18}  {:>18}",
-        "name", "source", "toml (x, z)", "sii  (x, z)", "delta_m",
-        "pre-snap uid", "post-snap uid",
+        "name", "source", "toml (x, z)", "sii  (x, z)", "delta_m", "pre-snap uid", "post-snap uid",
     );
     println!("  {}", "-".repeat(130));
 
@@ -532,8 +587,14 @@ fn print_city_source(
             }
             _ => format!("{:>8}", "n/a"),
         };
-        let pre_uid = pre.uid.map(|u| format!("0x{u:016X}[{}]", pre.tier)).unwrap_or_else(|| "MISS".to_string());
-        let post_uid = post.uid.map(|u| format!("0x{u:016X}[{}]", post.tier)).unwrap_or_else(|| "MISS".to_string());
+        let pre_uid = pre
+            .uid
+            .map(|u| format!("0x{u:016X}[{}]", pre.tier))
+            .unwrap_or_else(|| "MISS".to_string());
+        let post_uid = post
+            .uid
+            .map(|u| format!("0x{u:016X}[{}]", post.tier))
+            .unwrap_or_else(|| "MISS".to_string());
         println!(
             "  {:<12}  {}  {}  {}  {}  {}  {}",
             c.name, source_str, toml_str, sii_str, delta_str, pre_uid, post_uid
@@ -547,9 +608,18 @@ fn print_city_source(
     }
     println!();
 
-    let n_sii = snapped.iter().filter(|(c, _, _)| c.source == CoordSource::CitySii).count();
-    let n_stop = snapped.iter().filter(|(c, _, _)| c.source == CoordSource::SiiStop).count();
-    let n_fb = snapped.iter().filter(|(c, _, _)| c.source == CoordSource::TomlFallback).count();
+    let n_sii = snapped
+        .iter()
+        .filter(|(c, _, _)| c.source == CoordSource::CitySii)
+        .count();
+    let n_stop = snapped
+        .iter()
+        .filter(|(c, _, _)| c.source == CoordSource::SiiStop)
+        .count();
+    let n_fb = snapped
+        .iter()
+        .filter(|(c, _, _)| c.source == CoordSource::TomlFallback)
+        .count();
     println!(
         "  city.sii: {n_sii} matched | {n_fb} not-found (toml fallback) | {n_stop} STOP (delta ≥ {:.0} m)",
         STOP_DELTA_M
@@ -592,7 +662,10 @@ fn a_star(
     goal: u64,
 ) -> Option<PathInfo> {
     if start == goal {
-        return Some(PathInfo { distance_m: 0.0, hops: 0 });
+        return Some(PathInfo {
+            distance_m: 0.0,
+            hops: 0,
+        });
     }
 
     let &(gx, gz) = positions.get(&goal)?;
@@ -621,11 +694,16 @@ fn a_star(
                 }
             }
             let total = g_score.get(&goal).copied().unwrap_or(f64::INFINITY);
-            return Some(PathInfo { distance_m: total, hops });
+            return Some(PathInfo {
+                distance_m: total,
+                hops,
+            });
         }
 
         let cur_g = g_score.get(&cur).copied().unwrap_or(f64::INFINITY);
-        let Some(neighbours) = adj.get(&cur) else { continue };
+        let Some(neighbours) = adj.get(&cur) else {
+            continue;
+        };
         for &(next, edge_w) in neighbours {
             let tentative = cur_g + edge_w;
             if tentative < g_score.get(&next).copied().unwrap_or(f64::INFINITY) {
@@ -649,7 +727,11 @@ fn a_star(
 fn print_pair_results(results: &[PairResult]) {
     let total = results.len();
     let success = results.iter().filter(|r| r.path.is_some()).count();
-    let success_rate = if total == 0 { 0.0 } else { 100.0 * success as f64 / total as f64 };
+    let success_rate = if total == 0 {
+        0.0
+    } else {
+        100.0 * success as f64 / total as f64
+    };
 
     println!("=== ROUTING RESULTS ({success}/{total} pairs, {success_rate:.1}%) ===");
     println!();
@@ -657,7 +739,11 @@ fn print_pair_results(results: &[PairResult]) {
         match &r.path {
             Some(p) => println!(
                 "  {:<12} → {:<12}  {:>9.1} km  {:>5} hops  {:>6.1} ms",
-                r.from, r.to, p.distance_m / 1000.0, p.hops, r.elapsed_ms
+                r.from,
+                r.to,
+                p.distance_m / 1000.0,
+                p.hops,
+                r.elapsed_ms
             ),
             None => println!(
                 "  {:<12} → {:<12}  NO PATH                              {:>6.1} ms",
@@ -669,20 +755,35 @@ fn print_pair_results(results: &[PairResult]) {
 
     let succ_paths: Vec<&PathInfo> = results.iter().filter_map(|r| r.path.as_ref()).collect();
     if !succ_paths.is_empty() {
-        let avg_dist = succ_paths.iter().map(|p| p.distance_m).sum::<f64>() / succ_paths.len() as f64;
-        let avg_hops = succ_paths.iter().map(|p| p.hops as f64).sum::<f64>() / succ_paths.len() as f64;
-        let max_dist = succ_paths.iter().map(|p| p.distance_m).fold(0.0_f64, f64::max);
-        let min_dist = succ_paths.iter().map(|p| p.distance_m).fold(f64::INFINITY, f64::min);
+        let avg_dist =
+            succ_paths.iter().map(|p| p.distance_m).sum::<f64>() / succ_paths.len() as f64;
+        let avg_hops =
+            succ_paths.iter().map(|p| p.hops as f64).sum::<f64>() / succ_paths.len() as f64;
+        let max_dist = succ_paths
+            .iter()
+            .map(|p| p.distance_m)
+            .fold(0.0_f64, f64::max);
+        let min_dist = succ_paths
+            .iter()
+            .map(|p| p.distance_m)
+            .fold(f64::INFINITY, f64::min);
 
         println!("=== SUMMARY ===");
         println!("Success rate : {success_rate:.1}%  ({success}/{total})");
         println!("Avg distance : {:.1} km", avg_dist / 1000.0);
         println!("Avg hops     : {avg_hops:.1}");
-        println!("Min / Max    : {:.1} km / {:.1} km", min_dist / 1000.0, max_dist / 1000.0);
+        println!(
+            "Min / Max    : {:.1} km / {:.1} km",
+            min_dist / 1000.0,
+            max_dist / 1000.0
+        );
 
         let mut sorted: Vec<&PairResult> = results.iter().filter(|r| r.path.is_some()).collect();
         sorted.sort_by(|a, b| {
-            b.path.as_ref().unwrap().distance_m
+            b.path
+                .as_ref()
+                .unwrap()
+                .distance_m
                 .partial_cmp(&a.path.as_ref().unwrap().distance_m)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
@@ -692,7 +793,10 @@ fn print_pair_results(results: &[PairResult]) {
             let p = r.path.as_ref().unwrap();
             println!(
                 "  {:<12} → {:<12}  {:>9.1} km  {:>5} hops",
-                r.from, r.to, p.distance_m / 1000.0, p.hops
+                r.from,
+                r.to,
+                p.distance_m / 1000.0,
+                p.hops
             );
         }
     }

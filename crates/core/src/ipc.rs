@@ -379,8 +379,11 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
                     Some((uid, dist)) => {
                         let mgr = manager.lock().await;
                         mgr.blackboard.set("router.goal_uid", uid.to_string());
-                        mgr.blackboard.set("router.goal_snap_dist", format!("{dist:.1}"));
-                        info!("router goal by position ({x:.1},{z:.1}) → uid={uid} snap={dist:.1}m");
+                        mgr.blackboard
+                            .set("router.goal_snap_dist", format!("{dist:.1}"));
+                        info!(
+                            "router goal by position ({x:.1},{z:.1}) → uid={uid} snap={dist:.1}m"
+                        );
                     }
                     None => {
                         manager
@@ -401,53 +404,57 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
             }
             Vec::new()
         }
-        UiCommand::SpatialSegmentsInRadius { x, z, radius_m, max_results } => {
+        UiCommand::SpatialSegmentsInRadius {
+            x,
+            z,
+            radius_m,
+            max_results,
+        } => {
             // Clone the Arc while holding the lock (fast — just an atomic increment).
             // The actual query runs *outside* the lock to avoid blocking plugin ticks.
             let maybe_index = manager.lock().await.spline_index.clone();
 
             let t0 = std::time::Instant::now();
 
-            let segments: Vec<truckpilot_ipc_protocol::SegmentInfo> = if let Some(index) =
-                maybe_index
-            {
-                use truckpilot_map_parser::spline::Vec3;
-                let center = Vec3::new(x, 0.0, z);
-                let r2 = radius_m * radius_m;
+            let segments: Vec<truckpilot_ipc_protocol::SegmentInfo> =
+                if let Some(index) = maybe_index {
+                    use truckpilot_map_parser::spline::Vec3;
+                    let center = Vec3::new(x, 0.0, z);
+                    let r2 = radius_m * radius_m;
 
-                index
-                    .within_radius_with_idx(center, radius_m)
-                    .into_iter()
-                    // Secondary circle filter: AABB query is conservative (square),
-                    // this ensures we only return segments whose *start* is inside
-                    // the actual circle.  End-point could still be outside; that's
-                    // intentional — the overlay draws the full segment line.
-                    .filter(|(_, seg, _)| {
-                        let dx = seg.p0.x - x;
-                        let dz = seg.p0.z - z;
-                        dx * dx + dz * dz <= r2
-                    })
-                    .take(max_results)
-                    .map(|(idx, seg, meta)| truckpilot_ipc_protocol::SegmentInfo {
-                        idx: idx as u64,
-                        is_prefab: meta.map(|m| m.is_prefab).unwrap_or(false),
-                        // edge_uid is u64; truncate to u32 for debug display only
-                        ai_path_uid: (seg.edge_uid & 0xFFFF_FFFF) as u32,
-                        start_x: seg.p0.x,
-                        start_z: seg.p0.z,
-                        end_x: seg.p1.x,
-                        end_z: seg.p1.z,
-                        control_uid_a: seg.from_uid,
-                        control_uid_b: seg.to_uid,
-                    })
-                    .collect()
-            } else {
-                tracing::debug!(
-                    "SpatialSegmentsInRadius: SplineIndex not loaded \
+                    index
+                        .within_radius_with_idx(center, radius_m)
+                        .into_iter()
+                        // Secondary circle filter: AABB query is conservative (square),
+                        // this ensures we only return segments whose *start* is inside
+                        // the actual circle.  End-point could still be outside; that's
+                        // intentional — the overlay draws the full segment line.
+                        .filter(|(_, seg, _)| {
+                            let dx = seg.p0.x - x;
+                            let dz = seg.p0.z - z;
+                            dx * dx + dz * dz <= r2
+                        })
+                        .take(max_results)
+                        .map(|(idx, seg, meta)| truckpilot_ipc_protocol::SegmentInfo {
+                            idx: idx as u64,
+                            is_prefab: meta.map(|m| m.is_prefab).unwrap_or(false),
+                            // edge_uid is u64; truncate to u32 for debug display only
+                            ai_path_uid: (seg.edge_uid & 0xFFFF_FFFF) as u32,
+                            start_x: seg.p0.x,
+                            start_z: seg.p0.z,
+                            end_x: seg.p1.x,
+                            end_z: seg.p1.z,
+                            control_uid_a: seg.from_uid,
+                            control_uid_b: seg.to_uid,
+                        })
+                        .collect()
+                } else {
+                    tracing::debug!(
+                        "SpatialSegmentsInRadius: SplineIndex not loaded \
                      (graph.json missing at daemon start?)"
-                );
-                Vec::new()
-            };
+                    );
+                    Vec::new()
+                };
 
             let elapsed = t0.elapsed();
             let count = segments.len();
@@ -466,10 +473,7 @@ async fn build_response(cmd: UiCommand, manager: &SharedManager) -> Vec<CoreMess
                 );
             }
 
-            vec![truckpilot_ipc_protocol::CoreMessage::SpatialSegmentsResponse {
-                v: V,
-                segments,
-            }]
+            vec![truckpilot_ipc_protocol::CoreMessage::SpatialSegmentsResponse { v: V, segments }]
         }
     }
 }

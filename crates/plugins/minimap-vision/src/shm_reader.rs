@@ -49,7 +49,12 @@ impl MinimapHeader {
         let timestamp_ms = u64::from_le_bytes(buf[16..24].try_into().ok()?);
         let point_count = u32::from_le_bytes(buf[24..28].try_into().ok()?);
         let confidence = f32::from_le_bytes(buf[28..32].try_into().ok()?);
-        Some(Self { seq, timestamp_ms, point_count, confidence })
+        Some(Self {
+            seq,
+            timestamp_ms,
+            point_count,
+            confidence,
+        })
     }
 }
 
@@ -62,10 +67,10 @@ pub struct MinimapFrame {
 #[derive(Debug)]
 pub enum ReadOutcome {
     Frame(MinimapFrame),
-    NoFrame,           // seq==0 (nothing published yet)
-    WriterBusy,        // sequence-lock budget exhausted
-    InvalidHeader,     // bad magic/version or buffer too short
-    PayloadOverflow,   // point_count exceeds MAX_POINTS
+    NoFrame,         // seq==0 (nothing published yet)
+    WriterBusy,      // sequence-lock budget exhausted
+    InvalidHeader,   // bad magic/version or buffer too short
+    PayloadOverflow, // point_count exceeds MAX_POINTS
 }
 
 pub fn read_frame(buf: &[u8]) -> ReadOutcome {
@@ -112,7 +117,10 @@ pub fn read_frame(buf: &[u8]) -> ReadOutcome {
             None => return ReadOutcome::InvalidHeader,
         };
         if post.seq == pre.seq {
-            return ReadOutcome::Frame(MinimapFrame { header: pre, points });
+            return ReadOutcome::Frame(MinimapFrame {
+                header: pre,
+                points,
+            });
         }
         std::hint::spin_loop();
     }
@@ -132,7 +140,9 @@ pub fn map_shm(name: &str, size: usize) -> Result<&'static [u8], String> {
         let handle = OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(wide.as_ptr()))
             .map_err(|e| format!("OpenFileMappingW({name}): {e}"))?;
         if handle.is_invalid() {
-            return Err(format!("OpenFileMappingW returned invalid handle for {name}"));
+            return Err(format!(
+                "OpenFileMappingW returned invalid handle for {name}"
+            ));
         }
         let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, size);
         let _ = CloseHandle(handle);

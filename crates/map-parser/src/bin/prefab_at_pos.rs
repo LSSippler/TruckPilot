@@ -11,10 +11,7 @@
 
 use std::path::PathBuf;
 use truckpilot_map_parser::{
-    build_index_with_metadata,
-    build_splines_ex,
-    MapGraph,
-    spline::evaluate_heading_deg,
+    build_index_with_metadata, build_splines_ex, spline::evaluate_heading_deg, MapGraph,
 };
 
 struct Args {
@@ -38,15 +35,29 @@ fn parse_args() -> Args {
                 i += 2;
             }
             "--x" => {
-                x = Some(argv.get(i + 1).expect("--x needs value").parse().expect("--x must be f32"));
+                x = Some(
+                    argv.get(i + 1)
+                        .expect("--x needs value")
+                        .parse()
+                        .expect("--x must be f32"),
+                );
                 i += 2;
             }
             "--z" => {
-                z = Some(argv.get(i + 1).expect("--z needs value").parse().expect("--z must be f32"));
+                z = Some(
+                    argv.get(i + 1)
+                        .expect("--z needs value")
+                        .parse()
+                        .expect("--z must be f32"),
+                );
                 i += 2;
             }
             "--radius" => {
-                radius = argv.get(i + 1).expect("--radius needs value").parse().expect("--radius must be f32");
+                radius = argv
+                    .get(i + 1)
+                    .expect("--radius needs value")
+                    .parse()
+                    .expect("--radius must be f32");
                 i += 2;
             }
             "-h" | "--help" => {
@@ -69,12 +80,7 @@ fn parse_args() -> Args {
 
 /// Approximate distance from query (qx, qz) to nearest point on the segment chord,
 /// sampled at 5 evenly-spaced t values (t=0, 0.25, 0.5, 0.75, 1.0).
-fn approx_dist_to_seg(
-    p0: (f32, f32),
-    p1: (f32, f32),
-    qx: f32,
-    qz: f32,
-) -> f32 {
+fn approx_dist_to_seg(p0: (f32, f32), p1: (f32, f32), qx: f32, qz: f32) -> f32 {
     (0..=4)
         .map(|i| {
             let t = i as f32 / 4.0;
@@ -122,7 +128,9 @@ fn main() {
 
     eprintln!(
         "SplineIndex: {} road + {} prefab = {} total segments",
-        road_seg_count, prefab_seg_count, segs.len()
+        road_seg_count,
+        prefab_seg_count,
+        segs.len()
     );
 
     let index = build_index_with_metadata(segs, meta);
@@ -166,12 +174,8 @@ fn main() {
         let mut rows: Vec<(usize, f32, f32)> = prefab_hits
             .iter()
             .map(|(idx, seg, _)| {
-                let dist = approx_dist_to_seg(
-                    (seg.p0.x, seg.p0.z),
-                    (seg.p1.x, seg.p1.z),
-                    args.x,
-                    args.z,
-                );
+                let dist =
+                    approx_dist_to_seg((seg.p0.x, seg.p0.z), (seg.p1.x, seg.p1.z), args.x, args.z);
                 let heading = evaluate_heading_deg(seg, 0.5);
                 (*idx, dist, heading)
             })
@@ -181,22 +185,27 @@ fn main() {
         println!("--- Prefab NavCurve segments (sorted by distance) ---");
         println!(
             "{:>7}  {:>20}  {:>20}  {:>9}  {:>9}  {:>9}  {:>9}  {:>10}  {:>8}",
-            "idx", "from_uid", "to_uid",
-            "start_x", "start_z", "end_x", "end_z",
-            "dist_m", "hdg_deg"
+            "idx",
+            "from_uid",
+            "to_uid",
+            "start_x",
+            "start_z",
+            "end_x",
+            "end_z",
+            "dist_m",
+            "hdg_deg"
         );
         for (idx, dist, heading) in &rows {
-            let (_, seg, _) = prefab_hits
-                .iter()
-                .find(|(i, _, _)| i == idx)
-                .unwrap();
+            let (_, seg, _) = prefab_hits.iter().find(|(i, _, _)| i == idx).unwrap();
             println!(
                 "{:>7}  {:>20}  {:>20}  {:>9.1}  {:>9.1}  {:>9.1}  {:>9.1}  {:>10.2}  {:>8.1}",
                 idx,
                 seg.from_uid,
                 seg.to_uid,
-                seg.p0.x, seg.p0.z,
-                seg.p1.x, seg.p1.z,
+                seg.p0.x,
+                seg.p0.z,
+                seg.p1.x,
+                seg.p1.z,
                 dist,
                 heading
             );
@@ -222,29 +231,18 @@ fn main() {
         let mut road_rows: Vec<(usize, f32, f32)> = road_hits
             .iter()
             .map(|(idx, seg, _)| {
-                let dist = approx_dist_to_seg(
-                    (seg.p0.x, seg.p0.z),
-                    (seg.p1.x, seg.p1.z),
-                    args.x,
-                    args.z,
-                );
+                let dist =
+                    approx_dist_to_seg((seg.p0.x, seg.p0.z), (seg.p1.x, seg.p1.z), args.x, args.z);
                 let heading = evaluate_heading_deg(seg, 0.5);
                 (*idx, dist, heading)
             })
             .collect();
         road_rows.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         for (idx, dist, heading) in road_rows.iter().take(10) {
-            let (_, seg, _) = road_hits
-                .iter()
-                .find(|(i, _, _)| i == idx)
-                .unwrap();
+            let (_, seg, _) = road_hits.iter().find(|(i, _, _)| i == idx).unwrap();
             println!(
                 "{:>7}  {:>9.1}  {:>9.1}  {:>9.1}  {:>9.1}  {:>10.2}  {:>8.1}",
-                idx,
-                seg.p0.x, seg.p0.z,
-                seg.p1.x, seg.p1.z,
-                dist,
-                heading
+                idx, seg.p0.x, seg.p0.z, seg.p1.x, seg.p1.z, dist, heading
             );
         }
     }
@@ -264,9 +262,19 @@ fn main() {
         "=== COVERAGE ANALYSIS (prefab instances within {:.0}m) ===",
         search_r
     );
-    println!("graph.prefab_instances total : {}", graph.prefab_instances.len());
-    println!("graph.prefab_ai_paths  total : {}", graph.prefab_ai_paths.len());
-    println!("Instances within {:.0}m        : {}", search_r, nearby_instances.len());
+    println!(
+        "graph.prefab_instances total : {}",
+        graph.prefab_instances.len()
+    );
+    println!(
+        "graph.prefab_ai_paths  total : {}",
+        graph.prefab_ai_paths.len()
+    );
+    println!(
+        "Instances within {:.0}m        : {}",
+        search_r,
+        nearby_instances.len()
+    );
     println!();
 
     if nearby_instances.is_empty() {
@@ -311,7 +319,9 @@ fn main() {
         );
 
         if paths_via_instance.is_empty() {
-            println!("VERDICT: Prefab instance exists BUT zero NavCurves generated → PPD parsing gap.");
+            println!(
+                "VERDICT: Prefab instance exists BUT zero NavCurves generated → PPD parsing gap."
+            );
             println!("         (descriptor missing / PPD load failed for token)");
         } else {
             // Check if those paths produce segments within radius

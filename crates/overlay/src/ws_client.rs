@@ -145,4 +145,3 @@ fn handle_message(text: &str, state: &HudState) {
         }
     }
 }
-

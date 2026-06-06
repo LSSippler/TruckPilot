@@ -77,7 +77,8 @@ pub fn load_prefab_sii_defs(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, S
         if !paths.is_empty() {
             debug!(
                 "prefab_sii archive[{}]: {} SII paths discovered",
-                arc_idx, paths.len()
+                arc_idx,
+                paths.len()
             );
         }
         for path in &paths {
@@ -92,7 +93,12 @@ pub fn load_prefab_sii_defs(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, S
                         if first_binary_magic.is_none() {
                             first_binary_magic = Some(m[..8].try_into().unwrap());
                         }
-                        debug!("prefab_sii BINARY '{}' ({}) magic {:02X?}", path, label, &m[..n]);
+                        debug!(
+                            "prefab_sii BINARY '{}' ({}) magic {:02X?}",
+                            path,
+                            label,
+                            &m[..n]
+                        );
                         continue;
                     }
                     // Collect @include directives before parsing entries
@@ -120,10 +126,16 @@ pub fn load_prefab_sii_defs(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, S
         let mut found = false;
         for archive in archives.iter_mut() {
             if let Ok(bytes) = archive.read_path(inc_path) {
-                if detect_binary_sii(&bytes).is_some() { continue; }
+                if detect_binary_sii(&bytes).is_some() {
+                    continue;
+                }
                 let entries = parse_prefab_sii_text(&bytes);
                 if !entries.is_empty() {
-                    debug!("prefab_sii @include '{}' → {} entries", inc_path, entries.len());
+                    debug!(
+                        "prefab_sii @include '{}' → {} entries",
+                        inc_path,
+                        entries.len()
+                    );
                     found = true;
                 }
                 files_scanned += 1;
@@ -133,7 +145,10 @@ pub fn load_prefab_sii_defs(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, S
             }
         }
         if !found {
-            debug!("prefab_sii @include '{}' → not found in any archive", inc_path);
+            debug!(
+                "prefab_sii @include '{}' → not found in any archive",
+                inc_path
+            );
         }
     }
 
@@ -148,7 +163,9 @@ pub fn load_prefab_sii_defs(archives: &mut [Box<dyn Archive>]) -> HashMap<u64, S
     } else {
         info!(
             "prefab_sii: {} files scanned ({} binary skipped), {} unique token→path entries",
-            files_scanned, files_binary, merged.len()
+            files_scanned,
+            files_binary,
+            merged.len()
         );
     }
 
@@ -395,7 +412,11 @@ fn parse_prefab_sii_text_pairs(data: &[u8]) -> Vec<(String, String)> {
                         if !suffix.is_empty() {
                             current_name = format!("{}{suffix}", prefix);
                             current_ppd = None;
-                            if line.contains('{') { in_block = true; } else { pending_brace = true; }
+                            if line.contains('{') {
+                                in_block = true;
+                            } else {
+                                pending_brace = true;
+                            }
                             matched = true;
                             break;
                         }
@@ -412,7 +433,11 @@ fn parse_prefab_sii_text_pairs(data: &[u8]) -> Vec<(String, String)> {
                                 if !unit_name.is_empty() {
                                     current_name = unit_name.to_string();
                                     current_ppd = None;
-                                    if line.contains('{') { in_block = true; } else { pending_brace = true; }
+                                    if line.contains('{') {
+                                        in_block = true;
+                                    } else {
+                                        pending_brace = true;
+                                    }
                                     break;
                                 }
                             }

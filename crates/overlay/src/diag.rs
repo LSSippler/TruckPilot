@@ -52,13 +52,7 @@ fn fmt_screen(s: Option<(f32, f32)>) -> String {
 ///
 /// Purely observational: identical inputs to `ar_renderer::render_ar`, no
 /// shared mutable state, no effect on the rendered output or the autopilot.
-pub fn log_ar_frame(
-    pose: &TruckPose,
-    data: &HudData,
-    fov_h: f32,
-    screen_w: f32,
-    screen_h: f32,
-) {
+pub fn log_ar_frame(pose: &TruckPose, data: &HudData, fov_h: f32, screen_w: f32, screen_h: f32) {
     // ── 1 Hz throttle ─────────────────────────────────────────────────────────
     {
         let mut last = match LAST_LOG.lock() {

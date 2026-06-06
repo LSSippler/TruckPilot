@@ -64,6 +64,7 @@ integral_limit = 2.0
 kd = 0.3
 ki = 0.1
 kp = 0.8
+lane_offset_cal_m = 0.0
 look_ahead_distance = 50.0
 
 [telemetry]

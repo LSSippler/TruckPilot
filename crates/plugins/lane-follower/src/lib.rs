@@ -73,10 +73,14 @@ use std::sync::Arc;
 
 use junction::{detect_junction, JunctionDetector};
 use truckpilot_map_parser::{
-    arc_length::{build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS},
+    arc_length::{
+        build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS,
+    },
     graph::MapGraph,
     spline::{build_splines_ex, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3},
-    spline_index::{build_index, build_index_with_metadata, HeadingFilteredHit, NearestHit, SplineIndex},
+    spline_index::{
+        build_index, build_index_with_metadata, HeadingFilteredHit, NearestHit, SplineIndex,
+    },
 };
 use truckpilot_plugin_api::{
     ctx_info, ctx_warn, graph::RouterGraph, ControlOutput, ControlRequest, Plugin, PluginContext,
@@ -323,31 +327,71 @@ impl LaneFollowerPlugin {
         );
 
         // Map/spline diagnostic BB keys (written once at load time).
-        ctx.blackboard.set("map.prefab.instances_count", graph.prefab_instances.len().to_string());
-        ctx.blackboard.set("map.prefab.ai_paths_count", graph.prefab_ai_paths.len().to_string());
-        ctx.blackboard.set("map.spline.total_segments", total_seg_count.to_string());
-        ctx.blackboard.set("map.spline.prefab_segments", prefab_seg_count.to_string());
-        ctx.blackboard.set("map.ppd.files_attempted", graph.stats.ppd_files_attempted.to_string());
-        ctx.blackboard.set("map.ppd.files_loaded", graph.stats.ppd_files_loaded.to_string());
-        ctx.blackboard.set("map.ppd.files_failed", graph.stats.ppd_files_failed.to_string());
-        ctx.blackboard.set("map.ppd.total_nav_curves_parsed", graph.stats.ppd_total_nav_curves.to_string());
+        ctx.blackboard.set(
+            "map.prefab.instances_count",
+            graph.prefab_instances.len().to_string(),
+        );
+        ctx.blackboard.set(
+            "map.prefab.ai_paths_count",
+            graph.prefab_ai_paths.len().to_string(),
+        );
+        ctx.blackboard
+            .set("map.spline.total_segments", total_seg_count.to_string());
+        ctx.blackboard
+            .set("map.spline.prefab_segments", prefab_seg_count.to_string());
+        ctx.blackboard.set(
+            "map.ppd.files_attempted",
+            graph.stats.ppd_files_attempted.to_string(),
+        );
+        ctx.blackboard.set(
+            "map.ppd.files_loaded",
+            graph.stats.ppd_files_loaded.to_string(),
+        );
+        ctx.blackboard.set(
+            "map.ppd.files_failed",
+            graph.stats.ppd_files_failed.to_string(),
+        );
+        ctx.blackboard.set(
+            "map.ppd.total_nav_curves_parsed",
+            graph.stats.ppd_total_nav_curves.to_string(),
+        );
         // DS13c – TASK 4: road vs prefab segment index ranges for hypothesis A range-check.
-        ctx.blackboard.set("map.spline.road_segments_count", road_seg_count.to_string());
-        ctx.blackboard.set("map.spline.road_segment_idx_max", road_seg_count.saturating_sub(1).to_string());
-        ctx.blackboard.set("map.spline.prefab_segment_idx_min", road_seg_count.to_string());
-        ctx.blackboard.set("map.spline.prefab_segment_idx_max", total_seg_count.saturating_sub(1).to_string());
+        ctx.blackboard
+            .set("map.spline.road_segments_count", road_seg_count.to_string());
+        ctx.blackboard.set(
+            "map.spline.road_segment_idx_max",
+            road_seg_count.saturating_sub(1).to_string(),
+        );
+        ctx.blackboard.set(
+            "map.spline.prefab_segment_idx_min",
+            road_seg_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "map.spline.prefab_segment_idx_max",
+            total_seg_count.saturating_sub(1).to_string(),
+        );
         self.road_seg_count = road_seg_count;
 
         self.luts = luts;
         self.forward_adj = forward_adj;
         self.index = Some(Arc::new(build_index_with_metadata(segments, metadata)));
 
-        let rg_nodes: Vec<(u64, f64, f64)> = graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
-        let rg_edges: Vec<(u64, u64, f64)> = graph.edges.iter().map(|e| (e.from, e.to, e.distance_m)).collect();
+        let rg_nodes: Vec<(u64, f64, f64)> =
+            graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
+        let rg_edges: Vec<(u64, u64, f64)> = graph
+            .edges
+            .iter()
+            .map(|e| (e.from, e.to, e.distance_m))
+            .collect();
         let n_nodes = rg_nodes.len();
         let n_edges = rg_edges.len();
         self.router_graph = Some(Arc::new(RouterGraph::new(rg_nodes, rg_edges)));
-        ctx_info!(ctx, "lane-follower: RouterGraph built ({} nodes, {} edges)", n_nodes, n_edges);
+        ctx_info!(
+            ctx,
+            "lane-follower: RouterGraph built ({} nodes, {} edges)",
+            n_nodes,
+            n_edges
+        );
     }
 
     /// VMM-6: refresh minimap_index from BB if new data is available.
@@ -416,7 +460,8 @@ impl LaneFollowerPlugin {
     /// `autopilot.disengage_requested` and zero out the per-tick steering cmd.
     fn check_safety_trip(&mut self, lateral_dist_signed: f32, ctx: &PluginContext) {
         if self.mode != LaneFollowerMode::Active {
-            ctx.blackboard.set("lane_follower.safety_disengage_reason", "");
+            ctx.blackboard
+                .set("lane_follower.safety_disengage_reason", "");
             ctx.blackboard.set(
                 "lane_follower.safety_disengage_count",
                 self.safety_disengage_count.to_string(),
@@ -440,10 +485,12 @@ impl LaneFollowerPlugin {
             self.saturated_ticks = 0;
             self.spline_lost_ticks = 0;
             ctx.blackboard.set("autopilot.disengage_requested", "true");
-            ctx.blackboard.set("lane_follower.safety_disengage_reason", r);
+            ctx.blackboard
+                .set("lane_follower.safety_disengage_reason", r);
             ctx_warn!(ctx, "lane-follower: SAFETY DISENGAGE — {}", r);
         } else {
-            ctx.blackboard.set("lane_follower.safety_disengage_reason", "");
+            ctx.blackboard
+                .set("lane_follower.safety_disengage_reason", "");
         }
         ctx.blackboard.set(
             "lane_follower.safety_disengage_count",
@@ -488,12 +535,24 @@ impl Plugin for LaneFollowerPlugin {
                 total_seg_count, road_seg_count, prefab_seg_count, lut_ms, lut_kb
             );
 
-            ctx.blackboard.set("map.spline.total_segments", total_seg_count.to_string());
-            ctx.blackboard.set("map.spline.prefab_segments", prefab_seg_count.to_string());
-            ctx.blackboard.set("map.spline.road_segments_count", road_seg_count.to_string());
-            ctx.blackboard.set("map.spline.road_segment_idx_max", road_seg_count.saturating_sub(1).to_string());
-            ctx.blackboard.set("map.spline.prefab_segment_idx_min", road_seg_count.to_string());
-            ctx.blackboard.set("map.spline.prefab_segment_idx_max", total_seg_count.saturating_sub(1).to_string());
+            ctx.blackboard
+                .set("map.spline.total_segments", total_seg_count.to_string());
+            ctx.blackboard
+                .set("map.spline.prefab_segments", prefab_seg_count.to_string());
+            ctx.blackboard
+                .set("map.spline.road_segments_count", road_seg_count.to_string());
+            ctx.blackboard.set(
+                "map.spline.road_segment_idx_max",
+                road_seg_count.saturating_sub(1).to_string(),
+            );
+            ctx.blackboard.set(
+                "map.spline.prefab_segment_idx_min",
+                road_seg_count.to_string(),
+            );
+            ctx.blackboard.set(
+                "map.spline.prefab_segment_idx_max",
+                total_seg_count.saturating_sub(1).to_string(),
+            );
 
             self.road_seg_count = road_seg_count;
             self.luts = luts;
@@ -569,7 +628,12 @@ impl Plugin for LaneFollowerPlugin {
         self.junction_max_heading_diff_rad = DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG.to_radians();
     }
 
-    fn tick(&mut self, telemetry: Option<&Telemetry>, _output: &mut ControlOutput, ctx: &PluginContext) {
+    fn tick(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        _output: &mut ControlOutput,
+        ctx: &PluginContext,
+    ) {
         // Reset per-tick steering so tick_request() sees None on any early return.
         self.last_steering_cmd = None;
 
@@ -581,7 +645,11 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard.set("lane_follower.mode", self.mode.as_str());
         ctx.blackboard.set(
             "lane_follower.active",
-            if self.mode == LaneFollowerMode::Active { "true" } else { "false" },
+            if self.mode == LaneFollowerMode::Active {
+                "true"
+            } else {
+                "false"
+            },
         );
 
         let Some(tel) = telemetry else {
@@ -593,9 +661,12 @@ impl Plugin for LaneFollowerPlugin {
         let truck_x = tel.position[0];
         let truck_y = tel.position[1];
         let truck_z = tel.position[2];
-        ctx.blackboard.set("lane_follower.truck_x", format!("{truck_x:.3}"));
-        ctx.blackboard.set("lane_follower.truck_y", format!("{truck_y:.3}"));
-        ctx.blackboard.set("lane_follower.truck_z", format!("{truck_z:.3}"));
+        ctx.blackboard
+            .set("lane_follower.truck_x", format!("{truck_x:.3}"));
+        ctx.blackboard
+            .set("lane_follower.truck_y", format!("{truck_y:.3}"));
+        ctx.blackboard
+            .set("lane_follower.truck_z", format!("{truck_z:.3}"));
 
         // Junction detection — runs regardless of index availability.
         // Returns (active, distance_m) for DS13d prefab-bias query below.
@@ -603,17 +674,30 @@ impl Plugin for LaneFollowerPlugin {
             let detection = if let Some(graph) = self.router_graph.as_deref() {
                 detect_junction(graph, truck_x, truck_z)
             } else {
-                junction::JunctionDetection { is_junction: false, max_degree: 0, distance_m: None }
+                junction::JunctionDetection {
+                    is_junction: false,
+                    max_degree: 0,
+                    distance_m: None,
+                }
             };
             let (active, phase) = self.junction_detector.tick(&detection);
             let saved = (active, detection.distance_m);
-            ctx.blackboard.set("lane_follower.junction_detected", if active { "true" } else { "false" });
-            ctx.blackboard.set("lane_follower.junction_phase", phase.as_str());
+            ctx.blackboard.set(
+                "lane_follower.junction_detected",
+                if active { "true" } else { "false" },
+            );
+            ctx.blackboard
+                .set("lane_follower.junction_phase", phase.as_str());
             ctx.blackboard.set(
                 "lane_follower.junction_distance_m",
-                detection.distance_m.map_or_else(String::new, |d| format!("{d:.1}")),
+                detection
+                    .distance_m
+                    .map_or_else(String::new, |d| format!("{d:.1}")),
             );
-            ctx.blackboard.set("lane_follower.junction_max_degree", detection.max_degree.to_string());
+            ctx.blackboard.set(
+                "lane_follower.junction_max_degree",
+                detection.max_degree.to_string(),
+            );
             // DS13c – TASK 3: Hypothesis D — why does phase never transition to "inside"?
             // Note: JunctionPhase has no "inside"/"crossing" state; "approaching" is the only
             // active phase. SNAP_RADIUS_M is the detection radius — not an inside threshold.
@@ -630,12 +714,13 @@ impl Plugin for LaneFollowerPlugin {
                 self.junction_detector.frames().to_string(),
             );
             // "inside" phase does not exist — approaching is the only active phase.
-            ctx.blackboard
-                .set("lane_follower.junction_phase_inside_threshold_m", "not_implemented");
+            ctx.blackboard.set(
+                "lane_follower.junction_phase_inside_threshold_m",
+                "not_implemented",
+            );
             let phase_str = phase.as_str();
             if self.prev_junction_phase != Some(phase_str) {
-                self.junction_phase_transitions =
-                    self.junction_phase_transitions.saturating_add(1);
+                self.junction_phase_transitions = self.junction_phase_transitions.saturating_add(1);
                 self.prev_junction_phase = Some(phase_str);
             }
             ctx.blackboard.set(
@@ -646,8 +731,8 @@ impl Plugin for LaneFollowerPlugin {
         };
 
         // VMM-6: select primary or minimap SplineIndex.
-        let primary = self.index.as_deref();          // Option<Arc<SplineIndex>> → Option<&SplineIndex>
-        let minimap = self.minimap_index.as_ref();    // Option<SplineIndex> → Option<&SplineIndex>
+        let primary = self.index.as_deref(); // Option<Arc<SplineIndex>> → Option<&SplineIndex>
+        let minimap = self.minimap_index.as_ref(); // Option<SplineIndex> → Option<&SplineIndex>
         let index: &SplineIndex = match (primary, minimap) {
             (Some(idx), _) => idx,
             (None, Some(mm)) if self.minimap_confidence >= MINIMAP_CONF_THRESHOLD => mm,
@@ -678,7 +763,15 @@ impl Plugin for LaneFollowerPlugin {
         // Convert truck heading to radians (ETS2 CW from North, matching SplineIndex convention).
         let truck_heading_rad = truck_heading_deg.to_radians();
 
-        let (hit_opt, bias_attempted, bias_accepted, bias_rejected_reason, bias_heading_diff_rad, bias_tiebreak_successor, bias_should_count_heading_reject): (
+        let (
+            hit_opt,
+            bias_attempted,
+            bias_accepted,
+            bias_rejected_reason,
+            bias_heading_diff_rad,
+            bias_tiebreak_successor,
+            bias_should_count_heading_reject,
+        ): (
             Option<NearestHit>,
             bool,
             bool,
@@ -719,13 +812,29 @@ impl Plugin for LaneFollowerPlugin {
             match best_hit {
                 Some(h) if h.dist_m <= bias_max_prefab_dist_m => {
                     let nearest = heading_filtered_to_nearest(h, index);
-                    (Some(nearest), true, true, "none", h.heading_diff_rad, tiebreak_used, false)
+                    (
+                        Some(nearest),
+                        true,
+                        true,
+                        "none",
+                        h.heading_diff_rad,
+                        tiebreak_used,
+                        false,
+                    )
                 }
                 Some(h) => {
                     // Prefab found but too far — heading-aligned but outside dist threshold.
                     let fallback =
                         index.nearest_with_heading_filter(query, truck_heading_deg, CANDIDATES);
-                    (fallback, true, false, "too_far", h.heading_diff_rad, false, false)
+                    (
+                        fallback,
+                        true,
+                        false,
+                        "too_far",
+                        h.heading_diff_rad,
+                        false,
+                        false,
+                    )
                 }
                 None => {
                     // Heading filter rejected all prefab candidates in the radius.
@@ -739,18 +848,34 @@ impl Plugin for LaneFollowerPlugin {
             (hit, false, false, "not_active", 0.0, false, false)
         };
 
-        ctx.blackboard.set("lane_follower.bias_zone_active", in_junction_zone.to_string());
-        ctx.blackboard.set("lane_follower.bias_prefab_attempted", bias_attempted.to_string());
-        ctx.blackboard.set("lane_follower.bias_prefab_accepted", bias_accepted.to_string());
-        ctx.blackboard.set("lane_follower.bias_prefab_rejected_reason", bias_rejected_reason);
+        ctx.blackboard.set(
+            "lane_follower.bias_zone_active",
+            in_junction_zone.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_follower.bias_prefab_attempted",
+            bias_attempted.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_follower.bias_prefab_accepted",
+            bias_accepted.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_follower.bias_prefab_rejected_reason",
+            bias_rejected_reason,
+        );
         // DS13e: tiebreak diagnostic key (available on all paths).
-        ctx.blackboard.set("lane_follower.tiebreak_used_successor", bias_tiebreak_successor.to_string());
+        ctx.blackboard.set(
+            "lane_follower.tiebreak_used_successor",
+            bias_tiebreak_successor.to_string(),
+        );
         // suppress unused-variable warning for bias_heading_diff_rad on no_hit path
         let _ = bias_heading_diff_rad;
 
         let Some(hit) = hit_opt else {
             ctx.blackboard.set("lane_follower.status", "no_hit");
-            ctx.blackboard.set("lane_follower.heading_diff_rad", "0.0000");
+            ctx.blackboard
+                .set("lane_follower.heading_diff_rad", "0.0000");
             self.reset_safety_counters();
             return;
         };
@@ -758,8 +883,10 @@ impl Plugin for LaneFollowerPlugin {
         // DS13e: heading_diff of the SELECTED segment (more accurate than bias-attempt diff).
         let selected_heading_diff_rad =
             angular_diff_deg(truck_heading_deg, hit.heading_deg).to_radians();
-        ctx.blackboard
-            .set("lane_follower.heading_diff_rad", format!("{selected_heading_diff_rad:.4}"));
+        ctx.blackboard.set(
+            "lane_follower.heading_diff_rad",
+            format!("{selected_heading_diff_rad:.4}"),
+        );
 
         // DS8: per-segment lane metadata (None for prefab/building/ferry segments).
         let seg_meta: Option<SegmentMetadata> =
@@ -767,36 +894,54 @@ impl Plugin for LaneFollowerPlugin {
 
         ctx.blackboard
             .set("lane_follower.nearest_seg_idx", hit.segment_idx.to_string());
-        ctx.blackboard
-            .set("lane_follower.nearest_seg_dist_m", format!("{:.2}", hit.dist_m));
+        ctx.blackboard.set(
+            "lane_follower.nearest_seg_dist_m",
+            format!("{:.2}", hit.dist_m),
+        );
         ctx.blackboard
             .set("lane_follower.nearest_seg_t", format!("{:.4}", hit.t));
-        ctx.blackboard
-            .set("lane_follower.nearest_seg_x", format!("{:.3}", hit.point_on_curve.x));
-        ctx.blackboard
-            .set("lane_follower.nearest_seg_z", format!("{:.3}", hit.point_on_curve.z));
-        ctx.blackboard
-            .set("lane_follower.heading_deg", format!("{:.2}", hit.heading_deg));
+        ctx.blackboard.set(
+            "lane_follower.nearest_seg_x",
+            format!("{:.3}", hit.point_on_curve.x),
+        );
+        ctx.blackboard.set(
+            "lane_follower.nearest_seg_z",
+            format!("{:.3}", hit.point_on_curve.z),
+        );
+        ctx.blackboard.set(
+            "lane_follower.heading_deg",
+            format!("{:.2}", hit.heading_deg),
+        );
         // DS13c – TASK 1: Hypothesis A — is the nearest segment a prefab NavCurve?
         let nearest_is_prefab = seg_meta.is_some_and(|m| m.is_prefab);
-        ctx.blackboard
-            .set("lane_follower.nearest_seg_is_prefab", nearest_is_prefab.to_string());
+        ctx.blackboard.set(
+            "lane_follower.nearest_seg_is_prefab",
+            nearest_is_prefab.to_string(),
+        );
         // ai_path index = position within prefab array (0 when not prefab).
         let nearest_seg_ai_path_uid = if nearest_is_prefab {
             (hit.segment_idx.saturating_sub(self.road_seg_count)) as u64
         } else {
             0u64
         };
-        ctx.blackboard
-            .set("lane_follower.nearest_seg_ai_path_uid", nearest_seg_ai_path_uid.to_string());
+        ctx.blackboard.set(
+            "lane_follower.nearest_seg_ai_path_uid",
+            nearest_seg_ai_path_uid.to_string(),
+        );
 
-        ctx.blackboard
-            .set("lane_follower.truck_heading_deg", format!("{truck_heading_deg:.2}"));
-        ctx.blackboard
-            .set("lane_follower.heading_filter_applied", hit.heading_filter_applied.to_string());
+        ctx.blackboard.set(
+            "lane_follower.truck_heading_deg",
+            format!("{truck_heading_deg:.2}"),
+        );
+        ctx.blackboard.set(
+            "lane_follower.heading_filter_applied",
+            hit.heading_filter_applied.to_string(),
+        );
         let heading_diff = angular_diff_deg(truck_heading_deg, hit.heading_deg);
-        ctx.blackboard
-            .set("lane_follower.heading_diff_deg", format!("{heading_diff:.2}"));
+        ctx.blackboard.set(
+            "lane_follower.heading_diff_deg",
+            format!("{heading_diff:.2}"),
+        );
 
         // Lane offset: BB-key override → DS8/DS7 metadata → QW1 fallback constant.
         // NavCurve (prefab) segments already sit at lane-centre: offset = 0.
@@ -805,18 +950,30 @@ impl Plugin for LaneFollowerPlugin {
             .get("plugin.lane-follower.lane_offset_m")
             .and_then(|v| v.parse::<f32>().ok())
             .or_else(|| {
-                seg_meta.map(|m| if m.is_prefab { 0.0 } else { m.lane_offset_right_m })
+                seg_meta.map(|m| {
+                    if m.is_prefab {
+                        0.0
+                    } else {
+                        m.lane_offset_right_m
+                    }
+                })
             })
             .unwrap_or(LANE_OFFSET_RIGHT_M);
 
         // DS8: publish per-segment lane metadata keys.
         if let Some(meta) = seg_meta {
-            ctx.blackboard
-                .set("lane_follower.segment_lanes", meta.lanes_in_direction.to_string());
-            ctx.blackboard
-                .set("lane_follower.segment_lane_width", format!("{:.2}", meta.lane_width_m));
-            ctx.blackboard
-                .set("lane_follower.segment_offset", format!("{:.3}", meta.lane_offset_right_m));
+            ctx.blackboard.set(
+                "lane_follower.segment_lanes",
+                meta.lanes_in_direction.to_string(),
+            );
+            ctx.blackboard.set(
+                "lane_follower.segment_lane_width",
+                format!("{:.2}", meta.lane_width_m),
+            );
+            ctx.blackboard.set(
+                "lane_follower.segment_offset",
+                format!("{:.3}", meta.lane_offset_right_m),
+            );
         }
 
         // Task 4 — Diagnostic: right-normal and signed lateral distance at nearest spline point.
@@ -830,10 +987,16 @@ impl Plugin for LaneFollowerPlugin {
         let fwd_z = -road_h_rad.cos();
         let lateral_dist_signed = fwd_x * (truck_z as f32 - hit.point_on_curve.z)
             - fwd_z * (truck_x as f32 - hit.point_on_curve.x);
-        ctx.blackboard.set("lane_follower.lane_offset_m", format!("{lane_offset_m:.3}"));
-        ctx.blackboard.set("lane_follower.lane_normal_x", format!("{near_n_x:.4}"));
-        ctx.blackboard.set("lane_follower.lane_normal_z", format!("{near_n_z:.4}"));
-        ctx.blackboard.set("lane_follower.lateral_dist_signed", format!("{lateral_dist_signed:.3}"));
+        ctx.blackboard
+            .set("lane_follower.lane_offset_m", format!("{lane_offset_m:.3}"));
+        ctx.blackboard
+            .set("lane_follower.lane_normal_x", format!("{near_n_x:.4}"));
+        ctx.blackboard
+            .set("lane_follower.lane_normal_z", format!("{near_n_z:.4}"));
+        ctx.blackboard.set(
+            "lane_follower.lateral_dist_signed",
+            format!("{lateral_dist_signed:.3}"),
+        );
 
         // ── Safety-Fallback (Task 2) ─────────────────────────────────────
         // Rate-limit tightening + gain dampening active when |lateral| > soft threshold.
@@ -863,10 +1026,14 @@ impl Plugin for LaneFollowerPlugin {
         let speed_kmh = tel.speed_ms as f32 * 3.6;
         let lookahead_dist_m =
             (speed_kmh * LOOKAHEAD_SPEED_FACTOR).clamp(LOOKAHEAD_DIST_M_MIN, LOOKAHEAD_DIST_M_MAX);
-        ctx.blackboard
-            .set("lane_follower.lookahead_distance_m", format!("{lookahead_dist_m:.1}"));
-        ctx.blackboard
-            .set("lane_follower.wheelbase_m", format!("{:.1}", pure_pursuit::WHEELBASE_M));
+        ctx.blackboard.set(
+            "lane_follower.lookahead_distance_m",
+            format!("{lookahead_dist_m:.1}"),
+        );
+        ctx.blackboard.set(
+            "lane_follower.wheelbase_m",
+            format!("{:.1}", pure_pursuit::WHEELBASE_M),
+        );
 
         // Lookahead — computed before warn-checks so keys are always present after a hit.
         // VMM-6: minimap uses simple forward-walk (no LUT); primary uses arc-length LUT.
@@ -890,8 +1057,10 @@ impl Plugin for LaneFollowerPlugin {
                 // When using primary LUT lookahead, publish extra LUT-specific keys.
                 ctx.blackboard
                     .set("lane_follower.lookahead_seg_idx", la.seg_idx.to_string());
-                ctx.blackboard
-                    .set("lane_follower.lookahead_remaining_m", format!("{:.3}", la.remaining_dist_m));
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_remaining_m",
+                    format!("{:.3}", la.remaining_dist_m),
+                );
                 let la_status = if la.remaining_dist_m == 0.0 {
                     "ok"
                 } else if la.iteration_count >= LOOKAHEAD_MAX_HOPS {
@@ -899,7 +1068,8 @@ impl Plugin for LaneFollowerPlugin {
                 } else {
                     "dead_end"
                 };
-                ctx.blackboard.set("lane_follower.lookahead_status", la_status);
+                ctx.blackboard
+                    .set("lane_follower.lookahead_status", la_status);
                 // DS13c – TASK 2: Hypothesis C — lookahead hop diagnostics.
                 // remaining_dist_m=0 → ok (target reached); >0 → dead_end or max_hops.
                 ctx.blackboard.set(
@@ -913,8 +1083,10 @@ impl Plugin for LaneFollowerPlugin {
                 } else {
                     "no_next_edge"
                 };
-                ctx.blackboard
-                    .set("lane_follower.lookahead_hop_failed_reason", hop_failed_reason);
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_hop_failed_reason",
+                    hop_failed_reason,
+                );
 
                 self.lookahead_seg_history.push_back(la.seg_idx);
                 if self.lookahead_seg_history.len() > STABILITY_WINDOW {
@@ -926,8 +1098,10 @@ impl Plugin for LaneFollowerPlugin {
                     .zip(self.lookahead_seg_history.iter().skip(1))
                     .filter(|(a, b)| a != b)
                     .count();
-                ctx.blackboard
-                    .set("lane_follower.lookahead_seg_jump_count", jump_count.to_string());
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_seg_jump_count",
+                    jump_count.to_string(),
+                );
                 ctx.blackboard.set(
                     "lane_follower.lookahead_stable",
                     if jump_count < 3 { "true" } else { "false" },
@@ -958,16 +1132,22 @@ impl Plugin for LaneFollowerPlugin {
                 };
                 let offset_lx = la.x + la_n_x * lane_offset_m;
                 let offset_lz = la.z + la_n_z * lane_offset_m;
-                ctx.blackboard
-                    .set("lane_follower.lookahead_offset_x", format!("{offset_lx:.3}"));
-                ctx.blackboard
-                    .set("lane_follower.lookahead_offset_z", format!("{offset_lz:.3}"));
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_offset_x",
+                    format!("{offset_lx:.3}"),
+                );
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_offset_z",
+                    format!("{offset_lz:.3}"),
+                );
 
                 let dx = la.x - query.x;
                 let dz = la.z - query.z;
                 let heading_to_la = dx.atan2(-dz).to_degrees().rem_euclid(360.0);
-                ctx.blackboard
-                    .set("lane_follower.heading_to_lookahead_deg", format!("{:.2}", heading_to_la));
+                ctx.blackboard.set(
+                    "lane_follower.heading_to_lookahead_deg",
+                    format!("{:.2}", heading_to_la),
+                );
             }
         }
 
@@ -1001,31 +1181,42 @@ impl Plugin for LaneFollowerPlugin {
             let right_x = h_rad.cos(); // right-normal: (cos h, sin h)
             let right_z = h_rad.sin();
             let synth_offset_m = seg_meta
-                .map(|m| if m.is_prefab { LANE_OFFSET_RIGHT_M } else { m.lane_offset_right_m })
+                .map(|m| {
+                    if m.is_prefab {
+                        LANE_OFFSET_RIGHT_M
+                    } else {
+                        m.lane_offset_right_m
+                    }
+                })
                 .unwrap_or(LANE_OFFSET_RIGHT_M);
-            let synth_la_x =
-                truck_x as f32 + fwd_x * lookahead_dist_m + right_x * synth_offset_m;
-            let synth_la_z =
-                truck_z as f32 + fwd_z * lookahead_dist_m + right_z * synth_offset_m;
+            let synth_la_x = truck_x as f32 + fwd_x * lookahead_dist_m + right_x * synth_offset_m;
+            let synth_la_z = truck_z as f32 + fwd_z * lookahead_dist_m + right_z * synth_offset_m;
             ctx.blackboard
                 .set("lane_follower.lookahead_x", format!("{synth_la_x:.3}"));
             ctx.blackboard
                 .set("lane_follower.lookahead_z", format!("{synth_la_z:.3}"));
-            ctx.blackboard
-                .set("lane_follower.lookahead_offset_x", format!("{synth_la_x:.3}"));
-            ctx.blackboard
-                .set("lane_follower.lookahead_offset_z", format!("{synth_la_z:.3}"));
+            ctx.blackboard.set(
+                "lane_follower.lookahead_offset_x",
+                format!("{synth_la_x:.3}"),
+            );
+            ctx.blackboard.set(
+                "lane_follower.lookahead_offset_z",
+                format!("{synth_la_z:.3}"),
+            );
             let heading_to_la = (synth_la_x - truck_x as f32)
                 .atan2(-(synth_la_z - truck_z as f32))
                 .to_degrees()
                 .rem_euclid(360.0);
-            ctx.blackboard
-                .set("lane_follower.heading_to_lookahead_deg", format!("{heading_to_la:.2}"));
+            ctx.blackboard.set(
+                "lane_follower.heading_to_lookahead_deg",
+                format!("{heading_to_la:.2}"),
+            );
             "road_offset"
         } else {
             "road_center"
         };
-        ctx.blackboard.set("lane_follower.lateral_source", lateral_source);
+        ctx.blackboard
+            .set("lane_follower.lateral_source", lateral_source);
 
         if hit.dist_m > DIST_WARN_M {
             ctx_warn!(
@@ -1042,8 +1233,10 @@ impl Plugin for LaneFollowerPlugin {
             );
             self.steering_rate_limited_prev = rl;
             ctx.blackboard.set("lane_follower.steering_cmd", "0.0000");
-            ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
-            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard
+                .set("lane_follower.steering_curvature", "0.000000");
+            ctx.blackboard
+                .set("lane_follower.steering_filtered", format!("{rl:.4}"));
             ctx.blackboard.set("lane_follower.rate_limited", "false");
             self.saturated_ticks = 0;
             self.check_safety_trip(lateral_dist_signed, ctx);
@@ -1065,8 +1258,10 @@ impl Plugin for LaneFollowerPlugin {
             );
             self.steering_rate_limited_prev = rl;
             ctx.blackboard.set("lane_follower.steering_cmd", "0.0000");
-            ctx.blackboard.set("lane_follower.steering_curvature", "0.000000");
-            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard
+                .set("lane_follower.steering_curvature", "0.000000");
+            ctx.blackboard
+                .set("lane_follower.steering_filtered", format!("{rl:.4}"));
             ctx.blackboard.set("lane_follower.rate_limited", "false");
             self.saturated_ticks = 0;
             self.check_safety_trip(lateral_dist_signed, ctx);
@@ -1111,10 +1306,16 @@ impl Plugin for LaneFollowerPlugin {
             let is_rate_limited = (self.steering_ema - rl).abs() > 1e-9;
             self.steering_rate_limited_prev = rl;
 
-            ctx.blackboard.set("lane_follower.steering_cmd", format!("{cmd:.4}"));
-            ctx.blackboard.set("lane_follower.steering_curvature", format!("{curvature:.6}"));
-            ctx.blackboard.set("lane_follower.steering_filtered", format!("{rl:.4}"));
-            ctx.blackboard.set("lane_follower.rate_limited", is_rate_limited.to_string());
+            ctx.blackboard
+                .set("lane_follower.steering_cmd", format!("{cmd:.4}"));
+            ctx.blackboard.set(
+                "lane_follower.steering_curvature",
+                format!("{curvature:.6}"),
+            );
+            ctx.blackboard
+                .set("lane_follower.steering_filtered", format!("{rl:.4}"));
+            ctx.blackboard
+                .set("lane_follower.rate_limited", is_rate_limited.to_string());
 
             self.last_steering_cmd = Some(cmd);
         }
@@ -1151,8 +1352,7 @@ impl Plugin for LaneFollowerPlugin {
 
         // DS13e TASK 4: remaining diagnostic BB keys.
         if bias_should_count_heading_reject {
-            self.bias_rejected_heading_count =
-                self.bias_rejected_heading_count.saturating_add(1);
+            self.bias_rejected_heading_count = self.bias_rejected_heading_count.saturating_add(1);
         }
         ctx.blackboard.set(
             "lane_follower.bias_rejected_heading_count",
@@ -1182,7 +1382,8 @@ impl Plugin for LaneFollowerPlugin {
             Some("degraded") => "degraded",
             _ => "none",
         };
-        ctx.blackboard.set("lane_follower.engage_source", engage_source);
+        ctx.blackboard
+            .set("lane_follower.engage_source", engage_source);
         // DEGRADED is advisory only — no ControlRequest emitted
         if !matches!(engage_source, "route" | "lane") {
             return None;
@@ -1202,7 +1403,11 @@ impl Plugin for LaneFollowerPlugin {
 /// Minimum angular difference between two headings in degrees, result in [0, 180].
 fn angular_diff_deg(a: f32, b: f32) -> f32 {
     let diff = (a - b).abs() % 360.0;
-    if diff > 180.0 { 360.0 - diff } else { diff }
+    if diff > 180.0 {
+        360.0 - diff
+    } else {
+        diff
+    }
 }
 
 /// Converts a [`HeadingFilteredHit`] into a [`NearestHit`].
@@ -1281,9 +1486,18 @@ mod tests {
 
     #[test]
     fn angular_diff_wraps_correctly() {
-        assert!((angular_diff_deg(359.0, 1.0) - 2.0).abs() < 0.01, "wrap case");
-        assert!((angular_diff_deg(1.0, 359.0) - 2.0).abs() < 0.01, "reverse wrap");
-        assert!((angular_diff_deg(0.0, 180.0) - 180.0).abs() < 0.01, "opposite");
+        assert!(
+            (angular_diff_deg(359.0, 1.0) - 2.0).abs() < 0.01,
+            "wrap case"
+        );
+        assert!(
+            (angular_diff_deg(1.0, 359.0) - 2.0).abs() < 0.01,
+            "reverse wrap"
+        );
+        assert!(
+            (angular_diff_deg(0.0, 180.0) - 180.0).abs() < 0.01,
+            "opposite"
+        );
         assert!((angular_diff_deg(90.0, 90.0) - 0.0).abs() < 0.01, "same");
     }
 
@@ -1317,7 +1531,10 @@ mod tests {
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         plugin.tick(None, &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("no_telemetry"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("no_telemetry")
+        );
     }
 
     // ── No index ─────────────────────────────────────────────────────────────
@@ -1330,7 +1547,10 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, 0.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("no_index"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("no_index")
+        );
     }
 
     // ── SplineIndex with 3 mock segments ─────────────────────────────────────
@@ -1346,21 +1566,13 @@ mod tests {
     //   - closest on Seg 2: (+50, 0, -50), dist = 95 m
 
     fn three_segment_index() -> SplineIndex {
-        let seg0 = make_seg(
-            Vec3::new(-100.0, 0.0, 0.0),
-            Vec3::new(100.0, 0.0, 0.0),
-            10,
-        );
+        let seg0 = make_seg(Vec3::new(-100.0, 0.0, 0.0), Vec3::new(100.0, 0.0, 0.0), 10);
         let seg1 = make_seg(
             Vec3::new(-50.0, 0.0, 0.0),
             Vec3::new(-50.0, 0.0, -100.0),
             20,
         );
-        let seg2 = make_seg(
-            Vec3::new(50.0, 0.0, 0.0),
-            Vec3::new(50.0, 0.0, -100.0),
-            30,
-        );
+        let seg2 = make_seg(Vec3::new(50.0, 0.0, 0.0), Vec3::new(50.0, 0.0, -100.0), 30);
         build_index(vec![seg0, seg1, seg2])
     }
 
@@ -1368,9 +1580,14 @@ mod tests {
     fn spline_index_nearest_returns_expected_segment() {
         let index = three_segment_index();
         let query = Vec3::new(-45.0, 0.0, -50.0);
-        let hit = index.nearest_with_projection(query, 8).expect("must find a hit");
+        let hit = index
+            .nearest_with_projection(query, 8)
+            .expect("must find a hit");
         // Segment 1 (index 1) should win with dist ≈ 5 m
-        assert_eq!(hit.segment_idx, 1, "expected segment 1 (North road at x=-50)");
+        assert_eq!(
+            hit.segment_idx, 1,
+            "expected segment 1 (North road at x=-50)"
+        );
         assert!(
             (hit.dist_m - 5.0).abs() < 0.5,
             "expected dist ≈ 5 m, got {:.3}",
@@ -1396,7 +1613,11 @@ mod tests {
     #[test]
     fn tick_sets_dist_warn_when_far_from_road() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            mode: LaneFollowerMode::Observer,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Query far from all segments (e.g. x=0, z=-500 — all segments end at z=-100)
@@ -1414,7 +1635,11 @@ mod tests {
     #[test]
     fn tick_sets_heading_warn_when_truck_facing_wrong_way() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            mode: LaneFollowerMode::Observer,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Truck at (-45, 0, -50) near Seg 1 (heading 0°=North)
@@ -1433,21 +1658,40 @@ mod tests {
     #[test]
     fn tick_writes_ok_and_all_keys_on_nominal_path() {
         let index = three_segment_index();
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), mode: LaneFollowerMode::Observer, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            mode: LaneFollowerMode::Observer,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // Truck at (-45, 0, -50), facing North (heading=0)
         let tel = make_telemetry(-45.0, 0.0, -50.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        assert!(ctx.blackboard.get("lane_follower.nearest_seg_idx").is_some());
-        assert!(ctx.blackboard.get("lane_follower.nearest_seg_dist_m").is_some());
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        assert!(ctx
+            .blackboard
+            .get("lane_follower.nearest_seg_idx")
+            .is_some());
+        assert!(ctx
+            .blackboard
+            .get("lane_follower.nearest_seg_dist_m")
+            .is_some());
         assert!(ctx.blackboard.get("lane_follower.nearest_seg_t").is_some());
         assert!(ctx.blackboard.get("lane_follower.heading_deg").is_some());
         assert!(ctx.blackboard.get("lane_follower.truck_x").is_some());
         assert!(ctx.blackboard.get("lane_follower.truck_z").is_some());
-        assert_eq!(ctx.blackboard.get("lane_follower.active").as_deref(), Some("false"));
-        assert_eq!(ctx.blackboard.get("lane_follower.mode").as_deref(), Some("observer"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.active").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.mode").as_deref(),
+            Some("observer")
+        );
     }
 
     // ── tick_request always returns None in Observer mode ────────────────────
@@ -1477,7 +1721,12 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1490,7 +1739,10 @@ mod tests {
         // Truck 2m into chain, facing North — status ok, lookahead exists.
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
         let req = plugin.tick_request(Some(&tel), &ctx);
         assert!(req.is_some(), "Active + ok should produce a ControlRequest");
         let req = req.unwrap();
@@ -1505,9 +1757,15 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_none(), "Observer mode must never produce ControlRequest");
+        assert!(
+            req.is_none(),
+            "Observer mode must never produce ControlRequest"
+        );
     }
 
     #[test]
@@ -1519,7 +1777,10 @@ mod tests {
         // Far from road → dist_warn
         let tel = make_telemetry(0.0, 0.0, -500.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("dist_warn"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("dist_warn")
+        );
         assert!(
             plugin.tick_request(Some(&tel), &ctx).is_none(),
             "dist_warn must suppress ControlRequest"
@@ -1535,7 +1796,10 @@ mod tests {
         // ETS2 heading 0.5 = South; chain goes North → heading_warn
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.5);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("heading_warn"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("heading_warn")
+        );
         assert!(
             plugin.tick_request(Some(&tel), &ctx).is_none(),
             "heading_warn must suppress ControlRequest"
@@ -1550,13 +1814,29 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.5); // heading_warn
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("heading_warn"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("heading_warn")
+        );
         let cmd = ctx.blackboard.get("lane_follower.steering_cmd");
-        assert!(cmd.is_some(), "steering_cmd must be present on heading_warn");
+        assert!(
+            cmd.is_some(),
+            "steering_cmd must be present on heading_warn"
+        );
         let val: f64 = cmd.unwrap().parse().unwrap();
         assert_eq!(val, 0.0, "steering_cmd must be 0.0 on heading_warn");
-        assert!(ctx.blackboard.get("lane_follower.steering_filtered").is_some(), "filtered must be present");
-        assert!(ctx.blackboard.get("lane_follower.steering_curvature").is_some(), "curvature must be present");
+        assert!(
+            ctx.blackboard
+                .get("lane_follower.steering_filtered")
+                .is_some(),
+            "filtered must be present"
+        );
+        assert!(
+            ctx.blackboard
+                .get("lane_follower.steering_curvature")
+                .is_some(),
+            "curvature must be present"
+        );
     }
 
     #[test]
@@ -1569,7 +1849,9 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        let req = plugin.tick_request(Some(&tel), &ctx).expect("should produce request");
+        let req = plugin
+            .tick_request(Some(&tel), &ctx)
+            .expect("should produce request");
         let s = req.steering.unwrap();
         assert!(s > 0.0, "road to right → positive steering, got {s}");
     }
@@ -1584,7 +1866,9 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        let req = plugin.tick_request(Some(&tel), &ctx).expect("should produce request");
+        let req = plugin
+            .tick_request(Some(&tel), &ctx)
+            .expect("should produce request");
         let s = req.steering.unwrap();
         assert!(s < 0.0, "road to left → negative steering, got {s}");
     }
@@ -1596,11 +1880,14 @@ mod tests {
         let ctx = PluginContext::test();
         ctx.blackboard.set("plugin.lane-follower.mode", "active");
         ctx.blackboard.set("autopilot.engage_mode", "route");
-        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
+        ctx.blackboard
+            .set("plugin.lane-follower.lane_offset_m", "0.0");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        let req = plugin.tick_request(Some(&tel), &ctx).expect("should produce request");
+        let req = plugin
+            .tick_request(Some(&tel), &ctx)
+            .expect("should produce request");
         let s = req.steering.unwrap();
         assert!(s.abs() < 0.1, "on-road aligned → steering near 0, got {s}");
     }
@@ -1612,7 +1899,10 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
         assert!(
             ctx.blackboard.get("lane_follower.steering_cmd").is_some(),
             "steering_cmd key must be written when status=ok"
@@ -1627,7 +1917,9 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert!(
-            ctx.blackboard.get("lane_follower.steering_filtered").is_some(),
+            ctx.blackboard
+                .get("lane_follower.steering_filtered")
+                .is_some(),
             "steering_filtered key must be written when status=ok"
         );
     }
@@ -1640,7 +1932,9 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert!(
-            ctx.blackboard.get("lane_follower.steering_curvature").is_some(),
+            ctx.blackboard
+                .get("lane_follower.steering_curvature")
+                .is_some(),
             "steering_curvature key must be written when status=ok"
         );
     }
@@ -1689,7 +1983,12 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        }
     }
 
     // ── Lookahead status: ok (within segment) ────────────────────────────────
@@ -1703,14 +2002,22 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lookahead_status").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lookahead_status")
+                .as_deref(),
             Some("ok"),
             "expected ok when successors exist"
         );
         assert!(ctx.blackboard.get("lane_follower.lookahead_x").is_some());
         assert!(ctx.blackboard.get("lane_follower.lookahead_z").is_some());
-        assert!(ctx.blackboard.get("lane_follower.lookahead_seg_idx").is_some());
-        assert!(ctx.blackboard.get("lane_follower.lookahead_remaining_m").is_some());
+        assert!(ctx
+            .blackboard
+            .get("lane_follower.lookahead_seg_idx")
+            .is_some());
+        assert!(ctx
+            .blackboard
+            .get("lane_follower.lookahead_remaining_m")
+            .is_some());
     }
 
     // ── Lookahead status: ok (crosses boundaries) ────────────────────────────
@@ -1723,7 +2030,12 @@ mod tests {
         // truck 1m into seg 0 — 15m lookahead: 9m to end of seg 0, then 6m into seg 1 → z≈-16
         let tel = make_telemetry(0.0, 0.0, -1.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.lookahead_status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_follower.lookahead_status")
+                .as_deref(),
+            Some("ok")
+        );
         let laz: f32 = ctx
             .blackboard
             .get("lane_follower.lookahead_z")
@@ -1743,13 +2055,20 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -1.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lookahead_status").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lookahead_status")
+                .as_deref(),
             Some("dead_end"),
             "single segment with no successor must yield dead_end"
         );
@@ -1759,7 +2078,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(remaining > 0.0, "dead_end must have remaining_m > 0, got {remaining}");
+        assert!(
+            remaining > 0.0,
+            "dead_end must have remaining_m > 0, got {remaining}"
+        );
     }
 
     // ── Lookahead: heading filter at junction ────────────────────────────────
@@ -1787,19 +2109,32 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.lookahead_status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_follower.lookahead_status")
+                .as_deref(),
+            Some("ok")
+        );
         let seg_idx: usize = ctx
             .blackboard
             .get("lane_follower.lookahead_seg_idx")
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(seg_idx, 1, "heading filter must pick North seg (1), not East branch (2)");
+        assert_eq!(
+            seg_idx, 1,
+            "heading filter must pick North seg (1), not East branch (2)"
+        );
     }
 
     // ── P0.3: engage_mode gate + engage_source BB key ────────────────────────
@@ -1811,7 +2146,10 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
         (plugin, ctx)
     }
 
@@ -1821,8 +2159,14 @@ mod tests {
         ctx.blackboard.set("autopilot.engage_mode", "route");
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_some(), "engage_mode=route + status=ok → Some(ControlRequest)");
-        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("route"));
+        assert!(
+            req.is_some(),
+            "engage_mode=route + status=ok → Some(ControlRequest)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.engage_source").as_deref(),
+            Some("route")
+        );
     }
 
     #[test]
@@ -1831,8 +2175,14 @@ mod tests {
         ctx.blackboard.set("autopilot.engage_mode", "lane");
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_some(), "engage_mode=lane + status=ok → Some(ControlRequest)");
-        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("lane"));
+        assert!(
+            req.is_some(),
+            "engage_mode=lane + status=ok → Some(ControlRequest)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.engage_source").as_deref(),
+            Some("lane")
+        );
     }
 
     #[test]
@@ -1841,8 +2191,14 @@ mod tests {
         ctx.blackboard.set("autopilot.engage_mode", "degraded");
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_none(), "engage_mode=degraded must NOT emit ControlRequest (advisory only)");
-        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("degraded"));
+        assert!(
+            req.is_none(),
+            "engage_mode=degraded must NOT emit ControlRequest (advisory only)"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.engage_source").as_deref(),
+            Some("degraded")
+        );
     }
 
     #[test]
@@ -1851,8 +2207,14 @@ mod tests {
         // No autopilot.engage_mode key set
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_none(), "missing engage_mode must NOT emit ControlRequest");
-        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("none"));
+        assert!(
+            req.is_none(),
+            "missing engage_mode must NOT emit ControlRequest"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.engage_source").as_deref(),
+            Some("none")
+        );
     }
 
     #[test]
@@ -1865,8 +2227,14 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         let req = plugin.tick_request(Some(&tel), &ctx);
-        assert!(req.is_none(), "Observer mode must never emit ControlRequest regardless of engage_mode");
-        assert_eq!(ctx.blackboard.get("lane_follower.engage_source").as_deref(), Some("none"));
+        assert!(
+            req.is_none(),
+            "Observer mode must never emit ControlRequest regardless of engage_mode"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.engage_source").as_deref(),
+            Some("none")
+        );
     }
 
     // ── Task-5 tuning tests ───────────────────────────────────────────────────
@@ -1878,14 +2246,26 @@ mod tests {
         // Use lane_offset_m=0 to test raw wheelbase-correctness independent of QW1 offset.
         let mut plugin = make_chain_plugin_at_x(0.5);
         let ctx = PluginContext::test();
-        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
+        ctx.blackboard
+            .set("plugin.lane-follower.lane_offset_m", "0.0");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        let cmd: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(cmd > 0.0, "road to right → cmd positive, got {cmd:.4}");
-        assert!(cmd < 0.15, "0.5m offset must produce cmd < 0.15 (was ~0.39 pre-fix), got {cmd:.4}");
+        assert!(
+            cmd < 0.15,
+            "0.5m offset must produce cmd < 0.15 (was ~0.39 pre-fix), got {cmd:.4}"
+        );
     }
 
     #[test]
@@ -1904,7 +2284,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!((la - 15.0).abs() < 0.5, "50 km/h should give 15 m lookahead, got {la:.1}");
+        assert!(
+            (la - 15.0).abs() < 0.5,
+            "50 km/h should give 15 m lookahead, got {la:.1}"
+        );
 
         // 80 km/h = 22.22 m/s → max(15, 80 * 0.3) = 24.0 m
         tel.speed_ms = 22.22;
@@ -1915,7 +2298,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!((la - 24.0).abs() < 0.5, "80 km/h should give 24 m lookahead, got {la:.1}");
+        assert!(
+            (la - 24.0).abs() < 0.5,
+            "80 km/h should give 24 m lookahead, got {la:.1}"
+        );
     }
 
     #[test]
@@ -1927,9 +2313,20 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
-        assert!(cmd > 0.9, "large offset must saturate cmd near 1.0, got {cmd:.4}");
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        let cmd: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            cmd > 0.9,
+            "large offset must saturate cmd near 1.0, got {cmd:.4}"
+        );
         let filtered: f64 = ctx
             .blackboard
             .get("lane_follower.steering_filtered")
@@ -1958,9 +2355,18 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
 
         plugin.tick(Some(&tel), &mut out, &ctx);
-        let raw: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
-        let filtered: f64 =
-            ctx.blackboard.get("lane_follower.steering_filtered").unwrap().parse().unwrap();
+        let raw: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let filtered: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_filtered")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(raw > 0.0, "road at x=0.8 must produce positive cmd");
         assert!(
             filtered < raw / 2.0,
@@ -1970,10 +2376,18 @@ mod tests {
         for _ in 0..59 {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
-        let raw_final: f64 =
-            ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
-        let filtered_final: f64 =
-            ctx.blackboard.get("lane_follower.steering_filtered").unwrap().parse().unwrap();
+        let raw_final: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let filtered_final: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_filtered")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(
             (raw_final - filtered_final).abs() < 0.005,
             "after 60 ticks EMA must converge: raw={raw_final:.4}, filtered={filtered_final:.4}"
@@ -1991,18 +2405,44 @@ mod tests {
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
-        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
-        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
-        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        let la_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let la_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_z")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_z")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(
             (off_x - la_x - LANE_OFFSET_RIGHT_M).abs() < 0.05,
-            "North road: offset_x must be la_x + {}, got delta {:.4}", LANE_OFFSET_RIGHT_M, off_x - la_x
+            "North road: offset_x must be la_x + {}, got delta {:.4}",
+            LANE_OFFSET_RIGHT_M,
+            off_x - la_x
         );
         assert!(
             (off_z - la_z).abs() < 0.05,
-            "North road: offset_z must be unchanged, got delta {:.4}", off_z - la_z
+            "North road: offset_z must be unchanged, got delta {:.4}",
+            off_z - la_z
         );
     }
 
@@ -2017,24 +2457,55 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        let mut plugin = LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() };
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        };
         let ctx = PluginContext::test();
         let mut out = ControlOutput::default();
         // ETS2 heading 0.75 → truck_heading_deg = (-0.75 * 360).rem_euclid(360) = 90° = East.
         let tel = make_telemetry(0.0, 0.0, 0.0, 0.75);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
-        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
-        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
-        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        let la_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let la_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_z")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_z")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(
             (off_z - la_z - LANE_OFFSET_RIGHT_M).abs() < 0.05,
-            "East road: offset_z must be la_z + {}, got delta {:.4}", LANE_OFFSET_RIGHT_M, off_z - la_z
+            "East road: offset_z must be la_z + {}, got delta {:.4}",
+            LANE_OFFSET_RIGHT_M,
+            off_z - la_z
         );
         assert!(
             (off_x - la_x).abs() < 0.05,
-            "East road: offset_x must be unchanged, got delta {:.4}", off_x - la_x
+            "East road: offset_x must be unchanged, got delta {:.4}",
+            off_x - la_x
         );
     }
 
@@ -2043,25 +2514,59 @@ mod tests {
         // STOP condition: lane_offset_m=0 → lookahead_offset == lookahead_raw (no lateral shift).
         let mut plugin = make_chain_plugin();
         let ctx = PluginContext::test();
-        ctx.blackboard.set("plugin.lane-follower.lane_offset_m", "0.0");
+        ctx.blackboard
+            .set("plugin.lane-follower.lane_offset_m", "0.0");
         let mut out = ControlOutput::default();
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"));
-        let la_x: f32 = ctx.blackboard.get("lane_follower.lookahead_x").unwrap().parse().unwrap();
-        let la_z: f32 = ctx.blackboard.get("lane_follower.lookahead_z").unwrap().parse().unwrap();
-        let off_x: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_x").unwrap().parse().unwrap();
-        let off_z: f32 = ctx.blackboard.get("lane_follower.lookahead_offset_z").unwrap().parse().unwrap();
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok")
+        );
+        let la_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let la_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_z")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_x: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_x")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let off_z: f32 = ctx
+            .blackboard
+            .get("lane_follower.lookahead_offset_z")
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(
             (off_x - la_x).abs() < 1e-3,
-            "offset=0: lookahead_offset_x must equal lookahead_x, delta={:.6}", off_x - la_x
+            "offset=0: lookahead_offset_x must equal lookahead_x, delta={:.6}",
+            off_x - la_x
         );
         assert!(
             (off_z - la_z).abs() < 1e-3,
-            "offset=0: lookahead_offset_z must equal lookahead_z, delta={:.6}", off_z - la_z
+            "offset=0: lookahead_offset_z must equal lookahead_z, delta={:.6}",
+            off_z - la_z
         );
-        let cmd: f64 = ctx.blackboard.get("lane_follower.steering_cmd").unwrap().parse().unwrap();
-        assert!(cmd.abs() < 0.05, "offset=0 on centreline: steering near 0, got {cmd:.4}");
+        let cmd: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            cmd.abs() < 0.05,
+            "offset=0 on centreline: steering near 0, got {cmd:.4}"
+        );
     }
 
     // ── Safety-Fallback tests (Task 4) ───────────────────────────────────────
@@ -2083,7 +2588,12 @@ mod tests {
         let luts = build_all_luts(&segs);
         let forward_adj = build_forward_adjacency(&segs);
         let index = build_index(segs);
-        LaneFollowerPlugin { index: Some(Arc::new(index)), luts, forward_adj, ..Default::default() }
+        LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -2097,24 +2607,32 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
             Some("true"),
             "lateral=10m must request state-machine disengage"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.safety_disengage_reason")
+                .as_deref(),
             Some("lateral_excursion"),
             "trip reason must be lateral_excursion"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.safety_disengage_count").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.safety_disengage_count")
+                .as_deref(),
             Some("1"),
             "safety_disengage_count must increment on trip"
         );
         // last_steering_cmd must be suppressed → tick_request returns None.
         ctx.blackboard.set("autopilot.engage_mode", "route");
-        assert!(plugin.tick_request(Some(&tel), &ctx).is_none(),
-            "after safety trip, no ControlRequest must be emitted");
+        assert!(
+            plugin.tick_request(Some(&tel), &ctx).is_none(),
+            "after safety trip, no ControlRequest must be emitted"
+        );
     }
 
     #[test]
@@ -2135,9 +2653,14 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(count >= 1, "saturation for 35 ticks must trip at least once, got count={count}");
+        assert!(
+            count >= 1,
+            "saturation for 35 ticks must trip at least once, got count={count}"
+        );
         assert_eq!(
-            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
             Some("true"),
             "saturation trip must request disengage"
         );
@@ -2170,8 +2693,18 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(dist > SAFETY_SPLINE_LOST_M, "precondition dist > {}: got {}", SAFETY_SPLINE_LOST_M, dist);
-        assert!(lateral.abs() < SAFETY_LATERAL_HARD_M, "precondition |lateral| < {}: got {}", SAFETY_LATERAL_HARD_M, lateral);
+        assert!(
+            dist > SAFETY_SPLINE_LOST_M,
+            "precondition dist > {}: got {}",
+            SAFETY_SPLINE_LOST_M,
+            dist
+        );
+        assert!(
+            lateral.abs() < SAFETY_LATERAL_HARD_M,
+            "precondition |lateral| < {}: got {}",
+            SAFETY_LATERAL_HARD_M,
+            lateral
+        );
         // Now run 60 more ticks → counter reaches >50 → trip.
         for _ in 0..60 {
             plugin.tick(Some(&tel), &mut out, &ctx);
@@ -2182,9 +2715,14 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert!(count >= 1, "dist > 20m for 60 ticks must trip spline_lost, got count={count}");
+        assert!(
+            count >= 1,
+            "dist > 20m for 60 ticks must trip spline_lost, got count={count}"
+        );
         assert_eq!(
-            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
             Some("true"),
             "spline_lost must request disengage"
         );
@@ -2202,17 +2740,23 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -2.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.rate_limit_active")
+                .as_deref(),
             Some("true"),
             "lateral=4m must engage tightened rate-limit"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.safety_disengage_reason")
+                .as_deref(),
             Some(""),
             "lateral=4m alone must NOT trigger any disengage"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.safety_disengage_count").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.safety_disengage_count")
+                .as_deref(),
             Some("0"),
             "no trip → count stays at 0"
         );
@@ -2237,6 +2781,7 @@ mod tests {
             lanes_total: 1,
             lane_width_m: 3.75,
             lane_offset_right_m: 3.5, // non-zero; would be applied for road edges
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: true,
         });
@@ -2264,7 +2809,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(offset, 0.0, "is_prefab=true must give lane_offset_m=0, got {offset}");
+        assert_eq!(
+            offset, 0.0,
+            "is_prefab=true must give lane_offset_m=0, got {offset}"
+        );
     }
 
     // ── Stability: stable after repeated same-position ticks ────────────────
@@ -2279,7 +2827,9 @@ mod tests {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lookahead_stable").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lookahead_stable")
+                .as_deref(),
             Some("true"),
             "stable expected after 5 identical ticks"
         );
@@ -2312,6 +2862,7 @@ mod tests {
             lanes_total: 1,
             lane_width_m: 3.75,
             lane_offset_right_m: 1.875,
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: false,
         });
@@ -2321,6 +2872,7 @@ mod tests {
             lanes_total: 1,
             lane_width_m: 3.75,
             lane_offset_right_m: 0.0,
+            road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: true,
         });
@@ -2353,16 +2905,22 @@ mod tests {
         let tel = make_telemetry(0.0, 0.0, -5.0, 0.0);
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_zone_active").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_zone_active")
+                .as_deref(),
             Some("false"),
             "no router_graph → bias not active"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_attempted").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_attempted")
+                .as_deref(),
             Some("false"),
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("not_active"),
         );
     }
@@ -2377,19 +2935,27 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
         // Bias keys must be present regardless of status (they are set before the hit check).
         assert!(
-            ctx.blackboard.get("lane_follower.bias_zone_active").is_some(),
+            ctx.blackboard
+                .get("lane_follower.bias_zone_active")
+                .is_some(),
             "bias_zone_active must be published"
         );
         assert!(
-            ctx.blackboard.get("lane_follower.bias_prefab_attempted").is_some(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_attempted")
+                .is_some(),
             "bias_prefab_attempted must be published"
         );
         assert!(
-            ctx.blackboard.get("lane_follower.bias_prefab_accepted").is_some(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_accepted")
+                .is_some(),
             "bias_prefab_accepted must be published"
         );
         assert!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").is_some(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .is_some(),
             "bias_prefab_rejected_reason must be published"
         );
     }
@@ -2398,7 +2964,7 @@ mod tests {
     #[test]
     fn test_geometric_bias_rejects_far_prefab_via_max_dist() {
         let mut plugin = make_mixed_index_plugin(0.0, -0.5); // prefab very close
-        // Set max_dist=0.0 so any prefab hit is "too_far"
+                                                             // Set max_dist=0.0 so any prefab hit is "too_far"
         plugin.bias_max_prefab_dist_m = 0.0;
         // Force bias zone by setting bias_radius_m to a huge value AND
         // manually pre-setting junction_active via a high radius; since there's no
@@ -2414,13 +2980,17 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
         // Without router_graph → not_active (no junction detected).
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("not_active"),
             "no junction without router_graph → not_active path"
         );
         // nearest_seg_is_prefab should be false (road wins via heading_filter fallback).
         assert_eq!(
-            ctx.blackboard.get("lane_follower.nearest_seg_is_prefab").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.nearest_seg_is_prefab")
+                .as_deref(),
             Some("false"),
             "road segment must be selected when bias not active"
         );
@@ -2438,10 +3008,7 @@ mod tests {
                 (2u64, jx, jz - 5.0), // 5m North
                 (3u64, jx + 5.0, jz), // 5m East
             ],
-            vec![
-                (1u64, 2u64, 5.0f64),
-                (1u64, 3u64, 5.0f64),
-            ],
+            vec![(1u64, 2u64, 5.0f64), (1u64, 3u64, 5.0f64)],
         )
     }
 
@@ -2478,6 +3045,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         });
         let segs = vec![seg_a, seg_b, seg_c];
@@ -2506,7 +3074,9 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_accepted")
+                .as_deref(),
             Some("true"),
             "prefab must be accepted in junction zone"
         );
@@ -2527,7 +3097,10 @@ mod tests {
             nearest_idx, 1,
             "tiebreak must pick B (successor idx=1) over C (closer idx=2), got {nearest_idx}"
         );
-        assert!(tiebreak_used, "tiebreak_used_successor must be true when successor was found");
+        assert!(
+            tiebreak_used,
+            "tiebreak_used_successor must be true when successor was found"
+        );
     }
 
     /// DS13e TASK 4: bias_rejected_heading_count increments when heading filter
@@ -2555,6 +3128,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         });
         let segs = vec![east_prefab];
@@ -2581,7 +3155,9 @@ mod tests {
 
         plugin.tick(Some(&tel), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("none_found"),
             "East prefab (90° > 45°) must be heading-rejected → none_found"
         );
@@ -2601,7 +3177,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(count2, 2, "heading_reject count must increment to 2 on second tick");
+        assert_eq!(
+            count2, 2,
+            "heading_reject count must increment to 2 on second tick"
+        );
     }
 
     // ── DS14: Synthetic Lookahead Tests ─────────────────────────────────────
@@ -2613,12 +3192,18 @@ mod tests {
         let h_rad = 0.0_f32.to_radians();
         let right_x = h_rad.cos(); // 1.0
         let right_z = h_rad.sin(); // 0.0
-        assert!((right_x - 1.0).abs() < 1e-6, "heading North: right_x must be 1.0 (East)");
+        assert!(
+            (right_x - 1.0).abs() < 1e-6,
+            "heading North: right_x must be 1.0 (East)"
+        );
         assert!(right_z.abs() < 1e-6, "heading North: right_z must be 0.0");
         // Lane point must be East of road center (larger X)
         let lane_x = 0.0_f32 + right_x * 3.75;
         let lane_z = 0.0_f32 + right_z * 3.75;
-        assert!(lane_x > 0.0, "lane center must be East of road center when heading North");
+        assert!(
+            lane_x > 0.0,
+            "lane center must be East of road center when heading North"
+        );
         let _ = lane_z;
     }
 
@@ -2628,10 +3213,19 @@ mod tests {
         let h_rad = 90.0_f32.to_radians();
         let right_x = h_rad.cos(); // ~0.0
         let right_z = h_rad.sin(); // ~1.0
-        assert!(right_x.abs() < 1e-5, "heading East: right_x must be ~0 (South has no X component)");
-        assert!((right_z - 1.0).abs() < 1e-5, "heading East: right_z must be ~1.0 (South = +Z)");
+        assert!(
+            right_x.abs() < 1e-5,
+            "heading East: right_x must be ~0 (South has no X component)"
+        );
+        assert!(
+            (right_z - 1.0).abs() < 1e-5,
+            "heading East: right_z must be ~1.0 (South = +Z)"
+        );
         let lane_z = 0.0_f32 + right_z * 3.75;
-        assert!(lane_z > 0.0, "lane center must be South (+Z) of road center when heading East");
+        assert!(
+            lane_z > 0.0,
+            "lane center must be South (+Z) of road center when heading East"
+        );
     }
 
     /// Right-normal (cos h, sin h) is West (-X) when heading South.
@@ -2640,10 +3234,16 @@ mod tests {
         let h_rad = 180.0_f32.to_radians();
         let right_x = h_rad.cos(); // -1.0
         let right_z = h_rad.sin(); // ~0.0
-        assert!((right_x + 1.0).abs() < 1e-5, "heading South: right_x must be -1.0 (West)");
+        assert!(
+            (right_x + 1.0).abs() < 1e-5,
+            "heading South: right_x must be -1.0 (West)"
+        );
         assert!(right_z.abs() < 1e-5, "heading South: right_z must be ~0.0");
         let lane_x = 0.0_f32 + right_x * 3.75;
-        assert!(lane_x < 0.0, "lane center must be West (-X) of road center when heading South");
+        assert!(
+            lane_x < 0.0,
+            "lane center must be West (-X) of road center when heading South"
+        );
     }
 
     /// Right-normal (cos h, sin h) is North (-Z) when heading West.
@@ -2653,9 +3253,15 @@ mod tests {
         let right_x = h_rad.cos(); // ~0.0
         let right_z = h_rad.sin(); // -1.0
         assert!(right_x.abs() < 1e-5, "heading West: right_x must be ~0");
-        assert!((right_z + 1.0).abs() < 1e-5, "heading West: right_z must be -1.0 (North = -Z)");
+        assert!(
+            (right_z + 1.0).abs() < 1e-5,
+            "heading West: right_z must be -1.0 (North = -Z)"
+        );
         let lane_z = 0.0_f32 + right_z * 3.75;
-        assert!(lane_z < 0.0, "lane center must be North (-Z) of road center when heading West");
+        assert!(
+            lane_z < 0.0,
+            "lane center must be North (-Z) of road center when heading West"
+        );
     }
 
     /// When none_found, lateral_source=road_offset and lookahead_offset_x/z are overwritten
@@ -2682,6 +3288,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         });
         let segs = vec![east_prefab];
@@ -2708,12 +3315,16 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("none_found"),
             "prerequisite: must be none_found"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lateral_source")
+                .as_deref(),
             Some("road_offset"),
             "none_found must set lateral_source=road_offset"
         );
@@ -2766,6 +3377,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         });
         let segs = vec![north_prefab];
@@ -2792,12 +3404,16 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_accepted")
+                .as_deref(),
             Some("true"),
             "prerequisite: prefab must be accepted"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lateral_source")
+                .as_deref(),
             Some("navcurve"),
             "bias_accepted=true must set lateral_source=navcurve"
         );
@@ -2806,8 +3422,8 @@ mod tests {
     /// lateral_source is computed fresh each tick — no state bleeds between ticks.
     #[test]
     fn ds14_lateral_source_no_state_bleeding() {
-        use truckpilot_map_parser::spline_index::build_index_with_metadata;
         use std::f32::consts::PI;
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
 
         // East-going prefab produces none_found when truck heads North,
         // but navcurve when truck heads East.
@@ -2828,6 +3444,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         });
         let segs = vec![east_prefab];
@@ -2854,7 +3471,9 @@ mod tests {
         let tel_north = make_telemetry(0.0, 0.0, -5.0, 0.0);
         plugin.tick(Some(&tel_north), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lateral_source")
+                .as_deref(),
             Some("road_offset"),
             "tick 1 heading North must give road_offset"
         );
@@ -2869,12 +3488,16 @@ mod tests {
         let tel_east = make_telemetry(0.0, 0.0, -5.0, -0.25);
         plugin.tick(Some(&tel_east), &mut out, &ctx);
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_accepted").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_accepted")
+                .as_deref(),
             Some("true"),
             "tick 2 heading East must accept East prefab"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.lateral_source").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.lateral_source")
+                .as_deref(),
             Some("navcurve"),
             "tick 2 heading East must give navcurve (no state from tick 1 road_offset)"
         );
@@ -2907,6 +3530,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         })];
         let forward_adj = build_forward_adjacency(&segs);
@@ -2928,7 +3552,9 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("none_found"),
             "prerequisite: must be none_found"
         );
@@ -2943,7 +3569,9 @@ mod tests {
             "prerequisite: |lateral|={lateral} must exceed SOFT threshold"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.rate_limit_active")
+                .as_deref(),
             Some("false"),
             "none_found: Soft-Safety must NOT fire (invalid nearest-seg reference in K2 gap)"
         );
@@ -2976,6 +3604,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         })];
         let forward_adj = build_forward_adjacency(&segs);
@@ -2997,7 +3626,9 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("too_far"),
             "prerequisite: must be too_far (heading passes filter, dist > 0.0 threshold)"
         );
@@ -3012,7 +3643,9 @@ mod tests {
             "prerequisite: |lateral|={lateral} must exceed SOFT threshold"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.rate_limit_active")
+                .as_deref(),
             Some("true"),
             "too_far: Soft-Safety must still fire when lateral > SOFT threshold"
         );
@@ -3045,6 +3678,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
+            road_offset_m: 0.0,
             road_look_token: 0,
         })];
         let forward_adj = build_forward_adjacency(&segs);
@@ -3067,22 +3701,30 @@ mod tests {
         plugin.tick(Some(&tel), &mut out, &ctx);
 
         assert_eq!(
-            ctx.blackboard.get("lane_follower.bias_prefab_rejected_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
             Some("none_found"),
             "prerequisite: none_found (guard suppresses Soft)"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.rate_limit_active").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.rate_limit_active")
+                .as_deref(),
             Some("false"),
             "Soft-Safety suppressed by none_found guard"
         );
         assert_eq!(
-            ctx.blackboard.get("lane_follower.safety_disengage_reason").as_deref(),
+            ctx.blackboard
+                .get("lane_follower.safety_disengage_reason")
+                .as_deref(),
             Some("lateral_excursion"),
             "Hard-Safety must still fire despite Soft being suppressed"
         );
         assert_eq!(
-            ctx.blackboard.get("autopilot.disengage_requested").as_deref(),
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
             Some("true"),
             "Hard-Safety must request disengage"
         );
@@ -3106,8 +3748,11 @@ mod tests {
         for _ in 0..ACTIVE_SEG_RESET_FRAMES {
             plugin.tick(Some(&tel), &mut out, &ctx);
         }
-        assert_eq!(ctx.blackboard.get("lane_follower.status").as_deref(), Some("ok"),
-            "must reach ok status to write last_active_segment_idx key");
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok"),
+            "must reach ok status to write last_active_segment_idx key"
+        );
 
         let last_idx: i64 = ctx
             .blackboard

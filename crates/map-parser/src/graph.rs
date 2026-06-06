@@ -78,6 +78,9 @@ pub struct GraphEdge {
     /// Lane width in metres derived from the road-look type (default 3.75 for unknown).
     #[serde(default = "default_lane_width")]
     pub lane_width_m: f32,
+    /// Lateral median shift in metres from the road-look (`road_offset`, default 0.0).
+    #[serde(default)]
+    pub road_offset_m: f32,
 }
 
 /// A prefab (junction/intersection) in the graph.
@@ -212,7 +215,13 @@ impl GraphBuilder {
     }
 
     /// Record PPD load statistics for inclusion in [`BuildStats`].
-    pub fn set_ppd_stats(&mut self, attempted: usize, loaded: usize, failed: usize, nav_curves: usize) {
+    pub fn set_ppd_stats(
+        &mut self,
+        attempted: usize,
+        loaded: usize,
+        failed: usize,
+        nav_curves: usize,
+    ) {
         self.ppd_files_attempted = attempted;
         self.ppd_files_loaded = loaded;
         self.ppd_files_failed = failed;
@@ -419,11 +428,32 @@ impl GraphBuilder {
 
             // DS8: resolve lane width from road_look map.
             let lane_width = if road.road_type_token != 0 {
-                self.road_look.get(&road.road_type_token).map(|e| e.lane_width_m).unwrap_or(3.75)
+                self.road_look
+                    .get(&road.road_type_token)
+                    .map(|e| e.lane_width_m)
+                    .unwrap_or(3.75)
             } else if road.look_token != 0 {
-                self.road_look.get(&road.look_token).map(|e| e.lane_width_m).unwrap_or(3.75)
+                self.road_look
+                    .get(&road.look_token)
+                    .map(|e| e.lane_width_m)
+                    .unwrap_or(3.75)
             } else {
                 3.75_f32
+            };
+
+            // Phase 2h: resolve road_offset (median shift) from the same road_look entry.
+            let road_offset_m = if road.road_type_token != 0 {
+                self.road_look
+                    .get(&road.road_type_token)
+                    .map(|e| e.road_offset_m)
+                    .unwrap_or(0.0)
+            } else if road.look_token != 0 {
+                self.road_look
+                    .get(&road.look_token)
+                    .map(|e| e.road_offset_m)
+                    .unwrap_or(0.0)
+            } else {
+                0.0_f32
             };
 
             if road.lanes_forward > 0 {
@@ -441,6 +471,7 @@ impl GraphBuilder {
                     road_look_token: road.road_type_token,
                     lanes_opposite: road.lanes_backward,
                     lane_width_m: lane_width,
+                    road_offset_m,
                 });
                 edge_uid += 1;
             }
@@ -460,6 +491,7 @@ impl GraphBuilder {
                     road_look_token: road.road_type_token,
                     lanes_opposite: road.lanes_forward,
                     lane_width_m: lane_width,
+                    road_offset_m,
                 });
                 edge_uid += 1;
             }
@@ -484,6 +516,7 @@ impl GraphBuilder {
                         road_look_token: road.road_type_token,
                         lanes_opposite: 1,
                         lane_width_m: lane_width,
+                        road_offset_m,
                     });
                     edge_uid += 1;
                 }
@@ -547,6 +580,7 @@ impl GraphBuilder {
                     road_look_token: 0,
                     lanes_opposite: 0,
                     lane_width_m: 3.75,
+                    road_offset_m: 0.0,
                 });
                 edge_uid += 1;
                 building_edges_count += 1;
@@ -610,6 +644,7 @@ impl GraphBuilder {
                             road_look_token: 0,
                             lanes_opposite: 0,
                             lane_width_m: 3.75,
+                            road_offset_m: 0.0,
                         });
                         edge_uid += 1;
                     }
@@ -677,6 +712,7 @@ impl GraphBuilder {
                             road_look_token: 0,
                             lanes_opposite: 0,
                             lane_width_m: 3.75,
+                            road_offset_m: 0.0,
                         });
                         edge_uid += 1;
                         ferry_edges_count += 1;
@@ -771,6 +807,7 @@ impl GraphBuilder {
                     road_look_token: 0,
                     lanes_opposite: 0,
                     lane_width_m: 3.75,
+                    road_offset_m: 0.0,
                 });
                 edge_uid += 1;
                 pass1_edges += 1;
@@ -793,8 +830,7 @@ impl GraphBuilder {
         let mut pass2_edges = 0usize;
 
         for orphan in &orphans {
-            let raw_candidates =
-                query_circle(&spatial_index, &orphan.resolved_pos, pass2.max_dist);
+            let raw_candidates = query_circle(&spatial_index, &orphan.resolved_pos, pass2.max_dist);
             let mut filtered: Vec<(&_, f64)> = Vec::new();
             for cand in raw_candidates {
                 if let Some(d) = apply_filters(orphan, cand, &pass2) {
@@ -828,6 +864,7 @@ impl GraphBuilder {
                     gps_avoid: false,
                     road_look_token: 0,
                     lanes_opposite: 0,
+                    road_offset_m: 0.0,
                     lane_width_m: 3.75,
                 });
                 edge_uid += 1;
@@ -836,13 +873,14 @@ impl GraphBuilder {
         }
         info!(
             "Pass 2 (WIDE 200m/15m + adj-sector): {} unique matches ({} edges) from {} orphans",
-            pass2_matches, pass2_edges, orphans.len()
+            pass2_matches,
+            pass2_edges,
+            orphans.len()
         );
 
         // Process prefabs and generate PrefabAiPaths
         let mut prefabs: Vec<Prefab> = Vec::with_capacity(self.raw_prefabs.len());
-        let mut prefab_instances: Vec<PrefabInstance> =
-            Vec::with_capacity(self.raw_prefabs.len());
+        let mut prefab_instances: Vec<PrefabInstance> = Vec::with_capacity(self.raw_prefabs.len());
         let mut prefab_ai_paths: Vec<PrefabAiPath> = Vec::new();
         let mut used_descriptors: HashMap<u64, PrefabDescriptor> = HashMap::new();
 
@@ -1069,7 +1107,12 @@ fn euclidean_3d(a: &GraphNode, b: &GraphNode) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// Sample a NavCurve into `n` world-space points using Hermite interpolation.
-fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n: usize) -> Vec<[f32; 3]> {
+fn sample_nav_curve(
+    nc: &NavCurve,
+    origin: &[f32; 3],
+    _origin_rot: &[f32; 4],
+    n: usize,
+) -> Vec<[f32; 3]> {
     let ox = origin[0];
     let oy = origin[1];
     let oz = origin[2];
@@ -1119,7 +1162,6 @@ fn sample_nav_curve(nc: &NavCurve, origin: &[f32; 3], _origin_rot: &[f32; 4], n:
 
     pts
 }
-
 
 /// Build PrefabAiPath records by walking NavCurves within a PrefabDescriptor,
 /// mapping control nodes to world-space GraphNode UIDs.
@@ -1205,7 +1247,8 @@ fn build_prefab_ai_paths(
             // Get meta from first curve
             let first_curve = &desc.nav_curves[start_curve_idx];
             let last_curve_idx = curve_indices.last().copied().unwrap_or(start_curve_idx);
-            let last_curve = &desc.nav_curves[last_curve_idx.min(desc.nav_curves.len().saturating_sub(1))];
+            let last_curve =
+                &desc.nav_curves[last_curve_idx.min(desc.nav_curves.len().saturating_sub(1))];
 
             paths.push(PrefabAiPath {
                 from_node_uid,
@@ -1258,9 +1301,7 @@ fn trace_curve_chain_to_node(
 
         // Check if this curve terminates at a ControlNode
         let end_node = nc.leads_to.end_node as u32;
-        if end_node as usize != start_node as usize
-            && end_node < control_nodes.len() as u32
-        {
+        if end_node as usize != start_node as usize && end_node < control_nodes.len() as u32 {
             return (end_node, curve_indices);
         }
 
@@ -1300,7 +1341,10 @@ impl MapGraph {
     /// sit at lane-centre).
     pub fn prefab_hermite_segments_with_metadata(
         &self,
-    ) -> (Vec<crate::spline::HermiteSegment>, Vec<Option<crate::spline::SegmentMetadata>>) {
+    ) -> (
+        Vec<crate::spline::HermiteSegment>,
+        Vec<Option<crate::spline::SegmentMetadata>>,
+    ) {
         let mut segments = Vec::new();
         let mut metadata = Vec::new();
         for path in &self.prefab_ai_paths {
@@ -1309,13 +1353,19 @@ impl MapGraph {
                 continue;
             }
             let p0 = crate::spline::Vec3::new(pts[0][0], pts[0][1], pts[0][2]);
-            let p1 = crate::spline::Vec3::new(pts[pts.len() - 1][0], pts[pts.len() - 1][1], pts[pts.len() - 1][2]);
+            let p1 = crate::spline::Vec3::new(
+                pts[pts.len() - 1][0],
+                pts[pts.len() - 1][1],
+                pts[pts.len() - 1][2],
+            );
             let chord_len = (p1 - p0).length();
             if chord_len < 1e-4 {
                 continue;
             }
-            let m0 = crate::spline::quat_rotate_vec(path.start_rotation, crate::spline::FORWARD) * chord_len;
-            let m1 = crate::spline::quat_rotate_vec(path.end_rotation,   crate::spline::FORWARD) * chord_len;
+            let m0 = crate::spline::quat_rotate_vec(path.start_rotation, crate::spline::FORWARD)
+                * chord_len;
+            let m1 = crate::spline::quat_rotate_vec(path.end_rotation, crate::spline::FORWARD)
+                * chord_len;
             segments.push(crate::spline::HermiteSegment {
                 p0,
                 p1,
@@ -1332,6 +1382,7 @@ impl MapGraph {
                 lanes_total: 1,
                 lane_width_m: 3.75,
                 lane_offset_right_m: 0.0,
+                road_offset_m: 0.0,
                 road_look_token: 0,
                 is_prefab: true,
             }));

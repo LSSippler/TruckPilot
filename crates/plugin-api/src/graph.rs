@@ -284,16 +284,28 @@ mod tests {
         // Heading = 0.0 → ETS2 North, heading_rad=0, hx=0, hz=-1 — perpendicular to edge.
         // Try heading = 0.75 (East in ETS2: heading_rad=-0.75*TAU, sin≈1, cos≈0) → hx≈1, hz≈0.
         let result = graph.find_nearest_on_edge(100.0, 5.0, 0.75, 100.0);
-        assert!(result.is_some(), "edge-snap must find the edge when truck is 5m off it");
+        assert!(
+            result.is_some(),
+            "edge-snap must find the edge when truck is 5m off it"
+        );
         let (uid, dist, edge_used) = result.unwrap();
         assert!(edge_used, "must return edge_used=true");
-        assert!(dist < 6.0, "distance to edge must be near 5m, got {dist:.2}");
+        assert!(
+            dist < 6.0,
+            "distance to edge must be near 5m, got {dist:.2}"
+        );
         // Heading east → to-node (uid=2) should be chosen.
-        assert_eq!(uid, 2, "heading east along edge → to-node (uid=2) must be chosen");
+        assert_eq!(
+            uid, 2,
+            "heading east along edge → to-node (uid=2) must be chosen"
+        );
 
         // Node-snap (20m) must fail at this position.
         let node_result = graph.find_nearest_with_heading(100.0, 5.0, 0.75, 20.0);
-        assert!(node_result.is_none(), "node-snap with 20m must fail when both nodes are 100m away");
+        assert!(
+            node_result.is_none(),
+            "node-snap with 20m must fail when both nodes are 100m away"
+        );
     }
 
     #[test]

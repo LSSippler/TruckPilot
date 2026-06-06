@@ -13,10 +13,7 @@ pub const DEFAULT_FOV_H: f32 = 75.0;
 /// Returns `None` when the file doesn't exist or the key isn't present.
 pub fn read_ets2_fov() -> Option<f32> {
     let user = env::var("USERPROFILE").ok()?;
-    let path = format!(
-        "{}/Documents/Euro Truck Simulator 2/config.cfg",
-        user
-    );
+    let path = format!("{}/Documents/Euro Truck Simulator 2/config.cfg", user);
     let content = fs::read_to_string(&path)
         .map_err(|e| debug!("config.cfg read failed: {e}"))
         .ok()?;
@@ -31,11 +28,12 @@ pub fn read_ets2_fov() -> Option<f32> {
 
 /// Read `[overlay] fov_h_deg` from `truckpilot.toml` in the current directory.
 pub fn read_toml_fov() -> Option<f32> {
-    let content = fs::read_to_string("truckpilot.toml")
-        .map_err(|_| ())
-        .ok()?;
+    let content = fs::read_to_string("truckpilot.toml").map_err(|_| ()).ok()?;
     let doc: toml::Value = content.parse().ok()?;
-    doc.get("overlay")?.get("fov_h_deg")?.as_float().map(|v| v as f32)
+    doc.get("overlay")?
+        .get("fov_h_deg")?
+        .as_float()
+        .map(|v| v as f32)
 }
 
 /// Write back the calibrated FOV to `truckpilot.toml`.
@@ -75,7 +73,8 @@ pub fn effective_fov() -> f32 {
 
 /// Parse the quoted float in lines like: `uset r_multimon_fov_horizontal "70"`
 fn parse_quoted_float(line: &str) -> Option<f32> {
-    let start = line.rfind('"')
+    let start = line
+        .rfind('"')
         .and_then(|end| line[..end].rfind('"').map(|s| (s + 1, end)))?;
     line[start.0..start.1].parse().ok()
 }

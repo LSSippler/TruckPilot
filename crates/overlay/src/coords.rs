@@ -95,7 +95,10 @@ mod tests {
             "10m north → -{} px, got {py}",
             10.0 * S
         );
-        assert!((px - C.0).abs() < 1e-3, "no x offset → px unchanged, got {px}");
+        assert!(
+            (px - C.0).abs() < 1e-3,
+            "no x offset → px unchanged, got {px}"
+        );
     }
 
     #[test]
@@ -108,7 +111,10 @@ mod tests {
             "10m south → +{} px, got {py}",
             10.0 * S
         );
-        assert!((px - C.0).abs() < 1e-3, "no x offset → px unchanged, got {px}");
+        assert!(
+            (px - C.0).abs() < 1e-3,
+            "no x offset → px unchanged, got {px}"
+        );
     }
 
     #[test]

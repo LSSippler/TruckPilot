@@ -310,7 +310,13 @@ mod tests {
     use super::*;
 
     fn n(uid: u64, x: f64, y: f64, z: f64) -> GraphNode {
-        GraphNode { uid, x, y, z, rotation: [0.0; 4] }
+        GraphNode {
+            uid,
+            x,
+            y,
+            z,
+            rotation: [0.0; 4],
+        }
     }
 
     fn sectors(pairs: &[(u64, SectorId)]) -> HashMap<u64, SectorId> {
@@ -548,8 +554,8 @@ mod tests {
         // (Distance filter still applies, so use tiny distance.)
         let o = orphan(7, [0.0, 0.0, 0.0]);
         let c = nref(50, 9000.0, 0.0, 0.0, 8); // distant sector but pass1 doesn't check adjacency
-        // Distance (9000m) > max_dist (50m) so will be rejected by distance filter, not adjacency.
-        // Test that removing distance limit + disabling adjacency still accepts cross-continent.
+                                               // Distance (9000m) > max_dist (50m) so will be rejected by distance filter, not adjacency.
+                                               // Test that removing distance limit + disabling adjacency still accepts cross-continent.
         let cfg_no_dist_no_adj = PassConfig {
             max_dist: 100_000.0,
             z_tol: 100_000.0,
