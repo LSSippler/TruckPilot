@@ -8,9 +8,10 @@
 //! Filter pipeline, multi-pass driver and edge generation land in 5.23b–e.
 //! See `outputs/position_matching_spec.md` for the full algorithm.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::graph::GraphNode;
+use crate::graph::{GraphEdge, GraphNode};
+use crate::sector::RawRoad;
 
 /// Globally unique sector index (0-based, assigned during merge).
 pub type SectorId = u32;
@@ -100,6 +101,33 @@ pub const DEFAULT_CELL_SIZE: f64 = 250.0;
 /// ETS2 virtual-sector grid size in world units. Used by Pass 2 adjacency
 /// filter to prevent cross-continent false matches.
 pub const VIRTUAL_SECTOR_SIZE: f64 = 4096.0;
+
+/// Max 3-D distance (metres) for boundary stitch Pass (strict).
+pub const BOUNDARY_STITCH_MAX_DIST_M: f64 = 50.0;
+
+/// Minimum dot product of road tangents for a boundary stitch match.
+/// Rejects opposite carriageways (dot ≈ −1) while allowing collinear continuation.
+pub const BOUNDARY_STITCH_HEADING_DOT_MIN: f64 = 0.7;
+
+/// Vertical tolerance (metres) for boundary stitch — matches Pass 1 strict Z gate.
+pub const BOUNDARY_STITCH_Z_TOL_M: f64 = 5.0;
+
+/// Edge direction tag written for boundary-stitch pairs (audit: `contains("cross_sector")`).
+pub const BOUNDARY_STITCH_DIRECTION: &str = "cross_sector_boundary";
+
+/// Counters from [`stitch_cross_sector_boundary`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BoundaryStitchStats {
+    pub candidates: usize,
+    pub matches: usize,
+    pub edges: usize,
+    pub rejected_heading: usize,
+    pub rejected_distance: usize,
+    pub rejected_same_sector: usize,
+    pub rejected_already_connected: usize,
+    pub rejected_no_heading: usize,
+    pub rejected_not_endpoint: usize,
+}
 
 /// 2D-distance threshold above which the Z-tolerance is doubled (long road
 /// segments through hilly terrain may cross significant elevation deltas).
@@ -303,6 +331,197 @@ fn virtual_sector(x: f64, z: f64) -> (i32, i32) {
         (x / VIRTUAL_SECTOR_SIZE).floor() as i32,
         (z / VIRTUAL_SECTOR_SIZE).floor() as i32,
     )
+}
+
+/// Unit road tangent: direction from `node_a` toward `node_b` (travel-forward along the road).
+fn road_forward_tangent(node_a: &GraphNode, node_b: &GraphNode) -> Option<[f64; 3]> {
+    let dx = node_b.x - node_a.x;
+    let dy = node_b.y - node_a.y;
+    let dz = node_b.z - node_a.z;
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len < 0.001 {
+        return None;
+    }
+    Some([dx / len, dy / len, dz / len])
+}
+
+/// Collect forward tangents for every fully-resolved road incident on `uid`.
+fn road_tangents_at_node(
+    uid: u64,
+    roads: &[RawRoad],
+    lookup: &HashMap<u64, &GraphNode>,
+) -> Vec<[f64; 3]> {
+    let mut tangents = Vec::new();
+    for road in roads {
+        let tangent = if road.node_a == uid {
+            lookup
+                .get(&road.node_a)
+                .zip(lookup.get(&road.node_b))
+                .and_then(|(a, b)| road_forward_tangent(a, b))
+        } else if road.node_b == uid {
+            lookup
+                .get(&road.node_a)
+                .zip(lookup.get(&road.node_b))
+                .and_then(|(a, b)| road_forward_tangent(a, b))
+        } else {
+            None
+        };
+        if let Some(t) = tangent {
+            tangents.push(t);
+        }
+    }
+    tangents
+}
+
+fn max_tangent_dot(a: &[[f64; 3]], b: &[[f64; 3]]) -> Option<f64> {
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    let mut best = f64::NEG_INFINITY;
+    for ta in a {
+        for tb in b {
+            let dot = ta[0] * tb[0] + ta[1] * tb[1] + ta[2] * tb[2];
+            if dot > best {
+                best = dot;
+            }
+        }
+    }
+    Some(best)
+}
+
+fn sorted_pair(a: u64, b: u64) -> (u64, u64) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Flächenhafter Cross-Sector-Grenz-Stitch: verbindet Road-Endpunkt-Knoten aus
+/// verschiedenen Merge-Sektoren, die geometrisch nahe und kollinear sind.
+///
+/// Kandidaten = `road_endpoint_uids` (keine Deko-Knoten). Nutzt das bestehende
+/// [`SpatialIndex`] — kein N² über alle Knoten.
+pub fn stitch_cross_sector_boundary(
+    roads: &[RawRoad],
+    node_lookup: &HashMap<u64, &GraphNode>,
+    node_to_sector: &HashMap<u64, SectorId>,
+    road_endpoint_uids: &HashSet<u64>,
+    spatial_index: &SpatialIndex,
+    existing_pairs: &HashSet<(u64, u64)>,
+    mut edge_uid: u64,
+) -> (Vec<GraphEdge>, u64, BoundaryStitchStats) {
+    let mut stats = BoundaryStitchStats::default();
+    let mut new_edges = Vec::new();
+    let mut matched_pairs: HashSet<(u64, u64)> = HashSet::new();
+
+    let mut tangents_cache: HashMap<u64, Vec<[f64; 3]>> = HashMap::new();
+    for &uid in road_endpoint_uids {
+        tangents_cache.insert(uid, road_tangents_at_node(uid, roads, node_lookup));
+    }
+
+    stats.candidates = road_endpoint_uids.len();
+
+    for &uid_k in road_endpoint_uids {
+        let Some(node_k) = node_lookup.get(&uid_k) else {
+            continue;
+        };
+        let sector_k = node_to_sector
+            .get(&uid_k)
+            .copied()
+            .unwrap_or(SECTOR_ID_UNKNOWN);
+        if sector_k == SECTOR_ID_UNKNOWN {
+            continue;
+        }
+
+        let tangents_k = tangents_cache.get(&uid_k).map(Vec::as_slice).unwrap_or(&[]);
+        if tangents_k.is_empty() {
+            stats.rejected_no_heading += 1;
+            continue;
+        }
+
+        let center = [node_k.x, node_k.y, node_k.z];
+        let raw_hits = query_circle(spatial_index, &center, BOUNDARY_STITCH_MAX_DIST_M);
+
+        for cand in raw_hits {
+            if cand.uid == uid_k {
+                continue;
+            }
+            if !road_endpoint_uids.contains(&cand.uid) {
+                stats.rejected_not_endpoint += 1;
+                continue;
+            }
+
+            let sector_c = node_to_sector
+                .get(&cand.uid)
+                .copied()
+                .unwrap_or(SECTOR_ID_UNKNOWN);
+            if sector_c == SECTOR_ID_UNKNOWN || sector_c == sector_k {
+                stats.rejected_same_sector += 1;
+                continue;
+            }
+
+            let pair = sorted_pair(uid_k, cand.uid);
+            if existing_pairs.contains(&pair) || !matched_pairs.insert(pair) {
+                stats.rejected_already_connected += 1;
+                continue;
+            }
+
+            let dx = cand.x - node_k.x;
+            let dy = cand.y - node_k.y;
+            let dz = cand.z - node_k.z;
+            if dy.abs() >= BOUNDARY_STITCH_Z_TOL_M {
+                stats.rejected_distance += 1;
+                continue;
+            }
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist > BOUNDARY_STITCH_MAX_DIST_M {
+                stats.rejected_distance += 1;
+                continue;
+            }
+
+            let tangents_c = tangents_cache
+                .get(&cand.uid)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            if tangents_c.is_empty() {
+                stats.rejected_no_heading += 1;
+                matched_pairs.remove(&pair);
+                continue;
+            }
+
+            let best_dot = max_tangent_dot(tangents_k, tangents_c);
+            if best_dot.is_none_or(|d| d < BOUNDARY_STITCH_HEADING_DOT_MIN) {
+                stats.rejected_heading += 1;
+                matched_pairs.remove(&pair);
+                continue;
+            }
+
+            stats.matches += 1;
+            for (from, to) in [(uid_k, cand.uid), (cand.uid, uid_k)] {
+                new_edges.push(GraphEdge {
+                    uid: edge_uid,
+                    from,
+                    to,
+                    distance_m: dist,
+                    speed_limit_kmh: None,
+                    lanes: 1,
+                    direction: BOUNDARY_STITCH_DIRECTION.into(),
+                    dlc_guard: 0,
+                    is_hidden: false,
+                    gps_avoid: false,
+                    road_look_token: 0,
+                    lanes_opposite: 0,
+                    lane_width_m: 3.75,
+                    road_offset_m: 0.0,
+                });
+                edge_uid += 1;
+                stats.edges += 1;
+            }
+        }
+    }
+
+    (new_edges, edge_uid, stats)
 }
 
 #[cfg(test)]
@@ -582,5 +801,156 @@ mod tests {
         let mut uids: Vec<u64> = hits.iter().map(|n| n.uid).collect();
         uids.sort();
         assert_eq!(uids, vec![10, 11]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Boundary stitch tests
+    // -----------------------------------------------------------------------
+
+    use crate::sector::RawRoad;
+
+    fn test_road(uid: u64, a: u64, b: u64) -> RawRoad {
+        RawRoad {
+            uid,
+            node_a: a,
+            node_b: b,
+            speed_limit_kmh: 50,
+            lanes_forward: 1,
+            lanes_backward: 1,
+            look_token: 0,
+            dlc_guard: 0,
+            is_hidden: false,
+            gps_avoid: false,
+            road_type_token: 0,
+        }
+    }
+
+    fn run_boundary_stitch(
+        nodes: Vec<GraphNode>,
+        sector_map: HashMap<u64, SectorId>,
+        roads: Vec<RawRoad>,
+        endpoints: HashSet<u64>,
+    ) -> (Vec<GraphEdge>, BoundaryStitchStats) {
+        let lookup: HashMap<u64, &GraphNode> = nodes.iter().map(|n| (n.uid, n)).collect();
+        let idx = build_spatial_index(&nodes, &sector_map, DEFAULT_CELL_SIZE);
+        let (edges, _, stats) = stitch_cross_sector_boundary(
+            &roads,
+            &lookup,
+            &sector_map,
+            &endpoints,
+            &idx,
+            &HashSet::new(),
+            1,
+        );
+        (edges, stats)
+    }
+
+    #[test]
+    fn boundary_stitch_collinear_cross_sector_creates_bidirectional_edge() {
+        let nodes = vec![
+            n(1, 0.0, 0.0, 0.0),
+            n(2, 70.0, 0.0, 0.0),
+            n(3, 100.0, 0.0, 0.0),
+            n(4, 170.0, 0.0, 0.0),
+        ];
+        let sectors = sectors(&[(1, 0), (2, 0), (3, 1), (4, 1)]);
+        let roads = vec![test_road(10, 1, 2), test_road(20, 3, 4)];
+        let endpoints: HashSet<u64> = [1, 2, 3, 4].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert_eq!(
+            stats.matches, 1,
+            "expected one boundary pair (nodes 2 and 3)"
+        );
+        assert_eq!(stats.edges, 2, "bidirectional");
+        assert_eq!(edges.len(), 2);
+        assert!(edges
+            .iter()
+            .all(|e| e.direction == BOUNDARY_STITCH_DIRECTION));
+        assert!(edges.iter().any(|e| e.from == 2 && e.to == 3));
+        assert!(edges.iter().any(|e| e.from == 3 && e.to == 2));
+    }
+
+    #[test]
+    fn boundary_stitch_rejects_opposite_carriageway_headings() {
+        let nodes = vec![
+            n(1, 0.0, 0.0, 0.0),
+            n(2, 70.0, 0.0, 0.0),
+            n(3, 100.0, 0.0, 0.0),
+            n(4, 130.0, 0.0, 0.0),
+        ];
+        let sectors = sectors(&[(1, 0), (2, 0), (3, 1), (4, 1)]);
+        // Sector 0: +x travel; sector 1: −x travel (opposite carriageway).
+        let roads = vec![test_road(10, 1, 2), test_road(20, 4, 3)];
+        let endpoints: HashSet<u64> = [1, 2, 3, 4].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert!(edges.is_empty());
+        assert_eq!(stats.matches, 0);
+        assert!(stats.rejected_heading > 0);
+    }
+
+    #[test]
+    fn boundary_stitch_rejects_beyond_max_distance() {
+        // Within 2D grid radius but 3D distance > 50m (Y delta) — exercises the 3D gate.
+        let nodes = vec![
+            n(1, 0.0, 0.0, 0.0),
+            n(2, 70.0, 0.0, 0.0),
+            n(3, 100.0, 45.0, 0.0),
+            n(4, 170.0, 45.0, 0.0),
+        ];
+        let sectors = sectors(&[(1, 0), (2, 0), (3, 1), (4, 1)]);
+        let roads = vec![test_road(10, 1, 2), test_road(20, 3, 4)];
+        let endpoints: HashSet<u64> = [1, 2, 3, 4].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert!(edges.is_empty());
+        assert_eq!(stats.matches, 0);
+        assert!(stats.rejected_distance > 0);
+    }
+
+    #[test]
+    fn boundary_stitch_far_apart_never_considered_by_grid() {
+        // 90m XZ separation — spatial index never returns the pair (no distance counter).
+        let nodes = vec![
+            n(1, 0.0, 0.0, 0.0),
+            n(2, 70.0, 0.0, 0.0),
+            n(3, 160.0, 0.0, 0.0),
+            n(4, 230.0, 0.0, 0.0),
+        ];
+        let sectors = sectors(&[(1, 0), (2, 0), (3, 1), (4, 1)]);
+        let roads = vec![test_road(10, 1, 2), test_road(20, 3, 4)];
+        let endpoints: HashSet<u64> = [1, 2, 3, 4].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert!(edges.is_empty());
+        assert_eq!(stats.matches, 0);
+        assert_eq!(stats.rejected_distance, 0);
+    }
+
+    #[test]
+    fn boundary_stitch_rejects_same_sector_pair() {
+        let nodes = vec![n(1, 0.0, 0.0, 0.0), n(2, 30.0, 0.0, 0.0)];
+        let sectors = sectors(&[(1, 0), (2, 0)]);
+        let roads = vec![test_road(10, 1, 2)];
+        let endpoints: HashSet<u64> = [1, 2].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert!(edges.is_empty());
+        assert_eq!(stats.matches, 0);
+        assert!(stats.rejected_same_sector > 0);
+    }
+
+    #[test]
+    fn boundary_stitch_skips_non_road_endpoint_nodes() {
+        let nodes = vec![
+            n(1, 0.0, 0.0, 0.0),
+            n(2, 70.0, 0.0, 0.0),
+            n(99, 85.0, 0.0, 0.0), // decorative — not a road endpoint
+            n(3, 100.0, 0.0, 0.0),
+            n(4, 170.0, 0.0, 0.0),
+        ];
+        let sectors = sectors(&[(1, 0), (2, 0), (99, 0), (3, 1), (4, 1)]);
+        let roads = vec![test_road(10, 1, 2), test_road(20, 3, 4)];
+        let endpoints: HashSet<u64> = [1, 2, 3, 4].into();
+        let (edges, stats) = run_boundary_stitch(nodes, sectors, roads, endpoints);
+        assert_eq!(stats.matches, 1);
+        assert_eq!(edges.len(), 2);
+        assert_eq!(stats.candidates, 4);
     }
 }

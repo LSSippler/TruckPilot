@@ -15,7 +15,8 @@ use crate::sector::{ParsedSector, RawBuilding, RawFerry, RawNode, RawPrefab, Raw
 use crate::signs::TrafficSign;
 use crate::spatial_match::{
     apply_filters, build_spatial_index, pass1_strict_config, pass2_config, query_circle,
-    select_best_match, OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE, SECTOR_ID_UNKNOWN,
+    select_best_match, stitch_cross_sector_boundary, OrphanEndpoint, SectorId, DEFAULT_CELL_SIZE,
+    SECTOR_ID_UNKNOWN,
 };
 use std::collections::HashSet;
 
@@ -876,6 +877,55 @@ impl GraphBuilder {
             pass2_matches,
             pass2_edges,
             orphans.len()
+        );
+
+        // Phase 6.3 — Cross-sector boundary stitch (road-endpoint nodes, not orphan-driven).
+        let road_endpoint_uids: HashSet<u64> = self
+            .roads
+            .iter()
+            .flat_map(|r| {
+                let mut uids = Vec::new();
+                if node_lookup.contains_key(&r.node_a) {
+                    uids.push(r.node_a);
+                }
+                if node_lookup.contains_key(&r.node_b) {
+                    uids.push(r.node_b);
+                }
+                uids
+            })
+            .collect();
+
+        let mut edge_pairs: HashSet<(u64, u64)> = HashSet::new();
+        for e in &edges {
+            let pair = if e.from < e.to {
+                (e.from, e.to)
+            } else {
+                (e.to, e.from)
+            };
+            edge_pairs.insert(pair);
+        }
+
+        let (boundary_edges, _edge_uid, boundary_stats) = stitch_cross_sector_boundary(
+            &self.roads,
+            &node_lookup,
+            &self.node_to_sector,
+            &road_endpoint_uids,
+            &spatial_index,
+            &edge_pairs,
+            edge_uid,
+        );
+        edges.extend(boundary_edges);
+
+        info!(
+            "Boundary stitch: {} unique matches ({} edges) from {} candidates — rejected: {} heading, {} distance, {} same-sector, {} already-connected, {} no-heading",
+            boundary_stats.matches,
+            boundary_stats.edges,
+            boundary_stats.candidates,
+            boundary_stats.rejected_heading,
+            boundary_stats.rejected_distance,
+            boundary_stats.rejected_same_sector,
+            boundary_stats.rejected_already_connected,
+            boundary_stats.rejected_no_heading,
         );
 
         // Process prefabs and generate PrefabAiPaths
