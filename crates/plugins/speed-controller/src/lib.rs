@@ -118,6 +118,9 @@ impl Plugin for SpeedControllerPlugin {
     ) -> Option<ControlRequest> {
         if !ctx.is_active() {
             self.pid.reset();
+            // Längsregler ist aus → kein Gas-Wunsch. Der State-Machine-Pause-Gate
+            // (state_machine.rs) liest diesen Key, daher hier ehrlich auf 0 halten.
+            publish_throttle_cmd(ctx, 0.0);
             return None;
         }
 
@@ -125,58 +128,48 @@ impl Plugin for SpeedControllerPlugin {
 
         let Some(t) = telemetry else {
             self.pid.reset();
+            publish_throttle_cmd(ctx, 0.0);
             return None;
         };
 
-        if t.engine_rpm < 100.0 {
+        // Throttle/Brake in jedem Active-Pfad bestimmen, dann EINMAL publizieren +
+        // zurückgeben. `throttle_cmd` (der Gas-Wunsch) signalisiert der State-Machine,
+        // ob der Regler aktiv beschleunigen will (→ kein Paused-Deadlock im Lane-Only).
+        let (throttle, brake) = if t.engine_rpm < 100.0 {
             self.pid.reset();
-            return Some(ControlRequest {
-                throttle: Some(0.0),
-                brake: Some(0.0),
-                priority: PRIORITY_NORMAL,
-                ..Default::default()
-            });
-        }
-
-        let target_kmh = compute_target_speed(t, ctx);
-        let current_kmh = t.speed_ms * 3.6;
-        let error_kmh = target_kmh - current_kmh;
-
-        // Bergab safety-override: strongly above target → full brake.
-        if error_kmh <= BERGAB_BRAKE_KMH {
-            self.pid.reset();
-            return Some(ControlRequest {
-                throttle: Some(0.0),
-                brake: Some(1.0),
-                priority: PRIORITY_NORMAL,
-                ..Default::default()
-            });
-        }
-
-        // Dead-band: coast inside ±1 km/h.
-        if error_kmh.abs() < DEAD_BAND_KMH {
-            return Some(ControlRequest {
-                throttle: Some(0.0),
-                brake: Some(0.0),
-                priority: PRIORITY_NORMAL,
-                ..Default::default()
-            });
-        }
-
-        let target_ms = target_kmh / 3.6;
-        let error_ms = target_ms - t.speed_ms;
-        let dt = ctx.dt_s.min(0.1);
-        let raw = self.pid.update(error_ms, dt);
-
-        let (throttle, brake) = if raw > 0.0 {
-            (raw.min(1.0), 0.0)
+            (0.0, 0.0)
         } else {
-            (0.0, (-raw).min(1.0))
+            let target_kmh = compute_target_speed(t, ctx);
+            let current_kmh = t.speed_ms * 3.6;
+            let error_kmh = target_kmh - current_kmh;
+
+            if error_kmh <= BERGAB_BRAKE_KMH {
+                // Bergab safety-override: strongly above target → full brake.
+                self.pid.reset();
+                (0.0, 1.0)
+            } else if error_kmh.abs() < DEAD_BAND_KMH {
+                // Dead-band: coast inside ±1 km/h.
+                (0.0, 0.0)
+            } else {
+                let target_ms = target_kmh / 3.6;
+                let error_ms = target_ms - t.speed_ms;
+                let dt = ctx.dt_s.min(0.1);
+                let raw = self.pid.update(error_ms, dt);
+
+                let (throttle, brake) = if raw > 0.0 {
+                    (raw.min(1.0), 0.0)
+                } else {
+                    (0.0, (-raw).min(1.0))
+                };
+
+                tracing::debug!(
+                    "[speed-ctrl] target={target_kmh:.1} current={current_kmh:.1} err={error_kmh:+.2} thr={throttle:.2} brk={brake:.2}"
+                );
+                (throttle, brake)
+            }
         };
 
-        tracing::debug!(
-            "[speed-ctrl] target={target_kmh:.1} current={current_kmh:.1} err={error_kmh:+.2} thr={throttle:.2} brk={brake:.2}"
-        );
+        publish_throttle_cmd(ctx, throttle);
 
         Some(ControlRequest {
             throttle: Some(throttle),
@@ -224,11 +217,36 @@ fn compute_target_speed(t: &Telemetry, ctx: &PluginContext) -> f64 {
         }
     }
 
+    // Capture-Modus des Lane-Keepers (NearestSpline-Einfangen aus der Ferne):
+    // temporäres Tempoziel als weiterer min-Eingang. Der Lane-Keeper schreibt
+    // -1.0 außerhalb von Capture → Werte <= 0 sind inaktiv.
+    if let Some(v) = ctx
+        .blackboard
+        .get_f64("lane_keeper.capture_speed_target_kmh")
+    {
+        if v > 0.0 {
+            target = target.min(v);
+            had_source = true;
+        }
+    }
+
     if !had_source {
         target = FALLBACK_SPEED_KMH;
     }
 
     target.max(0.0)
+}
+
+/// Publish the controller's commanded throttle (0.0..1.0) to the blackboard.
+///
+/// Read by the autopilot state machine: in lane-only mode it must not latch
+/// `Active → Paused` while the controller is actively trying to accelerate
+/// (truck stopped but `throttle_cmd > 0`), otherwise the speed-controller —
+/// gated on `is_active()` — would be switched off and the truck could never
+/// pull away (self-holding standstill). Also a live diagnostic value.
+fn publish_throttle_cmd(ctx: &PluginContext, throttle: f64) {
+    ctx.blackboard
+        .set("speed_controller.throttle_cmd", format!("{throttle:.3}"));
 }
 
 truckpilot_plugin_api::export_plugin!(SpeedControllerPlugin);
@@ -301,6 +319,28 @@ mod tests {
     fn test_acc_cap_absent_path_a() {
         let t = make_telemetry(20.0, 0.0, 80.0);
         let ctx = active_ctx(SharedBlackboard::new());
+        assert!((compute_target_speed(&t, &ctx) - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_capture_speed_target_caps_target() {
+        // Lane-Keeper-Capture aktiv (20 km/h) → min-Eingang greift gegen Cruise 80.
+        let t = make_telemetry(20.0, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        bb.set("lane_keeper.capture_speed_target_kmh", "20.0");
+        let ctx = active_ctx(bb);
+        assert!((compute_target_speed(&t, &ctx) - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_capture_speed_target_inactive_when_negative() {
+        // Außerhalb Capture schreibt der Lane-Keeper -1.0 → Eingang inaktiv.
+        let t = make_telemetry(20.0, 0.0, -1.0);
+        let bb = SharedBlackboard::new();
+        bb.set("cruise.target_kmh", "80.0");
+        bb.set("lane_keeper.capture_speed_target_kmh", "-1.0");
+        let ctx = active_ctx(bb);
         assert!((compute_target_speed(&t, &ctx) - 80.0).abs() < 0.01);
     }
 

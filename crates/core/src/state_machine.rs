@@ -35,6 +35,12 @@ const TELEMETRY_LOSS: u64 = 25; // 500 ms
 const ENGINE_OFF_TOLERANCE: u64 = 25; // 500 ms — debounce before EngineStopped fault
 const PRECONDITION_GLITCH_TOLERANCE: u64 = 10; // 200 ms at 50 Hz daemon tick rate
 const ZERO_SPEED_MS: f64 = 0.028; // ≈ 0.1 km/h
+/// Lane-only Paused-Deadlock-Guard: ab diesem Gas-Wunsch (`speed_controller.throttle_cmd`)
+/// gilt der Längsregler als „will aktiv beschleunigen". Solange das im Lane-Only-Modus bei
+/// Stillstand der Fall ist, wird der `Active → Paused`-Latch unterdrückt — sonst würde der
+/// (an `is_active()` gekoppelte) Speed-Controller abgeschaltet und der Truck käme nie wieder
+/// ins Rollen (selbsthaltender Stillstand). Route-Modus ist davon unberührt.
+const PAUSE_THROTTLE_EPS: f64 = 0.05;
 const ROUTE_TO_LANE_TICKS: u64 = 150; // 3s at 50 Hz
 const LANE_TO_ROUTE_TICKS: u64 = 100; // 2s at 50 Hz
 const TO_DEGRADED_TICKS: u64 = 250; // 5s at 50 Hz
@@ -481,13 +487,34 @@ impl AutopilotStateMachine {
                         }
                     }
 
-                    if t.speed_ms.abs() < ZERO_SPEED_MS {
+                    // Lane-only Paused-Deadlock-Guard: den Active→Paused-Latch NICHT
+                    // ziehen, solange der Speed-Controller bei Stillstand aktiv Gas
+                    // anfordert (Truck steht, will aber losfahren). Der Längsregler
+                    // hängt an is_active() — ginge der State nach Paused, würde sein
+                    // Gas gekappt und der Truck käme nie wieder ins Rollen. Im Route-
+                    // Modus (lane_only_engage == false) ist das Verhalten unverändert:
+                    // throttle_demanded bleibt false, der Latch greift wie zuvor.
+                    let throttle_demanded = self.lane_only_engage
+                        && bb
+                            .get_f64("speed_controller.throttle_cmd")
+                            .map(|thr| thr > PAUSE_THROTTLE_EPS)
+                            .unwrap_or(false);
+                    if t.speed_ms.abs() < ZERO_SPEED_MS && !throttle_demanded {
                         self.stopped_ticks += 1;
                     } else {
                         self.stopped_ticks = 0;
                     }
+                    bb.set(
+                        "autopilot.pause_suppressed",
+                        if throttle_demanded && t.speed_ms.abs() < ZERO_SPEED_MS {
+                            "lane_only_throttle_demand"
+                        } else {
+                            ""
+                        },
+                    );
                     if self.stopped_ticks > PAUSE_DETECT {
                         tracing::info!("[state] Active -> Paused (speed=0 for 5 s)");
+                        bb.set("autopilot.paused_reason", "speed_zero_5s");
                         self.state = AutopilotState::Paused;
                         self.paused_ticks = 0;
                         self.stopped_ticks = 0;
@@ -545,7 +572,21 @@ impl AutopilotStateMachine {
                     if self.last_telemetry.is_none() {
                         return Err("Engage blocked: telemetry_lost".into());
                     }
+                    // Auto-Moduswechsel: lane_only ⇒ NearestSpline (routerloses Folgen).
+                    // Der Lane-Keeper schaltet daraufhin um und publiziert
+                    // lane_keeper.engage_allowed aus seinem eigenen Nearest-Hit (60°/20m),
+                    // der das truck_on_road-Gate für die Engaging→Active-Transition stellt.
+                    // Zurückgesetzt auf route_following beim Disengage (s.u.).
+                    bb.set("plugin.lane_keeper.mode", "nearest_spline");
                 } else {
+                    // Stale NearestSpline-Auto-Mode aus einem vorherigen lane_only-Engage
+                    // für einen normalen (Route-)Engage aufräumen — egal wie der vorige
+                    // Engage endete (Disengage, Timeout, Fault). Vision (extern gesetzt) bleibt
+                    // unberührt. nearest_spline wird AUSSCHLIESSLICH vom lane_only-Auto-Switch
+                    // gesetzt, ist hier also immer ein Überbleibsel.
+                    if bb.get("plugin.lane_keeper.mode").as_deref() == Some("nearest_spline") {
+                        bb.set("plugin.lane_keeper.mode", "route_following");
+                    }
                     // ── Phase 6.5q.1: synchronous off-route check ────────────
                     self.check_and_replan_if_offroute(bb);
 
@@ -599,6 +640,10 @@ impl AutopilotStateMachine {
                 self.engine_off_ticks = 0;
                 self.state_entry_ticks = 0;
                 self.lane_only_engage = false;
+                // NearestSpline-Auto-Mode beim Disengage zurücknehmen (Vision extern → unberührt).
+                if bb.get("plugin.lane_keeper.mode").as_deref() == Some("nearest_spline") {
+                    bb.set("plugin.lane_keeper.mode", "route_following");
+                }
             }
             (AutopilotState::Fault, AutopilotEvent::UserReset) => {
                 tracing::info!("[state] Fault -> Off (user reset)");
@@ -831,6 +876,12 @@ impl AutopilotStateMachine {
             (Some(r), AutopilotState::Fault) => bb.set("autopilot.fault_reason", r.as_str()),
             _ => bb.set("autopilot.fault_reason", ""),
         }
+        // `paused_reason` ist nur im Paused-State gültig. Bei jedem anderen State
+        // (inkl. Disengage→Off, Reset, Fault, 5-min-Timeout) leeren, damit keine
+        // veraltete Begründung stehen bleibt. Single source of truth.
+        if self.state != AutopilotState::Paused {
+            bb.set("autopilot.paused_reason", "");
+        }
     }
 
     fn publish_precondition_diag(
@@ -945,8 +996,12 @@ impl AutopilotStateMachine {
             ep.heading_aligned = true;
             ep.route_planned = true;
             ep.truck_on_route = true;
-            ep.heading_ok_for_engage = true;
-            ep.lane_keeper_engage_allowed = true;
+            // Heading/Distanz-Schutz an den NearestSpline-Engage-Gate des Lane-Keepers
+            // binden (statt blind true). Spiegelt das tatsächliche Engaging→Active-Gate
+            // (check_preconditions: truck_on_road = lane_keeper.engage_allowed) in die
+            // UI-Diagnose + Advisory. route_planned bleibt bypassed (keine Route nötig).
+            ep.heading_ok_for_engage = lane_keeper_engage_allowed;
+            // ep.lane_keeper_engage_allowed bleibt der echte BB-Wert (kein Force).
         }
         ep
     }
@@ -1001,11 +1056,9 @@ impl AutopilotStateMachine {
             bb.set("state.engage_precondition_route_planned", "true");
             bb.set("state.engage_precondition_truck_on_route", "true");
             bb.set("state.engage_precondition_heading_aligned", "true");
-            bb.set("state.engage_precondition_heading_ok_for_engage", "true");
-            bb.set(
-                "state.engage_precondition_lane_keeper_engage_allowed",
-                "true",
-            );
+            // heading_ok_for_engage + lane_keeper_engage_allowed werden NICHT mehr auf
+            // "true" geforced — sie spiegeln jetzt den echten NearestSpline-Gate
+            // (lane_keeper.engage_allowed), publiziert vom allgemeinen Block oben.
         }
         bb.set("state.engage_ready", pre.hard_blockers_met().to_string());
         bb.set("state.engage_all_ok", pre.all_met().to_string());
@@ -1219,12 +1272,15 @@ fn check_preconditions(
             .map(|s| s == "true")
             .unwrap_or(false)
     };
-    // Lane-only: gate on actual road proximity (snap_dist < 20m).
+    // Lane-only: gate on the lane-keeper's own NearestSpline engage gate
+    // (lane_keeper.engage_allowed = nearest_hit.heading_diff<60° && dist<20m). This is
+    // the reliable, router-independent proximity+heading check. router.last_snap_dist is
+    // stale/"0" without a planned route (it reflects the last *planning* snap), so it must
+    // not gate lane_only. Mirrors the vision-mode router_active = engage_allowed pattern.
     // Route/vision: not gated here — router guarantees on-graph position.
     let truck_on_road = if lane_only {
-        bb.get("router.last_snap_dist")
-            .and_then(|s| s.trim().parse::<f64>().ok())
-            .map(|d| d < 20.0)
+        bb.get("lane_keeper.engage_allowed")
+            .map(|s| s == "true")
             .unwrap_or(false)
     } else {
         true
@@ -1499,6 +1555,81 @@ mod tests {
         assert_eq!(sm.state(), AutopilotState::Paused);
         sm.evaluate(Some(&running), &bb);
         assert_eq!(sm.state(), AutopilotState::Active);
+    }
+
+    /// Drive a fresh state machine into `Active` via a **lane-only** engage.
+    /// Lane-only gates `truck_on_road` on `lane_keeper.engage_allowed`, so that
+    /// must be set; `last_telemetry` must be populated first (one `evaluate`)
+    /// or the lane-only engage is rejected as `telemetry_lost`.
+    fn drive_to_active_lane_only(bb: &SharedBlackboard) -> AutopilotStateMachine {
+        let mut sm = AutopilotStateMachine::new();
+        let running = mock_running();
+        sm.evaluate(Some(&running), bb); // populate last_telemetry (state stays Off)
+        bb.set("lane_keeper.engage_allowed", "true");
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&running), bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+        sm
+    }
+
+    #[test]
+    fn lane_only_throttle_demand_prevents_paused_deadlock() {
+        let bb = bb_with_preconditions();
+        let mut sm = drive_to_active_lane_only(&bb);
+        // Truck steht (speed≈0), aber der Speed-Controller fordert Gas an.
+        bb.set("speed_controller.throttle_cmd", "1.000");
+        let stopped = mock_stopped();
+        for _ in 0..400 {
+            sm.evaluate(Some(&stopped), &bb);
+        }
+        // Kein selbsthaltender Stillstand: der Truck bleibt Active, der an
+        // is_active() gekoppelte Längsregler bleibt scharf und kann anfahren.
+        assert_eq!(sm.state(), AutopilotState::Active);
+        assert_eq!(
+            bb.get("autopilot.pause_suppressed").as_deref(),
+            Some("lane_only_throttle_demand")
+        );
+    }
+
+    #[test]
+    fn lane_only_paused_still_triggers_without_throttle() {
+        let bb = bb_with_preconditions();
+        let mut sm = drive_to_active_lane_only(&bb);
+        // Truck steht und der Regler fordert KEIN Gas (z.B. Sollgeschwindigkeit 0 /
+        // Coast) → legitimes Stehenbleiben → Paused greift weiterhin.
+        bb.set("speed_controller.throttle_cmd", "0.000");
+        let stopped = mock_stopped();
+        for _ in 0..251 {
+            sm.evaluate(Some(&stopped), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Paused);
+        assert_eq!(
+            bb.get("autopilot.paused_reason").as_deref(),
+            Some("speed_zero_5s")
+        );
+    }
+
+    #[test]
+    fn route_paused_unaffected_by_throttle_cmd() {
+        // Route-Modus: der Deadlock-Guard ist auf lane_only beschränkt. Selbst bei
+        // anliegendem Gas-Wunsch muss der Paused-Latch unverändert greifen.
+        let bb = bb_with_preconditions();
+        let running = mock_running();
+        let mut sm = AutopilotStateMachine::new();
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Active);
+        bb.set("speed_controller.throttle_cmd", "1.000");
+        let stopped = mock_stopped();
+        for _ in 0..251 {
+            sm.evaluate(Some(&stopped), &bb);
+        }
+        assert_eq!(sm.state(), AutopilotState::Paused);
     }
 
     #[test]
@@ -3000,7 +3131,10 @@ mod tests {
         let bb = SharedBlackboard::new();
         // No router.active — lane_only must bypass this
         bb.set("plugins.loaded", "lane-keeper,speed-controller,vjoy-output");
-        // Truck is on-road (snap_dist < 20m) — physical safety gate must pass
+        // Lane-keeper's NearestSpline engage gate is satisfied: truck within 20 m of a
+        // heading-compatible lane (<60°). This is the routerless truck_on_road gate now.
+        bb.set("lane_keeper.engage_allowed", "true");
+        // Snap-dist still set so the (separate) diagnostic truck_on_road indicator is green.
         bb.set("router.last_snap_dist", "5.0");
         bb
     }
@@ -3080,6 +3214,64 @@ mod tests {
     }
 
     #[test]
+    fn lane_only_engage_sets_nearest_spline_mode() {
+        // Auto-Moduswechsel: lane_only-Engage muss plugin.lane_keeper.mode=nearest_spline setzen.
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        sm.evaluate(Some(&running), &bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        assert_eq!(
+            bb.get("plugin.lane_keeper.mode").as_deref(),
+            Some("nearest_spline"),
+            "lane_only engage must auto-switch the lane-keeper to nearest_spline"
+        );
+    }
+
+    #[test]
+    fn lane_only_disengage_resets_mode_to_route_following() {
+        let mut sm = AutopilotStateMachine::new();
+        let bb = bb_lane_only();
+        let running = mock_running();
+        activate_sm_lane_only(&mut sm, &bb);
+        assert_eq!(
+            bb.get("plugin.lane_keeper.mode").as_deref(),
+            Some("nearest_spline")
+        );
+        sm.handle_event(AutopilotEvent::UserDisengage, &bb).unwrap();
+        sm.evaluate(Some(&running), &bb);
+        assert_eq!(
+            bb.get("plugin.lane_keeper.mode").as_deref(),
+            Some("route_following"),
+            "disengage must reset the auto-switched nearest_spline mode to route_following"
+        );
+    }
+
+    #[test]
+    fn engage_ready_without_route() {
+        // lane_only + lane_keeper.engage_allowed=true (no router.active, no route) must reach
+        // Active — the route precondition is bypassed and the gate is the NearestSpline hit.
+        let mut sm = AutopilotStateMachine::new();
+        let bb = SharedBlackboard::new();
+        bb.set("plugins.loaded", "lane-keeper,speed-controller,vjoy-output");
+        bb.set("lane_keeper.engage_allowed", "true");
+        // Deliberately NO router.active, NO router.route_node_ids, NO waypoints.
+        let running = mock_running();
+        sm.evaluate(Some(&running), &bb);
+        bb.set("autopilot.requested_mode", "lane_only");
+        sm.handle_event(AutopilotEvent::UserEngage, &bb).unwrap();
+        for _ in 0..51 {
+            sm.evaluate(Some(&running), &bb);
+        }
+        assert_eq!(
+            sm.state(),
+            AutopilotState::Active,
+            "lane_only must reach Active without any router route when engage_allowed=true"
+        );
+    }
+
+    #[test]
     fn normal_engage_still_requires_router_active() {
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_lane_only(); // no router.active
@@ -3107,7 +3299,10 @@ mod tests {
     fn test_engage_lane_only_with_misaligned_heading_succeeds() {
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_lane_only();
-        // Waypoints going north (-Z): south-facing truck → heading_aligned=false, heading_ok=false
+        // The ROUTE-mode heading check (router.waypoints) is irrelevant for lane_only —
+        // heading_aligned stays bypassed to true. The real gate is lane_keeper.engage_allowed
+        // (set true in bb_lane_only), so engage still succeeds. A south-facing truck vs
+        // north waypoints would fail in route mode but is moot here.
         bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
         let south_truck = Telemetry {
             heading: 0.5,
@@ -3144,12 +3339,13 @@ mod tests {
     }
 
     #[test]
-    fn test_engage_lane_only_truck_on_road_not_bypassed() {
+    fn test_engage_lane_only_blocked_when_engage_allowed_false() {
         let mut sm = AutopilotStateMachine::new();
         let bb = bb_lane_only();
         let running = mock_running();
-        // Snap dist 55m > 20m threshold → truck_on_road=false in both gate and diagnostic
-        bb.set("router.last_snap_dist", "55.0");
+        // Lane-keeper reports the truck is NOT near a heading-compatible lane
+        // (engage_allowed=false). This IS the routerless truck_on_road gate now → must block.
+        bb.set("lane_keeper.engage_allowed", "false");
         // Seed last_telemetry
         sm.evaluate(Some(&running), &bb);
         bb.set("autopilot.requested_mode", "lane_only");
@@ -3161,13 +3357,14 @@ mod tests {
         assert_eq!(
             sm.state(),
             AutopilotState::Off,
-            "lane_only with snap_dist=55m must time out to Off (truck_on_road gate)"
+            "lane_only with engage_allowed=false must time out to Off (truck_on_road gate)"
         );
-        // Diagnostic must also show truck_on_road as blocked (not bypassed)
+        // Diagnostic must surface the gate as blocked — heading_ok_for_engage is bound to
+        // engage_allowed for lane_only.
         let blocked = bb.get("state.engage_blocked_by").unwrap_or_default();
         assert!(
-            blocked.contains("truck_on_road"),
-            "blocked_by must contain truck_on_road when snap_dist=55m: got '{blocked}'"
+            blocked.contains("heading_ok_for_engage"),
+            "blocked_by must contain heading_ok_for_engage when engage_allowed=false: got '{blocked}'"
         );
     }
 

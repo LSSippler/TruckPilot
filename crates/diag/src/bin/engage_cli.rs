@@ -55,7 +55,7 @@ enum Cmd {
     SetCruise { kmh: f32 },
     /// Set a tunable lane-keeper gain parameter live via Blackboard (whitelist only)
     SetGain {
-        /// Parameter name, e.g. kp, ki, kd, crosstrack_gain (see error output for full list)
+        /// Parameter name, e.g. kp, ki, kd, lane_offset_cal_m (see error output for full list)
         name: String,
         /// Value as decimal f64
         value: f64,
@@ -93,12 +93,6 @@ const GAIN_PARAMS: &[(&str, &str)] = &[
         "plugin.lane_keeper.intk_plausible_max_deg",
     ),
     ("lane_offset_cal_m", "plugin.lane_keeper.lane_offset_cal_m"),
-    ("crosstrack_gain", "plugin.lane_keeper.crosstrack_gain"),
-    ("crosstrack_v_min", "plugin.lane_keeper.crosstrack_v_min"),
-    (
-        "crosstrack_spike_m",
-        "plugin.lane_keeper.crosstrack_spike_m",
-    ),
     (
         "catmull_min_look_ahead_m",
         "plugin.lane_keeper.catmull_min_look_ahead_m",
@@ -107,10 +101,8 @@ const GAIN_PARAMS: &[(&str, &str)] = &[
         "catmull_max_route_hops",
         "plugin.lane_keeper.catmull_max_route_hops",
     ),
-    (
-        "slow_speed_guard_ms",
-        "plugin.lane_keeper.slow_speed_guard_ms",
-    ),
+    ("nearest_xtrack_k", "plugin.lane_keeper.nearest_xtrack_k"),
+    ("nearest_xtrack_ki", "plugin.lane_keeper.nearest_xtrack_ki"),
 ];
 
 /// Resolve a short gain name to its Blackboard key.
@@ -294,12 +286,8 @@ mod tests {
         assert_eq!(resolve_gain_key("ki"), Ok("plugin.lane_keeper.ki"));
         assert_eq!(resolve_gain_key("kd"), Ok("plugin.lane_keeper.kd"));
         assert_eq!(
-            resolve_gain_key("crosstrack_gain"),
-            Ok("plugin.lane_keeper.crosstrack_gain")
-        );
-        assert_eq!(
-            resolve_gain_key("slow_speed_guard_ms"),
-            Ok("plugin.lane_keeper.slow_speed_guard_ms")
+            resolve_gain_key("catmull_min_look_ahead_m"),
+            Ok("plugin.lane_keeper.catmull_min_look_ahead_m")
         );
     }
 
