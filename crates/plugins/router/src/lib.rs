@@ -986,7 +986,12 @@ mod tests {
 
     #[test]
     fn tick_produces_waypoints_on_replan_tick() {
-        let (n, e) = simple_graph();
+        // south_graph: edge 1→2 runs along +z, aligned with the truck's heading
+        // (fake_telemetry_at uses heading 0.0). simple_graph's East edges are
+        // perpendicular to that heading (dot≈0), which makes edge-snap skip
+        // node 1 to node 2 — a geometry artefact, not what this test means to
+        // assert. Aligned geometry snaps to node 1 → full 1→2→3 path.
+        let (n, e) = south_graph();
         let mut p = plugin_with_worker(n, e);
         p.goal_uid = 3;
 
@@ -1156,7 +1161,7 @@ mod tests {
     /// Build a graph where the truck starts at node 1 (0, 0) with heading 0.5
     /// (ETS2 South = +z direction). The edge 1→2 runs along the +z axis so
     /// edge-snap picks node 1 as start. Path 1→2→3 = three nodes.
-    fn south_graph() -> (Vec<(u64, f64, f64)>, Vec<(u64, u64, f64)>) {
+    fn south_graph() -> (NodeList, EdgeList) {
         (
             vec![(1, 0.0, 0.0), (2, 0.0, 100.0), (3, 0.0, 200.0)],
             vec![(1, 2, 100.0), (2, 3, 100.0)],

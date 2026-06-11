@@ -121,8 +121,18 @@ impl RouterGraph {
     /// finds the closest edge within `max_dist_m`, then picks the from/to node
     /// whose direction aligns with the truck's forward heading.
     ///
-    /// Returns `Some((uid, dist_to_edge, true))` on success; `None` if no edge
-    /// is within `max_dist_m`.
+    /// Edges pointing **>120° against travel** (`dot < -0.5`) are rejected as
+    /// snap candidates: on a divided highway the opposing carriageway is often
+    /// the geometrically nearest edge, and snapping to it makes A* plan the
+    /// whole route backwards (~180° heading mismatch). If *every* in-radius edge
+    /// is rejected (genuine dead-end, or truck genuinely facing against a
+    /// one-way), the best unfiltered edge is returned as a fallback — so a truck
+    /// that previously got a (wrong-direction) route never loses its route
+    /// entirely. The returned bool is `true` when the heading gate selected the
+    /// edge, `false` when the unfiltered fallback was used.
+    ///
+    /// Returns `Some((uid, dist_to_edge, heading_filter_applied))` on success;
+    /// `None` if no edge is within `max_dist_m`.
     pub fn find_nearest_on_edge(
         &self,
         x: f64,
@@ -134,8 +144,13 @@ impl RouterGraph {
         let hx = heading_rad.sin();
         let hz = -heading_rad.cos();
 
+        // Best edge whose direction is not strongly opposed to travel.
         let mut best_dist = f64::MAX;
         let mut best_uid: Option<u64> = None;
+        // Best edge ignoring the heading-rejection gate. Used only when the gate
+        // leaves no candidate, so the truck keeps *some* start node.
+        let mut fallback_dist = f64::MAX;
+        let mut fallback_uid: Option<u64> = None;
 
         for &(from_uid, to_uid, _) in &self.edges {
             let Some(&(fx, fz)) = self.positions.get(&from_uid) else {
@@ -156,21 +171,34 @@ impl RouterGraph {
             let px = fx + t * ex;
             let pz = fz + t * ez;
             let dist = ((x - px) * (x - px) + (z - pz) * (z - pz)).sqrt();
-            if dist >= best_dist || dist > max_dist_m {
+            if dist > max_dist_m {
                 continue;
             }
-            // Pick the node whose direction matches the truck heading.
+            // Alignment of the edge's intrinsic direction with truck heading.
             let len = len_sq.sqrt();
-            let chosen = if ex / len * hx + ez / len * hz >= 0.0 {
-                to_uid
-            } else {
-                from_uid
-            };
-            best_dist = dist;
-            best_uid = Some(chosen);
+            let dot = ex / len * hx + ez / len * hz;
+            // Pick the node whose direction matches the truck heading.
+            let chosen = if dot >= 0.0 { to_uid } else { from_uid };
+
+            // Unfiltered fallback tracker (first-seen wins ties via strict `<`).
+            if dist < fallback_dist {
+                fallback_dist = dist;
+                fallback_uid = Some(chosen);
+            }
+            // Reject edges pointing >120° against travel (opposing carriageway).
+            if dot < -0.5 {
+                continue;
+            }
+            if dist < best_dist {
+                best_dist = dist;
+                best_uid = Some(chosen);
+            }
         }
 
-        best_uid.map(|uid| (uid, best_dist, true))
+        match best_uid {
+            Some(uid) => Some((uid, best_dist, true)),
+            None => fallback_uid.map(|uid| (uid, fallback_dist, false)),
+        }
     }
 
     pub fn plan(&self, start: u64, goal: u64) -> Option<(Vec<u64>, f64)> {
@@ -305,6 +333,93 @@ mod tests {
         assert!(
             node_result.is_none(),
             "node-snap with 20m must fail when both nodes are 100m away"
+        );
+    }
+
+    /// Divided highway: the opposing carriageway edge is geometrically *closer*
+    /// to the truck (1 m vs 2 m) but points ~180° against travel. The heading
+    /// gate must reject it and snap to the aligned carriageway's forward node.
+    #[test]
+    fn nearest_on_edge_rejects_opposite() {
+        // Aligned carriageway: 1 -> 2 along +X (East).  Opposing: 3 -> 4 along -X,
+        // 3 m north (−z) of the truck so it projects 1 m closer.
+        let nodes: Vec<(u64, f64, f64)> = vec![
+            (1, 0.0, 0.0),
+            (2, 200.0, 0.0),
+            (3, 200.0, -3.0),
+            (4, 0.0, -3.0),
+        ];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0), (3, 4, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+
+        // Truck mid-road at (100, -2), heading 0.75 (ETS2 East → forward (+1, 0)).
+        // Opposing edge (z=-3) is 1 m away, aligned edge (z=0) is 2 m away.
+        let (uid, _dist, filter_used) = graph
+            .find_nearest_on_edge(100.0, -2.0, 0.75, 100.0)
+            .expect("an aligned edge is within range");
+        assert_eq!(
+            uid, 2,
+            "must snap to the aligned carriageway's forward node (2), not the closer opposing edge"
+        );
+        assert_ne!(uid, 3, "must not pick the opposing edge's behind-node");
+        assert!(filter_used, "heading gate selected the edge → flag true");
+    }
+
+    /// Sanity: an edge pointing the truck's way is selected unchanged.
+    #[test]
+    fn nearest_on_edge_keeps_aligned() {
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 200.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+
+        // Truck 2 m beside the edge, heading East along it.
+        let (uid, dist, filter_used) = graph
+            .find_nearest_on_edge(100.0, 2.0, 0.75, 100.0)
+            .expect("edge in range");
+        assert_eq!(uid, 2, "heading East → forward node (2)");
+        assert!(dist < 2.5, "distance ≈ 2 m, got {dist:.2}");
+        assert!(filter_used);
+    }
+
+    /// A perpendicular (~90°) edge — e.g. a cross street or offset ramp — has
+    /// `dot ≈ 0`, comfortably above the −0.5 reject threshold, so it must NOT be
+    /// rejected.
+    #[test]
+    fn nearest_on_edge_curve_tolerance() {
+        // Edge 1 -> 2 runs South (0, +1); truck heads East → dot = 0.
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 0.0, 200.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+
+        let result = graph.find_nearest_on_edge(2.0, 100.0, 0.75, 100.0);
+        assert!(
+            result.is_some(),
+            "a 90° edge (dot=0 > -0.5) must not be rejected"
+        );
+        let (uid, _dist, filter_used) = result.unwrap();
+        assert_eq!(uid, 2, "dot >= 0 → to-node");
+        assert!(filter_used, "selected by the gate, not the fallback");
+    }
+
+    /// Truck genuinely faces against the only nearby edge (one-way, dead-end):
+    /// the gate rejects every candidate, so the unfiltered fallback must still
+    /// return a node — never `None` where the pre-fix code returned `Some`.
+    #[test]
+    fn nearest_on_edge_fallback_when_all_rejected() {
+        // Only edge 1 -> 2 points West; truck heads East → dot = -1, rejected.
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 200.0, 0.0), (2, 0.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 200.0)];
+        let graph = RouterGraph::new(nodes, edges);
+
+        let result = graph.find_nearest_on_edge(100.0, 2.0, 0.75, 100.0);
+        assert!(
+            result.is_some(),
+            "fallback must keep a route — no None where pre-fix returned Some"
+        );
+        let (_uid, _dist, filter_used) = result.unwrap();
+        assert!(
+            !filter_used,
+            "unfiltered fallback was used → heading_filter_applied=false"
         );
     }
 
