@@ -36,6 +36,7 @@ use std::ptr;
 // ---------------------------------------------------------------------------
 
 mod nav_resolve;
+mod nav_route;
 
 // ---------------------------------------------------------------------------
 // Windows API FFI (kernel32.dll / user32.dll)
@@ -625,6 +626,9 @@ unsafe extern "system" fn frame_end_cb(
     if READY_EVENT != NULL {
         SetEvent(READY_EVENT);
     }
+
+    // Route UID walk — after SHM/event (throttled, not latency-critical).
+    nav_route::tick(G_TIMESTAMP_US);
 }
 
 // ---------------------------------------------------------------------------
