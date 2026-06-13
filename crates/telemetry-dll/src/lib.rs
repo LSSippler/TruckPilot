@@ -32,6 +32,12 @@ use std::mem;
 use std::ptr;
 
 // ---------------------------------------------------------------------------
+// Nav route memory resolution (Phase R1 — gps_manager AOB)
+// ---------------------------------------------------------------------------
+
+mod nav_resolve;
+
+// ---------------------------------------------------------------------------
 // Windows API FFI (kernel32.dll / user32.dll)
 // ---------------------------------------------------------------------------
 
@@ -528,6 +534,8 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_float,
         cb_nav_time,
     );
+
+    nav_resolve::diagnose_once();
 
     debug_log("scs_telemetry_init done — all channels registered");
     SCS_RESULT_OK
