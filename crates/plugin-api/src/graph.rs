@@ -131,15 +131,18 @@ impl RouterGraph {
     /// entirely. The returned bool is `true` when the heading gate selected the
     /// edge, `false` when the unfiltered fallback was used.
     ///
-    /// Returns `Some((uid, dist_to_edge, heading_filter_applied))` on success;
-    /// `None` if no edge is within `max_dist_m`.
+    /// Returns `Some((uid, dist_to_edge, heading_filter_applied, rejected_by_heading))`
+    /// on success; `None` if no edge is within `max_dist_m`.
+    ///
+    /// `rejected_by_heading` counts in-radius edge candidates discarded because
+    /// their direction is >120° against travel (`dot < -0.5`).
     pub fn find_nearest_on_edge(
         &self,
         x: f64,
         z: f64,
         heading: f64,
         max_dist_m: f64,
-    ) -> Option<(u64, f64, bool)> {
+    ) -> Option<(u64, f64, bool, u32)> {
         let heading_rad = -heading * std::f64::consts::TAU;
         let hx = heading_rad.sin();
         let hz = -heading_rad.cos();
@@ -151,6 +154,7 @@ impl RouterGraph {
         // leaves no candidate, so the truck keeps *some* start node.
         let mut fallback_dist = f64::MAX;
         let mut fallback_uid: Option<u64> = None;
+        let mut rejected_by_heading = 0u32;
 
         for &(from_uid, to_uid, _) in &self.edges {
             let Some(&(fx, fz)) = self.positions.get(&from_uid) else {
@@ -187,6 +191,7 @@ impl RouterGraph {
             }
             // Reject edges pointing >120° against travel (opposing carriageway).
             if dot < -0.5 {
+                rejected_by_heading = rejected_by_heading.saturating_add(1);
                 continue;
             }
             if dist < best_dist {
@@ -196,8 +201,8 @@ impl RouterGraph {
         }
 
         match best_uid {
-            Some(uid) => Some((uid, best_dist, true)),
-            None => fallback_uid.map(|uid| (uid, fallback_dist, false)),
+            Some(uid) => Some((uid, best_dist, true, rejected_by_heading)),
+            None => fallback_uid.map(|uid| (uid, fallback_dist, false, rejected_by_heading)),
         }
     }
 
@@ -316,7 +321,7 @@ mod tests {
             result.is_some(),
             "edge-snap must find the edge when truck is 5m off it"
         );
-        let (uid, dist, edge_used) = result.unwrap();
+        let (uid, dist, edge_used, _rejected) = result.unwrap();
         assert!(edge_used, "must return edge_used=true");
         assert!(
             dist < 6.0,
@@ -354,7 +359,7 @@ mod tests {
 
         // Truck mid-road at (100, -2), heading 0.75 (ETS2 East → forward (+1, 0)).
         // Opposing edge (z=-3) is 1 m away, aligned edge (z=0) is 2 m away.
-        let (uid, _dist, filter_used) = graph
+        let (uid, _dist, filter_used, rejected) = graph
             .find_nearest_on_edge(100.0, -2.0, 0.75, 100.0)
             .expect("an aligned edge is within range");
         assert_eq!(
@@ -363,6 +368,10 @@ mod tests {
         );
         assert_ne!(uid, 3, "must not pick the opposing edge's behind-node");
         assert!(filter_used, "heading gate selected the edge → flag true");
+        assert!(
+            rejected >= 1,
+            "opposing carriageway edge must be counted as rejected_by_heading, got {rejected}"
+        );
     }
 
     /// Sanity: an edge pointing the truck's way is selected unchanged.
@@ -373,7 +382,7 @@ mod tests {
         let graph = RouterGraph::new(nodes, edges);
 
         // Truck 2 m beside the edge, heading East along it.
-        let (uid, dist, filter_used) = graph
+        let (uid, dist, filter_used, _rejected) = graph
             .find_nearest_on_edge(100.0, 2.0, 0.75, 100.0)
             .expect("edge in range");
         assert_eq!(uid, 2, "heading East → forward node (2)");
@@ -396,9 +405,10 @@ mod tests {
             result.is_some(),
             "a 90° edge (dot=0 > -0.5) must not be rejected"
         );
-        let (uid, _dist, filter_used) = result.unwrap();
+        let (uid, _dist, filter_used, rejected) = result.unwrap();
         assert_eq!(uid, 2, "dot >= 0 → to-node");
         assert!(filter_used, "selected by the gate, not the fallback");
+        assert_eq!(rejected, 0, "90° edge must not increment rejected_by_heading");
     }
 
     /// Truck genuinely faces against the only nearby edge (one-way, dead-end):
@@ -416,10 +426,14 @@ mod tests {
             result.is_some(),
             "fallback must keep a route — no None where pre-fix returned Some"
         );
-        let (_uid, _dist, filter_used) = result.unwrap();
+        let (_uid, _dist, filter_used, rejected) = result.unwrap();
         assert!(
             !filter_used,
             "unfiltered fallback was used → heading_filter_applied=false"
+        );
+        assert_eq!(
+            rejected, 1,
+            "single opposing edge must be counted as rejected_by_heading"
         );
     }
 

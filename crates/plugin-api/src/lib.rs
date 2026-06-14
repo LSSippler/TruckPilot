@@ -73,10 +73,12 @@ pub struct Telemetry {
     pub pitch: f64,
     /// Roll in radians.
     pub roll: f64,
-    /// Forward speed in m/s.
+    /// Forward speed in m/s (magnitude; direction via [`Self::engine_gear`]).
     pub speed_ms: f64,
     /// Engine RPM.
     pub engine_rpm: f64,
+    /// Transmission gear from SCS telemetry (negative = reverse). `0` when unknown.
+    pub engine_gear: i32,
     /// Driver-set cruise control target speed in km/h (0 = off).
     pub cruise_control_kmh: f64,
     /// Navigation speed limit in km/h. `-1.0` = not available.

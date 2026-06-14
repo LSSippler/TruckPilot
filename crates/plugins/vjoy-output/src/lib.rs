@@ -145,6 +145,7 @@ impl Plugin for VJoyOutputPlugin {
         ctx.blackboard
             .set("vjoy.device_id", self.device_id.to_string());
         ctx.blackboard.remove("vjoy.last_error");
+        ctx.blackboard.remove("vjoy.init_error");
         ctx.blackboard.set("vjoy.last_write_tick", "0");
         ctx.blackboard.set("vjoy.idle_centered", "false");
         ctx.blackboard.set("vjoy.last_raw_x", "0");
@@ -181,6 +182,7 @@ impl Plugin for VJoyOutputPlugin {
                     }
                     self.vjoy = Some(handle);
                     ctx.blackboard.set("vjoy.connected", "true");
+                    ctx.blackboard.set("vjoy.init_error", "ok");
                     tracing::info!(
                         "[vjoy-output] vJoy device {} acquired (failsafe={}ms) \
                          HID: X=0x30 (steering), SL0=0x36 (throttle), SL1=0x37 (brake)",
@@ -195,7 +197,9 @@ impl Plugin for VJoyOutputPlugin {
                 Err(e) => {
                     self.vjoy = None;
                     self.inactive = true;
-                    ctx.blackboard.set("vjoy.last_error", format!("{e}"));
+                    let err = format!("{e}");
+                    ctx.blackboard.set("vjoy.last_error", err.clone());
+                    ctx.blackboard.set("vjoy.init_error", err);
                     tracing::warn!(
                         "[vjoy-output] vJoy init failed: {e} — plugin loaded but inactive"
                     );

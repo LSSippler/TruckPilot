@@ -194,6 +194,7 @@ struct RouteResult {
     route_node_ids: Vec<u64>,
     snap_dist_m: f64,
     heading_filter_applied: bool,
+    snap_rejected_by_heading: u32,
     snap_method: String,
 }
 
@@ -220,6 +221,7 @@ pub struct RouterPlugin {
     // ---- Phase 6.5q: Snap diagnostic ----
     last_snap_dist_m: f64,
     last_snap_heading_filter_applied: bool,
+    last_snap_rejected_by_heading: u32,
     last_snap_method: String,
     // ---- Phase 6.5q: Off-route auto-replan ----
     current_route_node_ids: HashSet<u64>,
@@ -256,6 +258,7 @@ impl Default for RouterPlugin {
             last_snap_dist_m: 0.0,
             last_snap_method: String::new(),
             last_snap_heading_filter_applied: false,
+            last_snap_rejected_by_heading: 0,
             current_route_node_ids: HashSet::new(),
             auto_replan_count: 0,
             last_auto_replan_at_ms: 0,
@@ -367,6 +370,7 @@ fn router_worker_loop(
                 route_node_ids: vec![],
                 snap_dist_m: 0.0,
                 heading_filter_applied: false,
+                snap_rejected_by_heading: 0,
                 snap_method: "none".to_string(),
             });
             continue;
@@ -381,21 +385,17 @@ fn router_worker_loop(
             req.truck_heading,
             EDGE_SNAP_RADIUS_M,
         );
-        let (snap_result, snap_method) = match edge_snap {
-            Some(r) => (Some(r), "edge"),
-            None => (
-                graph.find_nearest_with_heading(
-                    req.truck_x,
-                    req.truck_z,
-                    req.truck_heading,
-                    SNAP_RADIUS_M,
-                ),
-                "node",
-            ),
-        };
-        let (start_uid, snap_dist_m, heading_filter_applied) = match snap_result {
-            Some(r) => r,
-            None => {
+        let (start_uid, snap_dist_m, heading_filter_applied, snap_rejected_by_heading, snap_method) =
+            if let Some((uid, dist, hf, rejected)) = edge_snap {
+                (uid, dist, hf, rejected, "edge")
+            } else if let Some((uid, dist, hf)) = graph.find_nearest_with_heading(
+                req.truck_x,
+                req.truck_z,
+                req.truck_heading,
+                SNAP_RADIUS_M,
+            ) {
+                (uid, dist, hf, 0, "node")
+            } else {
                 let _ = res_tx.send(RouteResult {
                     goal_uid: req.goal_uid,
                     success: false,
@@ -411,11 +411,11 @@ fn router_worker_loop(
                     route_node_ids: vec![],
                     snap_dist_m: 0.0,
                     heading_filter_applied: false,
+                    snap_rejected_by_heading: 0,
                     snap_method: "none".to_string(),
                 });
                 continue;
-            }
-        };
+            };
 
         tracing::info!(
             "[router-worker] A* start={} goal={}",
@@ -450,6 +450,7 @@ fn router_worker_loop(
                     route_node_ids,
                     snap_dist_m,
                     heading_filter_applied,
+                    snap_rejected_by_heading,
                     snap_method: snap_method.to_string(),
                 });
             }
@@ -467,8 +468,9 @@ fn router_worker_loop(
                         start_uid, req.goal_uid
                     ),
                     route_node_ids: vec![],
-                    snap_dist_m: 0.0,
-                    heading_filter_applied: false,
+                    snap_dist_m,
+                    heading_filter_applied,
+                    snap_rejected_by_heading,
                     snap_method: snap_method.to_string(),
                 });
             }
@@ -568,6 +570,8 @@ impl Plugin for RouterPlugin {
         ctx.blackboard.set("router.last_snap_dist", "0");
         ctx.blackboard
             .set("router.last_snap_heading_filter_applied", "false");
+        ctx.blackboard
+            .set("router.last_snap_rejected_by_heading", "0");
         ctx.blackboard.set("router.snap_method", "");
         ctx.blackboard.set("router.auto_replan_count", "0");
         ctx.blackboard.set("router.auto_replan_triggered_at", "");
@@ -635,6 +639,8 @@ impl Plugin for RouterPlugin {
                                 self.last_snap_dist_m = result.snap_dist_m;
                                 self.last_snap_heading_filter_applied =
                                     result.heading_filter_applied;
+                                self.last_snap_rejected_by_heading =
+                                    result.snap_rejected_by_heading;
                                 self.last_snap_method = result.snap_method.clone();
                                 self.current_route_node_ids =
                                     result.route_node_ids.iter().copied().collect();
@@ -872,6 +878,10 @@ impl Plugin for RouterPlugin {
         ctx.blackboard.set(
             "router.last_snap_heading_filter_applied",
             self.last_snap_heading_filter_applied.to_string(),
+        );
+        ctx.blackboard.set(
+            "router.last_snap_rejected_by_heading",
+            self.last_snap_rejected_by_heading.to_string(),
         );
         ctx.blackboard
             .set("router.snap_method", &self.last_snap_method);

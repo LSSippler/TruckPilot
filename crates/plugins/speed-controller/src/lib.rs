@@ -35,6 +35,7 @@ const BERGAB_BRAKE_KMH: f64 = -10.0;
 pub struct SpeedControllerPlugin {
     pid: Pid,
     last_gains: (f64, f64, f64),
+    tick_seq: u64,
 }
 
 impl Default for SpeedControllerPlugin {
@@ -48,6 +49,7 @@ impl Default for SpeedControllerPlugin {
                 OUTPUT_LIMIT,
             ),
             last_gains: (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD),
+            tick_seq: 0,
         }
     }
 }
@@ -116,11 +118,25 @@ impl Plugin for SpeedControllerPlugin {
         telemetry: Option<&Telemetry>,
         ctx: &PluginContext,
     ) -> Option<ControlRequest> {
+        self.tick_seq = self.tick_seq.wrapping_add(1);
+        let tick_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
+        ctx.blackboard
+            .set("speed_controller.tick_seq", self.tick_seq.to_string());
+        ctx.blackboard
+            .set("speed_controller.last_tick_us", tick_us.to_string());
+        ctx.blackboard.set(
+            "speed_controller.tick_ctx_active",
+            ctx.is_active().to_string(),
+        );
+
         if !ctx.is_active() {
             self.pid.reset();
             // Längsregler ist aus → kein Gas-Wunsch. Der State-Machine-Pause-Gate
             // (state_machine.rs) liest diesen Key, daher hier ehrlich auf 0 halten.
-            publish_throttle_cmd(ctx, 0.0);
+            publish_longitudinal_diag(ctx, telemetry, None, 0.0, 0.0);
             return None;
         }
 
@@ -128,16 +144,16 @@ impl Plugin for SpeedControllerPlugin {
 
         let Some(t) = telemetry else {
             self.pid.reset();
-            publish_throttle_cmd(ctx, 0.0);
+            publish_longitudinal_diag(ctx, None, None, 0.0, 0.0);
             return None;
         };
 
         // Throttle/Brake in jedem Active-Pfad bestimmen, dann EINMAL publizieren +
         // zurückgeben. `throttle_cmd` (der Gas-Wunsch) signalisiert der State-Machine,
         // ob der Regler aktiv beschleunigen will (→ kein Paused-Deadlock im Lane-Only).
-        let (throttle, brake) = if t.engine_rpm < 100.0 {
+        let (throttle, brake, target_kmh) = if t.engine_rpm < 100.0 {
             self.pid.reset();
-            (0.0, 0.0)
+            (0.0, 0.0, compute_target_speed(t, ctx))
         } else {
             let target_kmh = compute_target_speed(t, ctx);
             let current_kmh = t.speed_ms * 3.6;
@@ -146,10 +162,10 @@ impl Plugin for SpeedControllerPlugin {
             if error_kmh <= BERGAB_BRAKE_KMH {
                 // Bergab safety-override: strongly above target → full brake.
                 self.pid.reset();
-                (0.0, 1.0)
+                (0.0, 1.0, target_kmh)
             } else if error_kmh.abs() < DEAD_BAND_KMH {
                 // Dead-band: coast inside ±1 km/h.
-                (0.0, 0.0)
+                (0.0, 0.0, target_kmh)
             } else {
                 let target_ms = target_kmh / 3.6;
                 let error_ms = target_ms - t.speed_ms;
@@ -165,11 +181,11 @@ impl Plugin for SpeedControllerPlugin {
                 tracing::debug!(
                     "[speed-ctrl] target={target_kmh:.1} current={current_kmh:.1} err={error_kmh:+.2} thr={throttle:.2} brk={brake:.2}"
                 );
-                (throttle, brake)
+                (throttle, brake, target_kmh)
             }
         };
 
-        publish_throttle_cmd(ctx, throttle);
+        publish_longitudinal_diag(ctx, Some(t), Some(target_kmh), throttle, brake);
 
         Some(ControlRequest {
             throttle: Some(throttle),
@@ -237,6 +253,56 @@ fn compute_target_speed(t: &Telemetry, ctx: &PluginContext) -> f64 {
     target.max(0.0)
 }
 
+/// Which input bound the target speed (diagnostic only).
+fn target_speed_limiting_source(t: &Telemetry, ctx: &PluginContext, target_kmh: f64) -> String {
+    let mut candidates: Vec<(&str, f64)> = Vec::new();
+    if let Some(v) = ctx.blackboard.get_f64("cruise.target_kmh") {
+        if v > 0.0 {
+            candidates.push(("cruise.target_kmh", v));
+        }
+    }
+    if t.nav_speed_limit_kmh > 0.0 {
+        candidates.push(("nav_speed_limit", t.nav_speed_limit_kmh));
+    }
+    if let Some(v) = ctx.blackboard.get_f64("sign.speed_limit_kmh") {
+        if v > 0.0 {
+            candidates.push(("sign.speed_limit_kmh", v));
+        }
+    }
+    if let Some(v) = ctx.blackboard.get_f64("sign_vision.speed_limit_kmh") {
+        if v > 0.0 {
+            candidates.push(("sign_vision.speed_limit_kmh", v));
+        }
+    }
+    if let Some(v) = ctx.blackboard.get_f64("acc.speed_cap_kmh") {
+        if v >= 0.0 {
+            candidates.push(("acc.speed_cap_kmh", v));
+        }
+    }
+    if let Some(v) = ctx
+        .blackboard
+        .get_f64("lane_keeper.capture_speed_target_kmh")
+    {
+        if v > 0.0 {
+            candidates.push(("lane_keeper.capture_speed_target_kmh", v));
+        }
+    }
+    if candidates.is_empty() {
+        return format!("fallback_{FALLBACK_SPEED_KMH:.0}");
+    }
+    candidates
+        .into_iter()
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(name, v)| {
+            if (v - target_kmh).abs() < 0.01 {
+                name.to_string()
+            } else {
+                format!("{name}@{v:.1}")
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// Publish the controller's commanded throttle (0.0..1.0) to the blackboard.
 ///
 /// Read by the autopilot state machine: in lane-only mode it must not latch
@@ -247,6 +313,55 @@ fn compute_target_speed(t: &Telemetry, ctx: &PluginContext) -> f64 {
 fn publish_throttle_cmd(ctx: &PluginContext, throttle: f64) {
     ctx.blackboard
         .set("speed_controller.throttle_cmd", format!("{throttle:.3}"));
+}
+
+fn publish_longitudinal_diag(
+    ctx: &PluginContext,
+    telemetry: Option<&Telemetry>,
+    target_kmh: Option<f64>,
+    throttle: f64,
+    brake: f64,
+) {
+    publish_throttle_cmd(ctx, throttle);
+    ctx.blackboard
+        .set("speed_controller.brake_cmd", format!("{brake:.3}"));
+    ctx.blackboard.set(
+        "speed_controller.cruise_target_kmh",
+        ctx.blackboard
+            .get("cruise.target_kmh")
+            .unwrap_or_else(|| "<absent>".to_string()),
+    );
+    if let (Some(t), Some(target_kmh)) = (telemetry, target_kmh) {
+        let target_ms = target_kmh / 3.6;
+        let error_ms = target_ms - t.speed_ms;
+        let error_kmh = target_kmh - t.speed_ms * 3.6;
+        ctx.blackboard.set(
+            "speed_controller.target_speed_kmh",
+            format!("{target_kmh:.1}"),
+        );
+        ctx.blackboard.set(
+            "speed_controller.target_speed_ms",
+            format!("{target_ms:.3}"),
+        );
+        ctx.blackboard.set(
+            "speed_controller.speed_error_ms",
+            format!("{error_ms:.3}"),
+        );
+        ctx.blackboard.set(
+            "speed_controller.speed_error_kmh",
+            format!("{error_kmh:.2}"),
+        );
+        ctx.blackboard.set(
+            "speed_controller.target_limiting_source",
+            target_speed_limiting_source(t, ctx, target_kmh),
+        );
+    } else {
+        ctx.blackboard.set("speed_controller.target_speed_kmh", "");
+        ctx.blackboard.set("speed_controller.target_speed_ms", "");
+        ctx.blackboard.set("speed_controller.speed_error_ms", "");
+        ctx.blackboard.set("speed_controller.speed_error_kmh", "");
+        ctx.blackboard.set("speed_controller.target_limiting_source", "");
+    }
 }
 
 truckpilot_plugin_api::export_plugin!(SpeedControllerPlugin);
@@ -264,6 +379,7 @@ mod tests {
             roll: 0.0,
             speed_ms,
             engine_rpm: 1200.0,
+            engine_gear: 3,
             cruise_control_kmh: cruise_kmh,
             nav_speed_limit_kmh: nav_limit,
             lead_vehicle_distance_m: -1.0,
@@ -362,6 +478,7 @@ mod tests {
             roll: 0.0,
             speed_ms: 0.0,
             engine_rpm: 1200.0,
+            engine_gear: 0,
             cruise_control_kmh: 0.0,
             nav_speed_limit_kmh: -1.0,
             lead_vehicle_distance_m: -1.0,

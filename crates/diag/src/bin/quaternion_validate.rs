@@ -874,7 +874,7 @@ mod tests {
         for (qw, qx, qy, qz) in cases {
             let h = quat_to_heading_rad(qw, qx, qy, qz);
             assert!(
-                h >= -PI_F32 && h <= PI_F32,
+                (-PI_F32..=PI_F32).contains(&h),
                 "({qw},{qx},{qy},{qz}) → {h} out of [−π,π]"
             );
         }

@@ -588,6 +588,8 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.steering_rate_limited", "false");
         ctx.blackboard
             .set("lane_keeper.steering_delta_clamped", "0.0000");
+        let stage = self.heading_stage.as_deref().unwrap_or("Normal");
+        self.publish_stage_steering_diag(ctx, stage, cause, false);
 
         Some(ControlRequest {
             steering: None,
@@ -645,6 +647,61 @@ impl LaneKeeperPlugin {
         }
     }
 
+    /// R3 steering-stage diagnose (read-only): why a tick did or did not emit
+    /// `ControlRequest.steering`.
+    fn publish_stage_steering_diag(
+        &self,
+        ctx: &PluginContext,
+        stage: &str,
+        block_reason: &str,
+        steering_emitted: bool,
+    ) {
+        ctx.blackboard.set("lane_keeper.stage", stage);
+        ctx.blackboard
+            .set("lane_keeper.stage_block_reason", block_reason);
+        ctx.blackboard.set(
+            "lane_keeper.steering_request_emitted",
+            steering_emitted.to_string(),
+        );
+    }
+
+    /// R3 Task-1: per-tick Route-/Snap-Diagnose (read-only, kein Verhaltens-Fix).
+    fn publish_r3_lane_diag_keys(&self, ctx: &PluginContext) {
+        let route_json = ctx.blackboard.get("router.route_node_ids");
+        let present = route_json.is_some();
+        let len = route_json
+            .as_ref()
+            .and_then(|j| serde_json::from_str::<Vec<u64>>(j).ok())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        ctx.blackboard.set(
+            "lane_keeper.route_node_ids_present",
+            present.to_string(),
+        );
+        ctx.blackboard
+            .set("lane_keeper.route_node_ids_len", len.to_string());
+
+        let rejected = ctx
+            .blackboard
+            .get("router.last_snap_rejected_by_heading")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        ctx.blackboard.set(
+            "lane_keeper.rejected_by_heading",
+            rejected.to_string(),
+        );
+    }
+
+    fn publish_lane_match_sentinels(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .set("lane_keeper.chosen_segment_index", "-1");
+        ctx.blackboard
+            .set("lane_keeper.chosen_edge_id", "none");
+        ctx.blackboard
+            .set("lane_keeper.heading_error_deg", "-1.0");
+        ctx.blackboard.set("lane_keeper.signed_cte_m", "0.000");
+    }
+
     fn try_spline_heading_error(
         &mut self,
         tx: f64,
@@ -667,6 +724,9 @@ impl LaneKeeperPlugin {
         // Bricht try_spline VOR der Query ab (index_none/route_miss), bleibt es None →
         // der Catmull-Fallback nutzt den 1.875-m-Default statt eines stale Segments.
         self.last_nearest_seg = None;
+
+        self.publish_r3_lane_diag_keys(ctx);
+        self.publish_lane_match_sentinels(ctx);
 
         // Phase 2c/2d-Diagnose (read-only): jeder Dispatch-Pfad schreibt GENAU EINEN
         // `lane_keeper.fallback_reason` (6-Wert-Vertrag) plus eine feinere
@@ -891,6 +951,22 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.nearest_heading_filter_applied",
             hit.heading_filter_applied.to_string(),
+        );
+        let mut seg_heading_diff = (hit.heading_deg - truck_heading_deg).rem_euclid(360.0);
+        if seg_heading_diff > 180.0 {
+            seg_heading_diff -= 360.0;
+        }
+        ctx.blackboard.set(
+            "lane_keeper.chosen_segment_index",
+            cur_seg.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.chosen_edge_id",
+            format!("{seg_f}->{seg_t}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.heading_error_deg",
+            format!("{:.1}", seg_heading_diff.abs()),
         );
 
         // Route-Relevanz-Prüfung (Route-Constraint). Linearer Scan über die Route (~8 Knoten):
@@ -1574,6 +1650,10 @@ impl LaneKeeperPlugin {
             "lane_keeper.truck_lat_vs_centerline_m",
             format!("{truck_lat_vs_centerline:.3}"),
         );
+        ctx.blackboard.set(
+            "lane_keeper.signed_cte_m",
+            format!("{truck_lat_vs_centerline:.3}"),
+        );
         let e_lat = truck_lat_vs_centerline - lane_offset as f64;
         ctx.blackboard.set(
             "lane_keeper.truck_lat_vs_offsetline_m",
@@ -2066,6 +2146,8 @@ impl LaneKeeperPlugin {
 
         let dt = ctx.dt_s.min(0.1);
 
+        self.publish_r3_lane_diag_keys(ctx);
+
         let err =
             self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms, ctx);
 
@@ -2213,6 +2295,14 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.truck_heading", format!("{:.6}", t.heading));
         ctx.blackboard
             .set("lane_keeper.truck_speed_ms", format!("{:.2}", t.speed_ms));
+
+        let stage = self.heading_stage.as_deref().unwrap_or("Normal");
+        let block_reason = if stage == "SoftLaneKeep" {
+            "none_soft_scaled"
+        } else {
+            "none"
+        };
+        self.publish_stage_steering_diag(ctx, stage, block_reason, true);
 
         Some(ControlRequest {
             steering: Some(steering),
@@ -3164,6 +3254,7 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.xtrack_i_rad", format!("{:.6}", -xtrack_i));
         ctx.blackboard
             .set("lane_keeper.steering_out", format!("{steering:.6}"));
+        self.publish_stage_steering_diag(ctx, "nearest_spline", "none", true);
         // Capture/Anti-Stall-Diagnose (Task 5).
         ctx.blackboard
             .set("lane_keeper.steer_cap_applied", format!("{steer_cap:.3}"));
@@ -3323,6 +3414,12 @@ impl LaneKeeperPlugin {
             ctx.blackboard.set("lane_keeper.active", "true");
             self.previous_steering_out = 0.0;
             self.pid.reset();
+            let block = if stage == "Disengaging" {
+                "disengaging"
+            } else {
+                "autoreplan"
+            };
+            self.publish_stage_steering_diag(ctx, stage, block, false);
             return None;
         }
 
@@ -3621,6 +3718,18 @@ impl Plugin for LaneKeeperPlugin {
         ctx: &PluginContext,
     ) -> Option<ControlRequest> {
         self.tick_count += 1;
+        let tick_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
+        ctx.blackboard
+            .set("lane_keeper.tick_seq", self.tick_count.to_string());
+        ctx.blackboard
+            .set("lane_keeper.last_tick_us", tick_us.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.tick_ctx_active",
+            ctx.is_active().to_string(),
+        );
 
         // Re-check mode every tick (cheap: one Blackboard read; `update_mode_from_blackboard`
         // only does work on an actual change). Per-tick statt alle 50 Ticks, damit der

@@ -370,6 +370,15 @@ pub fn lookahead(
                 continue; // Selbst-Referenz ignorieren
             }
             let cand_seg = &segs[cand_idx];
+            // b-ii-Schutz: exaktes Reverse-Geschwister (from/to vertauscht) hart
+            // überspringen — analog zum Chain-Advance (lane-keeper `advance_forward_adj`).
+            // Rückwärts-Kanten tragen kopierte statt negierte Hermite-Tangenten: bei t=0
+            // zeigen sie vorwärts und täuschen den Heading-Dot-Filter unten, im Segment-
+            // Inneren drehen sie nach hinten. Ohne diesen Skip läuft der Lookahead auf das
+            // Reverse-Geschwister → `head_c` springt ~π → Lenk-Anschlag/Crash.
+            if cand_seg.from_uid == seg.to_uid && cand_seg.to_uid == seg.from_uid {
+                continue;
+            }
             let entry_tan = evaluate_tangent(cand_seg, 0.0).normalize();
             let d = dot3(exit_tan, entry_tan);
             if d >= HEADING_DOT_THRESHOLD && d > best_dot {
@@ -751,6 +760,90 @@ mod tests {
         assert_eq!(
             result.seg_idx, 1,
             "Sollte geradeaus weiterfahren (Seg 1), nicht abbiegen"
+        );
+    }
+
+    /// b-ii-Reverse-Geschwister: from/to vertauscht, Geometrie rückwärts (West), aber
+    /// kopierte Vorwärts-Tangente bei t=0 (täuscht den Heading-Dot-Filter). Hier sogar
+    /// mit HÖHEREM t=0-Dot (1.0) als der echte Nachfolger (leichte Kurve, ~0.98) und VOR
+    /// ihm in der Adjacency → ohne Skip würde es gewinnen und der Lookahead liefe rückwärts.
+    #[test]
+    fn lookahead_skips_reverse_sibling() {
+        let a = make_seg(0.0, 0.0, 10.0, 0.0, 1, 2); // seg 0: Ost
+        let r = HermiteSegment {
+            p0: Vec3::new(10.0, 0.0, 0.0),
+            p1: Vec3::new(0.0, 0.0, 0.0),  // Geometrie West (rückwärts)
+            m0: Vec3::new(10.0, 0.0, 0.0), // kopiert (Ost) statt negiert → t=0 zeigt vorwärts
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 2, // exaktes Reverse-Geschwister von a (from/to vertauscht)
+            to_uid: 1,
+            edge_uid: 201,
+        };
+        let c = make_seg(10.0, 0.0, 20.0, 2.0, 2, 3); // seg 2: echte Fortsetzung (leichte Kurve)
+        let segs = vec![a, r, c];
+        let luts = build_all_luts(&segs);
+        let adj = build_forward_adjacency(&segs);
+        // adj[2] = [1(R), 2(C)] — R steht vorne und hätte den höheren t=0-Dot.
+        let result = lookahead(0, 0.0, 15.0, &adj, &segs, &luts).unwrap();
+        assert_eq!(
+            result.seg_idx, 2,
+            "Reverse-Geschwister (Seg 1) muss übersprungen, echte Fortsetzung (Seg 2) gewählt werden"
+        );
+        assert!(
+            result.point.x > 10.0,
+            "Lookahead muss vorwärts (x>10) liegen, nicht rückwärts; x={:.2}",
+            result.point.x
+        );
+    }
+
+    /// Regressions-Guard: ohne Reverse-Geschwister bleibt die echte Fortsetzung wählbar
+    /// (der Skip darf NUR das exakte from/to-vertauschte Geschwister treffen).
+    #[test]
+    fn lookahead_keeps_real_successor() {
+        let segs = vec![
+            make_seg(0.0, 0.0, 10.0, 0.0, 1, 2),  // 0: Ost
+            make_seg(10.0, 0.0, 20.0, 0.0, 2, 3), // 1: echte Fortsetzung Ost (to=3 ≠ from=1)
+        ];
+        let luts = build_all_luts(&segs);
+        let adj = build_forward_adjacency(&segs);
+        let result = lookahead(0, 0.0, 15.0, &adj, &segs, &luts).unwrap();
+        assert_eq!(result.seg_idx, 1, "Echte Fortsetzung muss gewählt werden");
+        assert_eq!(
+            result.remaining_dist_m, 0.0,
+            "Vorwärts-Walk muss gelingen (kein Dead-End durch versehentlichen Skip)"
+        );
+        assert!(
+            result.point.x > 10.0,
+            "x={:.2} muss vorwärts sein",
+            result.point.x
+        );
+    }
+
+    /// Tie-Break: Reverse-Geschwister und echter Nachfolger haben IDENTISCHEN t=0-Dot
+    /// (beide Ost, 1.0), das Reverse steht zuerst in der Adjacency. Nach dem Skip wird
+    /// deterministisch der echte Nachfolger gewählt.
+    #[test]
+    fn lookahead_tie_break_picks_forward() {
+        let a = make_seg(0.0, 0.0, 10.0, 0.0, 1, 2); // seg 0
+        let r = HermiteSegment {
+            p0: Vec3::new(10.0, 0.0, 0.0),
+            p1: Vec3::new(0.0, 0.0, 0.0),
+            m0: Vec3::new(10.0, 0.0, 0.0), // identische Vorwärts-Tangente wie der echte Nachfolger
+            m1: Vec3::new(10.0, 0.0, 0.0),
+            length_m: 10.0,
+            from_uid: 2,
+            to_uid: 1,
+            edge_uid: 201,
+        };
+        let c = make_seg(10.0, 0.0, 20.0, 0.0, 2, 3); // seg 2: gerade Ost, gleicher Dot
+        let segs = vec![a, r, c];
+        let luts = build_all_luts(&segs);
+        let adj = build_forward_adjacency(&segs);
+        let result = lookahead(0, 0.0, 15.0, &adj, &segs, &luts).unwrap();
+        assert_eq!(
+            result.seg_idx, 2,
+            "Bei gleichem Dot muss nach dem Reverse-Skip der echte Nachfolger (Seg 2) gewinnen"
         );
     }
 }

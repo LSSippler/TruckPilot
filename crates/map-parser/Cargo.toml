@@ -110,3 +110,7 @@ path = "src/bin/edge_uid_audit.rs"
 [[bin]]
 name = "truckpilot-road-look-probe"
 path = "src/bin/road_look_probe.rs"
+
+[[bin]]
+name = "truckpilot-navcurve-gap-audit"
+path = "src/bin/navcurve_gap_audit.rs"

@@ -79,6 +79,7 @@ impl From<FunbitTelemetry> for Telemetry {
             roll: f.truck_placement.roll,
             speed_ms: f.truck_float_values.speed,
             engine_rpm: f.truck_float_values.engine_rpm,
+            engine_gear: 0,
             cruise_control_kmh: f.truck_float_values.cruise_control_speed,
             nav_speed_limit_kmh: f.navigation_speed_limit.unwrap_or(-1.0),
             lead_vehicle_distance_m: -1.0,

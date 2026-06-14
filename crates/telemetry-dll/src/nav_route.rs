@@ -1,12 +1,12 @@
-//! In-process navigation route UID walk for ETS2 1.59 (Phase R2).
+//! In-process navigation route UID walk for ETS2 1.59 (Phase R2/R3).
 //!
-//! Port of `scripts/truckpilot_nav_read.py` pointer chain + UID scan.
-//!
-//! ## Known risk: UID termination heuristic
-//! Walk stops when `uid == 0` or `uid < 5e18`. That threshold mirrors the Python
-//! diagnostic tool and assumes vanilla 1.59 node UID layout. DLC / ProMods may use
-//! different UID ranges — we may stop early or read garbage. R3 may replace this
-//! with a versioned terminator once more game versions are profiled.
+//! ## Route end detection (R3 Teil 1, empiric 1.59.1.3s)
+//! - **No reliable `array_dyn.size`** at `route_task+0x58` (second pointer, not count).
+//! - **Scan cap:** read items while `uid >= 5e18` (sanity — DLC UID ranges may differ).
+//! - **True end:** trim trailing slots where `physical_route_item+0x0C == 0` (inactive tail
+//!   padding before the sub-threshold garbage UID). Stable vs graph.json gold on long routes.
+//! - **Known risk:** `5e18` alone caused 1085/1086 wobble; `+0x0C` tail-trim fixes it.
+//!   Mid-array `+0x0C==0` slots with valid UIDs are kept (not tail).
 
 #![allow(clippy::cast_possible_wrap)]
 
@@ -23,11 +23,13 @@ const OFF_PHYS_ITEMS: usize = 0x50;
 const OFF_PHYS_ITEMS_SIZE: usize = OFF_PHYS_ITEMS + 0x08;
 const ITEM_STRIDE: usize = 0x40;
 const OFF_ITEM_UID: usize = 0x30;
+/// Inactive / padding tail slots: dword at +0x0C is 0 (active slots non-zero).
+const OFF_ITEM_ACTIVE: usize = 0x0C;
 
 const MAX_ROUTE_ITEMS: usize = 4000;
 const SIZE_FIELD_MAX: u64 = 6000;
 
-/// Python parity: `uid < 5_000_000_000_000_000_000` ends the walk (fragile heuristic).
+/// UID below this is garbage past the real route tail (sanity cap only, not primary end).
 const UID_MIN_PLAUSIBLE: u64 = 5_000_000_000_000_000_000;
 
 const NAV_ROUTE_MIN_FRAMES: u32 = 30;
@@ -41,17 +43,31 @@ fn looks_like_heap_ptr(v: u64) -> bool {
     (0x1_0000..0x0007_FFFF_FFFF_FFFF).contains(&v)
 }
 
-fn uid_terminates(uid: u64) -> bool {
+fn uid_below_sanity_cap(uid: u64) -> bool {
     uid == 0 || uid < UID_MIN_PLAUSIBLE
 }
 
-/// Primary loop bound: use `array_dyn.size` when plausible, else scan cap.
-pub fn route_item_limit(size_field: u64) -> (usize, bool) {
-    if (1..=SIZE_FIELD_MAX).contains(&size_field) {
-        ((size_field as usize).min(MAX_ROUTE_ITEMS), true)
-    } else {
-        (MAX_ROUTE_ITEMS, false)
+/// Drop trailing items whose `+0x0C` active-dword is zero (padding past route end).
+pub fn trim_trailing_inactive_count(len: usize, is_active_tail: impl Fn(usize) -> bool) -> usize {
+    let mut n = len;
+    while n > 0 && !is_active_tail(n - 1) {
+        n -= 1;
     }
+    n
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkStop {
+    /// Final UID count after uid-cap scan + inactive-tail trim.
+    ActiveCount(usize),
+    /// Scan stopped at index `i` due to uid sanity cap (`< 5e18`).
+    UidSanityCap(usize),
+    /// Filled scan bound without uid cap — suspect garbage loop.
+    MaxCap,
+    /// No items after trim (or index 0 failed uid cap).
+    NoItemsAtZero,
+    /// `physical_route_items.ptr` missing or invalid.
+    NoArrayPtr,
 }
 
 /// FNV-1a 64-bit over the UID sequence (change detection).
@@ -66,18 +82,13 @@ pub fn uid_sequence_hash(uids: &[u64]) -> u64 {
     h
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WalkStop {
-    /// `array_dyn.size` was in 1..=6000 and defined the loop bound.
-    SizeField(usize),
-    /// Stopped at index `i` because uid failed the heuristic (route end).
-    UidHeuristic(usize),
-    /// Filled `MAX_ROUTE_ITEMS` without a clean terminator — suspect garbage loop.
-    MaxCap,
-    /// First item already failed uid check — no route items readable.
-    NoItemsAtZero,
-    /// `physical_route_items.ptr` missing or invalid.
-    NoArrayPtr,
+/// Scan bound: use `array_dyn.size` only when plausible (usually garbage in 1.59).
+pub fn route_item_limit(size_field: u64) -> usize {
+    if (1..=SIZE_FIELD_MAX).contains(&size_field) {
+        (size_field as usize).min(MAX_ROUTE_ITEMS)
+    } else {
+        MAX_ROUTE_ITEMS
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,38 +149,54 @@ mod win {
         };
 
         let size_field = ptr::read_unaligned(route_task.add(OFF_PHYS_ITEMS_SIZE) as *const u64);
-        let (limit, used_size) = route_item_limit(size_field);
+        let limit = route_item_limit(size_field);
+        let mut scan_stop = WalkStop::MaxCap;
 
         for i in 0..limit {
             let item = arr_ptr.add(i * ITEM_STRIDE);
             let uid = ptr::read_unaligned(item.add(OFF_ITEM_UID) as *const u64);
 
-            if uid_terminates(uid) {
+            if uid_below_sanity_cap(uid) {
                 if i == 0 {
                     return WalkStop::NoItemsAtZero;
                 }
-                return WalkStop::UidHeuristic(i);
+                scan_stop = WalkStop::UidSanityCap(i);
+                break;
             }
 
             out.push(uid);
         }
 
-        if used_size {
-            WalkStop::SizeField(limit)
-        } else {
-            WalkStop::MaxCap
+        // Trim inactive tail padding (+0x0C == 0); mid-route inactive slots are not tail.
+        while !out.is_empty() {
+            let idx = out.len() - 1;
+            let item = arr_ptr.add(idx * ITEM_STRIDE);
+            let active = ptr::read_unaligned(item.add(OFF_ITEM_ACTIVE) as *const u32);
+            if active != 0 {
+                break;
+            }
+            out.pop();
+        }
+
+        if out.is_empty() {
+            return WalkStop::NoItemsAtZero;
+        }
+
+        match scan_stop {
+            WalkStop::MaxCap if out.len() >= limit => WalkStop::MaxCap,
+            WalkStop::UidSanityCap(_) | WalkStop::MaxCap => WalkStop::ActiveCount(out.len()),
+            other => other,
         }
     }
 
-    fn log_walk_warnings(stop: WalkStop, size_field: u64, used_size: bool) {
+    fn log_walk_warnings(stop: WalkStop, size_field: u64) {
         match stop {
             WalkStop::MaxCap => nav_warn(&format!(
-                "walk hit MAX_ROUTE_ITEMS ({MAX_ROUTE_ITEMS}) without uid terminator; \
-                 size_field=0x{size_field:X} used_size={used_size} — suspect garbage"
+                "walk hit scan bound ({MAX_ROUTE_ITEMS}) without uid sanity cap; \
+                 size_field=0x{size_field:X} — suspect garbage"
             )),
             WalkStop::NoItemsAtZero => nav_warn(&format!(
-                "walk aborted at item 0 (uid heuristic); size_field=0x{size_field:X} \
-                 used_size={used_size} — no readable route items"
+                "walk empty after trim; size_field=0x{size_field:X} — no readable route items"
             )),
             _ => {}
         }
@@ -257,7 +284,7 @@ mod win {
             let size_field =
                 std::ptr::read_unaligned(route_task.add(OFF_PHYS_ITEMS_SIZE) as *const u64);
             let stop = read_route_uids_into(route_task, &mut state.uid_buf);
-            log_walk_warnings(stop, size_field, route_item_limit(size_field).1);
+            log_walk_warnings(stop, size_field);
 
             if state.uid_buf.is_empty() {
                 return;
@@ -309,17 +336,24 @@ mod tests {
 
     #[test]
     fn route_item_limit_prefers_size_field() {
-        assert_eq!(route_item_limit(37), (37, true));
-        assert_eq!(route_item_limit(0), (MAX_ROUTE_ITEMS, false));
-        assert_eq!(route_item_limit(99999), (MAX_ROUTE_ITEMS, false));
+        assert_eq!(route_item_limit(37), 37);
+        assert_eq!(route_item_limit(0), MAX_ROUTE_ITEMS);
+        assert_eq!(route_item_limit(99999), MAX_ROUTE_ITEMS);
     }
 
     #[test]
-    fn uid_terminates_matches_python() {
-        assert!(uid_terminates(0));
-        assert!(uid_terminates(UID_MIN_PLAUSIBLE - 1));
-        assert!(!uid_terminates(UID_MIN_PLAUSIBLE));
-        assert!(!uid_terminates(6_282_842_151_886_729_779));
+    fn uid_sanity_cap_matches_python() {
+        assert!(uid_below_sanity_cap(0));
+        assert!(uid_below_sanity_cap(UID_MIN_PLAUSIBLE - 1));
+        assert!(!uid_below_sanity_cap(UID_MIN_PLAUSIBLE));
+        assert!(!uid_below_sanity_cap(6_282_842_151_886_729_779));
+    }
+
+    #[test]
+    fn trim_trailing_inactive_only_from_tail() {
+        let active = [true, true, false, true, false, false];
+        let n = trim_trailing_inactive_count(active.len(), |i| active[i]);
+        assert_eq!(n, 4);
     }
 
     #[test]

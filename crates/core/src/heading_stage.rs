@@ -71,6 +71,17 @@ impl HeadingStageManager {
 
         let desired = self.desired_stage(error_rad, bb);
 
+        bb.set("state.heading_stage_desired", desired.as_str());
+        bb.set(
+            "state.heading_stage_hysteresis_ticks",
+            self.hysteresis_ticks.to_string(),
+        );
+        if let Some(t) = self.hysteresis_target {
+            bb.set("state.heading_stage_hysteresis_target", t.as_str());
+        } else {
+            bb.remove("state.heading_stage_hysteresis_target");
+        }
+
         if desired != self.stage {
             if self.hysteresis_target == Some(desired) {
                 self.hysteresis_ticks += 1;

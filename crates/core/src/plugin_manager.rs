@@ -281,6 +281,84 @@ impl PluginManager {
             .collect::<Vec<_>>()
             .join(",");
         self.blackboard.set("plugins.loaded", joined);
+        self.publish_output_sink_diag();
+    }
+
+    /// Diagnose keys for output sinks (vjoy-output, scs-sdk-output).
+    /// Written even when a sink is disabled so IPC/loggers can see why no
+    /// control reaches the game without reading truckpilot.toml or daemon logs.
+    fn publish_output_sink_diag(&self) {
+        for name in ["vjoy-output", "scs-sdk-output"] {
+            let slug = name.replace('-', "_");
+            let loaded = self.plugins.iter().find(|p| p.name == name);
+            let dll_loaded = loaded.is_some();
+            let enabled = loaded.map(|p| p.enabled).unwrap_or(false);
+            self.blackboard
+                .set(format!("plugin.{slug}.dll_loaded"), dll_loaded.to_string());
+            self.blackboard
+                .set(format!("plugin.{slug}.enabled"), enabled.to_string());
+        }
+
+        // vjoy-output: on_load is skipped when disabled — seed error keys here.
+        let vjoy = self.plugins.iter().find(|p| p.name == "vjoy-output");
+        match vjoy {
+            None => {
+                self.blackboard
+                    .set("vjoy.init_error", "dll_not_found_or_load_failed");
+                self.blackboard.set("vjoy.connected", "false");
+            }
+            Some(p) if !p.enabled => {
+                self.blackboard
+                    .set("vjoy.init_error", "disabled_by_config");
+                self.blackboard.set("vjoy.connected", "false");
+            }
+            Some(_) => {
+                // Enabled plugin sets vjoy.* in on_load; do not overwrite init_error.
+            }
+        }
+
+        // scs-sdk-output: summarize sink readiness for one-glance IPC reads.
+        let scs = self.plugins.iter().find(|p| p.name == "scs-sdk-output");
+        match scs {
+            None => {
+                self.blackboard
+                    .set("scs_sdk_output.init_state", "dll_not_found_or_load_failed");
+            }
+            Some(p) if !p.enabled => {
+                self.blackboard
+                    .set("scs_sdk_output.init_state", "disabled_by_config");
+            }
+            Some(_) => {
+                let connected = self
+                    .blackboard
+                    .get("scs_sdk_output.connected")
+                    .as_deref()
+                    == Some("true");
+                if connected {
+                    self.blackboard
+                        .set("scs_sdk_output.init_state", "shm_connected");
+                } else if self.blackboard.get("scs_sdk_output.last_error").is_some() {
+                    self.blackboard
+                        .set("scs_sdk_output.init_state", "shm_open_failed");
+                } else {
+                    self.blackboard
+                        .set("scs_sdk_output.init_state", "loaded_pending_shm");
+                }
+            }
+        }
+
+        let vjoy_writing = self.is_plugin_enabled("vjoy-output")
+            && self.blackboard.get("vjoy.connected").as_deref() == Some("true");
+        let scs_writing = self.is_plugin_enabled("scs-sdk-output")
+            && self.blackboard.get("scs_sdk_output.connected").as_deref() == Some("true");
+        let sink = if vjoy_writing {
+            "vjoy"
+        } else if scs_writing {
+            "scs_sdk"
+        } else {
+            "none"
+        };
+        self.blackboard.set("output.sink.configured", sink);
     }
 
     /// Process pending reload events. Call between tick() invocations only.
@@ -344,6 +422,8 @@ impl PluginManager {
     ) {
         self.tick_count = self.tick_count.wrapping_add(1);
         let tick_count = self.tick_count;
+        self.blackboard
+            .set("daemon.plugin_tick_count", tick_count.to_string());
 
         // Legacy bucket: plugins still on the old `tick(&mut output)`
         // API write here. Reset every tick so stale values don't stick.
@@ -353,6 +433,8 @@ impl PluginManager {
         // opinion (name, priority) so we can name the arbitration winner and
         // detect the dangerous "no steering opinion → legacy 0" fallback.
         let mut steer_offers: Vec<(String, i32)> = Vec::new();
+        let mut throttle_offers: Vec<(String, i32, f64)> = Vec::new();
+        let mut brake_offers: Vec<(String, i32, f64)> = Vec::new();
 
         // Output plugins (PostPhase) must observe the FINAL arbitrated output,
         // not intermediate legacy values. Collect their indices here, skip them
@@ -415,6 +497,12 @@ impl PluginManager {
                     if req.steering.is_some() {
                         steer_offers.push((p.name.clone(), req.priority));
                     }
+                    if let Some(thr) = req.throttle {
+                        throttle_offers.push((p.name.clone(), req.priority, thr));
+                    }
+                    if let Some(brk) = req.brake {
+                        brake_offers.push((p.name.clone(), req.priority, brk));
+                    }
                     requests.push(req);
                 }
                 Ok(None) => {}
@@ -471,6 +559,15 @@ impl PluginManager {
         self.blackboard.set(
             "arbitration.steering_value",
             format!("{:.6}", output.steering),
+        );
+
+        publish_longitudinal_arbitration_diag(
+            &self.blackboard,
+            &legacy,
+            &requests,
+            &throttle_offers,
+            &brake_offers,
+            *output,
         );
 
         // Tick all PostPhase (output) plugins with the final arbitrated value.
@@ -707,6 +804,86 @@ pub fn arbitrate(legacy: ControlOutput, requests: &[ControlRequest]) -> ControlO
         throttle,
         brake,
     }
+}
+
+/// Publish throttle/brake arbitration diagnostics (read-only).
+fn publish_longitudinal_arbitration_diag(
+    bb: &truckpilot_plugin_api::SharedBlackboard,
+    legacy: &ControlOutput,
+    _requests: &[truckpilot_plugin_api::ControlRequest],
+    throttle_offers: &[(String, i32, f64)],
+    brake_offers: &[(String, i32, f64)],
+    output: ControlOutput,
+) {
+    let brake_winner = brake_offers
+        .iter()
+        .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(name, _, v)| (name.as_str(), *v));
+    if legacy.brake > brake_winner.map(|(_, v)| v).unwrap_or(0.0) {
+        bb.set("arbitration.brake_winner_plugin", "legacy_default");
+    } else if let Some((name, _)) = brake_winner {
+        bb.set("arbitration.brake_winner_plugin", name);
+    } else {
+        bb.set("arbitration.brake_winner_plugin", "none");
+    }
+    bb.set(
+        "arbitration.brake_value",
+        format!("{:.6}", output.brake),
+    );
+    bb.set(
+        "arbitration.brake_offer_count",
+        brake_offers.len().to_string(),
+    );
+
+    let any_brake = output.brake > 0.0;
+    let throttle_winner_name = if any_brake {
+        throttle_offers
+            .iter()
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(name, _, _)| name.as_str())
+            .unwrap_or("legacy_default")
+    } else if let Some((name, _, _)) = throttle_offers
+        .iter()
+        .max_by_key(|(_, pri, _)| *pri)
+    {
+        name.as_str()
+    } else if legacy.throttle > 0.0 {
+        "legacy_default"
+    } else {
+        "none_legacy_default"
+    };
+    bb.set(
+        "arbitration.throttle_winner_plugin",
+        throttle_winner_name,
+    );
+    bb.set(
+        "arbitration.throttle_value",
+        format!("{:.6}", output.throttle),
+    );
+    bb.set(
+        "arbitration.throttle_offer_count",
+        throttle_offers.len().to_string(),
+    );
+
+    let longitudinal = if output.brake > 0.0 {
+        format!(
+            "brake:{} thr:{}",
+            bb.get("arbitration.brake_winner_plugin")
+                .unwrap_or_else(|| "none".into()),
+            throttle_winner_name
+        )
+    } else {
+        throttle_winner_name.to_string()
+    };
+    bb.set("arbitration.longitudinal_winner_plugin", longitudinal);
+    bb.set(
+        "arbitration.longitudinal_throttle_final",
+        format!("{:.6}", output.throttle),
+    );
+    bb.set(
+        "arbitration.longitudinal_brake_final",
+        format!("{:.6}", output.brake),
+    );
 }
 
 fn is_plugin_file(path: &Path) -> bool {

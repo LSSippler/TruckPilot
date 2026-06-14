@@ -950,6 +950,8 @@ const TELEMETRY_BLACKBOARD_KEYS: &[&str] = &[
     "telemetry.roll",
     "telemetry.speed_ms",
     "telemetry.engine_rpm",
+    "telemetry.engine_gear",
+    "telemetry.reverse_gear",
     "telemetry.cruise_control_kmh",
     "telemetry.nav_speed_limit_kmh",
     "telemetry.lead_vehicle_distance_m",
@@ -993,6 +995,11 @@ fn publish_telemetry_to_blackboard(t: Option<&Telemetry>, bb: &SharedBlackboard)
     bb.set("telemetry.roll", t.roll.to_string());
     bb.set("telemetry.speed_ms", t.speed_ms.to_string());
     bb.set("telemetry.engine_rpm", t.engine_rpm.to_string());
+    bb.set("telemetry.engine_gear", t.engine_gear.to_string());
+    bb.set(
+        "telemetry.reverse_gear",
+        if t.engine_gear < 0 { "true" } else { "false" },
+    );
     bb.set(
         "telemetry.cruise_control_kmh",
         t.cruise_control_kmh.to_string(),
@@ -1061,6 +1068,7 @@ mod telemetry_blackboard_tests {
             roll: 0.0,
             speed_ms: 22.222,
             engine_rpm: 1500.0,
+            engine_gear: 3,
             cruise_control_kmh: 80.0,
             nav_speed_limit_kmh: 80.0,
             lead_vehicle_distance_m: -1.0,

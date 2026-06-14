@@ -84,6 +84,7 @@ OFF_PHYS_ITEMS       = 0x50    # route_task + 0x50 (array_dyn.ptr)
 ITEM_STRIDE          = 0x40    # 1.59: 0x40 (1.58 war 0x20) — VERIFIZIERT
 OFF_ITEM_NODE        = 0x00    # 1.59: UID embedded @ +0x30, kein node*-Pfad
 OFF_ITEM_UID         = 0x30    # uid (u64) direkt im Item
+OFF_ITEM_ACTIVE      = 0x0C    # 0 = inactive tail padding (R3 termination)
 OFF_ITEM_DIST_LEFT   = 0x14    # 1.59: UNVERIFIZIERT (keine m-Werte)
 OFF_NODE_UID         = 0x30    # alias: embedded uid im Item
 OFF_GPS_TRIP_DIST    = 0x21C   # gps_manager trip_distance (float, m)
@@ -359,8 +360,15 @@ class Reader:
                 uids.append((uid, dist))
                 if i < 5 or i >= n - 2:
                     print(f"  item[{i}] uid={uid} dist_left={dist}")
+        # R3: trim trailing inactive slots (+0x0C == 0) past real route end
+        while uids:
+            last_item = arr_ptr + (len(uids) - 1) * ITEM_STRIDE
+            if self.u32(last_item + OFF_ITEM_ACTIVE) != 0:
+                break
+            uids.pop()
         if uids:
             print("-" * 60)
+            print(f"[walk-rt] COUNT = {len(uids)}")
             print(f"[walk-rt] ERSTE UID = {uids[0][0]}")
             print(f"[walk-rt] LETZTE UID = {uids[-1][0]}")
         return uids

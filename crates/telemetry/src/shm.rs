@@ -279,6 +279,7 @@ fn layout_to_telemetry(l: ShmTelemetryLayout) -> Telemetry {
         roll: l.roll,
         speed_ms: l.speed_ms,
         engine_rpm: l.engine_rpm,
+        engine_gear: l.engine_gear,
         cruise_control_kmh: l.cruise_control_speed_kmh,
         nav_speed_limit_kmh: if l.nav_speed_limit_valid != 0 {
             l.nav_speed_limit_kmh

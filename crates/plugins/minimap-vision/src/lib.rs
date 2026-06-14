@@ -299,13 +299,34 @@ impl Plugin for MinimapVisionPlugin {
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
+        // TOML-Settings übernehmen — der Plugin-Manager seedet [plugins.minimap-vision]
+        // vor on_load als `minimap_vision.<key>` ins Blackboard. Fehlende/unparsbare
+        // Keys behalten den Default aus `Settings::default()`.
+        if let Some(name) = ctx.blackboard.get("minimap_vision.shm_name") {
+            self.settings.shm_name = name;
+        }
+        if let Some(ms) = ctx.blackboard.get_f64("minimap_vision.stale_after_ms") {
+            self.settings.stale_after_ms = ms as u64;
+        }
+        if let Some(mpp) = ctx.blackboard.get_f64("minimap_vision.meters_per_pixel") {
+            self.settings.meters_per_pixel = mpp as f32;
+        }
+        if let Some(w) = ctx.blackboard.get_f64("minimap_vision.roi_w") {
+            self.settings.roi_w = w as u32;
+        }
+        if let Some(h) = ctx.blackboard.get_f64("minimap_vision.roi_h") {
+            self.settings.roi_h = h as u32;
+        }
+
         ctx_info!(
             ctx,
             target: "truckpilot_plugin_minimap_vision",
-            "loaded — shm='{}' stale_after_ms={} meters_per_pixel={}",
+            "loaded — shm='{}' stale_after_ms={} meters_per_pixel={} roi={}x{}",
             self.settings.shm_name,
             self.settings.stale_after_ms,
             self.settings.meters_per_pixel,
+            self.settings.roi_w,
+            self.settings.roi_h,
         );
 
         ctx.blackboard.set("minimap.healthy", "false");
@@ -511,6 +532,45 @@ mod tests {
         let w = pixel_to_world(100.0, 100.0, 100.0, 100.0, 500.0, 0.0, 1000.0, 10.0);
         assert!((w.x - 500.0).abs() < 0.01);
         assert!((w.z - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn pixel_to_world_calibrated_center_is_truck_pos() {
+        // Kalibrierte Werte (2026-06-12): ROI 444x355 → Zentrum (222, 177.5), 3.68 m/px.
+        let w = pixel_to_world(222.0, 177.5, 222.0, 177.5, 12359.3, 0.0, -6366.0, 3.68);
+        assert!((w.x - 12359.3).abs() < 0.01);
+        assert!((w.z - (-6366.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn on_load_reads_seeded_toml_settings() {
+        use truckpilot_plugin_api::{Plugin, PluginContext};
+        let ctx = PluginContext::test();
+        ctx.blackboard.set("minimap_vision.meters_per_pixel", "3.68");
+        ctx.blackboard.set("minimap_vision.roi_w", "444");
+        ctx.blackboard.set("minimap_vision.roi_h", "355");
+        ctx.blackboard.set("minimap_vision.stale_after_ms", "750");
+        ctx.blackboard.set("minimap_vision.shm_name", "TestShm");
+
+        let mut plugin = MinimapVisionPlugin::default();
+        plugin.on_load(&ctx);
+
+        assert!((plugin.settings.meters_per_pixel - 3.68).abs() < 1e-6);
+        assert_eq!(plugin.settings.roi_w, 444);
+        assert_eq!(plugin.settings.roi_h, 355);
+        assert_eq!(plugin.settings.stale_after_ms, 750);
+        assert_eq!(plugin.settings.shm_name, "TestShm");
+    }
+
+    #[test]
+    fn on_load_keeps_defaults_without_seeded_keys() {
+        use truckpilot_plugin_api::{Plugin, PluginContext};
+        let ctx = PluginContext::test();
+        let mut plugin = MinimapVisionPlugin::default();
+        plugin.on_load(&ctx);
+        assert!((plugin.settings.meters_per_pixel - 10.0).abs() < 1e-6);
+        assert_eq!(plugin.settings.roi_w, 200);
+        assert_eq!(plugin.settings.roi_h, 200);
     }
 
     #[test]

@@ -284,6 +284,8 @@ impl Plugin for ScsSdkOutputPlugin {
         ctx.blackboard.set("scs_sdk_output.active", "false");
         ctx.blackboard.remove("scs_sdk_output.last_error");
         ctx.blackboard.set("scs_sdk_output.last_write_tick", "0");
+        ctx.blackboard
+            .set("scs_sdk_output.init_state", "loaded_pending_shm");
 
         #[cfg(windows)]
         {
@@ -291,10 +293,14 @@ impl Plugin for ScsSdkOutputPlugin {
                 Ok(writer) => {
                     self.shm = Some(writer);
                     ctx.blackboard.set("scs_sdk_output.connected", "true");
+                    ctx.blackboard
+                        .set("scs_sdk_output.init_state", "shm_connected");
                     tracing::info!("[scs-sdk-output] control SHM opened — ready");
                 }
                 Err(e) => {
                     ctx.blackboard.set("scs_sdk_output.last_error", &e);
+                    ctx.blackboard
+                        .set("scs_sdk_output.init_state", "shm_open_failed");
                     tracing::warn!(
                         "[scs-sdk-output] SHM open failed (ETS2 not running?): {e} — will retry"
                     );
@@ -372,6 +378,8 @@ impl ScsSdkOutputPlugin {
                         self.shm = Some(writer);
                         ctx.blackboard.set("scs_sdk_output.connected", "true");
                         ctx.blackboard.remove("scs_sdk_output.last_error");
+                        ctx.blackboard
+                            .set("scs_sdk_output.init_state", "shm_connected");
                         tracing::info!("[scs-sdk-output] control SHM reconnected");
                     }
                     Err(e) => {
