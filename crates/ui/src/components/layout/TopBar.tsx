@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettingsStore, type Theme } from "@/stores/settings";
-import { openExternalDashboard } from "@/lib/tauri-bridge";
+import { openExternalDashboard, toggleOverlay } from "@/lib/tauri-bridge";
 
 function applyTheme(theme: Theme) {
   if (typeof document === "undefined") return;
@@ -43,6 +43,9 @@ export function TopBar() {
       <div className="flex items-center gap-2">
         <Button variant="outline" size="sm" onClick={() => void openExternalDashboard()}>
           Pop out dashboard (F2)
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => void toggleOverlay()}>
+          Toggle overlay
         </Button>
         <Button variant="ghost" size="icon" onClick={cycleTheme} aria-label="Toggle theme">
           <ThemeIcon className="size-4" />

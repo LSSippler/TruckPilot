@@ -1,4 +1,5 @@
 import {
+  getConnectionStatus,
   listenConnectionStatus,
   listenCoreEvent,
   sendCommand as invokeSendCommand,
@@ -92,6 +93,20 @@ export async function initIpcSubscriptions(): Promise<() => void> {
       useAutopilotStore.getState().clear();
     }
   });
+
+  // Seed the current status: `connection-status` only fires on CHANGE, so a
+  // window opened AFTER the bridge already connected (e.g. the overlay) would
+  // otherwise stay stuck on "disconnected" and never start the blackboard poll.
+  // Only seed while still in the initial state, so a real event that arrives
+  // first is never clobbered by this (possibly stale) snapshot.
+  void getConnectionStatus()
+    .then((status) => {
+      const st = useConnectionStore.getState();
+      if (st.status === "disconnected" && !st.helloReceived) {
+        st.setStatus(status);
+      }
+    })
+    .catch(() => {});
 
   const stopPoll = startBlackboardPoller();
 

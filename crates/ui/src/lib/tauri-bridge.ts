@@ -26,6 +26,10 @@ export async function openExternalDashboard(): Promise<void> {
   return invokeCommand("open_external_dashboard");
 }
 
+export async function toggleOverlay(): Promise<void> {
+  return invokeCommand("toggle_overlay");
+}
+
 export type DaemonState = "runningmanaged" | "runningexternal" | "stopped" | "crashed";
 
 export interface DaemonStatus {

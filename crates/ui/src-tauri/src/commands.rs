@@ -57,6 +57,12 @@ pub async fn close_external_dashboard(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Toggle the transparent HUD overlay window (Phase 6.5a).
+#[tauri::command]
+pub async fn toggle_overlay(app: AppHandle) -> Result<(), String> {
+    window_manager::toggle_overlay(&app).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn daemon_status(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
     Ok(daemon.status())

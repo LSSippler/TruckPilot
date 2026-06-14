@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities granted to the main and dashboard windows.",
-  "windows": ["main", "dashboard-window"],
+  "description": "Capabilities granted to the main, dashboard and overlay windows.",
+  "windows": ["main", "dashboard-window", "overlay"],
   "permissions": [
     "core:default",
     "core:event:default",

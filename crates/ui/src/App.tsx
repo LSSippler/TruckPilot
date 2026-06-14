@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { RouteShell } from "@/components/layout/RouteShell";
 import { Dashboard } from "@/routes/Dashboard";
@@ -10,6 +10,7 @@ import { Settings } from "@/routes/Settings";
 import { Logs } from "@/routes/Logs";
 import { Blackboard } from "@/routes/Blackboard";
 import { ExternalDashboard } from "@/routes/ExternalDashboard";
+import { Overlay } from "@/routes/Overlay";
 import { initIpcSubscriptions } from "@/lib/ipc";
 import { HotkeyHandler } from "@/components/HotkeyHandler";
 import { AutopilotToastWatcher } from "@/components/AutopilotToastWatcher";
@@ -22,10 +23,14 @@ export function App() {
     };
   }, []);
 
+  // The overlay window renders chrome-less and must NOT mount global chrome
+  // (toasts/hotkeys) — it shares this App but lives in its own webview.
+  const isOverlay = useLocation().pathname.startsWith("/overlay");
+
   return (
     <>
-      <HotkeyHandler />
-      <AutopilotToastWatcher />
+      {!isOverlay && <HotkeyHandler />}
+      {!isOverlay && <AutopilotToastWatcher />}
       <Routes>
         <Route element={<RouteShell />}>
           <Route index element={<Dashboard />} />
@@ -37,9 +42,10 @@ export function App() {
           <Route path="blackboard" element={<Blackboard />} />
         </Route>
         <Route path="external-dashboard" element={<ExternalDashboard />} />
+        <Route path="overlay" element={<Overlay />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <Toaster richColors position="bottom-right" closeButton />
+      {!isOverlay && <Toaster richColors position="bottom-right" closeButton />}
     </>
   );
 }

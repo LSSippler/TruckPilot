@@ -32,3 +32,9 @@ rand = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# Overlay snap-to-game + visibility gating (overlay_snap.rs): FindWindowW /
+# GetForegroundWindow / GetWindowRect / IsIconic.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }

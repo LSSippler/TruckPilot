@@ -152,22 +152,45 @@ impl DaemonManager {
             msg
         })?;
 
-        info!("spawning daemon: {}", binary.display());
-        let mut child = Command::new(&binary)
+        // The daemon resolves `truckpilot.toml`, `./plugins`, and `graph.json`
+        // RELATIVE TO ITS WORKING DIRECTORY (crates/core/src/main.rs:
+        // load_config / plugin_dir / load_map_graph_or_exit). A child inherits
+        // the UI's CWD, which under `tauri dev` is crates/ui — NOT the workspace
+        // root — so without an explicit cwd the daemon hard-exits ("graph.json
+        // not found", process::exit(1)) before it ever binds :8765, surfacing as
+        // a permanent "Disconnected". Run it where its data lives.
+        let workdir = daemon_working_dir(&binary);
+        info!(
+            "spawning daemon: {} (cwd: {})",
+            binary.display(),
+            workdir
+                .as_deref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "<inherited>".into())
+        );
+        let mut command = Command::new(&binary);
+        command
             .arg("daemon")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                let msg = format!("spawn daemon: {e}");
-                *self.last_error.lock().unwrap() = Some(msg.clone());
-                msg
-            })?;
+            .stdin(Stdio::null());
+        if let Some(dir) = workdir.as_deref() {
+            command.current_dir(dir);
+        }
+        let mut child = command.spawn().map_err(|e| {
+            let msg = format!("spawn daemon: {e}");
+            *self.last_error.lock().unwrap() = Some(msg.clone());
+            msg
+        })?;
 
-        // Post-spawn verification: poll the port up to N times. If it never
-        // comes up, the daemon likely failed (e.g. AddrInUse race) — reap it
-        // and surface the error instead of leaving a zombie marked managed.
+        *self.binary.lock().unwrap() = Some(binary);
+
+        // Post-spawn: the IPC port (:8765) is bound only AFTER the daemon parses
+        // graph.json (Roads 366k / Nodes 1.1M — several seconds). Poll briefly
+        // for an optimistic fast-path, but treat ONLY an actual child exit as
+        // failure. If the child is alive but the port isn't up yet, adopt it and
+        // let the IpcBridge reconnect loop connect once loading finishes —
+        // killing a healthy-but-slow daemon here was the old bug.
         let mut listening = false;
         for attempt in 0..POST_SPAWN_RETRIES {
             std::thread::sleep(POST_SPAWN_INTERVAL);
@@ -175,7 +198,6 @@ impl DaemonManager {
                 let msg = format!("daemon exited during startup with {exit}");
                 warn!("{msg}");
                 *self.last_error.lock().unwrap() = Some(msg.clone());
-                *self.binary.lock().unwrap() = Some(binary);
                 return Err(msg);
             }
             if Self::port_listening() {
@@ -185,21 +207,13 @@ impl DaemonManager {
             }
         }
 
-        *self.binary.lock().unwrap() = Some(binary);
-        if listening {
-            *self.child.lock().unwrap() = Some(child);
-            *self.last_error.lock().unwrap() = None;
-        } else {
-            // Port never came up — kill the orphan and report.
-            let _ = child.kill();
-            let _ = child.wait();
-            let msg = format!(
-                "daemon spawned but port :{DAEMON_PORT} never opened ({} probes)",
-                POST_SPAWN_RETRIES
+        *self.child.lock().unwrap() = Some(child);
+        *self.last_error.lock().unwrap() = None;
+        if !listening {
+            info!(
+                "daemon spawned, still loading (port :{DAEMON_PORT} not up after \
+                 {POST_SPAWN_RETRIES} probes) — bridge will connect when ready"
             );
-            warn!("{msg}");
-            *self.last_error.lock().unwrap() = Some(msg.clone());
-            return Err(msg);
         }
         Ok(self.status())
     }
@@ -285,6 +299,23 @@ fn locate_daemon_binary() -> io::Result<PathBuf> {
         io::ErrorKind::NotFound,
         format!("daemon binary '{exe_name}' not found near UI exe or in target/"),
     ))
+}
+
+/// Working directory for the spawned daemon. `truckpilot-core` loads
+/// `truckpilot.toml`, `./plugins`, and `graph.json` relative to its CWD, so it
+/// must run from the directory that holds them:
+///   * dev: the workspace root (parent of `target/`), found by climbing from
+///     the binary path;
+///   * bundle / env-override: the directory containing the binary (data is
+///     deployed alongside it).
+fn daemon_working_dir(binary: &Path) -> Option<PathBuf> {
+    let dir = binary.parent()?;
+    if let Some(target) = climb_to_workspace_target(dir) {
+        if let Some(root) = target.parent() {
+            return Some(root.to_path_buf());
+        }
+    }
+    Some(dir.to_path_buf())
 }
 
 /// From a path inside `target/...`, climb up to the `target/` directory itself.

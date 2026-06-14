@@ -384,3 +384,15 @@
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ---- Overlay window (Phase 6.5a): transparent, click-through HUD ---- */
+/* `overlay-active` is toggled on <html> ONLY inside the dedicated overlay   */
+/* webview (routes/Overlay.tsx). The main window's document never gets this  */
+/* class, so its background is unaffected. Overrides the base `body`         */
+/* background so the transparent Tauri window shows the game underneath.     */
+html.overlay-active,
+html.overlay-active body,
+html.overlay-active #root {
+  background: transparent !important;
+  background-color: transparent !important;
+}

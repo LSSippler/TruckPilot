@@ -4,6 +4,7 @@ mod daemon_config;
 mod hotkey_config;
 mod hotkey_manager;
 mod ipc_bridge;
+mod overlay_snap;
 mod steam_detect;
 mod window_manager;
 
@@ -64,6 +65,7 @@ pub fn run() {
             commands::detect_ets2_path,
             commands::open_external_dashboard,
             commands::close_external_dashboard,
+            commands::toggle_overlay,
             commands::daemon_status,
             commands::daemon_start,
             commands::daemon_stop,
