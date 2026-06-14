@@ -46,6 +46,12 @@ const LANE_TO_ROUTE_TICKS: u64 = 100; // 2s at 50 Hz
 const TO_DEGRADED_TICKS: u64 = 250; // 5s at 50 Hz
 const DEGRADED_RECOVERY_TICKS: u64 = 100; // 2s at 50 Hz
 const DEGRADED_TIMEOUT_TICKS: u64 = 1500; // 30s at 50 Hz
+/// Max snap distance (m) for `truck_on_route` engage gate. Router publishes
+/// `router.last_snap_dist` every tick; override via
+/// `plugin.router.truck_on_route_snap_dist_m`.
+const TRUCK_ON_ROUTE_SNAP_DIST_M: f64 = 5.0;
+const HEADING_ALIGNED_MAX_DEG: f64 = 45.0;
+const HEADING_OK_FOR_ENGAGE_MAX_DEG: f64 = 60.0;
 
 // ---- AutopilotState --------------------------------------------------------
 
@@ -430,6 +436,11 @@ impl AutopilotStateMachine {
                         self.max_stable_counter_in_engaging,
                         self.last_failure_reason,
                     );
+                    Self::record_off_transition(
+                        AutopilotState::Engaging,
+                        &format!("engaging_timeout:{}", self.last_failure_reason),
+                        bb,
+                    );
                     self.state = AutopilotState::Off;
                     self.engaging_ticks = 0;
                     self.precondition_stable_ticks = 0;
@@ -445,6 +456,11 @@ impl AutopilotStateMachine {
                 if let Some(t) = telemetry {
                     if check_steering_override(Some(t)) {
                         tracing::info!("[state] Active -> Off (steering override)");
+                        Self::record_off_transition(
+                            AutopilotState::Active,
+                            "steering_override",
+                            bb,
+                        );
                         self.state = AutopilotState::Off;
                         self.engine_off_ticks = 0;
                         self.publish(bb);
@@ -479,6 +495,14 @@ impl AutopilotStateMachine {
                                 "[state] Active -> Off (mode changed: {} -> {})",
                                 self.mode_at_engage,
                                 current_mode,
+                            );
+                            Self::record_off_transition(
+                                AutopilotState::Active,
+                                &format!(
+                                    "mode_changed:{}->{}",
+                                    self.mode_at_engage, current_mode
+                                ),
+                                bb,
                             );
                             self.state = AutopilotState::Off;
                             self.engine_off_ticks = 0;
@@ -532,6 +556,11 @@ impl AutopilotStateMachine {
                     self.engine_off_ticks = 0;
                 } else if self.paused_ticks > PAUSE_TIMEOUT {
                     tracing::info!("[state] Paused -> Off (5 min timeout)");
+                    Self::record_off_transition(
+                        AutopilotState::Paused,
+                        "paused_timeout_5min",
+                        bb,
+                    );
                     self.state = AutopilotState::Off;
                     self.paused_ticks = 0;
                     self.engine_off_ticks = 0;
@@ -632,6 +661,7 @@ impl AutopilotStateMachine {
             | (AutopilotState::Active, AutopilotEvent::UserDisengage)
             | (AutopilotState::Paused, AutopilotEvent::UserDisengage) => {
                 tracing::info!("[state] {:?} -> Off (user disengage)", self.state);
+                Self::record_off_transition(self.state, "user_disengage", bb);
                 self.state = AutopilotState::Off;
                 self.engaging_ticks = 0;
                 self.paused_ticks = 0;
@@ -647,6 +677,7 @@ impl AutopilotStateMachine {
             }
             (AutopilotState::Fault, AutopilotEvent::UserReset) => {
                 tracing::info!("[state] Fault -> Off (user reset)");
+                Self::record_off_transition(AutopilotState::Fault, "fault_reset", bb);
                 self.state = AutopilotState::Off;
                 self.fault_reason = None;
                 self.engine_off_ticks = 0;
@@ -870,8 +901,20 @@ impl AutopilotStateMachine {
         self.lane_only_engage = false;
     }
 
+    fn record_off_transition(from: AutopilotState, reason: &str, bb: &SharedBlackboard) {
+        bb.set(
+            "state.last_transition",
+            format!("{}->Off", from.as_str()),
+        );
+        bb.set("state.last_disengage_reason", reason);
+    }
+
     fn publish(&self, bb: &SharedBlackboard) {
         bb.set("autopilot.state", self.state.as_str());
+        bb.set(
+            "state.state_age_ticks",
+            self.state_entry_ticks.to_string(),
+        );
         match (&self.fault_reason, self.state) {
             (Some(r), AutopilotState::Fault) => bb.set("autopilot.fault_reason", r.as_str()),
             _ => bb.set("autopilot.fault_reason", ""),
@@ -937,26 +980,14 @@ impl AutopilotStateMachine {
             .map(|d| d < 20.0)
             .unwrap_or(false);
 
-        let heading_aligned = match &self.last_telemetry {
-            Some(t) => compute_heading_aligned(t, bb),
-            None => false,
-        };
+        let heading_aligned = compute_heading_aligned_from_lane_keeper(bb);
 
         let route_planned = bb
             .get("router.last_planning_result")
             .map(|s| s == "ok")
             .unwrap_or(false);
 
-        let truck_on_route = match (
-            bb.get("router.last_snap_edge_id")
-                .and_then(|s| s.trim().parse::<u64>().ok()),
-            bb.get("router.route_edge_ids"),
-        ) {
-            (Some(e), Some(ref set)) => set
-                .split(',')
-                .any(|s| s.trim().parse::<u64>().ok() == Some(e)),
-            _ => false,
-        };
+        let truck_on_route = compute_truck_on_route(bb);
 
         let speed_ok = self
             .last_telemetry
@@ -964,11 +995,9 @@ impl AutopilotStateMachine {
             .map(|t| t.speed_ms > 1.4)
             .unwrap_or(false);
 
-        // Hard-block engage if heading deviation exceeds 60°. None (no waypoints) → allow.
-        let heading_ok_for_engage = match &self.last_telemetry {
-            Some(t) => heading_diff_degrees(t, bb).is_none_or(|d| d < 60.0),
-            None => true,
-        };
+        // Hard-block engage if heading deviation exceeds 60°. Missing lane-keeper
+        // key → allow (lane-keeper publishes on previous tick; absent = not ready yet).
+        let heading_ok_for_engage = heading_ok_for_engage_from_lane_keeper(bb);
 
         let mode = bb
             .get("plugin.lane_keeper.mode")
@@ -1083,12 +1112,35 @@ impl AutopilotStateMachine {
         if let Some(dist) = bb.get("router.last_snap_dist") {
             bb.set("state.engage_detail_snap_dist_m", &dist);
         }
+        let truck_threshold = truck_on_route_snap_threshold_m(bb);
+        bb.set(
+            "state.gate_truck_on_route_value",
+            bb.get("router.last_snap_dist")
+                .unwrap_or_else(|| String::new()),
+        );
+        bb.set(
+            "state.gate_truck_on_route_threshold",
+            format!("{truck_threshold:.1}"),
+        );
+        if let Some(d) = lane_keeper_engage_heading_diff_deg(bb) {
+            bb.set("state.gate_heading_aligned_value", format!("{d:.1}"));
+            bb.set(
+                "state.gate_heading_aligned_threshold",
+                format!("{HEADING_ALIGNED_MAX_DEG:.1}"),
+            );
+            bb.set("state.gate_heading_ok_value", format!("{d:.1}"));
+            bb.set(
+                "state.gate_heading_ok_threshold",
+                format!("{HEADING_OK_FOR_ENGAGE_MAX_DEG:.1}"),
+            );
+            bb.set("state.engage_detail_heading_diff_deg", format!("{d:.1}"));
+        } else {
+            bb.set("state.gate_heading_aligned_value", "");
+            bb.set("state.gate_heading_ok_value", "");
+        }
         if let Some(t) = &self.last_telemetry {
-            if let Some(d) = heading_diff_degrees(t, bb) {
-                bb.set("state.engage_detail_heading_diff_deg", format!("{:.1}", d));
-            }
             let kmh = t.speed_ms * 3.6;
-            bb.set("state.engage_detail_speed_kmh", format!("{:.1}", kmh));
+            bb.set("state.engage_detail_speed_kmh", format!("{kmh:.1}"));
             if let Some(last_time) = self.last_telemetry_time {
                 let age_ms = last_time.elapsed().as_millis();
                 bb.set("state.engage_detail_telemetry_age_ms", age_ms.to_string());
@@ -1226,6 +1278,11 @@ impl AutopilotStateMachine {
                     self.degraded_timeout_ticks += 1;
                     if self.degraded_timeout_ticks >= DEGRADED_TIMEOUT_TICKS {
                         tracing::info!("[state] Active -> Off (degraded 30s timeout)");
+                        Self::record_off_transition(
+                            AutopilotState::Active,
+                            "degraded_timeout_30s",
+                            bb,
+                        );
                         self.state = AutopilotState::Off;
                         self.state_entry_ticks = 0;
                         self.reset_engage_mode_timers();
@@ -1340,32 +1397,40 @@ fn precondition_failure_reason(pre: &Preconditions) -> &'static str {
 
 // ---- Heading alignment helpers (Phase 6.5r) ---------------------------------
 
-pub fn compute_heading_aligned(telemetry: &Telemetry, bb: &SharedBlackboard) -> bool {
-    let waypoints_json = match bb.get("router.waypoints") {
-        Some(json) => json,
-        None => return false,
-    };
-    let wps: Vec<[f64; 2]> = match serde_json::from_str(&waypoints_json) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    if wps.len() < 2 {
-        return true;
-    }
-    let tx = telemetry.position[0];
-    let tz = telemetry.position[2];
-    let dx = wps[1][0] - tx;
-    let dz = wps[1][1] - tz;
-    let len = (dx * dx + dz * dz).sqrt();
-    if len < 0.01 {
-        return true;
-    }
-    let (dir_x, dir_z) = (dx / len, dz / len);
-    let heading_rad = -telemetry.heading * std::f64::consts::TAU;
-    let fw_x = heading_rad.sin();
-    let fw_z = -heading_rad.cos();
-    let dot = fw_x * dir_x + fw_z * dir_z;
-    dot >= 0.707
+/// Snap-distance threshold for the `truck_on_route` gate (override via blackboard).
+fn truck_on_route_snap_threshold_m(bb: &SharedBlackboard) -> f64 {
+    bb.get_f64("plugin.router.truck_on_route_snap_dist_m")
+        .unwrap_or(TRUCK_ON_ROUTE_SNAP_DIST_M)
+}
+
+/// `true` when the truck is within [`truck_on_route_snap_threshold_m`] of the route snap.
+/// Uses `router.last_snap_dist`, which the production router publishes every tick.
+pub fn compute_truck_on_route(bb: &SharedBlackboard) -> bool {
+    let threshold = truck_on_route_snap_threshold_m(bb);
+    bb.get("router.last_snap_dist")
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .is_some_and(|d| d >= 0.0 && d < threshold)
+}
+
+/// Lane-keeper heading diff vs nearest heading-filtered spline segment (−1 = sentinel).
+pub fn lane_keeper_engage_heading_diff_deg(bb: &SharedBlackboard) -> Option<f64> {
+    bb.get("lane_keeper.engage_heading_diff_deg")
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|&d| d >= 0.0)
+}
+
+pub fn compute_heading_aligned_from_lane_keeper(bb: &SharedBlackboard) -> bool {
+    lane_keeper_engage_heading_diff_deg(bb)
+        .is_none_or(|d| d <= HEADING_ALIGNED_MAX_DEG)
+}
+
+pub fn heading_ok_for_engage_from_lane_keeper(bb: &SharedBlackboard) -> bool {
+    lane_keeper_engage_heading_diff_deg(bb).is_none_or(|d| d < HEADING_OK_FOR_ENGAGE_MAX_DEG)
+}
+
+/// Engage gate: heading aligned when lane-keeper reports diff ≤ 45°. Missing key → allow.
+pub fn compute_heading_aligned(_telemetry: &Telemetry, bb: &SharedBlackboard) -> bool {
+    compute_heading_aligned_from_lane_keeper(bb)
 }
 
 /// Returns `true` if the next meaningful waypoint is in the truck's forward hemisphere.
@@ -1400,26 +1465,8 @@ fn waypoint_ahead_of_truck(bb: &SharedBlackboard, pos_x: f64, pos_z: f64, headin
     (fw_x * dx + fw_z * dz) / len >= 0.0
 }
 
-pub fn heading_diff_degrees(telemetry: &Telemetry, bb: &SharedBlackboard) -> Option<f64> {
-    let waypoints_json = bb.get("router.waypoints")?;
-    let wps: Vec<[f64; 2]> = serde_json::from_str(&waypoints_json).ok()?;
-    if wps.len() < 2 {
-        return Some(0.0);
-    }
-    let tx = telemetry.position[0];
-    let tz = telemetry.position[2];
-    let dx = wps[1][0] - tx;
-    let dz = wps[1][1] - tz;
-    let len = (dx * dx + dz * dz).sqrt();
-    if len < 0.01 {
-        return Some(0.0);
-    }
-    let (dir_x, dir_z) = (dx / len, dz / len);
-    let heading_rad = -telemetry.heading * std::f64::consts::TAU;
-    let fw_x = heading_rad.sin();
-    let fw_z = -heading_rad.cos();
-    let dot = (fw_x * dir_x + fw_z * dir_z).clamp(-1.0, 1.0);
-    Some(dot.acos() * 180.0 / std::f64::consts::PI)
+pub fn heading_diff_degrees(_telemetry: &Telemetry, bb: &SharedBlackboard) -> Option<f64> {
+    lane_keeper_engage_heading_diff_deg(bb)
 }
 
 // ---- Tests -----------------------------------------------------------------
@@ -1436,6 +1483,7 @@ mod tests {
             roll: 0.0,
             speed_ms: 22.0, // ≈ 80 km/h
             engine_rpm: 1500.0,
+            engine_gear: 3,
             cruise_control_kmh: 80.0,
             nav_speed_limit_kmh: -1.0,
             lead_vehicle_distance_m: -1.0,
@@ -2025,10 +2073,11 @@ mod tests {
         let ep = sm.evaluate_engagement_preconditions(&bb);
         assert!(!ep.telemetry_fresh);
         assert!(!ep.truck_on_road);
-        assert!(!ep.heading_aligned);
+        assert!(ep.heading_aligned, "missing lane-keeper key → neutral/allow");
         assert!(!ep.route_planned);
         assert!(!ep.truck_on_route);
         assert!(!ep.speed_ok);
+        assert!(ep.heading_ok_for_engage, "missing lane-keeper key → neutral/allow");
     }
 
     #[test]
@@ -2102,22 +2151,18 @@ mod tests {
         sm.last_telemetry_time = Some(std::time::Instant::now());
 
         let bb = SharedBlackboard::new();
-        bb.set("router.last_snap_dist", "5.0");
-        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
+        bb.set("router.last_snap_dist", "4.0");
         bb.set("router.last_planning_result", "ok");
-        bb.set("router.last_snap_edge_id", "1");
-        bb.set("router.route_edge_ids", "1,2,3");
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
 
         let ep = sm.evaluate_engagement_preconditions(&bb);
 
-        // With fresh telemetry + heading=0, and waypoints [[0,0],[100,0]],
-        // truck at (0,0,0) with heading=0: forward = (sin(0), -cos(0)) = (0, -1)
-        // dir to wp[1] = (100, 0), dot = 0 → heading_aligned = false
-        // We need waypoints that align better with heading 0 (North = -Z)
         assert!(ep.telemetry_fresh, "mock_running at start should be fresh");
-        assert!(ep.truck_on_road, "snap_dist 5.0 < 20.0");
+        assert!(ep.truck_on_road, "snap_dist 4.0 < 20.0");
         assert!(ep.route_planned, "last_planning_result=ok");
-        assert!(ep.truck_on_route, "snap_edge 1 in route 1,2,3");
+        assert!(ep.truck_on_route, "snap_dist 4.0 < 5.0 threshold");
+        assert!(ep.heading_aligned, "6.5° <= 45°");
+        assert!(ep.heading_ok_for_engage, "6.5° < 60°");
         assert!(ep.speed_ok, "22 m/s > 1.4");
     }
 
@@ -2146,28 +2191,35 @@ mod tests {
     }
 
     #[test]
-    fn compute_heading_aligned_dot_product() {
+    fn compute_heading_aligned_uses_lane_keeper_key() {
         let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
+        let t = mock_running();
 
-        // heading 0.75 (East, ETS2 0..1): fw=(1,0), dot=1.0 >= 0.707 → true
-        let t = Telemetry {
-            position: [0.0, 0.0, 0.0],
-            heading: 0.75,
-            ..mock_running()
-        };
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
         assert!(compute_heading_aligned(&t, &bb));
 
-        // heading 0.5 (South, ETS2 0..1): fw=(0,1), dot=0 → false
-        let t2 = Telemetry { heading: 0.5, ..t };
-        assert!(!compute_heading_aligned(&t2, &bb));
+        bb.set("lane_keeper.engage_heading_diff_deg", "46.0");
+        assert!(!compute_heading_aligned(&t, &bb));
+
+        bb.set("lane_keeper.engage_heading_diff_deg", "45.0");
+        assert!(compute_heading_aligned(&t, &bb));
+
+        bb.remove("lane_keeper.engage_heading_diff_deg");
+        assert!(
+            compute_heading_aligned(&t, &bb),
+            "missing key → neutral/allow"
+        );
     }
 
     #[test]
-    fn compute_heading_aligned_missing_waypoints() {
+    fn compute_heading_aligned_rejects_sentinel() {
         let bb = SharedBlackboard::new();
+        bb.set("lane_keeper.engage_heading_diff_deg", "-1.0");
         let t = mock_running();
-        assert!(!compute_heading_aligned(&t, &bb));
+        assert!(
+            compute_heading_aligned(&t, &bb),
+            "-1 sentinel → treat as absent → allow"
+        );
     }
 
     #[test]
@@ -2281,29 +2333,28 @@ mod tests {
     }
 
     #[test]
-    fn engagement_precondition_truck_on_route_missing() {
+    fn engagement_precondition_truck_on_route_snap_dist() {
         let sm = AutopilotStateMachine::new();
         let bb = SharedBlackboard::new();
         let ep = sm.evaluate_engagement_preconditions(&bb);
-        assert!(
-            !ep.truck_on_route,
-            "missing both edge_id and route_edge_ids"
-        );
+        assert!(!ep.truck_on_route, "missing snap_dist");
 
-        bb.set("router.last_snap_edge_id", "42");
+        bb.set("router.last_snap_dist", "abc");
         let ep = sm.evaluate_engagement_preconditions(&bb);
-        assert!(
-            !ep.truck_on_route,
-            "edge_id present but route_edge_ids missing"
-        );
+        assert!(!ep.truck_on_route, "unparseable snap_dist");
 
-        bb.set("router.route_edge_ids", "1,2,3");
+        bb.set("router.last_snap_dist", "5.0");
         let ep = sm.evaluate_engagement_preconditions(&bb);
-        assert!(!ep.truck_on_route, "42 not in [1,2,3]");
+        assert!(!ep.truck_on_route, "5.0 m is NOT < 5.0 threshold (strict)");
 
-        bb.set("router.last_snap_edge_id", "2");
+        bb.set("router.last_snap_dist", "4.9");
         let ep = sm.evaluate_engagement_preconditions(&bb);
-        assert!(ep.truck_on_route, "2 is in [1,2,3]");
+        assert!(ep.truck_on_route, "4.9 m < 5.0");
+
+        bb.set("plugin.router.truck_on_route_snap_dist_m", "10.0");
+        bb.set("router.last_snap_dist", "9.5");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        assert!(ep.truck_on_route, "override threshold 10 m");
     }
 
     #[test]
@@ -2323,66 +2374,33 @@ mod tests {
     }
 
     #[test]
-    fn heading_aligned_single_waypoint_returns_true() {
+    fn heading_aligned_threshold_from_lane_keeper() {
         let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0]]");
         let t = mock_running();
+
+        bb.set("lane_keeper.engage_heading_diff_deg", "45.0");
         assert!(
             compute_heading_aligned(&t, &bb),
-            "single waypoint: no direction → always aligned"
+            "45° should pass aligned gate"
         );
-    }
 
-    #[test]
-    fn heading_aligned_waypoint_on_truck_returns_true() {
-        let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,0.0]]");
-        let mut t = mock_running();
-        t.position = [0.0, 0.0, 0.0];
-        assert!(
-            compute_heading_aligned(&t, &bb),
-            "truck on waypoint → len < 0.01 → always aligned"
-        );
-    }
-
-    #[test]
-    fn heading_aligned_invalid_json_waypoints_returns_false() {
-        let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "not valid json");
-        let t = mock_running();
+        bb.set("lane_keeper.engage_heading_diff_deg", "45.1");
         assert!(
             !compute_heading_aligned(&t, &bb),
-            "invalid JSON should return false"
+            ">45° should fail aligned gate"
         );
     }
 
     #[test]
-    fn heading_aligned_46_degrees_returns_false() {
+    fn heading_ok_for_engage_threshold_from_lane_keeper() {
         let bb = SharedBlackboard::new();
-        // Waypoint south of truck at (0, 0, 0): direction = (0, -1) in ETS2 units
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        assert!(heading_ok_for_engage_from_lane_keeper(&bb));
 
-        // heading 0.125 (NW, 45° CCW from N in ETS2): fw=(-0.707,-0.707)
-        // dot with (0,-1) = 0.707 → exactly threshold → aligned
-        let t_at_45 = Telemetry {
-            position: [0.0, 0.0, 0.0],
-            heading: 0.125,
-            ..mock_running()
-        };
-        assert!(
-            compute_heading_aligned(&t_at_45, &bb),
-            "45° should be at threshold"
-        );
+        bb.set("lane_keeper.engage_heading_diff_deg", "59.9");
+        assert!(heading_ok_for_engage_from_lane_keeper(&bb));
 
-        // heading 0.130 (≈47° CCW from N in ETS2): dot < 0.707 → misaligned
-        let t_over = Telemetry {
-            heading: 0.130,
-            ..t_at_45
-        };
-        assert!(
-            !compute_heading_aligned(&t_over, &bb),
-            ">45° misalignment should fail"
-        );
+        bb.set("lane_keeper.engage_heading_diff_deg", "60.0");
+        assert!(!heading_ok_for_engage_from_lane_keeper(&bb));
     }
 
     #[test]
@@ -2411,7 +2429,7 @@ mod tests {
 
         let bb = SharedBlackboard::new();
         bb.set("router.last_snap_dist", "12.3");
-        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
 
         let ep = sm.evaluate_engagement_preconditions(&bb);
         sm.publish_engagement_preconditions(&ep, &bb);
@@ -2424,23 +2442,24 @@ mod tests {
             bb.get("state.engage_detail_speed_kmh").as_deref(),
             Some("54.0")
         );
-        assert!(bb.get("state.engage_detail_heading_diff_deg").is_some());
+        assert_eq!(
+            bb.get("state.engage_detail_heading_diff_deg").as_deref(),
+            Some("6.5")
+        );
         assert!(bb.get("state.engage_detail_telemetry_age_ms").is_some());
     }
 
     #[test]
-    fn heading_diff_degrees_returns_none_for_missing_waypoints() {
+    fn heading_diff_degrees_reads_lane_keeper_key() {
         let bb = SharedBlackboard::new();
         let t = mock_running();
         assert_eq!(heading_diff_degrees(&t, &bb), None);
-    }
 
-    #[test]
-    fn heading_diff_degrees_returns_zero_for_single_waypoint() {
-        let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0]]");
-        let t = mock_running();
-        assert_eq!(heading_diff_degrees(&t, &bb), Some(0.0));
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
+        assert_eq!(heading_diff_degrees(&t, &bb), Some(6.5));
+
+        bb.set("lane_keeper.engage_heading_diff_deg", "-1.0");
+        assert_eq!(heading_diff_degrees(&t, &bb), None);
     }
 
     #[test]
@@ -2523,36 +2542,28 @@ mod tests {
     #[test]
     fn heading_ok_for_engage_aligned_passes() {
         let mut sm = AutopilotStateMachine::new();
-        let mut t = mock_running();
-        t.position = [0.0, 0.0, 0.0];
-        t.heading = 0.0; // north: fw=(0,-1)
-        sm.last_telemetry = Some(t);
+        sm.last_telemetry = Some(mock_running());
         sm.last_telemetry_time = Some(std::time::Instant::now());
         let bb = SharedBlackboard::new();
-        // Waypoints going north (−Z): diff ≈ 0° < 60° → ok
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
         let ep = sm.evaluate_engagement_preconditions(&bb);
         assert!(
             ep.heading_ok_for_engage,
-            "0° diff should pass 60° threshold"
+            "6.5° should pass 60° threshold"
         );
     }
 
     #[test]
     fn heading_ok_for_engage_reversed_fails() {
         let mut sm = AutopilotStateMachine::new();
-        let mut t = mock_running();
-        t.position = [0.0, 0.0, 0.0];
-        t.heading = 0.5; // south (ETS2 0..1): fw=(0,1)
-        sm.last_telemetry = Some(t);
+        sm.last_telemetry = Some(mock_running());
         sm.last_telemetry_time = Some(std::time::Instant::now());
         let bb = SharedBlackboard::new();
-        // Waypoints going north (−Z): diff = 180° > 60° → fail
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        bb.set("lane_keeper.engage_heading_diff_deg", "172.2");
         let ep = sm.evaluate_engagement_preconditions(&bb);
         assert!(
             !ep.heading_ok_for_engage,
-            "180° diff should fail 60° threshold"
+            "172° diff should fail 60° threshold"
         );
         assert!(
             !ep.hard_blockers_met(),
@@ -2561,29 +2572,26 @@ mod tests {
     }
 
     #[test]
-    fn heading_ok_for_engage_no_waypoints_allows_engage() {
+    fn heading_ok_for_engage_no_lane_keeper_key_allows_engage() {
         let mut sm = AutopilotStateMachine::new();
         sm.last_telemetry = Some(mock_running());
         sm.last_telemetry_time = Some(std::time::Instant::now());
-        let bb = SharedBlackboard::new(); // no waypoints
+        let bb = SharedBlackboard::new();
         let ep = sm.evaluate_engagement_preconditions(&bb);
         assert!(
             ep.heading_ok_for_engage,
-            "no waypoints → cannot measure → allow"
+            "missing lane-keeper key → neutral/allow"
         );
     }
 
     #[test]
     fn heading_hard_block_sets_engage_ready_false() {
         let mut sm = AutopilotStateMachine::new();
-        let mut t = mock_running();
-        t.position = [0.0, 0.0, 0.0];
-        t.heading = 0.5; // south/reversed (ETS2 0..1)
-        sm.last_telemetry = Some(t);
+        sm.last_telemetry = Some(mock_running());
         sm.last_telemetry_time = Some(std::time::Instant::now());
         let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
         bb.set("router.last_planning_result", "ok");
+        bb.set("lane_keeper.engage_heading_diff_deg", "172.2");
         let ep = sm.evaluate_engagement_preconditions(&bb);
         sm.publish_engagement_preconditions(&ep, &bb);
         assert_eq!(
@@ -2595,36 +2603,14 @@ mod tests {
             .get("state.engage_blocked_by")
             .unwrap_or_default()
             .contains("heading_ok_for_engage"));
+        assert_eq!(
+            bb.get("state.gate_heading_ok_value").as_deref(),
+            Some("172.2")
+        );
     }
 
     // ---- ETS2 heading convention (0..1 CCW from North) regression tests ------
-
-    #[test]
-    fn compute_heading_aligned_ets2_convention() {
-        let bb = SharedBlackboard::new();
-        bb.set("router.waypoints", "[[0.0,0.0],[100.0,0.0]]");
-
-        // East (0.75) facing east waypoint → aligned
-        let t_east = Telemetry {
-            position: [0.0, 0.0, 0.0],
-            heading: 0.75,
-            ..mock_running()
-        };
-        assert!(
-            compute_heading_aligned(&t_east, &bb),
-            "east heading, east waypoint → aligned"
-        );
-
-        // South (0.5) facing east waypoint → dot=0 → not aligned
-        let t_south = Telemetry {
-            heading: 0.5,
-            ..t_east
-        };
-        assert!(
-            !compute_heading_aligned(&t_south, &bb),
-            "south heading, east waypoint → not aligned"
-        );
-    }
+    // waypoint_ahead_of_truck still uses router.waypoints (engage-time helper only).
 
     #[test]
     fn waypoint_ahead_of_truck_ets2_south_ahead() {
@@ -2646,19 +2632,30 @@ mod tests {
     }
 
     #[test]
-    fn heading_diff_degrees_ets2_south_reversed() {
+    fn gate_diag_keys_published_from_lane_keeper() {
+        let mut sm = AutopilotStateMachine::new();
+        sm.last_telemetry = Some(mock_running());
+        sm.last_telemetry_time = Some(std::time::Instant::now());
         let bb = SharedBlackboard::new();
-        // South (0.5): fw=(0,1). Waypoint north at (0,-100) → diff ≈ 180°
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
-        let t = Telemetry {
-            position: [0.0, 0.0, 0.0],
-            heading: 0.5,
-            ..mock_running()
-        };
-        let diff = heading_diff_degrees(&t, &bb).expect("should return Some");
-        assert!(
-            (diff - 180.0).abs() < 0.01,
-            "south heading vs north waypoint → 180° diff, got {diff}"
+        bb.set("router.last_snap_dist", "0.4");
+        bb.set("lane_keeper.engage_heading_diff_deg", "6.5");
+        let ep = sm.evaluate_engagement_preconditions(&bb);
+        sm.publish_engagement_preconditions(&ep, &bb);
+        assert_eq!(
+            bb.get("state.gate_truck_on_route_value").as_deref(),
+            Some("0.4")
+        );
+        assert_eq!(
+            bb.get("state.gate_truck_on_route_threshold").as_deref(),
+            Some("5.0")
+        );
+        assert_eq!(
+            bb.get("state.gate_heading_aligned_value").as_deref(),
+            Some("6.5")
+        );
+        assert_eq!(
+            bb.get("state.engage_detail_heading_diff_deg").as_deref(),
+            Some("6.5")
         );
     }
 
@@ -2707,7 +2704,7 @@ mod tests {
         sm.last_telemetry_time = Some(std::time::Instant::now());
         let bb = SharedBlackboard::new();
         bb.set("router.last_planning_result", "ok");
-        bb.set("router.waypoints", "[[0.0,0.0],[0.0,-100.0]]");
+        bb.set("lane_keeper.engage_heading_diff_deg", "172.2");
         let ep = sm.evaluate_engagement_preconditions(&bb);
         sm.publish_engagement_preconditions(&ep, &bb);
         let advisory = bb.get("state.engage_advisory").unwrap_or_default();
