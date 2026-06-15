@@ -51,8 +51,11 @@
 //! | `lane_follower.rate_limit_active` | `"true"/"false"` | tightened rate-limit (`|lateral| > 3m`) |
 //! | `lane_follower.nearest_seg_is_prefab` | `"true"/"false"` | DS13c: nearest segment is a prefab NavCurve |
 //! | `lane_follower.nearest_seg_ai_path_uid` | u64 | DS13c: prefab ai_path array index (0 if road) |
-//! | `lane_follower.junction_detection_radius_m` | f64 metres | DS13c: snap radius for junction detection |
-//! | `lane_follower.junction_min_activation_frames` | u32 | DS13c: frames needed to activate junction |
+//! | `lane_follower.junction_detection_radius_m` | f64 metres | FIX 2: actual junction scan radius in use |
+//! | `lane_follower.junction_detection_spread_deg` | f64 degrees | FIX 2: actual edge-spread threshold in use |
+//! | `lane_follower.junction_forward_cone_deg` | f64 degrees | FIX 2: actual forward-cone half-angle in use |
+//! | `lane_follower.junction_min_activation_frames` | u32 | FIX 2: frames needed to activate junction |
+//! | `lane_follower.dead_end_fallback` | string | FIX 3: `"tangent"` when the dead_end tangent fallback fired, else `""` |
 //! | `lane_follower.junction_frames_count` | u32 | DS13c: consecutive positive detection frames |
 //! | `lane_follower.junction_phase_inside_threshold_m` | string | DS13c: "not_implemented" (no inside phase) |
 //! | `lane_follower.junction_phase_transitions_count` | u32 | DS13c: monotonic phase-string change counter |
@@ -77,7 +80,7 @@ use truckpilot_map_parser::{
         build_all_luts, build_forward_adjacency, lookahead, ArcLengthLUT, LOOKAHEAD_MAX_HOPS,
     },
     graph::MapGraph,
-    spline::{build_splines_ex, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3},
+    spline::{build_splines_ex, evaluate, evaluate_tangent, HermiteSegment, SegmentMetadata, Vec3},
     spline_index::{
         build_index, build_index_with_metadata, HeadingFilteredHit, NearestHit, SplineIndex,
     },
@@ -134,6 +137,21 @@ const DEFAULT_BIAS_MAX_PREFAB_DIST_M: f32 = 10.0;
 const LANE_OFFSET_RIGHT_M: f32 = LANE_WIDTH_M / 2.0;
 /// Default max heading diff for junction prefab-bias (Apollo max_lane_angle_diff_in_junction = 45°).
 const DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG: f32 = 45.0;
+
+// ── FIX 2: junction-detection tuning (conservative + configurable) ─────────
+// Detection used to be radius 25 m / spread 30° / 3 frames with NO forward cone,
+// so side/rear junction nodes triggered on straight multi-lane roads and chained
+// into the DS14 synthetic-lookahead failure (BEFUND 1). These defaults tighten
+// detection; the forward cone is the most important filter.
+/// Default junction scan radius (was 25 m).
+const DEFAULT_JUNCTION_DETECTION_RADIUS_M: f64 = 18.0;
+/// Default edge heading-spread threshold in degrees (was 30°).
+const DEFAULT_JUNCTION_DETECTION_SPREAD_DEG: f64 = 50.0;
+/// Default consecutive frames required to activate (was 3).
+const DEFAULT_JUNCTION_MIN_ACTIVATION_FRAMES: u32 = 6;
+/// Default forward-cone half-angle in degrees: a node only counts when it lies
+/// within ±this of the truck heading.
+const DEFAULT_JUNCTION_FORWARD_CONE_DEG: f64 = 60.0;
 /// Active-segment memory: frames out of junction zone before resetting.
 const ACTIVE_SEG_RESET_FRAMES: u32 = 10;
 /// Active-segment memory: max age in seconds before resetting.
@@ -188,7 +206,6 @@ impl LaneFollowerMode {
 // Plugin struct
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
 pub struct LaneFollowerPlugin {
     index: Option<Arc<SplineIndex>>,
     luts: Vec<ArcLengthLUT>,
@@ -242,6 +259,52 @@ pub struct LaneFollowerPlugin {
     out_of_zone_frames: u32,
     /// Cumulative count of ticks where heading filter found no aligned prefab in bias zone.
     bias_rejected_heading_count: u32,
+    // ── FIX 2: junction-detection config (loaded from truckpilot.toml) ───────
+    /// Junction scan radius in metres (default 18).
+    junction_detection_radius_m: f64,
+    /// Edge heading-spread threshold in radians (default 50°).
+    junction_detection_spread_rad: f64,
+    /// Forward-cone half-angle in radians (default 60°).
+    junction_forward_cone_rad: f64,
+}
+
+impl Default for LaneFollowerPlugin {
+    fn default() -> Self {
+        Self {
+            index: None,
+            luts: Vec::new(),
+            forward_adj: HashMap::new(),
+            lookahead_seg_history: VecDeque::new(),
+            mode: LaneFollowerMode::default(),
+            tick_count: 0,
+            last_steering_cmd: None,
+            steering_ema: 0.0,
+            steering_rate_limited_prev: 0.0,
+            router_graph: None,
+            junction_detector: JunctionDetector::default(),
+            minimap_index: None,
+            last_minimap_ts: 0,
+            minimap_confidence: 0.0,
+            saturated_ticks: 0,
+            spline_lost_ticks: 0,
+            safety_disengage_count: 0,
+            road_seg_count: 0,
+            prev_junction_phase: None,
+            junction_phase_transitions: 0,
+            bias_radius_m: 0.0,
+            bias_max_prefab_dist_m: 0.0,
+            junction_max_heading_diff_rad: 0.0,
+            last_active_segment_idx: None,
+            last_active_segment_at: None,
+            out_of_zone_frames: 0,
+            bias_rejected_heading_count: 0,
+            // FIX 2: live defaults so direct-constructed instances (and tests using
+            // `..Default::default()`) detect junctions sensibly without on_load.
+            junction_detection_radius_m: DEFAULT_JUNCTION_DETECTION_RADIUS_M,
+            junction_detection_spread_rad: DEFAULT_JUNCTION_DETECTION_SPREAD_DEG.to_radians(),
+            junction_forward_cone_rad: DEFAULT_JUNCTION_FORWARD_CONE_DEG.to_radians(),
+        }
+    }
 }
 
 /// VMM-6: simple forward-walk lookahead over minimap segments (no LUT required).
@@ -253,7 +316,6 @@ fn minimap_lookahead(
     start_t: f32,
     dist_m: f32,
 ) -> Option<Vec3> {
-    use truckpilot_map_parser::spline::evaluate;
     let mut remaining = dist_m;
     let mut idx = start_idx;
     let mut t = start_t;
@@ -278,6 +340,35 @@ fn minimap_lookahead(
     } else {
         None
     }
+}
+
+/// FIX 1 + FIX 3: build a *road-relative* lookahead target.
+///
+/// Anchors at the spline point `evaluate(segment, t)`, projects `lookahead_dist_m`
+/// forward along the (normalised) road tangent, then shifts right by `lane_offset_m`
+/// along the right-normal. The returned `(x, z)` therefore sits a fixed distance
+/// AHEAD ALONG THE ROAD at the lane offset, so Pure-Pursuit's `y_local` becomes the
+/// truck's true cross-track error (small when aligned) instead of a constant
+/// `offset/8` saturation that a truck-relative target produces for every heading.
+fn road_tangent_lookahead(
+    segment: &HermiteSegment,
+    t: f32,
+    lookahead_dist_m: f32,
+    lane_offset_m: f32,
+) -> (f32, f32) {
+    let anchor = evaluate(segment, t);
+    let tan = evaluate_tangent(segment, t);
+    let len_xz = (tan.x * tan.x + tan.z * tan.z).sqrt();
+    let (fwd_x, fwd_z) = if len_xz > 1e-6 {
+        (tan.x / len_xz, tan.z / len_xz)
+    } else {
+        (0.0, 0.0)
+    };
+    // Right-normal in XZ: n = (-tz, tx) (matches the lane-offset convention above).
+    let (n_x, n_z) = (-fwd_z, fwd_x);
+    let x = anchor.x + fwd_x * lookahead_dist_m + n_x * lane_offset_m;
+    let z = anchor.z + fwd_z * lookahead_dist_m + n_z * lane_offset_m;
+    (x, z)
 }
 
 impl LaneFollowerPlugin {
@@ -591,6 +682,32 @@ impl Plugin for LaneFollowerPlugin {
             .unwrap_or(DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG)
             .to_radians();
 
+        // FIX 2: conservative junction-detection config (live-tunable).
+        self.junction_detection_radius_m = ctx
+            .blackboard
+            .get("lane_follower.junction_detection_radius_m")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(DEFAULT_JUNCTION_DETECTION_RADIUS_M);
+        self.junction_detection_spread_rad = ctx
+            .blackboard
+            .get("lane_follower.junction_detection_spread_deg")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(DEFAULT_JUNCTION_DETECTION_SPREAD_DEG)
+            .to_radians();
+        self.junction_forward_cone_rad = ctx
+            .blackboard
+            .get("lane_follower.junction_forward_cone_deg")
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(DEFAULT_JUNCTION_FORWARD_CONE_DEG)
+            .to_radians();
+        let min_activation_frames = ctx
+            .blackboard
+            .get("lane_follower.junction_min_activation_frames")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_JUNCTION_MIN_ACTIVATION_FRAMES);
+        self.junction_detector
+            .set_min_activation_frames(min_activation_frames);
+
         ctx_info!(
             ctx,
             "lane-follower: loaded (mode={}, index={}, bias_radius={:.1}m, bias_max_prefab={:.1}m, max_heading_diff={:.0}°)",
@@ -626,6 +743,12 @@ impl Plugin for LaneFollowerPlugin {
         self.out_of_zone_frames = 0;
         self.bias_rejected_heading_count = 0;
         self.junction_max_heading_diff_rad = DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG.to_radians();
+        // FIX 2: reset junction-detection config to defaults.
+        self.junction_detection_radius_m = DEFAULT_JUNCTION_DETECTION_RADIUS_M;
+        self.junction_detection_spread_rad = DEFAULT_JUNCTION_DETECTION_SPREAD_DEG.to_radians();
+        self.junction_forward_cone_rad = DEFAULT_JUNCTION_FORWARD_CONE_DEG.to_radians();
+        self.junction_detector
+            .set_min_activation_frames(DEFAULT_JUNCTION_MIN_ACTIVATION_FRAMES);
     }
 
     fn tick(
@@ -668,11 +791,29 @@ impl Plugin for LaneFollowerPlugin {
         ctx.blackboard
             .set("lane_follower.truck_z", format!("{truck_z:.3}"));
 
+        // ETS2 SDK heading is 0..1 CCW from North; convert to CW degrees (0=N, 90=E).
+        // FIX 2: needed for the junction forward-cone filter (computed before detection).
+        let truck_heading_deg = ((-tel.heading) * 360.0).rem_euclid(360.0) as f32;
+        let truck_heading_rad_f64 = (truck_heading_deg as f64).to_radians();
+
+        // FIX 2: junction-detection tuning (live values from config).
+        let junction_radius_m = self.junction_detection_radius_m;
+        let junction_spread_rad = self.junction_detection_spread_rad;
+        let junction_cone_rad = self.junction_forward_cone_rad;
+
         // Junction detection — runs regardless of index availability.
         // Returns (active, distance_m) for DS13d prefab-bias query below.
         let (junction_active_for_bias, junction_distance_for_bias): (bool, Option<f64>) = {
             let detection = if let Some(graph) = self.router_graph.as_deref() {
-                detect_junction(graph, truck_x, truck_z)
+                detect_junction(
+                    graph,
+                    truck_x,
+                    truck_z,
+                    truck_heading_rad_f64,
+                    junction_radius_m,
+                    junction_spread_rad,
+                    junction_cone_rad,
+                )
             } else {
                 junction::JunctionDetection {
                     is_junction: false,
@@ -700,14 +841,22 @@ impl Plugin for LaneFollowerPlugin {
             );
             // DS13c – TASK 3: Hypothesis D — why does phase never transition to "inside"?
             // Note: JunctionPhase has no "inside"/"crossing" state; "approaching" is the only
-            // active phase. SNAP_RADIUS_M is the detection radius — not an inside threshold.
+            // active phase. FIX 2: these keys now report the ACTUAL config in use.
             ctx.blackboard.set(
                 "lane_follower.junction_detection_radius_m",
-                format!("{:.1}", junction::SNAP_RADIUS_M),
+                format!("{junction_radius_m:.1}"),
+            );
+            ctx.blackboard.set(
+                "lane_follower.junction_detection_spread_deg",
+                format!("{:.1}", junction_spread_rad.to_degrees()),
+            );
+            ctx.blackboard.set(
+                "lane_follower.junction_forward_cone_deg",
+                format!("{:.1}", junction_cone_rad.to_degrees()),
             );
             ctx.blackboard.set(
                 "lane_follower.junction_min_activation_frames",
-                junction::MIN_ACTIVATION_FRAMES.to_string(),
+                self.junction_detector.min_activation_frames().to_string(),
             );
             ctx.blackboard.set(
                 "lane_follower.junction_frames_count",
@@ -749,8 +898,7 @@ impl Plugin for LaneFollowerPlugin {
             if using_minimap { "minimap" } else { "map" },
         );
 
-        // ETS2 SDK heading is 0..1 CCW from North; convert to CW degrees (0=N, 90=E).
-        let truck_heading_deg = ((-tel.heading) * 360.0).rem_euclid(360.0) as f32;
+        // truck_heading_deg was computed above (before junction detection).
         let query = Vec3::new(truck_x as f32, tel.position[1] as f32, truck_z as f32);
 
         // DS13d/DS13e: heading-aware prefab-bias in junction zone.
@@ -1037,13 +1185,16 @@ impl Plugin for LaneFollowerPlugin {
 
         // Lookahead — computed before warn-checks so keys are always present after a hit.
         // VMM-6: minimap uses simple forward-walk (no LUT); primary uses arc-length LUT.
-        let la_point_opt: Option<Vec3> = if using_minimap {
+        // The bool flag marks a "dead_end" lookahead (FIX 3): a phantom point at a
+        // truncated NavCurve end that must NOT feed steering directly.
+        let la_point_opt: Option<(Vec3, bool)> = if using_minimap {
             minimap_lookahead(
                 index.segments.as_slice(),
                 hit.segment_idx,
                 hit.t,
                 lookahead_dist_m,
             )
+            .map(|p| (p, false))
         } else if !self.luts.is_empty() {
             lookahead(
                 hit.segment_idx,
@@ -1107,15 +1258,50 @@ impl Plugin for LaneFollowerPlugin {
                     if jump_count < 3 { "true" } else { "false" },
                 );
 
-                la.point
+                (la.point, la_status == "dead_end")
             })
         } else {
             None
         };
 
-        if let Some(la_pt) = la_point_opt {
-            let la = la_pt;
-            {
+        if let Some((la_pt, is_dead_end)) = la_point_opt {
+            if is_dead_end {
+                // FIX 3: the LUT walk hit a truncated NavCurve end — `la_pt` is a phantom
+                // point that drags the heading 38–41° off-axis (below HEADING_WARN_DEG=90°,
+                // so it slips through into steering as a κ-spike). Instead, project the
+                // lookahead road-relatively along the nearest segment's tangent — i.e. keep
+                // going straight along the current spline. (Do NOT hold last steer, do NOT
+                // use the phantom point.) Same construction as the FIX 1 synthetic target.
+                let (offset_lx, offset_lz) = road_tangent_lookahead(
+                    &index.segments[hit.segment_idx],
+                    hit.t,
+                    lookahead_dist_m,
+                    lane_offset_m,
+                );
+                ctx.blackboard
+                    .set("lane_follower.lookahead_x", format!("{offset_lx:.3}"));
+                ctx.blackboard
+                    .set("lane_follower.lookahead_z", format!("{offset_lz:.3}"));
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_offset_x",
+                    format!("{offset_lx:.3}"),
+                );
+                ctx.blackboard.set(
+                    "lane_follower.lookahead_offset_z",
+                    format!("{offset_lz:.3}"),
+                );
+                // Diagnostic: surface that the tangent fallback fired this tick.
+                ctx.blackboard
+                    .set("lane_follower.dead_end_fallback", "tangent");
+                let dx = offset_lx - query.x;
+                let dz = offset_lz - query.z;
+                let heading_to_la = dx.atan2(-dz).to_degrees().rem_euclid(360.0);
+                ctx.blackboard.set(
+                    "lane_follower.heading_to_lookahead_deg",
+                    format!("{heading_to_la:.2}"),
+                );
+            } else {
+                let la = la_pt;
                 ctx.blackboard
                     .set("lane_follower.lookahead_x", format!("{:.3}", la.x));
                 ctx.blackboard
@@ -1140,6 +1326,8 @@ impl Plugin for LaneFollowerPlugin {
                     "lane_follower.lookahead_offset_z",
                     format!("{offset_lz:.3}"),
                 );
+                // Clear stale fallback marker on the normal path.
+                ctx.blackboard.set("lane_follower.dead_end_fallback", "");
 
                 let dx = la.x - query.x;
                 let dz = la.z - query.z;
@@ -1151,46 +1339,34 @@ impl Plugin for LaneFollowerPlugin {
             }
         }
 
-        // DS14: Synthetic lookahead for none_found gap junctions (K2 coverage gaps).
+        // DS14 / FIX 1: Synthetic lookahead for none_found gap junctions (K2 coverage gaps).
         //
         // When the prefab-bias query returns none_found, the normal lookahead above landed
-        // on a road dead-end at the junction edge (la_point_opt = Some(junction_edge)).
-        // That dead-end lookahead is behind the truck once it enters the gap, causing
-        // Pure-Pursuit to steer off-course.
+        // on a road dead-end at the junction edge. That dead-end target sits behind the truck
+        // once it enters the gap, so it must be overwritten.
         //
-        // Fix: overwrite lookahead_offset_x/z with a synthetic target computed directly
-        // from truck heading + road_look lane offset.  This block runs AFTER the normal
-        // lookahead block so it cleanly overwrites the stale dead-end value.
+        // OLD behaviour (BEFUND 1): the synthetic target was built TRUCK-relative
+        // (truck + forward·lookahead + right·offset). In Pure-Pursuit that makes
+        // `y_local ≡ offset` for EVERY heading, so `steering = offset/8` saturates to a
+        // constant (~0.70 at offset≈5.6 m) — the truck cranks the wheel regardless of
+        // its actual cross-track error.
         //
-        // Inherent heading bias: because the target is truck-relative (not road-relative),
-        // heading_to_lookahead_deg − truck_heading_deg = atan2(offset, lookahead_dist)
-        // = atan2(1.875m, 15m) ≈ 7.1° regardless of truck position.  This is intentional:
-        // Pure-Pursuit steers toward the right-lane target; the bias is accepted/harmless
-        // for short gaps (<100m) because the EMA+rate-limiter dampens actual heading change.
-        //
-        // Right-normal convention (matches existing code at ~line 788):
-        //   forward  = (sin h, -cos h)  in XZ   [0=North=-Z, 90=East=+X]
-        //   right    = (cos h,  sin h)  in XZ
-        //   Proof h=0 (North): right=(1,0)=East ✓   h=90 (East): right=(0,1)=South ✓
+        // FIX 1: build the synthetic target ROAD-relative via `road_tangent_lookahead`
+        // (anchor at the nearest road point, project forward along the road tangent,
+        // shift right by the lane offset). Now `y_local` is the truck's real cross-track
+        // error — small when aligned — so the wheel is no longer pinned. We use the SAME
+        // `lane_offset_m` as the normal path for consistency (see the ≈5.6m-vs-3.75m note
+        // in the summary). This block runs AFTER the normal lookahead so it cleanly
+        // overwrites the stale dead-end value.
         let lateral_source: &'static str = if bias_accepted {
             "navcurve"
         } else if bias_rejected_reason == "none_found" {
-            let h_rad = truck_heading_deg.to_radians();
-            let fwd_x = h_rad.sin();
-            let fwd_z = -h_rad.cos();
-            let right_x = h_rad.cos(); // right-normal: (cos h, sin h)
-            let right_z = h_rad.sin();
-            let synth_offset_m = seg_meta
-                .map(|m| {
-                    if m.is_prefab {
-                        LANE_OFFSET_RIGHT_M
-                    } else {
-                        m.lane_offset_right_m
-                    }
-                })
-                .unwrap_or(LANE_OFFSET_RIGHT_M);
-            let synth_la_x = truck_x as f32 + fwd_x * lookahead_dist_m + right_x * synth_offset_m;
-            let synth_la_z = truck_z as f32 + fwd_z * lookahead_dist_m + right_z * synth_offset_m;
+            let (synth_la_x, synth_la_z) = road_tangent_lookahead(
+                &index.segments[hit.segment_idx],
+                hit.t,
+                lookahead_dist_m,
+                lane_offset_m,
+            );
             ctx.blackboard
                 .set("lane_follower.lookahead_x", format!("{synth_la_x:.3}"));
             ctx.blackboard
@@ -1203,14 +1379,19 @@ impl Plugin for LaneFollowerPlugin {
                 "lane_follower.lookahead_offset_z",
                 format!("{synth_la_z:.3}"),
             );
-            let heading_to_la = (synth_la_x - truck_x as f32)
-                .atan2(-(synth_la_z - truck_z as f32))
+            let heading_to_la = (synth_la_x - query.x)
+                .atan2(-(synth_la_z - query.z))
                 .to_degrees()
                 .rem_euclid(360.0);
             ctx.blackboard.set(
                 "lane_follower.heading_to_lookahead_deg",
                 format!("{heading_to_la:.2}"),
             );
+            // Reviewer issue 1: this none_found target supersedes any dead_end
+            // tangent fallback above (identical road_tangent_lookahead), so clear
+            // the marker — `lateral_source="road_offset"` is the single source of
+            // truth here, no ambiguous double marker in the blackboard.
+            ctx.blackboard.set("lane_follower.dead_end_fallback", "");
             "road_offset"
         } else {
             "road_center"
@@ -1454,6 +1635,7 @@ mod tests {
             pitch: 0.0,
             roll: 0.0,
             speed_ms: 0.0,
+            engine_gear: 0,
             engine_rpm: 0.0,
             cruise_control_kmh: 0.0,
             nav_speed_limit_kmh: -1.0,
@@ -2785,8 +2967,8 @@ mod tests {
             road_look_token: 0,
             is_prefab: true,
         });
-        let luts = build_all_luts(&[seg.clone()]);
-        let forward_adj = build_forward_adjacency(&[seg.clone()]);
+        let luts = build_all_luts(std::slice::from_ref(&seg));
+        let forward_adj = build_forward_adjacency(std::slice::from_ref(&seg));
         let index = build_index_with_metadata(vec![seg], vec![meta]);
         let mut plugin = LaneFollowerPlugin {
             index: Some(Arc::new(index)),
@@ -2861,7 +3043,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
-            lane_offset_right_m: 1.875,
+            lane_offset_right_m: 0.0,
             road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: false,
@@ -3264,8 +3446,11 @@ mod tests {
         );
     }
 
-    /// When none_found, lateral_source=road_offset and lookahead_offset_x/z are overwritten
-    /// with a synthetic target (truck_pos + forward*lookahead_dist + right*lane_offset).
+    /// FIX 1: When none_found, lateral_source=road_offset and lookahead_offset_x/z are
+    /// overwritten with a ROAD-relative synthetic target
+    /// (road_anchor + road_tangent*lookahead_dist + right*lane_offset), NOT the old
+    /// truck-relative target. With an East-going prefab and the truck centred on it, the
+    /// road tangent is +X, so the target projects 15 m East of the anchor at offset 0.
     #[test]
     fn ds14_none_found_sets_road_offset_and_synthetic_lookahead() {
         use truckpilot_map_parser::spline_index::build_index_with_metadata;
@@ -3329,9 +3514,10 @@ mod tests {
             "none_found must set lateral_source=road_offset"
         );
 
-        // Synthetic target: truck(0,0,-5) + forward(0,-1)*15 + right(1,0)*LANE_OFFSET_RIGHT_M
-        let expected_x = 0.0_f32 + 0.0 * 15.0 + 1.0 * LANE_OFFSET_RIGHT_M;
-        let expected_z = -5.0_f32 + (-1.0) * 15.0 + 0.0 * LANE_OFFSET_RIGHT_M;
+        // FIX 1: road-relative target. East-going prefab → tangent +X at the truck-centred
+        // anchor (0,-5). lane_offset_m=0 (prefab). target = anchor + tangent(1,0)*15 = (15,-5).
+        let expected_x = 15.0_f32;
+        let expected_z = -5.0_f32;
         let got_x: f32 = ctx
             .blackboard
             .get("lane_follower.lookahead_offset_x")
@@ -3351,6 +3537,207 @@ mod tests {
         assert!(
             (got_z - expected_z).abs() < 0.01,
             "lookahead_offset_z: expected {expected_z:.3} got {got_z:.3}"
+        );
+    }
+
+    /// FIX 1 (BEFUND 1): in the `none_found` junction path the synthetic lookahead is now
+    /// ROAD-relative (`road_tangent_lookahead`), so Pure-Pursuit `y_local` reflects the
+    /// truck's REAL cross-track error. When the truck is aligned with the road tangent and
+    /// centred on the lane, `steering_cmd` must be SMALL — NOT the old constant ~0.70 that
+    /// the truck-relative synthetic target produced for every heading.
+    ///
+    /// Setup that keeps the truck aligned while still forcing `none_found`: a regular
+    /// (non-prefab) East road through the truck is selected as the fallback hit by
+    /// `nearest_with_heading_filter` (dot=1 with the East-heading truck → heading_diff≈0),
+    /// while a North-going PREFAB at the truck is rejected by the prefab-only, heading-filtered
+    /// bias query (90° > 45° → `within_radius_filtered_heading` returns nothing → none_found).
+    ///
+    /// Truck heads East (ETS2 heading = -0.25 → truck_heading_deg = 90°) and sits on z=-5
+    /// (the East road's z) → lateral ≈ 0 → road-relative `y_local` ≈ 0 → tiny steer.
+    #[test]
+    fn fix1_junction_approaching_small_heading_diff_small_steer() {
+        use truckpilot_map_parser::spline_index::build_index_with_metadata;
+
+        // idx 0: regular East road (non-prefab) through the truck. Tangent +X → heading 90°.
+        let east_road = HermiteSegment {
+            p0: Vec3::new(-10.0, 0.0, -5.0),
+            p1: Vec3::new(10.0, 0.0, -5.0),
+            m0: Vec3::new(20.0, 0.0, 0.0),
+            m1: Vec3::new(20.0, 0.0, 0.0),
+            length_m: 20.0,
+            from_uid: 10,
+            to_uid: 11,
+            edge_uid: 10,
+        };
+        let road_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: false,
+            lane_offset_right_m: 0.0, // keep lane-centre = road-centre → aligned y_local ≈ 0
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_offset_m: 0.0,
+            road_look_token: 0,
+        });
+
+        // idx 1: North prefab at the truck. Tangent -Z → heading 0° → 90° off the East truck
+        // → heading-rejected by the prefab-only bias query → none_found.
+        let north_prefab = HermiteSegment {
+            p0: Vec3::new(0.0, 0.0, 0.0),
+            p1: Vec3::new(0.0, 0.0, -10.0),
+            m0: Vec3::new(0.0, 0.0, -10.0),
+            m1: Vec3::new(0.0, 0.0, -10.0),
+            length_m: 10.0,
+            from_uid: 100,
+            to_uid: 200,
+            edge_uid: 100,
+        };
+        let prefab_meta: Option<SegmentMetadata> = Some(SegmentMetadata {
+            is_prefab: true,
+            lane_offset_right_m: 0.0,
+            lanes_in_direction: 1,
+            lanes_opposite: 0,
+            lanes_total: 1,
+            lane_width_m: 3.75,
+            road_offset_m: 0.0,
+            road_look_token: 0,
+        });
+
+        let segs = vec![east_road, north_prefab];
+        let metas = vec![road_meta, prefab_meta];
+        let forward_adj = build_forward_adjacency(&segs);
+        let luts = build_all_luts(&segs);
+        let index = build_index_with_metadata(segs, metas);
+
+        let mut plugin = LaneFollowerPlugin {
+            index: Some(Arc::new(index)),
+            luts,
+            forward_adj,
+            // road_seg_count=1 so the prefab is index 1 (matches nearest_seg_ai_path_uid logic).
+            road_seg_count: 1,
+            router_graph: Some(Arc::new(make_junction_rg(0.0, -5.0))),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+
+        let ctx = PluginContext::test();
+        let mut out = ControlOutput::default();
+        // Truck at (0,0,-5) on the East road, heading East (ETS2 heading -0.25 → 90°).
+        let tel = make_telemetry(0.0, 0.0, -5.0, -0.25);
+        plugin.tick(Some(&tel), &mut out, &ctx);
+
+        // Prerequisites: we are on the none_found / road_offset path with an aligned truck.
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
+            Some("none_found"),
+            "prerequisite: prefab heading-rejected (90°>45°) → none_found"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_follower.lateral_source")
+                .as_deref(),
+            Some("road_offset"),
+            "prerequisite: none_found → road_offset synthetic lookahead"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_follower.status").as_deref(),
+            Some("ok"),
+            "prerequisite: aligned truck must pass the heading_warn guard → status=ok"
+        );
+        let heading_diff: f32 = ctx
+            .blackboard
+            .get("lane_follower.heading_diff_deg")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            heading_diff < 1.0,
+            "prerequisite: truck aligned with East road → heading_diff≈0, got {heading_diff:.2}°"
+        );
+
+        // CORE ASSERTION: the raw Pure-Pursuit steering_cmd must be SMALL — not the old ~0.70.
+        let steer: f64 = ctx
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .expect("steering_cmd must be present on status=ok")
+            .parse()
+            .unwrap();
+        assert!(
+            steer.abs() < 0.15,
+            "FIX 1: aligned/centred truck on none_found path must give a small steer, got {steer:.4}"
+        );
+        assert!(
+            (steer.abs() - 0.70).abs() > 0.3,
+            "FIX 1 regression: steer must NOT be the old constant ~0.70, got {steer:.4}"
+        );
+
+        // GEGENPROBE: shift the truck laterally North of the lane (z=-7.5 vs road z=-5).
+        // For an East-heading truck, North is to the LEFT, so the lane (and its road-relative
+        // lookahead target) sits to the truck's RIGHT → corrective steer must be POSITIVE and
+        // clearly larger than the aligned case.
+        let ctx2 = PluginContext::test();
+        let mut plugin2 = LaneFollowerPlugin {
+            index: plugin.index.clone(),
+            luts: build_all_luts(&[
+                HermiteSegment {
+                    p0: Vec3::new(-10.0, 0.0, -5.0),
+                    p1: Vec3::new(10.0, 0.0, -5.0),
+                    m0: Vec3::new(20.0, 0.0, 0.0),
+                    m1: Vec3::new(20.0, 0.0, 0.0),
+                    length_m: 20.0,
+                    from_uid: 10,
+                    to_uid: 11,
+                    edge_uid: 10,
+                },
+                HermiteSegment {
+                    p0: Vec3::new(0.0, 0.0, 0.0),
+                    p1: Vec3::new(0.0, 0.0, -10.0),
+                    m0: Vec3::new(0.0, 0.0, -10.0),
+                    m1: Vec3::new(0.0, 0.0, -10.0),
+                    length_m: 10.0,
+                    from_uid: 100,
+                    to_uid: 200,
+                    edge_uid: 100,
+                },
+            ]),
+            forward_adj: plugin.forward_adj.clone(),
+            road_seg_count: 1,
+            // Junction node placed straight ahead of the off-lane truck (East at x=3, z=-7.5)
+            // so the forward-cone gate still detects it → in_junction_zone stays true.
+            router_graph: Some(Arc::new(make_junction_rg(3.0, -7.5))),
+            junction_max_heading_diff_rad: std::f32::consts::PI / 4.0,
+            bias_radius_m: 30.0,
+            bias_max_prefab_dist_m: 10.0,
+            ..Default::default()
+        };
+        let mut out2 = ControlOutput::default();
+        // Truck 2.5 m North of the lane (z=-7.5), still heading East.
+        let tel_off = make_telemetry(0.0, 0.0, -7.5, -0.25);
+        plugin2.tick(Some(&tel_off), &mut out2, &ctx2);
+        assert_eq!(
+            ctx2.blackboard
+                .get("lane_follower.bias_prefab_rejected_reason")
+                .as_deref(),
+            Some("none_found"),
+            "gegenprobe: still on the none_found path"
+        );
+        let steer_off: f64 = ctx2
+            .blackboard
+            .get("lane_follower.steering_cmd")
+            .expect("steering_cmd present")
+            .parse()
+            .unwrap();
+        assert!(
+            steer_off > 0.05,
+            "gegenprobe: truck North of lane must steer corrective POSITIVE (toward lane to its right), got {steer_off:.4}"
+        );
+        assert!(
+            steer_off.abs() > steer.abs(),
+            "gegenprobe: off-lane steer {steer_off:.4} must exceed aligned steer {steer:.4}"
         );
     }
 
