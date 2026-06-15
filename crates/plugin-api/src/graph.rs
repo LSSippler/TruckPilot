@@ -118,8 +118,10 @@ impl RouterGraph {
     /// Find the best start node by projecting the truck position onto the nearest graph edge.
     ///
     /// Projects the truck's `(x, z)` onto every edge via point-to-segment math,
-    /// finds the closest edge within `max_dist_m`, then picks the from/to node
-    /// whose direction aligns with the truck's forward heading.
+    /// finds the closest edge within `max_dist_m`, then picks the **FROM** node
+    /// of the aligned edge as the A* start. Using `from_uid` (not `to_uid`) is
+    /// correct because A* traverses `from → to` in the forward direction; starting
+    /// from `to_uid` would make the only outgoing edge go backwards.
     ///
     /// Edges pointing **>120° against travel** (`dot < -0.5`) are rejected as
     /// snap candidates: on a divided highway the opposing carriageway is often
@@ -181,13 +183,17 @@ impl RouterGraph {
             // Alignment of the edge's intrinsic direction with truck heading.
             let len = len_sq.sqrt();
             let dot = ex / len * hx + ez / len * hz;
-            // Pick the node whose direction matches the truck heading.
-            let chosen = if dot >= 0.0 { to_uid } else { from_uid };
+            // A* routes from → to, so starting from `from_uid` on an aligned
+            // edge lets A* traverse the edge forward. For an opposed edge the
+            // "forward" segment runs the other way, so its from_uid is `to_uid`.
+            let routing_node = if dot >= 0.0 { from_uid } else { to_uid };
+            // Fallback always uses from_uid (graph-ordered start; broadest A* reach).
+            let fallback_node = from_uid;
 
             // Unfiltered fallback tracker (first-seen wins ties via strict `<`).
             if dist < fallback_dist {
                 fallback_dist = dist;
-                fallback_uid = Some(chosen);
+                fallback_uid = Some(fallback_node);
             }
             // Reject edges pointing >120° against travel (opposing carriageway).
             if dot < -0.5 {
@@ -196,7 +202,7 @@ impl RouterGraph {
             }
             if dist < best_dist {
                 best_dist = dist;
-                best_uid = Some(chosen);
+                best_uid = Some(routing_node);
             }
         }
 
@@ -327,10 +333,10 @@ mod tests {
             dist < 6.0,
             "distance to edge must be near 5m, got {dist:.2}"
         );
-        // Heading east → to-node (uid=2) should be chosen.
+        // Heading east → from-node (uid=1) is the A* start for forward traversal.
         assert_eq!(
-            uid, 2,
-            "heading east along edge → to-node (uid=2) must be chosen"
+            uid, 1,
+            "heading east along edge → from-node (uid=1) must be chosen so A* routes forward"
         );
 
         // Node-snap (20m) must fail at this position.
@@ -363,10 +369,10 @@ mod tests {
             .find_nearest_on_edge(100.0, -2.0, 0.75, 100.0)
             .expect("an aligned edge is within range");
         assert_eq!(
-            uid, 2,
-            "must snap to the aligned carriageway's forward node (2), not the closer opposing edge"
+            uid, 1,
+            "must snap to the aligned carriageway's from-node (1), not the closer opposing edge"
         );
-        assert_ne!(uid, 3, "must not pick the opposing edge's behind-node");
+        assert_ne!(uid, 3, "must not pick the opposing edge's from-node");
         assert!(filter_used, "heading gate selected the edge → flag true");
         assert!(
             rejected >= 1,
@@ -385,7 +391,7 @@ mod tests {
         let (uid, dist, filter_used, _rejected) = graph
             .find_nearest_on_edge(100.0, 2.0, 0.75, 100.0)
             .expect("edge in range");
-        assert_eq!(uid, 2, "heading East → forward node (2)");
+        assert_eq!(uid, 1, "heading East → from-node (1) for forward A* traversal");
         assert!(dist < 2.5, "distance ≈ 2 m, got {dist:.2}");
         assert!(filter_used);
     }
@@ -406,7 +412,7 @@ mod tests {
             "a 90° edge (dot=0 > -0.5) must not be rejected"
         );
         let (uid, _dist, filter_used, rejected) = result.unwrap();
-        assert_eq!(uid, 2, "dot >= 0 → to-node");
+        assert_eq!(uid, 1, "dot >= 0 → from-node (A* start)");
         assert!(filter_used, "selected by the gate, not the fallback");
         assert_eq!(rejected, 0, "90° edge must not increment rejected_by_heading");
     }
@@ -454,6 +460,79 @@ mod tests {
         assert!(
             filter_used,
             "ETS2 heading=0.5 (South) must accept south-pointing edge (filter_used=true)"
+        );
+    }
+
+    /// Fix regression: aligned edge must return from_uid so A* starts at the
+    /// segment origin and traverses from→to (forward direction).
+    #[test]
+    fn snap_from_node_for_a_star_alignment() {
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 100.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // Truck 5m south of midpoint, heading East (0.75 ETS2 → hx≈1, hz≈0, dot≈+1).
+        let (uid, _, filter_used, _) = graph
+            .find_nearest_on_edge(50.0, 5.0, 0.75, 20.0)
+            .expect("edge must be found");
+        assert_eq!(uid, 1, "aligned edge → from_uid=1 so A* routes 1→2 forward");
+        assert!(filter_used, "heading gate must accept the east-pointing edge");
+    }
+
+    /// Divided highway: the aligned carriageway's from_uid is chosen; the
+    /// opposing carriageway is rejected; rejected_by_heading is incremented.
+    #[test]
+    fn snap_returns_from_node_for_opposed_aligned_pair() {
+        // Edge 1→2 East at z=0; Edge 3→4 West at z=4 (opposing carriageway).
+        let nodes: Vec<(u64, f64, f64)> = vec![
+            (1, 0.0, 0.0),
+            (2, 100.0, 0.0),
+            (3, 100.0, 4.0),
+            (4, 0.0, 4.0),
+        ];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0), (3, 4, 100.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // Truck between carriageways, heading East.
+        let (uid, _, filter_used, rejected) = graph
+            .find_nearest_on_edge(50.0, 2.0, 0.75, 20.0)
+            .expect("aligned carriageway must be found");
+        assert_eq!(uid, 1, "from_uid of the east carriageway must be chosen");
+        assert!(filter_used, "heading gate selected the aligned edge");
+        assert!(
+            rejected >= 1,
+            "opposing carriageway must be counted as rejected_by_heading, got {rejected}"
+        );
+    }
+
+    /// When all edges are opposed (e.g. one-way against travel), the fallback
+    /// returns from_uid (graph-ordered start) — never to_uid.
+    #[test]
+    fn fallback_uses_from_node_when_all_opposed() {
+        // Only edge 1→2 East; truck heads West → dot≈-1, rejected.
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 100.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // heading=0.25 (ETS2 West → hx≈-1, hz≈0).
+        let result = graph
+            .find_nearest_on_edge(50.0, 2.0, 0.25, 20.0)
+            .expect("fallback must not be None");
+        let (_uid, _, filter_used, rejected) = result;
+        assert!(!filter_used, "heading gate rejected all → fallback used");
+        assert_eq!(rejected, 1, "single opposing edge must be counted");
+    }
+
+    /// Explicit assertion: fallback node is from_uid=1, not to_uid=2.
+    #[test]
+    fn counterflow_fallback_node_is_from_uid() {
+        let nodes: Vec<(u64, f64, f64)> = vec![(1, 0.0, 0.0), (2, 100.0, 0.0)];
+        let edges: Vec<(u64, u64, f64)> = vec![(1, 2, 100.0)];
+        let graph = RouterGraph::new(nodes, edges);
+        // Truck heading West (opposed to east edge).
+        let (uid, _, _, _) = graph
+            .find_nearest_on_edge(50.0, 2.0, 0.25, 20.0)
+            .expect("fallback must exist");
+        assert_eq!(
+            uid, 1,
+            "fallback must be from_uid=1 (graph-ordered start), not to_uid=2"
         );
     }
 }

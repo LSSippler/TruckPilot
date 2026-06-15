@@ -790,6 +790,10 @@ impl Plugin for RouterPlugin {
             if let Some(tel) = telemetry {
                 let pos_x = tel.position[0];
                 let pos_z = tel.position[2];
+                // Node-proximity check: is the nearest route node within radius?
+                // find_nearest_geometric is intentionally heading-blind here —
+                // the "truck counterflow but still near route nodes" case is
+                // handled by the heading_stage == "AutoReplan" trigger below.
                 let truck_on_route = self
                     .graph
                     .as_ref()
@@ -943,6 +947,7 @@ mod tests {
             pitch: 0.0,
             roll: 0.0,
             speed_ms: 0.0,
+            engine_gear: 0,
             engine_rpm: 0.0,
             cruise_control_kmh: 0.0,
             nav_speed_limit_kmh: -1.0,
