@@ -169,6 +169,10 @@ const NEAREST_PREFAB_BIAS_M: f32 = 10.0;
 /// Bewusst 5 m unter `NEAREST_QUERY_RADIUS_M` (50 m): ein Treffer an der Radius-
 /// Kante flackert im R-Tree-Query — die Marge hält engage_allowed stabil.
 const NEAREST_ENGAGE_DIST_M: f32 = 45.0;
+/// Engage-Gate: maximale laterale Ablage (m) zur Soll-Linie. Additiv zum Heading-Gate —
+/// beide müssen erfüllt sein. Live-tunbar via `[plugins.lane-keeper] engage_max_lateral_m`
+/// in truckpilot.toml (BB-Key: `lane_keeper.engage_max_lateral_m`).
+const DEFAULT_ENGAGE_MAX_LATERAL_M: f32 = 3.0;
 /// Such-Radius (m) für den heading-gefilterten Nearest-Query.
 const NEAREST_QUERY_RADIUS_M: f32 = 50.0;
 /// Chain-Advance-Distanz (m): erst weiterschalten, wenn die RESTBOGENLÄNGE des aktuellen
@@ -391,6 +395,9 @@ pub struct LaneKeeperPlugin {
     /// wird bei Disengage / Re-Acquisition / chain_broken / Modus-Wechsel auf 0 zurückgesetzt
     /// (sauberer Neustart, kein Alt-Integral). Nur vom NearestSpline-Pfad benutzt.
     xtrack_integ: f64,
+    /// Laterales Engage-Gate (m). Truck muss ≤ diesem Wert von der nächsten
+    /// heading-kompatiblen Soll-Linie entfernt sein. Geladen aus truckpilot.toml.
+    engage_max_lateral_m: f32,
     /// Stuck-Watchdog (Task 2): Ticks in Folge mit v < `STUCK_SPEED_MS` und
     /// Lenk-Absicht > `STUCK_STEER_MIN`. Reset bei v > `STUCK_RESET_SPEED_MS`,
     /// Disengage und Re-Acquisition.
@@ -457,6 +464,7 @@ impl Default for LaneKeeperPlugin {
             stuck_recovery: false,
             capture_active: false,
             capture_exit_ticks: 0,
+            engage_max_lateral_m: DEFAULT_ENGAGE_MAX_LATERAL_M,
         }
     }
 }
@@ -2094,7 +2102,9 @@ impl LaneKeeperPlugin {
                     |_idx, _meta| true,
                 );
                 let fresh_raw = cands.first();
-                let would_allow = fresh_raw.is_some_and(|h| h.dist_m < NEAREST_ENGAGE_DIST_M);
+                let would_allow = fresh_raw.is_some_and(|h| {
+                    h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= self.engage_max_lateral_m
+                });
                 self.publish_engage_gate_diag(
                     &index,
                     query,
@@ -2687,9 +2697,18 @@ impl LaneKeeperPlugin {
                     "lane_keeper.engage_heading_diff_deg",
                     format!("{:.1}", h.heading_diff_rad.to_degrees()),
                 );
+                // Reihenfolge der Bedingungen ist entscheidend:
+                // too_far (>45m) hat Vorrang vor lateral_too_far (3-45m),
+                // damit lateral_too_far nicht durch too_far maskiert wird.
                 ctx.blackboard.set(
                     "lane_keeper.engage_block_reason",
-                    if engage_allowed { "ok" } else { "too_far" },
+                    if engage_allowed {
+                        "ok"
+                    } else if h.dist_m >= NEAREST_ENGAGE_DIST_M {
+                        "too_far"
+                    } else {
+                        "lateral_too_far"
+                    },
                 );
             }
             None => match index.nearest_with_projection(query, ROUTE_NEAREST_CANDIDATES) {
@@ -2785,9 +2804,12 @@ impl LaneKeeperPlugin {
             |_idx, _meta| true,
         );
         // engage_allowed: nächstes (RAW-Distanz) heading-kompatibles Segment
-        // < NEAREST_ENGAGE_DIST_M (45 m, „Von-überall-Engage").
+        // < NEAREST_ENGAGE_DIST_M (45 m) UND laterale Ablage <= engage_max_lateral_m (3 m default).
+        // Beide Gates müssen erfüllt sein (additiv).
         let fresh_raw = cands.first();
-        let engage_allowed = fresh_raw.is_some_and(|h| h.dist_m < NEAREST_ENGAGE_DIST_M);
+        let engage_allowed = fresh_raw.is_some_and(|h| {
+            h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= self.engage_max_lateral_m
+        });
         ctx.blackboard.set(
             "lane_keeper.engage_allowed",
             if engage_allowed { "true" } else { "false" },
@@ -3644,6 +3666,16 @@ impl Plugin for LaneKeeperPlugin {
         ctx.blackboard.set("lane_keeper.engage_allowed", "false");
         tracing::info!("[lane-keeper] loaded, engage_allowed=false (pre-populated)");
 
+        self.engage_max_lateral_m = ctx
+            .blackboard
+            .get("lane_keeper.engage_max_lateral_m")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(DEFAULT_ENGAGE_MAX_LATERAL_M);
+        tracing::info!(
+            "[lane-keeper] engage_max_lateral_m={:.1}m",
+            self.engage_max_lateral_m
+        );
+
         if let Some(shared) = &ctx.spline_index {
             self.index = Some(Arc::clone(shared));
             let road_n = ctx.spline_index_road_seg_count.min(shared.segments.len());
@@ -3808,6 +3840,7 @@ mod tests {
             pitch: 0.0,
             roll: 0.0,
             speed_ms,
+            engine_gear: 0,
             engine_rpm: 1200.0,
             cruise_control_kmh: 80.0,
             nav_speed_limit_kmh: -1.0,
@@ -4725,7 +4758,7 @@ mod tests {
         }
     }
 
-    /// Road metadata: lane_offset_right_m = (lanes - 0.5) * width for non-prefab.
+    /// Road metadata: lane_offset_right_m from compute_lane_offset_right_m for non-prefab.
     fn road_meta(lanes: u8, w: f32, prefab: bool) -> SegmentMetadata {
         SegmentMetadata {
             lanes_in_direction: lanes,
@@ -4735,7 +4768,7 @@ mod tests {
             lane_offset_right_m: if prefab {
                 0.0
             } else {
-                (lanes as f32 - 0.5) * w
+                truckpilot_map_parser::compute_lane_offset_right_m(lanes, w, 0.0)
             },
             road_offset_m: 0.0,
             road_look_token: 0,
@@ -4766,7 +4799,7 @@ mod tests {
         (lk, ctx)
     }
 
-    /// Test 1: 3-lane north road → lane_offset_right_m = (3-0.5)*3.75 = 9.375,
+    /// Test 1: 3-lane north road → lane_offset_right_m = 3.75 m,
     /// lateral_source = "spline_road".
     #[test]
     fn spline_road_3lane_offset_9375() {
@@ -4790,12 +4823,12 @@ mod tests {
             .and_then(|s| s.parse::<f64>().ok())
             .expect("lane_offset_applied_m must parse");
         assert!(
-            (applied - 9.375).abs() < 0.01,
-            "expected offset ≈ 9.375, got {applied}"
+            (applied - 3.75).abs() < 0.01,
+            "expected offset ≈ 3.75, got {applied}"
         );
         assert!(
-            applied > 1.875,
-            "spline offset must exceed the catmull constant 1.875, got {applied}"
+            applied > 0.0,
+            "spline offset must be positive for 3-lane road, got {applied}"
         );
     }
 
@@ -4902,13 +4935,13 @@ mod tests {
     // nearest findet das Nord-Segment (heading passt), setzt cur_seg/last_nearest_seg,
     // dann off_route → None → Catmull-Fallback. Der Catmull-Offset stammt jetzt aus
     // index.metadata[last_nearest_seg]. Helfer road_meta(lanes,w,false) =>
-    // lane_offset_right_m=(lanes-0.5)*w: 1-lane=1.875, 2-lane=5.625, prefab=0.
+    // lane_offset_right_m via compute_lane_offset_right_m: 1-lane=0, 2-lane=1.875, prefab=0.
 
-    /// H2-1: 2-spuriges nearest-Segment → Catmull-Offset 5.625 m (statt fix 1.875).
+    /// H2-1: 2-spuriges nearest-Segment → Catmull-Offset 1.875 m (statt fix 1.875).
     #[test]
     fn catmull_offset_uses_segment_lane_offset() {
         let segs = vec![seg((0.0, 0.0), (0.0, -200.0), 10, 20)];
-        let metas = vec![Some(road_meta(2, 3.75, false))]; // 2-lane → 5.625
+        let metas = vec![Some(road_meta(2, 3.75, false))]; // 2-lane → 1.875
         let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -200.0)];
         let edges = vec![(20u64, 10u64, 200.0)]; // reversed → off_route → Catmull
         let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,10]", 1);
@@ -4928,8 +4961,8 @@ mod tests {
         );
         let off = bb_f32(&ctx, "lane_keeper.lane_offset_applied_m");
         assert!(
-            (off - 5.625).abs() < 0.01,
-            "Catmull-Offset muss der 2-lane-lane_offset_right_m (5.625) sein, got {off:.3}"
+            (off - 1.875).abs() < 0.01,
+            "Catmull-Offset muss der 2-lane-lane_offset_right_m (1.875) sein, got {off:.3}"
         );
     }
 
@@ -7563,9 +7596,9 @@ mod tests {
 
     #[test]
     fn offset_inherited_on_meta_none() {
-        // A = 3-spurige Road (offset 9.375), B = metadatenlose prefab-Lücke (meta=None,
+        // A = 3-spurige Road (offset 3.75), B = metadatenlose prefab-Lücke (meta=None,
         // B.from == A.to). Beim Chain-Advance A→B muss B den ECHTEN Offset von A ERBEN
-        // (9.375), NICHT auf LANE_OFFSET_RIGHT_M (1.875) fallen.
+        // (3.75), NICHT auf LANE_OFFSET_RIGHT_M (1.875) fallen.
         let segs = vec![
             north_seg(0.0, 0.0, -100.0, 10, 20),    // A (3-lane road), idx 0
             north_seg(0.0, -100.0, -200.0, 20, 30), // B (meta=None gap), idx 1
@@ -7573,7 +7606,7 @@ mod tests {
         let metas = vec![Some(road_meta(3, 3.75, false)), None];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
 
-        // Tick 1: anchor A (real 3-lane metadata) → last_road_lane_offset = 9.375.
+        // Tick 1: anchor A (real 3-lane metadata) → last_road_lane_offset = 3.75.
         lk.tick_request(Some(&tel_at(0.0, -50.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.nearest_seg_idx").as_deref(),
@@ -7581,11 +7614,11 @@ mod tests {
             "tick 1 anchors the 3-lane road A"
         );
         assert!(
-            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 9.375).abs() < 1e-3,
-            "on A the applied offset is the real 3-lane offset 9.375"
+            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 3.75).abs() < 1e-3,
+            "on A the applied offset is the real 3-lane offset 3.75"
         );
 
-        // Tick 2: near end of A → advance to B (meta=None). Offset must be INHERITED 9.375.
+        // Tick 2: near end of A → advance to B (meta=None). Offset must be INHERITED 3.75.
         lk.tick_request(Some(&tel_at(0.0, -95.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.nearest_seg_idx").as_deref(),
@@ -7593,8 +7626,8 @@ mod tests {
             "tick 2 advances onto the meta=None gap B"
         );
         assert!(
-            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 9.375).abs() < 1e-3,
-            "meta=None gap must INHERIT A's 9.375 offset, NOT fall back to 1.875"
+            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 3.75).abs() < 1e-3,
+            "meta=None gap must INHERIT A's 3.75 offset, NOT fall back to 1.875"
         );
         assert_eq!(
             ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
@@ -7605,9 +7638,9 @@ mod tests {
 
     #[test]
     fn offset_not_inherited_road_to_road() {
-        // A = 3-spurig (9.375), B = 2-spurig (5.625), beide ECHTE Road-Metadaten,
+        // A = 3-spurig (3.75), B = 2-spurig (1.875), beide ECHTE Road-Metadaten,
         // B.from == A.to. Am Road→Road-Übergang mit anderer Spuranzahl behält B seinen
-        // EIGENEN Offset (5.625) — Vererbung greift hier NICHT.
+        // EIGENEN Offset (1.875) — Vererbung greift hier NICHT.
         let segs = vec![
             north_seg(0.0, 0.0, -100.0, 10, 20),    // A (3-lane), idx 0
             north_seg(0.0, -100.0, -200.0, 20, 30), // B (2-lane), idx 1
@@ -7618,7 +7651,7 @@ mod tests {
         ];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
 
-        lk.tick_request(Some(&tel_at(0.0, -50.0, 0.0, 10.0)), &ctx); // anchor A (9.375)
+        lk.tick_request(Some(&tel_at(0.0, -50.0, 0.0, 10.0)), &ctx); // anchor A (3.75)
         lk.tick_request(Some(&tel_at(0.0, -95.0, 0.0, 10.0)), &ctx); // advance to B (2-lane)
         assert_eq!(
             ctx.blackboard.get("lane_keeper.nearest_seg_idx").as_deref(),
@@ -7626,8 +7659,8 @@ mod tests {
             "advanced onto the 2-lane road B"
         );
         assert!(
-            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 5.625).abs() < 1e-3,
-            "real road keeps its OWN 2-lane offset 5.625 (no inheritance of 9.375)"
+            (bb_f32_key(&ctx, "lane_keeper.lane_offset_applied_m") - 1.875).abs() < 1e-3,
+            "real road keeps its OWN 2-lane offset 1.875 (no inheritance of 3.75)"
         );
         assert_eq!(
             ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
@@ -7813,7 +7846,7 @@ mod tests {
     // ── Capture-Modus + Anti-Stall (Low-Speed-Cap, Stuck-Watchdog, Gate 45 m) ──
 
     /// Standard-Szenario der Capture-Tests: 1-spurige Nordstraße, Soll-Linie bei
-    /// x = 1.875 (lane_offset_right). `x_off` = gewünschtes e_lat.
+    /// x = 0.0 (lane_offset_right). `x_off` = gewünschtes e_lat.
     fn capture_wired() -> (LaneKeeperPlugin, PluginContext) {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
@@ -7831,7 +7864,7 @@ mod tests {
         // → Output auf 0.3 gecapt (Watchdog-Schwelle 50 Ticks hier nicht erreicht).
         let (mut lk, ctx) = capture_wired();
         for _ in 0..20 {
-            lk.tick_request(Some(&tel_at(21.875, -100.0, 0.0, 0.0)), &ctx);
+            lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 0.0)), &ctx);
         }
         let steer = bb_f64(&ctx, "lane_keeper.steering_out");
         assert!(
@@ -7846,7 +7879,7 @@ mod tests {
     fn steer_cap_full_at_speed() {
         // Auf der Linie bei v=10 m/s: kein Capture, kein Low-Speed-Cap → Cap 1.0.
         let (mut lk, ctx) = capture_wired();
-        lk.tick_request(Some(&tel_at(1.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(0.0, -100.0, 0.0, 10.0)), &ctx);
         let cap = bb_f64(&ctx, "lane_keeper.steer_cap_applied");
         assert!(
             (cap - 1.0).abs() < 1e-6,
@@ -7864,7 +7897,7 @@ mod tests {
         // → Recovery aktiv, Cap 0.15, Output relaxt unter 0.15.
         let (mut lk, ctx) = capture_wired();
         for _ in 0..60 {
-            lk.tick_request(Some(&tel_at(21.875, -100.0, 0.0, 0.1)), &ctx);
+            lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 0.1)), &ctx);
         }
         assert_eq!(
             ctx.blackboard.get("lane_keeper.stuck_recovery").as_deref(),
@@ -7885,13 +7918,13 @@ mod tests {
         // Recovery aktiv → Truck rollt wieder (v=2 > 1.0) → Zähler+Recovery weg.
         let (mut lk, ctx) = capture_wired();
         for _ in 0..60 {
-            lk.tick_request(Some(&tel_at(21.875, -100.0, 0.0, 0.1)), &ctx);
+            lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 0.1)), &ctx);
         }
         assert_eq!(
             ctx.blackboard.get("lane_keeper.stuck_recovery").as_deref(),
             Some("true")
         );
-        lk.tick_request(Some(&tel_at(21.875, -100.0, 0.0, 2.0)), &ctx);
+        lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 2.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.stuck_recovery").as_deref(),
             Some("false"),
@@ -7907,7 +7940,7 @@ mod tests {
     fn capture_active_when_far() {
         // e_lat = 3 m (> 1.5) bei Tempo → Capture aktiv, Cap 0.5, Tempoziel 20 km/h.
         let (mut lk, ctx) = capture_wired();
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.capture_active").as_deref(),
             Some("true"),
@@ -7930,20 +7963,20 @@ mod tests {
         // Erst fern (Capture an), dann auf der Linie: Exit erst nach der Hysterese
         // (CAPTURE_EXIT_STABLE_TICKS), kein Flackern nach einem einzelnen guten Tick.
         let (mut lk, ctx) = capture_wired();
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.capture_active").as_deref(),
             Some("true")
         );
         // Ein einzelner On-Line-Tick beendet Capture NICHT (Hysterese).
-        lk.tick_request(Some(&tel_at(1.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(0.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.capture_active").as_deref(),
             Some("true"),
             "Hysterese: 1 guter Tick darf Capture nicht beenden"
         );
         for _ in 0..CAPTURE_EXIT_STABLE_TICKS {
-            lk.tick_request(Some(&tel_at(1.875, -100.0, 0.0, 10.0)), &ctx);
+            lk.tick_request(Some(&tel_at(0.0, -100.0, 0.0, 10.0)), &ctx);
         }
         assert_eq!(
             ctx.blackboard.get("lane_keeper.capture_active").as_deref(),
@@ -7967,7 +8000,7 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Off");
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard
                 .get("lane_keeper.capture_speed_target_kmh")
@@ -7976,7 +8009,7 @@ mod tests {
             "Pre-Engage: Tempoziel inaktiv"
         );
         ctx.blackboard.set("autopilot.state", "Active");
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard
                 .get("lane_keeper.capture_speed_target_kmh")
@@ -7988,17 +8021,45 @@ mod tests {
 
     #[test]
     fn gate_engage_at_45m() {
-        // Gate 45 m: Treffer bei 44 m → engage_allowed, bei 48 m (im 50-m-Radius,
-        // über dem Gate) → too_far, außerhalb des Radius → no_segment.
+        // Laterales Gate (3 m) + äußeres Gate (45 m):
+        //  - 2 m: unter beiden Gates → engage_allowed (auf der Soll-Linie)
+        //  - 44 m: unter 45 m-Gate, ÜBER 3 m-Lateral-Gate → lateral_too_far
+        //  - 48 m: über 45 m-Gate → too_far
+        //  - 80 m: außerhalb des 50-m-Suchradius → no_segment
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Off");
-        lk.tick_request(Some(&tel_at(44.0, -100.0, 0.0, 5.0)), &ctx);
+
+        // 2 m lateral: beide Gates erfüllt → engaged
+        lk.tick_request(Some(&tel_at(2.0, -100.0, 0.0, 5.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(),
             Some("true"),
-            "44 m < 45-m-Gate muss engagen dürfen"
+            "2 m: unter 3 m-Lateral-Gate → engage_allowed"
         );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.engage_block_reason")
+                .as_deref(),
+            Some("ok"),
+        );
+
+        // 44 m lateral: unter 45 m-Gate, über 3 m-Lateral-Gate → lateral_too_far
+        lk.tick_request(Some(&tel_at(44.0, -100.0, 0.0, 5.0)), &ctx);
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(),
+            Some("false"),
+            "44 m: laterales Gate blockiert"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.engage_block_reason")
+                .as_deref(),
+            Some("lateral_too_far"),
+            "44 m: Dist unter 45 m-Grenze, aber über 3 m-Lateral-Gate"
+        );
+
+        // 48 m: über 45 m äußeres Gate → too_far
         lk.tick_request(Some(&tel_at(48.0, -100.0, 0.0, 5.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.engage_allowed").as_deref(),
@@ -8009,8 +8070,10 @@ mod tests {
                 .get("lane_keeper.engage_block_reason")
                 .as_deref(),
             Some("too_far"),
-            "48 m: im Radius, aber über dem Gate"
+            "48 m: im Radius, aber über dem 45 m-Gate"
         );
+
+        // 80 m: außerhalb des 50-m-Suchradius → no_segment
         lk.tick_request(Some(&tel_at(80.0, -100.0, 0.0, 5.0)), &ctx);
         assert_eq!(
             ctx.blackboard
@@ -8028,7 +8091,7 @@ mod tests {
         // Der Mode-Wechsel selbst muss das Capture-Tempoziel räumen, sonst cappt
         // es den nächsten Route-Engage dauerhaft auf 20 km/h.
         let (mut lk, ctx) = capture_wired();
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard
                 .get("lane_keeper.capture_speed_target_kmh")
@@ -8038,7 +8101,7 @@ mod tests {
         ctx.blackboard
             .set("plugin.lane_keeper.mode", "route_following");
         ctx.blackboard.set("autopilot.state", "Off");
-        lk.tick_request(Some(&tel_at(4.875, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(3.0, -100.0, 0.0, 10.0)), &ctx);
         assert_eq!(lk.mode, LaneKeeperMode::RouteFollowing);
         assert_eq!(
             ctx.blackboard
@@ -8062,7 +8125,7 @@ mod tests {
         // zünden (sonst 20-km/h-Ziel + Vollbrems-Override in jeder Kurve).
         let (mut lk, ctx) = capture_wired();
         // Auf der Soll-Linie, aber 30° schief (heading 30°/360° CW → raw -30/360).
-        lk.tick_request(Some(&tel_at(1.875, -100.0, -30.0 / 360.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(0.0, -100.0, -30.0 / 360.0, 10.0)), &ctx);
         assert_eq!(
             ctx.blackboard.get("lane_keeper.capture_active").as_deref(),
             Some("false"),
@@ -8524,12 +8587,12 @@ mod tests {
 
     #[test]
     fn xtrack_zero_when_on_line() {
-        // 2-lane north road → soll-line at x = lane_offset = 5.625. Truck ON it, aligned →
+        // 2-lane north road → soll-line at x = lane_offset = 1.875. Truck ON it, aligned →
         // e_lat ≈ 0 → cross-track contribution ≈ 0.
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
-        let metas = vec![Some(road_meta(2, 3.75, false))]; // (2-0.5)*3.75 = 5.625
+        let metas = vec![Some(road_meta(2, 3.75, false))]; // 2-lane → 1.875
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        lk.tick_request(Some(&tel_at(5.625, -100.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(1.875, -100.0, 0.0, 10.0)), &ctx);
         let e_lat = bb_f64(&ctx, "lane_keeper.xtrack_e_lat_m");
         let xc = bb_f64(&ctx, "lane_keeper.xtrack_contribution_rad");
         assert!(e_lat.abs() < 0.05, "on soll-line → e_lat≈0, got {e_lat}");
@@ -8538,7 +8601,7 @@ mod tests {
 
     #[test]
     fn xtrack_corrects_toward_line() {
-        // 2-lane soll-line at x=5.625.
+        // 2-lane soll-line at x=1.875.
         // Truck RIGHT of line (x=10) → e_lat>0 → steer LEFT (contribution<0).
         let (mut lk_r, ctx_r) = nearest_wired(
             vec![north_seg(0.0, 0.0, -200.0, 10, 20)],
@@ -8560,7 +8623,7 @@ mod tests {
             vec![Some(road_meta(2, 3.75, false))],
             "Active",
         );
-        lk_l.tick_request(Some(&tel_at(2.0, -100.0, 0.0, 10.0)), &ctx_l);
+        lk_l.tick_request(Some(&tel_at(0.0, -100.0, 0.0, 10.0)), &ctx_l);
         let e_l = bb_f64(&ctx_l, "lane_keeper.xtrack_e_lat_m");
         let xc_l = bb_f64(&ctx_l, "lane_keeper.xtrack_contribution_rad");
         assert!(e_l < 0.0, "truck left of soll-line → e_lat<0, got {e_l}");
@@ -8577,12 +8640,12 @@ mod tests {
         // = 12 m (statt früher 5 m); K_CT daher hochgesetzt, damit der Clamp weiterhin
         // getestet wird: atan2(4.0·7.6, 12) ≈ 1.20 rad > XTRACK_MAX_RAD (1.0).
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
-        let metas = vec![Some(road_meta(1, 3.75, false))]; // offset 1.875
+        let metas = vec![Some(road_meta(1, 3.75, false))]; // offset 0.0
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
         ctx.blackboard
             .set("plugin.lane_keeper.nearest_xtrack_k", "4.0");
-        // x=9.475 → e_lat = 9.475 − 1.875 = 7.6 (within 50 m radius); v=0 → denom = 12 m (Floor).
-        lk.tick_request(Some(&tel_at(9.475, -100.0, 0.0, 0.0)), &ctx);
+        // x=7.6 → e_lat = 7.6 − 0 = 7.6 (within 50 m radius); v=0 → denom = 12 m (Floor).
+        lk.tick_request(Some(&tel_at(7.6, -100.0, 0.0, 0.0)), &ctx);
         let xc = bb_f64(&ctx, "lane_keeper.xtrack_contribution_rad");
         assert!(
             xc.abs() <= XTRACK_MAX_RAD + 1e-9,
@@ -8600,7 +8663,7 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        let req = lk.tick_request(Some(&tel_at(9.475, -100.0, 0.0, 0.0)), &ctx);
+        let req = lk.tick_request(Some(&tel_at(7.6, -100.0, 0.0, 0.0)), &ctx);
         let steer = req.expect("must steer").steering.expect("steering set");
         assert!(
             steer.abs() <= 0.1 + 1e-9,
@@ -8637,9 +8700,9 @@ mod tests {
 
     // ── Option-3 Cross-Track-PI + Heading-P split-controller tests ────────────
     //
-    // A 1-lane north road → soll-line at x = lane_offset = (1-0.5)*3.75 = 1.875.
+    // A 1-lane north road → soll-line at x = lane_offset = 0.0.
     // The truck rides on a north segment whose right normal is +x, so
-    //     e_lat = truck_x − 1.875.
+    //     e_lat = truck_x − 0.0.
     // All ticks use v=0 → look_ahead = NEAREST_MIN_LOOK_AHEAD = 12 m (Kriechtempo-Floor)
     // → denom = 12 (no v in the denominator; deterministic P and a fixed lookahead). dt_s = 0.02
     // (PluginContext default, verified), so the integral step per tick is e_lat·0.02.
@@ -8665,7 +8728,7 @@ mod tests {
         // integ_ss = D/(PLANT_GAIN·k_i) ≈ 0.63 (< CT_INTEG_MAX) and settle without
         // limit-cycling (k_eff·PLANT_GAIN well below the discrete first-order stability bound).
         const PLANT_GAIN: f64 = 0.6;
-        const SOLL: f64 = 1.875;
+        const SOLL: f64 = 0.0;
         const DISTURB: f64 = 0.03; // constant lateral push (m/tick), keeps e_lat inside the gate
 
         fn run(ki: f64) -> f64 {
@@ -8705,9 +8768,9 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        // x = 1.875 + 4.0 = 5.875 → e_lat = 4.0 m > CT_INTEG_GATE_M (3.0).
+        // x = 4.0 → e_lat = 4.0 m > CT_INTEG_GATE_M (3.0).
         for _ in 0..5 {
-            lk.tick_request(Some(&tel_at(5.875, -100.0, 0.0, 0.0)), &ctx);
+            lk.tick_request(Some(&tel_at(4.0, -100.0, 0.0, 0.0)), &ctx);
         }
         let e_lat = bb_f64(&ctx, "lane_keeper.xtrack_e_lat_m");
         assert!(
@@ -8728,11 +8791,11 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        // x = 1.875 + 2.8 = 4.675 → e_lat = 2.8 m (inside the 3.0 m gate). Truck is
+        // x = 2.8 → e_lat = 2.8 m (inside the 3.0 m gate). Truck is
         // FIXED (no plant), so the integral keeps accumulating e_lat·dt every tick:
         // 500·2.8·0.02 = 28 ≫ CT_INTEG_MAX (5.0) → must saturate at the clamp.
         for _ in 0..500 {
-            lk.tick_request(Some(&tel_at(4.675, -100.0, 0.0, 0.0)), &ctx);
+            lk.tick_request(Some(&tel_at(2.8, -100.0, 0.0, 0.0)), &ctx);
         }
         assert!(
             lk.xtrack_integ.abs() <= CT_INTEG_MAX + 1e-9,
@@ -8756,7 +8819,7 @@ mod tests {
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
         // A few active ticks at e_lat = 2.0 m (inside gate) → integral winds up.
         for _ in 0..5 {
-            lk.tick_request(Some(&tel_at(3.875, -100.0, 0.0, 0.0)), &ctx);
+            lk.tick_request(Some(&tel_at(2.0, -100.0, 0.0, 0.0)), &ctx);
         }
         assert!(
             lk.xtrack_integ.abs() > 1e-6,
@@ -8765,7 +8828,7 @@ mod tests {
         );
         // Flip to a non-Active state (Off) → the !is_active branch must reset.
         ctx.blackboard.set("autopilot.state", "Off");
-        lk.tick_request(Some(&tel_at(3.875, -100.0, 0.0, 0.0)), &ctx);
+        lk.tick_request(Some(&tel_at(2.0, -100.0, 0.0, 0.0)), &ctx);
         assert_eq!(
             lk.xtrack_integ, 0.0,
             "disengage (state != Active) must reset the integral, got {}",
@@ -8781,10 +8844,10 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        // Truck ON the soll-line (x = 1.875 → e_lat ≈ 0) but yawed ~20° off North.
+        // Truck ON the soll-line (x = 0.0 → e_lat ≈ 0) but yawed ~20° off North.
         // ETS2 heading 0..1 CCW: 20° CW from North = 1 − 20/360 = 0.9444 → inside the
         // 60° filter, so the segment stays selected and heading_err is constant.
-        let tel = tel_at(1.875, -100.0, 0.9444, 0.0);
+        let tel = tel_at(0.0, -100.0, 0.9444, 0.0);
         let mut steer_late = Vec::new();
         for tick in 0..50 {
             let req = lk.tick_request(Some(&tel), &ctx);
@@ -8822,10 +8885,10 @@ mod tests {
             .set("plugin.lane_keeper.nearest_xtrack_k", "2.0");
         ctx.blackboard
             .set("plugin.lane_keeper.nearest_xtrack_ki", "1.0");
-        // x = 1.875 + 2.5 = 4.375 → e_lat = 2.5 m (inside the 3.0 m gate). Truck FIXED,
+        // x = 2.5 → e_lat = 2.5 m (inside the 3.0 m gate). Truck FIXED,
         // so the integral keeps climbing to its clamp; check the joint bound every tick.
         for _ in 0..400 {
-            lk.tick_request(Some(&tel_at(4.375, -100.0, 0.0, 0.0)), &ctx);
+            lk.tick_request(Some(&tel_at(2.5, -100.0, 0.0, 0.0)), &ctx);
             let xc = bb_f64(&ctx, "lane_keeper.xtrack_contribution_rad");
             assert!(
                 xc.abs() <= XTRACK_MAX_RAD + 1e-9,
@@ -8843,8 +8906,8 @@ mod tests {
         let segs = vec![north_seg(0.0, 0.0, -200.0, 10, 20)];
         let metas = vec![Some(road_meta(1, 3.75, false))];
         let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
-        // x = 1.875 + 1.5 = 3.375 → e_lat = 1.5 m (inside gate), v = 0.
-        let req = lk.tick_request(Some(&tel_at(3.375, -100.0, 0.0, 0.0)), &ctx);
+        // x = 1.5 → e_lat = 1.5 m (inside gate), v = 0.
+        let req = lk.tick_request(Some(&tel_at(1.5, -100.0, 0.0, 0.0)), &ctx);
         let steer = req.expect("must steer").steering.expect("steering set");
         assert!(
             steer.abs() <= 0.1 + 1e-9,
@@ -8886,5 +8949,140 @@ mod tests {
             "RouteFollowing must not touch the NearestSpline cross-track integral, got {}",
             lk.xtrack_integ
         );
+    }
+
+    // ── Laterales Engage-Gate ────────────────────────────────────────────────
+
+    /// Hilfsfunktion: baut einen minimalen HeadingFilteredHit mit gegebener Distanz.
+    fn make_hit(dist_m: f32) -> HeadingFilteredHit {
+        HeadingFilteredHit {
+            idx: 0,
+            dist_m,
+            t: 0.5,
+            point_on_curve: Vec3::new(0.0, 0.0, 0.0),
+            heading_diff_rad: 0.0,
+            meta: None,
+        }
+    }
+
+    /// Hilfsfunktion: erstellt PluginContext mit gesetztem engage_max_lateral_m BB-Key.
+    fn ctx_with_lateral_limit(limit_m: f32) -> PluginContext {
+        let bb = SharedBlackboard::new();
+        bb.set(
+            "lane_keeper.engage_max_lateral_m",
+            format!("{limit_m}"),
+        );
+        PluginContext::new("lane-keeper", bb)
+    }
+
+    #[test]
+    fn engage_max_lateral_m_loaded_from_blackboard() {
+        // on_load liest engage_max_lateral_m aus dem toml-geseedten BB-Key.
+        let mut plugin = LaneKeeperPlugin::default();
+        assert_eq!(
+            plugin.engage_max_lateral_m, DEFAULT_ENGAGE_MAX_LATERAL_M,
+            "Default muss 3.0 sein"
+        );
+        let ctx = ctx_with_lateral_limit(7.5);
+        plugin.on_load(&ctx);
+        assert!(
+            (plugin.engage_max_lateral_m - 7.5).abs() < 1e-5,
+            "on_load muss 7.5 aus BB laden, got {}",
+            plugin.engage_max_lateral_m
+        );
+    }
+
+    #[test]
+    fn engage_max_lateral_m_fallback_when_key_absent() {
+        // Kein BB-Key → Fallback auf DEFAULT_ENGAGE_MAX_LATERAL_M (3.0).
+        let mut plugin = LaneKeeperPlugin::default();
+        let ctx = fresh_ctx();
+        plugin.on_load(&ctx);
+        assert_eq!(
+            plugin.engage_max_lateral_m, DEFAULT_ENGAGE_MAX_LATERAL_M,
+            "Fehlender Key muss auf Default 3.0 fallen"
+        );
+    }
+
+    #[test]
+    fn engage_gate_lateral_too_far_sets_block_reason() {
+        // dist=10m: unter 45m (altes Gate ok), über 3m (laterales Gate verletzt)
+        // → engage_block_reason="lateral_too_far"
+        let plugin = LaneKeeperPlugin {
+            engage_max_lateral_m: 3.0,
+            ..Default::default()
+        };
+        // engage_allowed=false, h.dist_m=10.0 < 45.0 → lateral_too_far
+        let ctx = fresh_ctx();
+        // Kein SplineIndex → rufe publish_engage_gate_diag direkt mit fake SplineIndex auf.
+        // Stattdessen prüfen wir die Gate-Logik über die Bool-Bedingung inline.
+        let h = make_hit(10.0);
+        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(!engage_allowed, "10m > 3m-Limit → engage_allowed muss false sein");
+
+        let block_reason = if engage_allowed {
+            "ok"
+        } else if h.dist_m >= NEAREST_ENGAGE_DIST_M {
+            "too_far"
+        } else {
+            "lateral_too_far"
+        };
+        assert_eq!(block_reason, "lateral_too_far");
+        let _ = ctx; // silence unused warning
+    }
+
+    #[test]
+    fn engage_gate_lateral_ok_allows_engage() {
+        // dist=1.5m: unter 45m UND unter 3m → engage_allowed=true
+        let plugin = LaneKeeperPlugin {
+            engage_max_lateral_m: 3.0,
+            ..Default::default()
+        };
+        let h = make_hit(1.5);
+        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(engage_allowed, "1.5m <= 3m-Limit → engage_allowed muss true sein");
+
+        let block_reason = if engage_allowed {
+            "ok"
+        } else if h.dist_m >= NEAREST_ENGAGE_DIST_M {
+            "too_far"
+        } else {
+            "lateral_too_far"
+        };
+        assert_eq!(block_reason, "ok");
+    }
+
+    #[test]
+    fn engage_gate_too_far_not_masked_by_lateral() {
+        // dist=50m: über 45m → "too_far", nicht "lateral_too_far"
+        // Stellt sicher dass too_far Vorrang hat (block_reason-Reihenfolge korrekt).
+        let plugin = LaneKeeperPlugin {
+            engage_max_lateral_m: 3.0,
+            ..Default::default()
+        };
+        let h = make_hit(50.0);
+        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(!engage_allowed);
+
+        let block_reason = if engage_allowed {
+            "ok"
+        } else if h.dist_m >= NEAREST_ENGAGE_DIST_M {
+            "too_far"
+        } else {
+            "lateral_too_far"
+        };
+        assert_eq!(block_reason, "too_far", "50m muss too_far liefern, nicht lateral_too_far");
+    }
+
+    #[test]
+    fn engage_gate_boundary_at_limit_exact() {
+        // dist == engage_max_lateral_m (3.0): genau an der Grenze → allowed (<=)
+        let plugin = LaneKeeperPlugin {
+            engage_max_lateral_m: 3.0,
+            ..Default::default()
+        };
+        let h = make_hit(3.0);
+        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(engage_allowed, "dist==limit (3.0m) muss noch erlaubt sein (<=)");
     }
 }

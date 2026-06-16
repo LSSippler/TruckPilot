@@ -25,6 +25,11 @@ enabled = true
 exist_thresh = 0.5
 model_path = "C:/Users/Sippler/Documents/TruckPilot/tools/ufld-test/models/ufldv2_tusimple_res18_320x800.onnx"
 
+[plugins.lane-keeper]
+# Laterales Engage-Gate: Truck muss <= diesem Wert (m) von der Soll-Linie entfernt sein.
+# Bei lane-side-Bug ggf. auf 5-6 m erhöhen bis der Offset-Bug behoben ist.
+engage_max_lateral_m = 3.0
+
 [plugins.lane-follower]
 junction_bias_max_prefab_dist_m = 10.0
 junction_bias_radius_m = 30.0
