@@ -28,13 +28,18 @@ model_path = "C:/Users/Sippler/Documents/TruckPilot/tools/ufld-test/models/ufldv
 [plugins.lane-follower]
 junction_bias_max_prefab_dist_m = 10.0
 junction_bias_radius_m = 30.0
+# FIX 2: conservative junction detection (live-tunable). Forward-cone is the key filter.
+junction_detection_radius_m = 18.0
+junction_detection_spread_deg = 50.0
+junction_forward_cone_deg = 60.0
 junction_max_heading_diff_deg = 45.0
+junction_min_activation_frames = 6
 
 [plugins.minimap-vision]
-enabled = false
-meters_per_pixel = 10.0
-roi_h = 200
-roi_w = 200
+enabled = true
+meters_per_pixel = 3.68
+roi_h = 355
+roi_w = 444
 stale_after_ms = 500
 
 [plugins.router]
@@ -70,3 +75,11 @@ look_ahead_distance = 50.0
 [telemetry]
 disabled = false
 url = "http://localhost:25555/api/ets2/telemetry"
+
+[vision.minimap]
+x = 2092
+y = 1025
+w = 444
+h = 355
+hsv_lower = [50, 182, 98]
+hsv_upper = [0, 255, 255]
