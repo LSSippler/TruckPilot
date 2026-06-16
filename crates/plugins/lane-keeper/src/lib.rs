@@ -235,6 +235,9 @@ const STUCK_SPEED_MS: f64 = 0.5;
 const STUCK_STEER_MIN: f64 = 0.4;
 /// Stuck-Watchdog: Ticks bis zur Auslösung (~1 s bei 50 Hz).
 const STUCK_TICKS: u32 = 50;
+/// Stuck-Watchdog: Ticks im Recovery-Zustand ohne Fortschritt bis zum Disengage.
+/// Nach ~1 s Recovery noch ~3 s ohne Bewegung → autopilot.disengage_requested.
+const STUCK_DISENGAGE_TICKS: u32 = 150;
 /// Stuck-Recovery: harter Steer-Cap solange der Watchdog aktiv ist — nahe geradeaus,
 /// damit der Truck anfahren kann statt gegen den Einschlag zu drücken.
 const STUCK_RELAX_CAP: f64 = 0.15;
@@ -405,6 +408,9 @@ pub struct LaneKeeperPlugin {
     /// true solange die Stuck-Recovery aktiv ist (Steer hart auf ±`STUCK_RELAX_CAP`
     /// gecapt). Latch bis der Truck wieder rollt (v > `STUCK_RESET_SPEED_MS`).
     stuck_recovery: bool,
+    /// Ticks seit Eintritt in stuck_recovery ohne Fortschritt. Nach
+    /// `STUCK_DISENGAGE_TICKS` → autopilot.disengage_requested.
+    stuck_disengage_ticks: u32,
     /// Capture-Modus (Task 3): true solange der Truck die Soll-Linie noch einfängt
     /// (|e_lat| > 1.5 m oder |heading_err| > 10°). Steuert Capture-Steer-Cap und
     /// Capture-Tempoziel.
@@ -462,6 +468,7 @@ impl Default for LaneKeeperPlugin {
             xtrack_integ: 0.0,
             stuck_ticks: 0,
             stuck_recovery: false,
+            stuck_disengage_ticks: 0,
             capture_active: false,
             capture_exit_ticks: 0,
             engage_max_lateral_m: DEFAULT_ENGAGE_MAX_LATERAL_M,
@@ -530,6 +537,7 @@ impl LaneKeeperPlugin {
             // Key mode-agnostisch).
             self.stuck_ticks = 0;
             self.stuck_recovery = false;
+            self.stuck_disengage_ticks = 0;
             self.capture_active = false;
             self.capture_exit_ticks = 0;
             ctx.blackboard.set("lane_keeper.stuck_recovery", "false");
@@ -682,10 +690,8 @@ impl LaneKeeperPlugin {
             .and_then(|j| serde_json::from_str::<Vec<u64>>(j).ok())
             .map(|v| v.len())
             .unwrap_or(0);
-        ctx.blackboard.set(
-            "lane_keeper.route_node_ids_present",
-            present.to_string(),
-        );
+        ctx.blackboard
+            .set("lane_keeper.route_node_ids_present", present.to_string());
         ctx.blackboard
             .set("lane_keeper.route_node_ids_len", len.to_string());
 
@@ -694,19 +700,14 @@ impl LaneKeeperPlugin {
             .get("router.last_snap_rejected_by_heading")
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
-        ctx.blackboard.set(
-            "lane_keeper.rejected_by_heading",
-            rejected.to_string(),
-        );
+        ctx.blackboard
+            .set("lane_keeper.rejected_by_heading", rejected.to_string());
     }
 
     fn publish_lane_match_sentinels(&self, ctx: &PluginContext) {
-        ctx.blackboard
-            .set("lane_keeper.chosen_segment_index", "-1");
-        ctx.blackboard
-            .set("lane_keeper.chosen_edge_id", "none");
-        ctx.blackboard
-            .set("lane_keeper.heading_error_deg", "-1.0");
+        ctx.blackboard.set("lane_keeper.chosen_segment_index", "-1");
+        ctx.blackboard.set("lane_keeper.chosen_edge_id", "none");
+        ctx.blackboard.set("lane_keeper.heading_error_deg", "-1.0");
         ctx.blackboard.set("lane_keeper.signed_cte_m", "0.000");
     }
 
@@ -964,14 +965,10 @@ impl LaneKeeperPlugin {
         if seg_heading_diff > 180.0 {
             seg_heading_diff -= 360.0;
         }
-        ctx.blackboard.set(
-            "lane_keeper.chosen_segment_index",
-            cur_seg.to_string(),
-        );
-        ctx.blackboard.set(
-            "lane_keeper.chosen_edge_id",
-            format!("{seg_f}->{seg_t}"),
-        );
+        ctx.blackboard
+            .set("lane_keeper.chosen_segment_index", cur_seg.to_string());
+        ctx.blackboard
+            .set("lane_keeper.chosen_edge_id", format!("{seg_f}->{seg_t}"));
         ctx.blackboard.set(
             "lane_keeper.heading_error_deg",
             format!("{:.1}", seg_heading_diff.abs()),
@@ -2567,7 +2564,7 @@ impl LaneKeeperPlugin {
         }
 
         // ── (2b) Nahe am Segmentende (Restbogen < NEAREST_ADVANCE_DIST_M) → forward_adj.
-        self.advance_forward_adj(index, ci, query, fresh)
+        self.advance_forward_adj(index, ci, query, fresh, &self.cached_route_seg_set)
     }
 
     /// Segmentende (Restbogen < `NEAREST_ADVANCE_DIST_M`): über `forward_adj[current.to_uid]`
@@ -2591,6 +2588,7 @@ impl LaneKeeperPlugin {
         ci: usize,
         query: Vec3,
         fresh: Option<&HeadingFilteredHit>,
+        route_seg_set: &std::collections::HashSet<usize>,
     ) -> NearestSelection {
         let cur_seg = &index.segments[ci];
         let cur_from = cur_seg.from_uid;
@@ -2621,6 +2619,11 @@ impl LaneKeeperPlugin {
                 let kink_deg = dot.clamp(-1.0, 1.0).acos().to_degrees();
                 if kink_deg >= CHAIN_SUCCESSOR_TOL_DEG {
                     continue; // ≥ 90° Knick (inkl. Rückwärts ≈180°) → kein Vorwärts-Nachfolger
+                }
+                // Route-Guard: bei aktiver Route nur Route-Nachfolger zulassen.
+                // Leer = keine Route → Guard inaktiv, altes Kink-Verhalten bleibt.
+                if !route_seg_set.is_empty() && !route_seg_set.contains(&si) {
+                    continue;
                 }
                 count += 1;
                 // Geradeaus-ster = kleinster Knick.
@@ -2855,6 +2858,7 @@ impl LaneKeeperPlugin {
             // (sonst hielte der Speed-Controller das 20-km/h-Limit nach dem Disengage).
             self.stuck_ticks = 0;
             self.stuck_recovery = false;
+            self.stuck_disengage_ticks = 0;
             self.capture_active = false;
             self.capture_exit_ticks = 0;
             ctx.blackboard.set("lane_keeper.stuck_recovery", "false");
@@ -2887,6 +2891,7 @@ impl LaneKeeperPlugin {
             self.xtrack_integ = 0.0;
             self.stuck_ticks = 0;
             self.stuck_recovery = false;
+            self.stuck_disengage_ticks = 0;
             self.capture_active = false;
             self.capture_exit_ticks = 0;
             ctx.blackboard.set("lane_keeper.stuck_recovery", "false");
@@ -2927,6 +2932,7 @@ impl LaneKeeperPlugin {
                 // Capture re-evaluiert sich beim nächsten Steering-Tick aus e_lat/heading.
                 self.stuck_ticks = 0;
                 self.stuck_recovery = false;
+                self.stuck_disengage_ticks = 0;
                 self.capture_active = false;
                 self.capture_exit_ticks = 0;
                 ctx.blackboard.set("lane_keeper.stuck_recovery", "false");
@@ -3198,28 +3204,27 @@ impl LaneKeeperPlugin {
             }
         }
 
-        // ── Stuck-Watchdog (Task 2): v≈0 + große Lenk-ABSICHT + aktiver Vortriebs-
-        // Versuch über ~1 s = der selbsthaltende Schräglage-Stillstand der Einfang-
-        // Diagnose (bei v≈0 sind alle Regler-Eingänge eingefroren). Recovery capt den
-        // Steer hart auf ±0.15, damit der Truck nahezu geradeaus anfahren kann.
-        // Bewusst die UNGECAPPTE Absicht prüfen: der Low-Speed-Cap (Task 1) drückt den
-        // Output unter 0.3, die Absicht bleibt sichtbar. throttle_cmd-Gate (Reviewer-E1):
-        // Stehen mit Bremse (Ampel/Stau mitten im Abbiegen) ist NICHT verkeilt — nur
-        // zählen, wenn der Speed-Controller anschiebt (Key fehlt → 1.0 = Watchdog scharf).
-        let throttle_cmd = ctx
-            .blackboard
-            .get_f64("speed_controller.throttle_cmd")
-            .unwrap_or(1.0);
+        // ── Stuck-Watchdog (Fix 2/3): v≈0 + große Lenk-ABSICHT über ~1 s = verkeilt.
+        // Recovery capt Steer auf ±0.15 (Anfahren möglich). Nach weiteren ~3 s ohne
+        // Fortschritt → Disengage.
+        // throttle_cmd-Gate entfernt (Fix 3): nach einem Crash-Stop ist throttle=0,
+        // der alte Gate verhinderte das Zählen genau im Crash-Fall (beobachtetes Symptom).
         if t.speed_ms > STUCK_RESET_SPEED_MS {
             self.stuck_ticks = 0;
             self.stuck_recovery = false;
-        } else if t.speed_ms < STUCK_SPEED_MS
-            && steer_wish.abs() > STUCK_STEER_MIN
-            && throttle_cmd > 0.05
-        {
+            self.stuck_disengage_ticks = 0;
+        } else if t.speed_ms < STUCK_SPEED_MS && steer_wish.abs() > STUCK_STEER_MIN {
             self.stuck_ticks = self.stuck_ticks.saturating_add(1);
             if self.stuck_ticks > STUCK_TICKS {
                 self.stuck_recovery = true;
+                self.stuck_disengage_ticks = self.stuck_disengage_ticks.saturating_add(1);
+                if self.stuck_disengage_ticks > STUCK_DISENGAGE_TICKS {
+                    ctx.blackboard.set("autopilot.disengage_requested", "true");
+                    tracing::warn!(
+                        "[lane-keeper] SAFETY DISENGAGE — stuck_watchdog ({} ticks)",
+                        self.stuck_disengage_ticks
+                    );
+                }
             }
         }
 
@@ -3758,10 +3763,8 @@ impl Plugin for LaneKeeperPlugin {
             .set("lane_keeper.tick_seq", self.tick_count.to_string());
         ctx.blackboard
             .set("lane_keeper.last_tick_us", tick_us.to_string());
-        ctx.blackboard.set(
-            "lane_keeper.tick_ctx_active",
-            ctx.is_active().to_string(),
-        );
+        ctx.blackboard
+            .set("lane_keeper.tick_ctx_active", ctx.is_active().to_string());
 
         // Re-check mode every tick (cheap: one Blackboard read; `update_mode_from_blackboard`
         // only does work on an actual change). Per-tick statt alle 50 Ticks, damit der
@@ -8968,10 +8971,7 @@ mod tests {
     /// Hilfsfunktion: erstellt PluginContext mit gesetztem engage_max_lateral_m BB-Key.
     fn ctx_with_lateral_limit(limit_m: f32) -> PluginContext {
         let bb = SharedBlackboard::new();
-        bb.set(
-            "lane_keeper.engage_max_lateral_m",
-            format!("{limit_m}"),
-        );
+        bb.set("lane_keeper.engage_max_lateral_m", format!("{limit_m}"));
         PluginContext::new("lane-keeper", bb)
     }
 
@@ -9017,8 +9017,12 @@ mod tests {
         // Kein SplineIndex → rufe publish_engage_gate_diag direkt mit fake SplineIndex auf.
         // Stattdessen prüfen wir die Gate-Logik über die Bool-Bedingung inline.
         let h = make_hit(10.0);
-        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
-        assert!(!engage_allowed, "10m > 3m-Limit → engage_allowed muss false sein");
+        let engage_allowed =
+            h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(
+            !engage_allowed,
+            "10m > 3m-Limit → engage_allowed muss false sein"
+        );
 
         let block_reason = if engage_allowed {
             "ok"
@@ -9039,8 +9043,12 @@ mod tests {
             ..Default::default()
         };
         let h = make_hit(1.5);
-        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
-        assert!(engage_allowed, "1.5m <= 3m-Limit → engage_allowed muss true sein");
+        let engage_allowed =
+            h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(
+            engage_allowed,
+            "1.5m <= 3m-Limit → engage_allowed muss true sein"
+        );
 
         let block_reason = if engage_allowed {
             "ok"
@@ -9061,7 +9069,8 @@ mod tests {
             ..Default::default()
         };
         let h = make_hit(50.0);
-        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        let engage_allowed =
+            h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
         assert!(!engage_allowed);
 
         let block_reason = if engage_allowed {
@@ -9071,7 +9080,10 @@ mod tests {
         } else {
             "lateral_too_far"
         };
-        assert_eq!(block_reason, "too_far", "50m muss too_far liefern, nicht lateral_too_far");
+        assert_eq!(
+            block_reason, "too_far",
+            "50m muss too_far liefern, nicht lateral_too_far"
+        );
     }
 
     #[test]
@@ -9082,7 +9094,120 @@ mod tests {
             ..Default::default()
         };
         let h = make_hit(3.0);
-        let engage_allowed = h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
-        assert!(engage_allowed, "dist==limit (3.0m) muss noch erlaubt sein (<=)");
+        let engage_allowed =
+            h.dist_m < NEAREST_ENGAGE_DIST_M && h.dist_m <= plugin.engage_max_lateral_m;
+        assert!(
+            engage_allowed,
+            "dist==limit (3.0m) muss noch erlaubt sein (<=)"
+        );
+    }
+
+    // ── Junction-Fix Tests (Fix 1/2/3) ────────────────────────────────────────
+
+    /// Test A — advance_forward_adj Route-Guard: bei aktiver Route gewinnt der
+    /// Route-Nachfolger (idx 2, Kink 45°) über den geometrisch geradeaus-sten
+    /// Off-Route-Kandidaten (idx 1, Kink ≈0°).
+    #[test]
+    fn advance_fwd_route_guard_picks_route_successor() {
+        // A (idx 0): Nord, UID 10→20
+        // B (idx 1): Nord (gerade, Kink ≈0°), UID 20→30 — NICHT auf Route
+        // C (idx 2): NE 45°, UID 20→40 — AUF Route (knik 45°, geometrisch knickreicher)
+        // route_seg_set = {2} → C muss gewinnen trotz größerem Kink
+        let segs = vec![
+            north_seg(0.0, 0.0, -90.0, 10, 20),        // A idx 0
+            north_seg(0.0, -90.0, -200.0, 20, 30),     // B gerade idx 1
+            seg((0.0, -90.0), (63.6, -153.6), 20, 40), // C 45° NE idx 2
+        ];
+        let metas = vec![
+            Some(road_meta(1, 3.75, false)),
+            Some(road_meta(1, 3.75, false)),
+            Some(road_meta(1, 3.75, false)),
+        ];
+        let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
+        lk.cached_route_seg_set.insert(2); // nur C ist auf der Route
+
+        lk.tick_request(Some(&tel_at(0.0, -45.0, 0.0, 10.0)), &ctx); // auf A einrasten
+        lk.tick_request(Some(&tel_at(0.0, -82.0, 0.0, 10.0)), &ctx); // Segmentende → advance
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chain_segment_idx")
+                .as_deref(),
+            Some("2"),
+            "Route-Guard: On-Route C (idx 2, Kink 45°) muss Off-Route B (idx 1, Kink 0°) schlagen"
+        );
+        // Route-Guard filtert B aus → nur C bleibt → count=1 → fwd_progress (korrekt)
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_seg_switch_reason")
+                .as_deref(),
+            Some("fwd_progress"),
+            "nach Route-Guard ein Kandidat übrig → fwd_progress"
+        );
+    }
+
+    /// Test B — leeres route_set: altes Kink-Verhalten bleibt erhalten.
+    /// Exakt selbes Setup wie Test A, aber ohne route_set → B (Kink ≈0°) gewinnt.
+    #[test]
+    fn advance_fwd_empty_route_set_keeps_kink_behavior() {
+        let segs = vec![
+            north_seg(0.0, 0.0, -90.0, 10, 20),
+            north_seg(0.0, -90.0, -200.0, 20, 30), // B gerade idx 1
+            seg((0.0, -90.0), (63.6, -153.6), 20, 40), // C 45° idx 2
+        ];
+        let metas = vec![
+            Some(road_meta(1, 3.75, false)),
+            Some(road_meta(1, 3.75, false)),
+            Some(road_meta(1, 3.75, false)),
+        ];
+        let (mut lk, ctx) = nearest_wired(segs, metas, "Active");
+        // cached_route_seg_set bleibt leer (kein insert)
+
+        lk.tick_request(Some(&tel_at(0.0, -45.0, 0.0, 10.0)), &ctx);
+        lk.tick_request(Some(&tel_at(0.0, -82.0, 0.0, 10.0)), &ctx);
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chain_segment_idx")
+                .as_deref(),
+            Some("1"),
+            "Leeres route_set: geradeaus-ster Nachfolger B (idx 1) gewinnt (altes Verhalten)"
+        );
+    }
+
+    /// Test C — Stuck-Watchdog zählt auch bei throttle=0.
+    /// Fix 3 entfernte den throttle_cmd > 0.05-Gate. Der Watchdog muss jetzt
+    /// auch nach einem Crash-Stop (throttle=0) zählen und Recovery auslösen.
+    #[test]
+    fn stuck_watchdog_counts_without_throttle() {
+        let (mut lk, ctx) = capture_wired();
+        ctx.blackboard.set("speed_controller.throttle_cmd", "0.0"); // Crash-Stop: throttle=0
+
+        for _ in 0..60 {
+            lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 0.1)), &ctx);
+        }
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.stuck_recovery").as_deref(),
+            Some("true"),
+            "Watchdog muss nach >50 Ticks auch bei throttle=0 auslösen (Fix 3)"
+        );
+    }
+
+    /// Test D — Stuck-Watchdog Disengage nach STUCK_DISENGAGE_TICKS.
+    /// Nach Eintritt in Recovery ohne Fortschritt → autopilot.disengage_requested.
+    #[test]
+    fn stuck_watchdog_disengages_after_timeout() {
+        let (mut lk, ctx) = capture_wired();
+        ctx.blackboard.set("speed_controller.throttle_cmd", "0.0");
+
+        // STUCK_TICKS (50) + STUCK_DISENGAGE_TICKS (150) + 5 Puffer = 205 Ticks
+        for _ in 0..205 {
+            lk.tick_request(Some(&tel_at(20.0, -100.0, 0.0, 0.1)), &ctx);
+        }
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "Stuck-Watchdog muss nach STUCK_TICKS + STUCK_DISENGAGE_TICKS disengagen (Fix 2)"
+        );
     }
 }
