@@ -2880,6 +2880,15 @@ impl LaneKeeperPlugin {
             ctx.blackboard.set("lane_keeper.chain_successor_count", "0");
             ctx.blackboard.set("lane_keeper.chain_reverse_skipped", "0");
             ctx.blackboard.set("lane_keeper.chain_broken", "false");
+            // Junction-Snap-Diag: im Pre-Engage-Zustand kein Nearest-Lauf → Reset-Werte,
+            // route_set_size aber aktuell (Route-Set wird unabhaengig vom State gepflegt).
+            ctx.blackboard.set("lane_keeper.sel_path", "none");
+            ctx.blackboard.set(
+                "lane_keeper.route_set_size",
+                self.cached_route_seg_set.len().to_string(),
+            );
+            ctx.blackboard.set("lane_keeper.route_set_has_nearest", "false");
+            ctx.blackboard.set("lane_keeper.route_set_has_lookahead", "false");
             return None;
         }
 
@@ -2901,6 +2910,13 @@ impl LaneKeeperPlugin {
             ctx.blackboard.set("lane_keeper.active", "false");
             ctx.blackboard.set("lane_keeper.skip_reason", "engine_off");
             ctx.blackboard.set("lane_keeper.null_steer_cause", "none");
+            ctx.blackboard.set("lane_keeper.sel_path", "none");
+            ctx.blackboard.set(
+                "lane_keeper.route_set_size",
+                self.cached_route_seg_set.len().to_string(),
+            );
+            ctx.blackboard.set("lane_keeper.route_set_has_nearest", "false");
+            ctx.blackboard.set("lane_keeper.route_set_has_lookahead", "false");
             return None;
         }
 
@@ -2953,6 +2969,13 @@ impl LaneKeeperPlugin {
                 ctx.blackboard.set("lane_keeper.chain_successor_count", "0");
                 ctx.blackboard.set("lane_keeper.chain_reverse_skipped", "0");
                 ctx.blackboard.set("lane_keeper.chain_broken", "true");
+                ctx.blackboard.set("lane_keeper.sel_path", "null_steer");
+                ctx.blackboard.set(
+                    "lane_keeper.route_set_size",
+                    self.cached_route_seg_set.len().to_string(),
+                );
+                ctx.blackboard.set("lane_keeper.route_set_has_nearest", "false");
+                ctx.blackboard.set("lane_keeper.route_set_has_lookahead", "false");
                 return None;
             }
             NearestSelection::Steer {
@@ -2990,6 +3013,25 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.nearest_kreuzung_unresolved",
             chain_broken.to_string(),
+        );
+        // ── Hypothesen-Diag (Junction-Snap-Debug) ───────────────────────────────
+        // Welcher Selektionspfad hat nearest_seg_idx gesetzt?
+        let sel_path = match (chain_reason, chain_broken) {
+            ("sticky", _) => "sticky",
+            ("segment_end", _) => "advance_forward_adj",
+            ("off_segment", _) => "spatial_off_segment",
+            ("reacquire", false) => "spatial_initial",
+            ("reacquire", true) => "spatial_chain_broken",
+            _ => "unknown",
+        };
+        ctx.blackboard.set("lane_keeper.sel_path", sel_path);
+        ctx.blackboard.set(
+            "lane_keeper.route_set_size",
+            self.cached_route_seg_set.len().to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.route_set_has_nearest",
+            self.cached_route_seg_set.contains(&seg_idx).to_string(),
         );
         // ── Chain-Diagnose (Task 2/3) ────────────────────────────────────────────
         ctx.blackboard
@@ -3311,6 +3353,10 @@ impl LaneKeeperPlugin {
             .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
         ctx.blackboard
             .set("lane_keeper.lookahead_final_seg_id", la.seg_idx.to_string());
+        ctx.blackboard.set(
+            "lane_keeper.route_set_has_lookahead",
+            self.cached_route_seg_set.contains(&la.seg_idx).to_string(),
+        );
         ctx.blackboard
             .set("lane_keeper.target_heading", format!("{path_heading:.6}"));
         ctx.blackboard
