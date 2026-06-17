@@ -142,6 +142,19 @@ const SAFETY_BRAKE_MAX: f64 = 0.80; // keine Vollbremsung (Auffahrschutz)
 /// Erholung sauber disengagen. Disengaging (Latch) eskaliert SOFORT (kein Timeout).
 const SAFETY_AUTOREPLAN_DISENGAGE_S: f64 = 15.0;
 
+// ── Schritt 2: Junction-Failsafe ────────────────────────────────────────────
+// Verliert lane_keeper an einer ERKANNTEN Junction (lane_follower.junction_detected)
+// die Lenkautorität (heading_stage → Disengaging), NICHT sofort in Off fallen —
+// sonst rollt der Truck ungebremst geradeaus in die kurvige Junction (Leitplanke).
+// Stattdessen kurzes Grace-Fenster mit harter Bremse: nimmt Tempo raus und gibt
+// lane_keeper Zeit, route_hit über die On-Route-NavCurve (Fix C) wiederzufinden.
+// Greift NUR an erkannten Junctions; ohne Junction-Signal bleibt der sofortige
+// Disengage (User-/echtes-Off-Route) unverändert.
+/// Dauer des Junction-Grace-Fensters, bevor doch disengaged wird.
+const JUNCTION_FAILSAFE_GRACE_S: f64 = 1.5;
+/// Mindest-Bremswert im Grace-Fenster (entschlossenes Tempo-Raus statt freiem Rollen).
+const JUNCTION_FAILSAFE_BRAKE: f64 = 0.60;
+
 /// Block-2: max steering change per tick.
 const STEERING_MAX_DELTA_PER_TICK: f64 = 0.1;
 
@@ -368,6 +381,9 @@ pub struct LaneKeeperPlugin {
     /// Phase 2h-Safety: Sekunden (dt-akkumuliert) seit Eintritt in AutoReplan ohne
     /// Erholung. Tick-Rate-robust statt Frame-Zähler. Reset bei Stage-Recovery.
     safety_autoreplan_secs: f64,
+    /// Schritt 2: akkumulierte Zeit im Junction-Failsafe-Grace (hart bremsen statt
+    /// sofort disengage). Reset bei Recovery / Off / Re-Engage.
+    junction_failsafe_secs: f64,
 
     /// Phase 2h-Wurzelfix: akkumulierte Sekunden anhaltenden Kink-Stops auf demselben
     /// Hop (dt-basiert). Reset sobald der Walk NICHT am Knick stoppt oder der Hop wechselt.
@@ -474,6 +490,7 @@ impl Default for LaneKeeperPlugin {
             prev_lane_offset_m: 0.0,
             prev_lateral_source: String::new(),
             safety_autoreplan_secs: 0.0,
+            junction_failsafe_secs: 0.0,
             kink_stuck_secs: 0.0,
             kink_stuck_hop: (0, 0),
             prefab_curve_latched: false,
@@ -581,14 +598,34 @@ impl LaneKeeperPlugin {
         err: f64,
         ctx: &PluginContext,
     ) -> Option<ControlRequest> {
-        let brake = (speed_ms * SAFETY_BRAKE_PER_MS).clamp(SAFETY_BRAKE_MIN, SAFETY_BRAKE_MAX);
+        let mut brake = (speed_ms * SAFETY_BRAKE_PER_MS).clamp(SAFETY_BRAKE_MIN, SAFETY_BRAKE_MAX);
         self.previous_steering_out = 0.0;
         self.pid.reset();
         self.xtrack_integ = 0.0;
 
+        let mut junction_failsafe = false;
         if immediate_disengage {
-            ctx.blackboard.set("autopilot.disengage_requested", "true");
-            tracing::warn!("[lane-keeper] {cause}: lane authority lost → immediate disengage");
+            // Schritt 2: Junction-Failsafe. An einer ERKANNTEN Junction NICHT sofort
+            // disengagen (sonst rollt der Truck ungebremst geradeaus in die Leitplanke).
+            // Stattdessen kurzes Grace-Fenster mit harter Bremse; erst danach disengage.
+            // Ohne Junction-Signal bleibt der sofortige Disengage unverändert.
+            let at_junction = ctx
+                .blackboard
+                .get("lane_follower.junction_detected")
+                .as_deref()
+                == Some("true");
+            if at_junction && self.junction_failsafe_secs < JUNCTION_FAILSAFE_GRACE_S {
+                self.junction_failsafe_secs += dt;
+                junction_failsafe = true;
+                brake = brake.max(JUNCTION_FAILSAFE_BRAKE);
+                tracing::warn!(
+                    "[lane-keeper] {cause}: junction failsafe grace {:.2}s — hard brake, no disengage yet",
+                    self.junction_failsafe_secs
+                );
+            } else {
+                ctx.blackboard.set("autopilot.disengage_requested", "true");
+                tracing::warn!("[lane-keeper] {cause}: lane authority lost → immediate disengage");
+            }
         } else {
             self.safety_autoreplan_secs += dt;
             if self.safety_autoreplan_secs > SAFETY_AUTOREPLAN_DISENGAGE_S {
@@ -599,6 +636,10 @@ impl LaneKeeperPlugin {
                 );
             }
         }
+        ctx.blackboard.set(
+            "lane_keeper.junction_failsafe_active",
+            junction_failsafe.to_string(),
+        );
 
         ctx.blackboard.set("lane_keeper.returned_none", "false");
         ctx.blackboard
@@ -2137,6 +2178,8 @@ impl LaneKeeperPlugin {
             self.cached_route_node_ids.clear();
             // Phase 2h-Safety: Re-Engage sauber starten.
             self.safety_autoreplan_secs = 0.0;
+            // Schritt 2: Junction-Failsafe-Grace bei Off/Re-Engage zurücksetzen.
+            self.junction_failsafe_secs = 0.0;
             // Phase 2h-Wurzelfix: Kink-Stuck-Zähler bei Off/Disengage zurücksetzen.
             self.kink_stuck_secs = 0.0;
             self.kink_stuck_hop = (0, 0);
@@ -2342,6 +2385,10 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set("lane_keeper.null_steer_cause", "none");
         // Phase 2h-Safety: Stage recovery → reset accumulator and clear safety keys.
         self.safety_autoreplan_secs = 0.0;
+        // Schritt 2: Recovery → Junction-Failsafe-Grace zurücksetzen.
+        self.junction_failsafe_secs = 0.0;
+        ctx.blackboard
+            .set("lane_keeper.junction_failsafe_active", "false");
         ctx.blackboard.set("lane_keeper.safety_state", "normal");
         ctx.blackboard
             .set("lane_keeper.steering_suppressed", "false");
@@ -6432,6 +6479,106 @@ mod tests {
             lk.safety_autoreplan_secs, 0.0,
             "Disengaging must not accumulate into safety_autoreplan_secs (got {})",
             lk.safety_autoreplan_secs
+        );
+    }
+
+    // ── Schritt 2: Junction-Failsafe (kein ungebremstes Geradeaus) ──────────────
+
+    /// Schritt-2-1: An einer erkannten Junction löst die Disengaging-Stage NICHT
+    /// sofort disengage aus, sondern bremst hart (Grace) — kein Steering-Vakuum mit
+    /// 0.0-Geradeaus, sondern Tempo raus.
+    #[test]
+    fn junction_failsafe_brakes_instead_of_immediate_disengage() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Disengaging".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        ctx.blackboard
+            .set("lane_follower.junction_detected", "true");
+
+        let req = lk.tick_request(Some(&t), &ctx);
+
+        assert_ne!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "junction failsafe must NOT disengage on the first tick"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.junction_failsafe_active")
+                .as_deref(),
+            Some("true"),
+            "junction_failsafe_active must report the grace"
+        );
+        let req = req.expect("failsafe must still emit a (brake) ControlRequest");
+        assert!(req.steering.is_none(), "no steering during failsafe");
+        assert!(
+            req.brake.unwrap_or(0.0) >= JUNCTION_FAILSAFE_BRAKE,
+            "must brake hard during grace, got {:?}",
+            req.brake
+        );
+    }
+
+    /// Schritt-2-2: Nach Ablauf des Grace-Fensters wird doch disengaged (gebremst,
+    /// nicht ewig hängend).
+    #[test]
+    fn junction_failsafe_disengages_after_grace_expires() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Disengaging".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(10.0, 0.0);
+        let bb = SharedBlackboard::new();
+        bb.set("autopilot.state", "Active");
+        bb.set("lane_follower.junction_detected", "true");
+        let ctx = PluginContext::new("lane-keeper", bb).with_dt(0.1);
+
+        // dt=0.1 → ~16 Ticks bis > 1.5 s Grace; 25 Ticks mit Reserve.
+        for _ in 0..25 {
+            let _ = lk.tick_request(Some(&t), &ctx);
+        }
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "after the grace window the failsafe must disengage (secs={})",
+            lk.junction_failsafe_secs
+        );
+    }
+
+    /// Schritt-2-3 (Regression): OHNE Junction-Signal bleibt der sofortige Disengage
+    /// unverändert (User-/echtes-Off-Route-Disengage funktioniert weiter).
+    #[test]
+    fn no_junction_still_disengages_immediately() {
+        let mut lk = LaneKeeperPlugin {
+            waypoints: vec![[0.0, 0.0], [20.0, -100.0]],
+            heading_stage: Some("Disengaging".to_string()),
+            ..Default::default()
+        };
+        let t = make_telemetry(10.0, 0.0);
+        let ctx = ctx_with_state("Active");
+        // lane_follower.junction_detected NICHT gesetzt.
+
+        let _ = lk.tick_request(Some(&t), &ctx);
+        assert_eq!(
+            ctx.blackboard
+                .get("autopilot.disengage_requested")
+                .as_deref(),
+            Some("true"),
+            "without junction signal, Disengaging must disengage immediately as before"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.junction_failsafe_active")
+                .as_deref(),
+            Some("false")
         );
     }
 
