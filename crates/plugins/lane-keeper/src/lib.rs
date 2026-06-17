@@ -117,6 +117,10 @@ const CATMULL_MAX_ROUTE_HOPS: usize = 2;
 /// etwas weiter weg liegen kann als der geometrisch nächste Abbieger. R-tree-kNN
 /// (`take(N)`), KEIN Linearscan über alle Segmente.
 const ROUTE_NEAREST_CANDIDATES: usize = 24;
+/// Laufender Reanchor: maximal so viele Hops rückwärts erlaubt (Jitter-Toleranz).
+const REANCHOR_BACKWARD_WINDOW: usize = 2;
+/// Laufender Reanchor: maximal so viele Hops vorwärts erlaubt.
+const REANCHOR_FORWARD_WINDOW: usize = 32;
 
 // ── PID defaults ──────────────────────────────────────────────────────────────
 const DEFAULT_KP: f64 = 0.8;
@@ -974,28 +978,45 @@ impl LaneKeeperPlugin {
             format!("{:.1}", seg_heading_diff.abs()),
         );
 
-        // Route-Relevanz-Prüfung (Route-Constraint). Linearer Scan über die Route (~8 Knoten):
-        //   on-route Hop:        ∃ j: route[j]==F && route[j+1]==T → progress=j,  end=j+1
-        //   Vorgänger-Kante:     sonst ∃ k: route[k]==T            → progress=k,  end=k
-        //   off-route:           sonst → Catmull-Fallback (Schutz gegen Parallelstraße)
-        // on-route wird gegenüber feeds-into bevorzugt; jeweils kleinster passender Index.
+        // Route-Relevanz-Prüfung (Route-Constraint), windowed:
+        //   Erst-Anchor (route_changed=true): globaler Scan 0..route.len()
+        //   Laufend (route_changed=false):    Fenster [progress−BACKWARD, progress+FORWARD)
+        //
+        //   Pass 1 – on-route:   ∃ j: route[j]==F && route[j+1]==T → progress=j, end=j+1
+        //   Pass 2 – feeds-into: ∃ k: route[k]==T                  → progress=k, end=k
+        //   off-route:           kein Treffer im Fenster → Catmull-Fallback
+        //
+        //   Pass-Trennung garantiert: on_route schlägt feeds_into unabhängig vom Index.
+        //   Monotonie: scan_lo = max(0, progress−BACKWARD) verhindert Regression nach k=0.
+        let (scan_lo, scan_hi) = if route_changed {
+            (0, route.len())
+        } else {
+            let lo = self.node_progress_idx.saturating_sub(REANCHOR_BACKWARD_WINDOW);
+            let hi = (self.node_progress_idx + REANCHOR_FORWARD_WINDOW).min(route.len());
+            (lo, hi)
+        };
+
+        // Pass 1: on-route (exakter direktionaler (from,to)-Match — höchste Priorität).
         let mut on_route_idx: Option<usize> = None;
-        let mut feeds_into_idx: Option<usize> = None;
-        for k in 0..route.len() {
-            if on_route_idx.is_none()
-                && k + 1 < route.len()
-                && route[k] == seg_f
-                && route[k + 1] == seg_t
-            {
+        for k in scan_lo..scan_hi {
+            if k + 1 < route.len() && route[k] == seg_f && route[k + 1] == seg_t {
                 on_route_idx = Some(k);
-            }
-            if feeds_into_idx.is_none() && route[k] == seg_t {
-                feeds_into_idx = Some(k);
+                break;
             }
         }
+
+        // Pass 2: feeds-into (nur wenn kein on_route im Fenster).
+        let feeds_into_idx: Option<usize> = if on_route_idx.is_none() {
+            route[scan_lo..scan_hi]
+                .iter()
+                .position(|&n| n == seg_t)
+                .map(|i| scan_lo + i)
+        } else {
+            None
+        };
+
         let (node_progress_idx, end_route_idx) = if let Some(j) = on_route_idx {
-            // on-route: exakter direktionaler (from,to)-Match → immer sicher,
-            // unabhängig vom Heading-Flag (W1) und ohne Forward-Hop-Prüfung (W2).
+            // on-route: immer sicher, unabhängig von Heading-Flag (W1) und Forward-Hop-Prüfung (W2).
             (j, j + 1)
         } else if let Some(k) = feeds_into_idx {
             // feeds-into (Vorgänger-Kante): nur akzeptieren wenn
@@ -1044,8 +1065,10 @@ impl LaneKeeperPlugin {
         } else {
             0.0
         };
-        ctx.blackboard
-            .set("lane_keeper.reanchor_scan_window", "global");
+        ctx.blackboard.set(
+            "lane_keeper.reanchor_scan_window",
+            format!("{scan_lo}..{scan_hi}"),
+        );
         ctx.blackboard.set(
             "lane_keeper.reanchor_best_idx",
             node_progress_idx.to_string(),
@@ -9254,6 +9277,186 @@ mod tests {
                 .as_deref(),
             Some("true"),
             "Stuck-Watchdog muss nach STUCK_TICKS + STUCK_DISENGAGE_TICKS disengagen (Fix 2)"
+        );
+    }
+
+    // ── Phase Reanchor-Window: windowed scan (REANCHOR_BACKWARD_WINDOW / FORWARD_WINDOW) ──
+    //
+    // These guard the windowed reanchor fix: laufender Reanchor darf node_progress_idx
+    // nicht auf k=0 zurücksetzen, wenn der Truck bereits bei k=4 steht und das nächste
+    // Segment nur feeds_into route[0] (Jitter / off-route Segment am Ortsrand).
+
+    /// Test RW-1 (Regression): node_progress_idx=4 vorgesetzt; nächstes Segment (70→10)
+    /// ist off-route und feeds_into route[0]=10 — alter Code würde auf k=0 zurückspringen.
+    /// Der neue windowed Scan hat scan_lo=max(0,4-2)=2: k=0 liegt außerhalb des Fensters,
+    /// feeds_into wird nicht gefunden → off_route → node_progress_idx bleibt 4.
+    ///
+    /// Route `[10,20,30,40,50,60]`:
+    ///   Hops 0-4 laufen Nord an x=0 (Truck steht 200 m weiter östlich → dist > 50 m gate).
+    ///   Segment 70→10 an x=200 läuft ebenfalls Nord, direkt unter dem Truck.
+    #[test]
+    fn reanchor_window_blocks_feeds_into_k0_when_progress_is_4() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),         // hop 0
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30),      // hop 1
+            seg((0.0, -200.0), (0.0, -300.0), 30, 40),      // hop 2
+            seg((0.0, -300.0), (0.0, -400.0), 40, 50),      // hop 3
+            seg((0.0, -400.0), (0.0, -500.0), 50, 60),      // hop 4
+            seg((200.0, -390.0), (200.0, -410.0), 70, 10),  // off-route, feeds_into route[0]=10
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+            (40u64, 0.0, -300.0),
+            (50u64, 0.0, -400.0),
+            (60u64, 0.0, -500.0),
+            (70u64, 200.0, -390.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 100.0),
+            (30u64, 40u64, 100.0),
+            (40u64, 50u64, 100.0),
+            (50u64, 60u64, 100.0),
+            (70u64, 10u64, 20.0),
+        ];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30,40,50,60]", 5);
+
+        // Tick 1: Truck auf hop 4 (x=0, z=-450). route_changed=true → globaler Scan.
+        // Nearest = hop 4 (50→60), node_progress_idx sollte auf 4 gesetzt werden.
+        lk.compute_heading_error(0.0, -450.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            lk.node_progress_idx, 4,
+            "tick 1: Erst-Anchor muss hop 4 treffen; got {}",
+            lk.node_progress_idx
+        );
+
+        // Tick 2: Truck 200 m östlich (x=200, z=-400) — alle on-route Segmente > 50 m entfernt.
+        // Global-nearest = 70→10 (feeds_into route[0]=10, k=0).
+        // scan_lo = max(0, 4-2) = 2 → k=0 liegt außerhalb → off_route → kein Schreiben.
+        lk.compute_heading_error(200.0, -400.0, 0.0, 0.0, &ctx);
+        // node_progress_idx darf nicht auf 0 fallen — off_route-Pfad überschreibt es nicht.
+        assert_eq!(
+            lk.node_progress_idx, 4,
+            "windowed scan muss k=0 feeds_into blockieren; node_progress_idx darf nicht auf 0 fallen; got {}",
+            lk.node_progress_idx
+        );
+        // off_route-Pfad muss fallback_reason setzen (Beweis, dass das Segment verworfen wurde).
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("off_route"),
+            "segment 70→10 muss als off_route klassifiziert werden (k=0 liegt außerhalb Fenster)"
+        );
+    }
+
+    /// Test RW-2 (Backward-Toleranz): node_progress_idx=4 vorgesetzt; nearest ist on-route
+    /// hop 2 (30→40), der innerhalb des Rückwärts-Fensters liegt (4-2=2 ≤ k=2 ≤ 4).
+    /// Ergebnis: node_progress_idx=2 (kleiner Rücksprung toleriert), nicht 0 oder 4.
+    ///
+    /// Route `[10,20,30,40,50]`:
+    ///   Nur hop 2 (30→40) liegt unter dem Truck (x=0, z=-200..-300).
+    ///   Alle anderen Hops liegen weit östlich (x=500).
+    #[test]
+    fn reanchor_window_backward_tolerance_bounded_at_scan_lo() {
+        let segs = vec![
+            seg((500.0, 0.0), (500.0, -100.0), 10, 20),     // hop 0, far east
+            seg((500.0, -100.0), (500.0, -200.0), 20, 30),  // hop 1, far east
+            seg((0.0, -200.0), (0.0, -300.0), 30, 40),      // hop 2, under truck
+            seg((500.0, -300.0), (500.0, -400.0), 40, 50),  // hop 3, far east
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 500.0, 0.0),
+            (20u64, 500.0, -100.0),
+            (30u64, 0.0, -200.0),
+            (40u64, 0.0, -300.0),
+            (50u64, 500.0, -400.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 500.0),
+            (30u64, 40u64, 100.0),
+            (40u64, 50u64, 500.0),
+        ];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30,40,50]", 4);
+
+        // Tick 1: Truck auf hop 2 (x=0, z=-250). route_changed=true → Erst-Anchor → k=2.
+        lk.compute_heading_error(0.0, -250.0, 0.0, 0.0, &ctx);
+        assert_eq!(lk.node_progress_idx, 2, "Erst-Anchor muss hop 2 setzen");
+
+        // Manuell auf k=4 setzen (Simulation: Truck war weiter vorne, jetzt jittert er zurück).
+        lk.node_progress_idx = 4;
+
+        // Tick 2: gleiche Position, scan_lo=max(0,4-2)=2. hop 2 liegt bei k=2 → on_route gefunden.
+        // Ergebnis: 2 (Rücksprung toleriert, aber nicht unter scan_lo=2 und nicht 0).
+        lk.compute_heading_error(0.0, -250.0, 0.0, 0.0, &ctx);
+        assert_eq!(
+            lk.node_progress_idx, 2,
+            "Backward-Toleranz: on_route bei k=2 muss gefunden werden; got {}",
+            lk.node_progress_idx
+        );
+    }
+
+    /// Test RW-3 (Erst-Anchor bleibt global): route_changed=true → scan_lo=0, feeds_into
+    /// bei k=0 wird akzeptiert. Prüft, dass der Erst-Anchor-Sonderfall nicht vom Fenster
+    /// blockiert wird.
+    ///
+    /// Identisch zu VB-1, aber prüft explizit scan_window = "0..N".
+    #[test]
+    fn reanchor_erst_anchor_uses_global_scan() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20),         // predecessor P→A, unter Truck
+            seg((0.0, -100.0), (200.0, -100.0), 20, 30),    // hop A→B, weit östlich
+            seg((200.0, -100.0), (200.0, -300.0), 30, 40),  // hop B→C
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 200.0, -100.0),
+            (40u64, 200.0, -300.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 200.0),
+            (30u64, 40u64, 200.0),
+        ];
+        // Route beginnt bei A=20, predecessor P→A ist nicht in der Route.
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[20,30,40]", 3);
+
+        // Erster Tick: route_changed=true → globaler Scan. nearest=10→20 (feeds_into route[0]=20).
+        lk.compute_heading_error(2.0, -50.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            lk.node_progress_idx, 0,
+            "Erst-Anchor muss feeds_into bei k=0 akzeptieren (globaler Scan); got {}",
+            lk.node_progress_idx
+        );
+        let win = ctx
+            .blackboard
+            .get("lane_keeper.reanchor_scan_window")
+            .unwrap_or_default();
+        assert!(
+            win.starts_with("0.."),
+            "Erst-Anchor muss '0..' (globalen Scan) verwenden; got '{win}'"
         );
     }
 }
