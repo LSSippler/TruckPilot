@@ -317,6 +317,18 @@ pub struct LaneKeeperPlugin {
     index: Option<Arc<SplineIndex>>,
     router_graph: Option<Arc<RouterGraph>>,
     seg_by_from_to: HashMap<(u64, u64), usize>,
+    /// Fix C: NavCurve-Segmente (Index >= `road_seg_count`) adressiert nach
+    /// `(from_uid, to_uid)`. Anders als Road (1:1) kann ein Knotenpaar mehrere
+    /// NavCurves tragen (z.B. parallele Junction-Durchfahrten / Lanes) → `Vec`.
+    /// In `on_load` neben `seg_by_from_to` befüllt; treibt die On-Route-NavCurve-
+    /// Aufnahme in `cached_route_seg_set`, damit lane_keeper an Junctions einen
+    /// gültigen `route_hit` bekommt statt in heading_stage/Disengage zu fallen.
+    navcurve_by_from_to: HashMap<(u64, u64), Vec<usize>>,
+    /// Fix C: Anzahl Road-Segmente vorne im Index; NavCurves beginnen hier.
+    /// Aus `ctx.spline_index_road_seg_count`. Für `chosen_segment_is_navcurve`.
+    road_seg_count: usize,
+    /// Fix C: Anzahl On-Route-NavCurves in `cached_route_seg_set` (Diagnostik).
+    cached_route_navcurve_count: usize,
     cached_route_node_ids: Vec<u64>,
     cached_route_hash: u64,
     /// Phase 2h-Befund3-Fix: Menge der Segment-Indizes, die auf der aktuellen
@@ -447,6 +459,9 @@ impl Default for LaneKeeperPlugin {
             index: None,
             router_graph: None,
             seg_by_from_to: HashMap::new(),
+            navcurve_by_from_to: HashMap::new(),
+            road_seg_count: 0,
+            cached_route_navcurve_count: 0,
             cached_route_node_ids: Vec::new(),
             cached_route_hash: 0,
             cached_route_seg_set: std::collections::HashSet::new(),
@@ -788,15 +803,32 @@ impl LaneKeeperPlugin {
         // legitim leerem Set). Jeder konsekutive Hop (route[j],route[j+1]) →
         // segment_idx. Wenn seg_by_from_to noch leer ist (Index nicht geladen),
         // bleibt der seg-Hash stale → Rebuild greift, sobald die Quelle bereit ist.
+        //
+        // Fix C: Zusätzlich zu den Road-Segmenten auch die On-Route-NavCurves
+        // aufnehmen — die NavCurve(s), deren (from_uid,to_uid) GENAU auf einem
+        // konsekutiven Route-Paar (route[j],route[j+1]) liegen. Off-Route-NavCurves
+        // (anderes Knotenpaar, z.B. der Abbieger) bleiben ausgeschlossen. Auf reinen
+        // Road-Strecken gibt es für die Road-Paare keinen NavCurve-Eintrag → das Set
+        // bleibt dort road-only, die Geraden-Selektion ändert sich NICHT.
         if self.cached_route_seg_hash != self.cached_route_hash {
             let mut set = std::collections::HashSet::new();
+            let mut navcurve_count = 0usize;
             for w in self.cached_route_node_ids.windows(2) {
                 if let Some(&seg) = self.seg_by_from_to.get(&(w[0], w[1])) {
                     set.insert(seg);
                 }
+                if let Some(navs) = self.navcurve_by_from_to.get(&(w[0], w[1])) {
+                    for &nseg in navs {
+                        if set.insert(nseg) {
+                            navcurve_count += 1;
+                        }
+                    }
+                }
             }
             self.cached_route_seg_set = set;
-            if !self.seg_by_from_to.is_empty() {
+            self.cached_route_navcurve_count = navcurve_count;
+            // Latch erst, wenn mindestens eine Quelle bereit ist (Index geladen).
+            if !self.seg_by_from_to.is_empty() || !self.navcurve_by_from_to.is_empty() {
                 self.cached_route_seg_hash = self.cached_route_hash;
             }
         }
@@ -879,6 +911,11 @@ impl LaneKeeperPlugin {
             "lane_keeper.nearest_route_seg_set_size",
             route_seg_set_len.to_string(),
         );
+        // Fix C: wie viele On-Route-NavCurves im aktuellen route_seg_set stecken.
+        ctx.blackboard.set(
+            "lane_keeper.nearest_route_navcurve_count",
+            self.cached_route_navcurve_count.to_string(),
+        );
         ctx.blackboard.set(
             "lane_keeper.nearest_route_query_hits",
             route_query_hits.to_string(),
@@ -957,6 +994,12 @@ impl LaneKeeperPlugin {
         // tick) is the candidate cause of the herr spike.
         ctx.blackboard
             .set("lane_keeper.nearest_segment_id", cur_seg.to_string());
+        // Fix C: ist das gewählte nearest-Segment eine NavCurve (Index >= road_n)?
+        // An der Junction wird hier kurz "true" erwartet (On-Route-NavCurve gewählt).
+        ctx.blackboard.set(
+            "lane_keeper.chosen_segment_is_navcurve",
+            (cur_seg >= self.road_seg_count).to_string(),
+        );
         ctx.blackboard
             .set("lane_keeper.nearest_segment_t", format!("{t_cur:.3}"));
         ctx.blackboard
@@ -3753,18 +3796,33 @@ impl Plugin for LaneKeeperPlugin {
         if let Some(shared) = &ctx.spline_index {
             self.index = Some(Arc::clone(shared));
             let road_n = ctx.spline_index_road_seg_count.min(shared.segments.len());
+            self.road_seg_count = road_n;
             let mut map = HashMap::with_capacity(road_n);
             for i in 0..road_n {
                 let s = &shared.segments[i];
                 map.insert((s.from_uid, s.to_uid), i);
             }
             self.seg_by_from_to = map;
+            // Fix C: NavCurve-Segmente (Index >= road_n) nach (from_uid,to_uid).
+            // Vec, weil ein Knotenpaar mehrere NavCurves tragen kann (Lanes/
+            // parallele Durchfahrten). Damit kann die On-Route-NavCurve an einer
+            // Junction in cached_route_seg_set aufgenommen werden.
+            let mut nc_map: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
+            for i in road_n..shared.segments.len() {
+                let s = &shared.segments[i];
+                nc_map.entry((s.from_uid, s.to_uid)).or_default().push(i);
+            }
+            let nc_pairs = nc_map.len();
+            let nc_segs: usize = nc_map.values().map(|v| v.len()).sum();
+            self.navcurve_by_from_to = nc_map;
             if let Some(rg) = &ctx.graph {
                 self.router_graph = Some(Arc::clone(rg));
             }
             tracing::info!(
-                "[lane-keeper] shared SplineIndex: {} road segs mapped (graph={})",
+                "[lane-keeper] shared SplineIndex: {} road segs mapped, {} NavCurve segs in {} node-pairs (graph={})",
                 self.seg_by_from_to.len(),
+                nc_segs,
+                nc_pairs,
                 self.router_graph.is_some()
             );
             // Phase 2c/2d-Diagnose (read-only): Index-Status auch ohne stdout per
@@ -3774,6 +3832,10 @@ impl Plugin for LaneKeeperPlugin {
             ctx.blackboard.set(
                 "lane_keeper.seg_by_from_to_count",
                 self.seg_by_from_to.len().to_string(),
+            );
+            ctx.blackboard.set(
+                "lane_keeper.navcurve_by_from_to_count",
+                nc_segs.to_string(),
             );
             ctx.blackboard.set(
                 "lane_keeper.router_graph_present",
@@ -5727,6 +5789,220 @@ mod tests {
             ctx.blackboard.get("lane_keeper.lateral_source").as_deref(),
             Some("catmullrom_fallback"),
             "off-route nearest must NOT hijack the spline path → Catmull fallback"
+        );
+    }
+
+    // ── Fix C: On-Route-NavCurve in route_seg_set (Junction-Durchfahrt) ─────────
+    //
+    // An Junctions sitzt der Truck auf einer NavCurve (Prefab-Segment, Index >=
+    // road_seg_count). Vor Fix C war seg_by_from_to road-only → die On-Route-NavCurve
+    // lag NIE in route_seg_set → route_hit=None → heading_stage/Disengage → niemand
+    // lenkt → geradeaus in die Leitplanke. Fix C nimmt NavCurves, deren (from,to) auf
+    // einem konsekutiven Route-Paar liegen, in route_seg_set mit auf.
+
+    /// Fix-C-1: Eine On-Route-NavCurve (20→30) unter dem Truck wird als route_hit
+    /// gewählt; chosen_segment_is_navcurve=true, kein off_route/heading_stage-Fallback.
+    #[test]
+    fn fixc_navcurve_on_route_is_selected() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // road 10->20  (index 0)
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30), // NavCurve 20->30 (index 1)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(1, 3.75, true)), // is_prefab → NavCurve
+        ];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -100.0), (30u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
+        // road_seg_count=1 → index 1 is a NavCurve.
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 1);
+
+        // Truck mid-NavCurve (z=-150, 2 m east), heading North → on the 20->30 curve.
+        lk.compute_heading_error(2.0, -150.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chosen_segment_is_navcurve")
+                .as_deref(),
+            Some("true"),
+            "the On-Route NavCurve under the truck must be the chosen segment"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.nearest_seg_hop").as_deref(),
+            Some("20->30"),
+            "chosen hop must be the on-route NavCurve pair"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_filtered")
+                .as_deref(),
+            Some("true"),
+            "route-aware query must accept the NavCurve as route_hit"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_navcurve_count")
+                .as_deref(),
+            Some("1"),
+            "exactly one on-route NavCurve in route_seg_set"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none"),
+            "on-route NavCurve → no heading_stage/off_route fallback"
+        );
+    }
+
+    /// Fix-C-2 (Diskriminierung + Tie-Break, User-Punkt 2): am Junction-Knoten 20
+    /// hängen ZWEI NavCurves — die On-Route (20→30, geradeaus) UND eine Off-Route
+    /// (20→99, Abbieger), die GEOMETRISCH NÄHER am Truck liegt. Nur die On-Route
+    /// (20,30) ist in route_seg_set; der route-gefilterte nearest-Query wählt sie,
+    /// NICHT die nähere Off-Route-NavCurve. Das ist exakt der Crash-Fall.
+    #[test]
+    fn fixc_off_route_navcurve_excluded_even_when_closer() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // road 10->20            (index 0)
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30), // on-route NavCurve 20->30 (index 1)
+            seg((0.0, -100.0), (30.0, -110.0), 20, 99), // off-route NavCurve 20->99 (index 2, Abbieger)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(1, 3.75, true)),
+            Some(road_meta(1, 3.75, true)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+            (99u64, 30.0, -110.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 100.0),
+            (20u64, 99u64, 32.0),
+        ];
+        // road_seg_count=1 → indices 1,2 are NavCurves.
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 1);
+
+        // Truck just on the on-route curve, heading North. The off-route Abbieger
+        // shares node 20 but its pair (20,99) is NOT on the route.
+        lk.compute_heading_error(2.0, -150.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.nearest_seg_hop").as_deref(),
+            Some("20->30"),
+            "must pick the ON-ROUTE NavCurve, never the off-route Abbieger 20->99"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chosen_segment_is_navcurve")
+                .as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_navcurve_count")
+                .as_deref(),
+            Some("1"),
+            "off-route NavCurve (20,99) must NOT enter route_seg_set"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none")
+        );
+    }
+
+    /// Fix-C-3 (Vec, mehrere NavCurves am selben Knotenpaar): zwei NavCurves teilen
+    /// (20,30) — beide On-Route → BEIDE landen in route_seg_set (navcurve_count=2).
+    #[test]
+    fn fixc_multiple_navcurves_same_pair_both_enter_set() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // road 10->20            (index 0)
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30), // NavCurve 20->30 lane A  (index 1)
+            seg((3.0, -100.0), (3.0, -200.0), 20, 30), // NavCurve 20->30 lane B  (index 2)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(1, 3.75, true)),
+            Some(road_meta(1, 3.75, true)),
+        ];
+        let nodes = vec![(10u64, 0.0, 0.0), (20u64, 0.0, -100.0), (30u64, 0.0, -200.0)];
+        let edges = vec![(10u64, 20u64, 100.0), (20u64, 30u64, 100.0)];
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 1);
+
+        // Truck on lane A (x≈1), heading North.
+        lk.compute_heading_error(1.0, -150.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_navcurve_count")
+                .as_deref(),
+            Some("2"),
+            "both NavCurves sharing the on-route pair (20,30) must enter route_seg_set"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chosen_segment_is_navcurve")
+                .as_deref(),
+            Some("true"),
+            "nearest tie-break picks one of the on-route NavCurves"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.fallback_reason").as_deref(),
+            Some("none")
+        );
+    }
+
+    /// Fix-C-4 (Regression — Gerade bleibt road-only): reine Road-Route mit einer
+    /// NavCurve an einem NICHT-Route-Paar → navcurve_count=0, Auswahl unverändert Road.
+    #[test]
+    fn fixc_straight_road_route_seg_set_stays_road_only() {
+        let segs = vec![
+            seg((0.0, 0.0), (0.0, -100.0), 10, 20), // road 10->20 (index 0)
+            seg((0.0, -100.0), (0.0, -200.0), 20, 30), // road 20->30 (index 1)
+            seg((100.0, 0.0), (100.0, -100.0), 50, 51), // NavCurve off-route (index 2)
+        ];
+        let metas = vec![
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(2, 3.75, false)),
+            Some(road_meta(1, 3.75, true)),
+        ];
+        let nodes = vec![
+            (10u64, 0.0, 0.0),
+            (20u64, 0.0, -100.0),
+            (30u64, 0.0, -200.0),
+            (50u64, 100.0, 0.0),
+            (51u64, 100.0, -100.0),
+        ];
+        let edges = vec![
+            (10u64, 20u64, 100.0),
+            (20u64, 30u64, 100.0),
+            (50u64, 51u64, 100.0),
+        ];
+        // road_seg_count=2 → only index 2 is a NavCurve, but it is off-route.
+        let (mut lk, ctx) = wired_plugin(segs, metas, nodes, edges, "[10,20,30]", 2);
+
+        // Truck on the straight road 10->20 (z=-50), heading North.
+        lk.compute_heading_error(2.0, -50.0, 0.0, 0.0, &ctx);
+
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.nearest_route_navcurve_count")
+                .as_deref(),
+            Some("0"),
+            "no NavCurve on a route pair → route_seg_set stays road-only on the straight"
+        );
+        assert_eq!(
+            ctx.blackboard
+                .get("lane_keeper.chosen_segment_is_navcurve")
+                .as_deref(),
+            Some("false"),
+            "straight road selection must remain a road segment"
+        );
+        assert_eq!(
+            ctx.blackboard.get("lane_keeper.nearest_seg_hop").as_deref(),
+            Some("10->20"),
+            "straight selection unchanged from pre-Fix-C"
         );
     }
 
