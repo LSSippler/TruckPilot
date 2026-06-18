@@ -165,6 +165,14 @@ pub struct BuildStats {
     pub ppd_files_failed: usize,
     #[serde(default)]
     pub ppd_total_nav_curves: usize,
+    #[serde(default)]
+    pub ppd_failed_token_miss: usize,
+    #[serde(default)]
+    pub ppd_failed_archive_miss: usize,
+    #[serde(default)]
+    pub ppd_failed_parse_err: usize,
+    #[serde(default)]
+    pub ppd_chain_broken: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +204,10 @@ pub struct GraphBuilder {
     ppd_files_loaded: usize,
     ppd_files_failed: usize,
     ppd_total_nav_curves: usize,
+    ppd_failed_token_miss: usize,
+    ppd_failed_archive_miss: usize,
+    ppd_failed_parse_err: usize,
+    ppd_chain_broken: usize,
 }
 
 impl GraphBuilder {
@@ -222,11 +234,17 @@ impl GraphBuilder {
         loaded: usize,
         failed: usize,
         nav_curves: usize,
+        token_miss: usize,
+        archive_miss: usize,
+        parse_err: usize,
     ) {
         self.ppd_files_attempted = attempted;
         self.ppd_files_loaded = loaded;
         self.ppd_files_failed = failed;
         self.ppd_total_nav_curves = nav_curves;
+        self.ppd_failed_token_miss = token_miss;
+        self.ppd_failed_archive_miss = archive_miss;
+        self.ppd_failed_parse_err = parse_err;
     }
 
     /// Merge one parsed sector into the builder.
@@ -932,6 +950,7 @@ impl GraphBuilder {
         let mut prefabs: Vec<Prefab> = Vec::with_capacity(self.raw_prefabs.len());
         let mut prefab_instances: Vec<PrefabInstance> = Vec::with_capacity(self.raw_prefabs.len());
         let mut prefab_ai_paths: Vec<PrefabAiPath> = Vec::new();
+        let mut total_chain_broken = 0usize;
         let mut used_descriptors: HashMap<u64, PrefabDescriptor> = HashMap::new();
 
         // Build a quick node position lookup for origin derivation
@@ -975,7 +994,7 @@ impl GraphBuilder {
                     .or_insert_with(|| desc.clone());
 
                 // Generate AI paths
-                let paths = build_prefab_ai_paths(
+                let (paths, broken) = build_prefab_ai_paths(
                     desc,
                     &origin_pos,
                     &origin_rot,
@@ -983,6 +1002,7 @@ impl GraphBuilder {
                     &node_pos_map,
                 );
                 prefab_ai_paths.extend(paths);
+                total_chain_broken += broken;
             }
 
             prefabs.push(Prefab {
@@ -996,12 +1016,14 @@ impl GraphBuilder {
         let descriptor_count = used_descriptors.len();
         if descriptor_count > 0 {
             info!(
-                "Generated {} AI paths from {} PPD descriptors for {} prefab instances",
+                "Generated {} AI paths from {} PPD descriptors for {} prefab instances ({} chain-breaks)",
                 ai_path_count,
                 descriptor_count,
-                prefab_instances.len()
+                prefab_instances.len(),
+                total_chain_broken,
             );
         }
+        self.ppd_chain_broken = total_chain_broken;
 
         // Attach signs to nearest nodes
         let signs = crate::signs::attach_signs_to_nodes(&self.raw_signs, &nodes);
@@ -1028,6 +1050,10 @@ impl GraphBuilder {
                 ppd_files_loaded: self.ppd_files_loaded,
                 ppd_files_failed: self.ppd_files_failed,
                 ppd_total_nav_curves: self.ppd_total_nav_curves,
+                ppd_failed_token_miss: self.ppd_failed_token_miss,
+                ppd_failed_archive_miss: self.ppd_failed_archive_miss,
+                ppd_failed_parse_err: self.ppd_failed_parse_err,
+                ppd_chain_broken: self.ppd_chain_broken,
             },
             nodes,
             edges,
@@ -1221,8 +1247,9 @@ fn build_prefab_ai_paths(
     _origin_rot: &[f32; 4],
     node_uids: &[u64],
     _node_pos_map: &HashMap<u64, [f32; 3]>,
-) -> Vec<PrefabAiPath> {
+) -> (Vec<PrefabAiPath>, usize) {
     let mut paths = Vec::new();
+    let mut chain_broken = 0usize;
 
     // For each ControlNode in the PPD, map its output lines to paths.
     // Each output line (NavCurve index) from a ControlNode represents a path
@@ -1253,6 +1280,10 @@ fn build_prefab_ai_paths(
                 start_curve_idx,
                 64, // max depth to prevent infinite loops
             );
+
+            if curve_indices.is_empty() {
+                chain_broken += 1;
+            }
 
             if to_node_idx >= desc.control_nodes.len() as u32 {
                 continue;
@@ -1321,7 +1352,7 @@ fn build_prefab_ai_paths(
         }
     }
 
-    paths
+    (paths, chain_broken)
 }
 
 /// Follow a NavCurve chain from a start curve to the next ControlNode.

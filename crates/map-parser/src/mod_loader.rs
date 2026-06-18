@@ -390,7 +390,7 @@ fn parse_sectors_from_archives(
     );
     let (ppd_descriptors, ppd_stats) = load_ppd_descriptors(archives, &builder);
     builder.set_ppd_descriptors(ppd_descriptors);
-    builder.set_ppd_stats(ppd_stats.0, ppd_stats.1, ppd_stats.2, ppd_stats.3);
+    builder.set_ppd_stats(ppd_stats.0, ppd_stats.1, ppd_stats.2, ppd_stats.3, ppd_stats.4, ppd_stats.5, ppd_stats.6);
 
     Ok(builder.build())
 }
@@ -443,11 +443,11 @@ fn walk_ppd_paths(arc: &HashFsArchive) -> Vec<String> {
 /// listings, builds a `scs_token_hash(stem) → path` map, then reads and
 /// parses each PPD whose token appears in the accumulated raw prefabs.
 ///
-/// Returns `(token→descriptor map, (attempted, loaded, failed, total_nav_curves))`.
+/// Returns `(token→descriptor map, (attempted, loaded, failed_total, total_nav_curves, token_miss, archive_miss, parse_err))`.
 fn load_ppd_descriptors(
     archives: &mut [Box<dyn Archive>],
     builder: &GraphBuilder,
-) -> (HashMap<u64, PrefabDescriptor>, (usize, usize, usize, usize)) {
+) -> (HashMap<u64, PrefabDescriptor>, (usize, usize, usize, usize, usize, usize, usize)) {
     use crate::ppd::parse_ppd;
     use std::collections::{HashMap, HashSet};
 
@@ -462,7 +462,7 @@ fn load_ppd_descriptors(
         .collect();
 
     if tokens.is_empty() {
-        return (HashMap::new(), (0, 0, 0, 0));
+        return (HashMap::new(), (0, 0, 0, 0, 0, 0, 0));
     }
 
     // Build token→path map via TruckLib base-38 tokens of the unit-name dot-suffix.
@@ -513,7 +513,9 @@ fn load_ppd_descriptors(
     let mut descriptors: HashMap<u64, PrefabDescriptor> = HashMap::new();
     let attempted = tokens.len();
     let mut loaded = 0usize;
-    let mut failed = 0usize;
+    let mut failed_token_miss = 0usize;
+    let mut failed_archive_miss = 0usize;
+    let mut failed_parse_err = 0usize;
     let mut total_nav_curves = 0usize;
 
     for token in &tokens {
@@ -534,25 +536,27 @@ fn load_ppd_descriptors(
                     }
                     Err(e) => {
                         warn!("PPD {lookup} parse failed: {e}");
-                        failed += 1;
+                        failed_parse_err += 1;
                     }
                 }
             } else {
                 debug!("PPD {lookup} not found in any archive");
-                failed += 1;
+                failed_archive_miss += 1;
             }
         } else {
-            failed += 1;
+            failed_token_miss += 1;
         }
     }
 
+    let failed_total = failed_token_miss + failed_archive_miss + failed_parse_err;
     let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
     info!(
-        "PPD load: {} loaded, {} failed, {} nav_curves in {:.1} ms",
-        loaded, failed, total_nav_curves, elapsed
+        "PPD load: {} loaded, {} failed (token_miss={} archive_miss={} parse_err={}), {} nav_curves in {:.1} ms",
+        loaded, failed_total, failed_token_miss, failed_archive_miss, failed_parse_err,
+        total_nav_curves, elapsed
     );
 
-    (descriptors, (attempted, loaded, failed, total_nav_curves))
+    (descriptors, (attempted, loaded, failed_total, total_nav_curves, failed_token_miss, failed_archive_miss, failed_parse_err))
 }
 
 #[cfg(test)]

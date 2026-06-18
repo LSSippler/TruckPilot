@@ -61,6 +61,13 @@ const SPLINE_LOOKAHEAD_MAX_HOPS: usize = 64;
 /// deckt die gemessenen 42 m mit Marge ab, bleibt aber moderat genug um legitime
 /// nahe Off-Route-Segmente (echter Spurwechsel) nicht zu überstimmen.
 const MAX_HOP_PROJECTION_DIST_M: f32 = 50.0;
+/// Dual-CW-Guard: Route-Treffer ablehnen wenn der physisch nächste Treffer
+/// < DUAL_CW_REJECT_RATIO * route_dist. Verhindert Vollausschlag-Lenkung auf
+/// Gegenfahrbahn/Parallelfahrspur die ~40m entfernt ist (Dual Carriageway).
+const DUAL_CW_REJECT_RATIO: f32 = 0.30;
+/// Dual-CW-Guard: nur aktiv wenn physischer Treffer ≤ diesem Wert. Stellt sicher,
+/// dass der Guard nicht bei echten >12m-Abweichungen unkontrolliert feuert.
+const PHYSICAL_CLOSE_DIST_M: f32 = 12.0;
 /// Phase 2h-Wurzelfix: max. Richtungsknick (Grad) an einem Walk-Hop-Übergang,
 /// bevor der Lookahead-Walk STOPPT statt über den Knick auf ein abknickendes
 /// Segment zu zielen. Gemessen als |Δheading| zwischen auslaufender Tangente
@@ -931,11 +938,24 @@ impl LaneKeeperPlugin {
             }
             None => (-1.0f32, "none".to_string(), -1.0f32),
         };
+        // Dual-CW-Guard: prüfen BEVOR route_hit-Filter, da raw_route_hit danach consumed wird.
+        // Wenn global_hit (physisch nächstes Segment) deutlich näher als der Route-Treffer,
+        // fährt der Truck auf einer Parallelfahrbahn → Route-Treffer ablehnen.
+        let dual_cw_guard = match (&raw_route_hit, &global_hit) {
+            (Some(rh), Some(gh)) => {
+                gh.dist_m < PHYSICAL_CLOSE_DIST_M && gh.dist_m < rh.dist_m * DUAL_CW_REJECT_RATIO
+            }
+            _ => false,
+        };
+
         // Gate anwenden (dist ≤ MAX_HOP_PROJECTION_DIST_M UND heading ≤60°) — Logik
         // unverändert ggü. dem deployten Stand. nearest_with_projection_filtered hat
         // KEINEN Heading-Filter; das Gate ≤60° spiegelt dot≥0.5 der globalen Query
         // (heading_deg und truck_heading_deg teilen dieselbe CW-von-Nord-Konvention).
         let route_hit = raw_route_hit.filter(|h| {
+            if dual_cw_guard {
+                return false; // Parallel-Fahrbahn → kein Route-Lock
+            }
             if h.dist_m > MAX_HOP_PROJECTION_DIST_M {
                 return false;
             }
@@ -964,6 +984,10 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.nearest_route_gate_rejected",
             route_gate_rejected.to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.dual_cw_guard_active",
+            u8::from(dual_cw_guard).to_string(),
         );
         ctx.blackboard.set(
             "lane_keeper.nearest_route_best_dist_m",

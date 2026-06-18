@@ -70,6 +70,25 @@ fn print_basic_stats(graph: &MapGraph) {
     println!("Prefabs : {}", graph.prefabs.len());
     println!("Signs   : {}", graph.signs.len());
     println!();
+
+    let s = &graph.stats;
+    if s.ppd_files_attempted > 0 {
+        let pct_fail = s.ppd_files_failed as f64 / s.ppd_files_attempted as f64 * 100.0;
+        println!("=== PPD LOAD STATS ===");
+        println!(
+            "Attempted: {}  Loaded: {}  Failed: {} ({:.1}%)",
+            s.ppd_files_attempted, s.ppd_files_loaded, s.ppd_files_failed, pct_fail
+        );
+        println!(
+            "  token_miss={} archive_miss={} parse_err={}",
+            s.ppd_failed_token_miss, s.ppd_failed_archive_miss, s.ppd_failed_parse_err
+        );
+        println!(
+            "  chain_broken={}  nav_curves_total={}",
+            s.ppd_chain_broken, s.ppd_total_nav_curves
+        );
+        println!();
+    }
 }
 
 fn print_bounding_box(graph: &MapGraph) {
