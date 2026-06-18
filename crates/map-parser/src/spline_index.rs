@@ -979,7 +979,7 @@ mod tests {
             lanes_opposite: 0,
             lanes_total: 1,
             lane_width_m: 3.75,
-            lane_offset_right_m: 1.875,
+            lane_offset_right_m: 0.0,
             road_offset_m: 0.0,
             road_look_token: 0,
             is_prefab: false,

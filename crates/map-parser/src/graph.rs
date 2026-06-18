@@ -1380,13 +1380,15 @@ fn trace_curve_chain_to_node(
 
         let nc = &nav_curves[current_curve];
 
-        // Check if this curve terminates at a ControlNode
+        // Check if this curve terminates at a different ControlNode.
+        // Skip same-node termination here — it will be caught on dead-end below,
+        // allowing the chain to continue through intermediate same-node entries.
         let end_node = nc.leads_to.end_node as u32;
         if end_node as usize != start_node as usize && end_node < control_nodes.len() as u32 {
             return (end_node, curve_indices);
         }
 
-        // Follow next_lines to continue
+        // Follow next_lines to continue the chain
         let mut found_next = false;
         for &next_raw in &nc.next_lines {
             if next_raw < 0 {
@@ -1400,6 +1402,12 @@ fn trace_curve_chain_to_node(
             }
         }
         if !found_next {
+            // Chain dead-ends here. If the last curve has a valid end_node
+            // (including same-node for roundabout exits), use it.
+            // Self-loops are already filtered in build_prefab_ai_paths.
+            if end_node < control_nodes.len() as u32 {
+                return (end_node, curve_indices);
+            }
             break;
         }
     }

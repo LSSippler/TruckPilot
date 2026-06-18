@@ -35,6 +35,18 @@ pub const FORWARD: Vec3 = Vec3 {
 /// 0 = Rechtsfahrgebot. Spaeterer Spurwechsel setzt diesen Wert >0 (weiter links).
 const TARGET_LANE_FROM_RIGHT: u32 = 0;
 
+/// Lateral offset from the Hermite centerline (road median) to the target lane centre.
+///
+/// Right-hand traffic: default target is the outermost right lane (`TARGET_LANE_FROM_RIGHT`).
+/// `lanes` is the lane count in the travel direction (`lanes_in_direction`).
+pub fn compute_lane_offset_right_m(lanes: u8, lane_width_m: f32, road_offset_m: f32) -> f32 {
+    let lanes = lanes.max(1);
+    let lanes_f = lanes as f32;
+    let target_lane = (lanes as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
+    let lane_center = (target_lane as f32 + 0.5 - lanes_f / 2.0) * lane_width_m;
+    lane_center + road_offset_m
+}
+
 // ---------------------------------------------------------------------------
 // Datenmodell
 // ---------------------------------------------------------------------------
@@ -312,11 +324,20 @@ pub fn build_splines_ex(
 
         let mag = chord_len * TANGENT_SCALE;
 
+        // Für backward-Edges traversiert man von edge.to nach edge.from (to→from).
+        // Der Quaternion eines Nodes codiert aber immer die road-forward-Richtung (from→to bei
+        // forward). Bei backward-Edges zeigt der Quaternion also ENTGEGEN der Traversierungsrichtung.
+        // Fix: Quaternion-Tangenten für backward-Edges negieren.
+        // Geometrische Fallbacks ((p1-p0).normalize()) sind korrekt — p0=from, p1=to ist bereits
+        // in Traversierungsreihenfolge (der Graph speichert backward-Edges als from=to_fwd, to=from_fwd).
+        let backward = edge.direction == "backward";
+
         let m0 = {
             let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, FORWARD * mag)
+                let t = quat_rotate_vec(q, FORWARD * mag);
+                if backward { t * -1.0 } else { t }
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.from) {
@@ -330,7 +351,8 @@ pub fn build_splines_ex(
             let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, FORWARD * mag)
+                let t = quat_rotate_vec(q, FORWARD * mag);
+                if backward { t * -1.0 } else { t }
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.to) {
@@ -369,17 +391,16 @@ pub fn build_splines_ex(
         let seg_meta = match edge.direction.as_str() {
             "forward" | "backward" | "bidirectional_unknown" => {
                 let lanes = edge.lanes.max(1);
-                // lanes ist hier bereits .max(1). Lane-Index 0-basiert, hoeherer Index = weiter
-                // vom Median = weiter rechts. Aeusserste Rechtsspur = lanes-1. TARGET_LANE_FROM_RIGHT
-                // zaehlt vom rechten Rand nach links.
-                let target_lane = (lanes as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
-                let lane_center = (target_lane as f32 + 0.5) * edge.lane_width_m;
                 Some(SegmentMetadata {
                     lanes_in_direction: lanes,
                     lanes_opposite: edge.lanes_opposite,
                     lanes_total: lanes.saturating_add(edge.lanes_opposite),
                     lane_width_m: edge.lane_width_m,
-                    lane_offset_right_m: lane_center + edge.road_offset_m,
+                    lane_offset_right_m: compute_lane_offset_right_m(
+                        lanes,
+                        edge.lane_width_m,
+                        edge.road_offset_m,
+                    ),
                     road_offset_m: edge.road_offset_m,
                     road_look_token: edge.road_look_token,
                     is_prefab: false,
@@ -446,12 +467,16 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
 
         let mag = chord_len * TANGENT_SCALE;
 
+        let backward = edge.direction == "backward";
+
         // m0: quaternion-derived if set, else weighted-average fallback
+        // Backward-Edges: Quaternion-Tangenten negieren (s. build_splines_ex-Kommentar).
         let m0 = {
             let q = rotation_map.get(&edge.from).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, FORWARD * mag)
+                let t = quat_rotate_vec(q, FORWARD * mag);
+                if backward { t * -1.0 } else { t }
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.from) {
@@ -466,7 +491,8 @@ pub fn build_splines_bbox(graph: &MapGraph, bbox: BBox) -> (Vec<HermiteSegment>,
             let q = rotation_map.get(&edge.to).copied().unwrap_or([0.0; 4]);
             if quat_is_set(q) {
                 stats.quat_tangents += 1;
-                quat_rotate_vec(q, FORWARD * mag)
+                let t = quat_rotate_vec(q, FORWARD * mag);
+                if backward { t * -1.0 } else { t }
             } else {
                 stats.fallback_tangents += 1;
                 match adj.get(&edge.to) {
@@ -1226,8 +1252,7 @@ mod tests {
 
     #[test]
     fn ds8_motorway_3lane_offset() {
-        // 3-lane motorway, 3.75m: offset = (target_lane + 0.5) × 3.75 = 9.375m
-        // where target_lane = lanes − 1 = 2, so (2 + 0.5) × 3.75 = 9.375m
+        // 3-lane motorway, 3.75m: (2 + 0.5 − 1.5) × 3.75 = 3.75 m (right lane from median)
         let graph = make_road_graph(3, 3, 3.75, "forward");
         let (_, meta, _) = build_splines_ex(&graph);
         assert_eq!(meta.len(), 1);
@@ -1235,24 +1260,23 @@ mod tests {
         assert_eq!(m.lanes_in_direction, 3);
         assert_eq!(m.lane_width_m, 3.75);
         assert!(
-            (m.lane_offset_right_m - 9.375).abs() < 1e-4,
-            "expected 9.375, got {}",
+            (m.lane_offset_right_m - 3.75).abs() < 1e-4,
+            "expected 3.75, got {}",
             m.lane_offset_right_m
         );
     }
 
     #[test]
     fn ds8_city_1lane_offset() {
-        // 1-lane city road, 3.0m: offset = (target_lane + 0.5) × 3.0 = 1.5m
-        // where target_lane = lanes − 1 = 0, so (0 + 0.5) × 3.0 = 1.5m
+        // 1-lane city road, 3.0m: (0 + 0.5 − 0.5) × 3.0 = 0 m (centerline = lane centre)
         let graph = make_road_graph(1, 1, 3.0, "forward");
         let (_, meta, _) = build_splines_ex(&graph);
         let m = meta[0].expect("forward edge must have metadata");
         assert_eq!(m.lanes_in_direction, 1);
         assert_eq!(m.lane_width_m, 3.0);
         assert!(
-            (m.lane_offset_right_m - 1.5).abs() < 1e-4,
-            "expected 1.5, got {}",
+            (m.lane_offset_right_m - 0.0).abs() < 1e-4,
+            "expected 0.0, got {}",
             m.lane_offset_right_m
         );
     }
@@ -1311,10 +1335,10 @@ mod tests {
             "default width = 3.75, got {}",
             m.lane_width_m
         );
-        // (1 − 0.5) × 3.75 = 1.875m — QW1 baseline
+        // (0 + 0.5 − 0.5) × 3.75 = 0 m — single lane, median = lane centre
         assert!(
-            (m.lane_offset_right_m - 1.875).abs() < 1e-4,
-            "offset = 1.875m, got {}",
+            (m.lane_offset_right_m - 0.0).abs() < 1e-4,
+            "offset = 0.0m, got {}",
             m.lane_offset_right_m
         );
     }
@@ -1368,7 +1392,7 @@ mod tests {
 
     /// Phase 2h (a): ger7 case — lanes=2, width=3.75, road_offset=1.0.
     /// TARGET_LANE_FROM_RIGHT=0 ⇒ target_lane = 2-1-0 = 1 (outermost right).
-    /// lane_center = (1+0.5)*3.75 = 5.625; +road_offset 1.0 = 6.625.
+    /// lane_center = (1+0.5−1)*3.75 = 1.875; +road_offset 1.0 = 2.875.
     #[test]
     fn ph2h_ger7_right_lane_with_offset() {
         assert_eq!(
@@ -1387,14 +1411,14 @@ mod tests {
             m.road_offset_m
         );
         assert!(
-            (m.lane_offset_right_m - 6.625).abs() < 1e-4,
-            "expected 6.625 (5.625 lane_center + 1.0 offset), got {}",
+            (m.lane_offset_right_m - 2.875).abs() < 1e-4,
+            "expected 2.875 (1.875 lane_center + 1.0 offset), got {}",
             m.lane_offset_right_m
         );
     }
 
     /// Phase 2h (b): 3-lane road — target must be the right-most lane (index 2),
-    /// NOT the inner-most (index 0). lane_center = (2+0.5)*width, plus offset.
+    /// NOT the inner-most (index 0). lane_center = (2+0.5−1.5)*width, plus offset.
     #[test]
     fn ph2h_three_lane_targets_rightmost_not_inner() {
         assert_eq!(TARGET_LANE_FROM_RIGHT, 0);
@@ -1405,21 +1429,35 @@ mod tests {
         let m = meta[0].expect("forward edge must have metadata");
         let target_lane = (m.lanes_in_direction as u32).saturating_sub(1 + TARGET_LANE_FROM_RIGHT);
         assert_eq!(target_lane, 2, "3-lane → right-most index 2");
-        let expected = 2.5 * width + offset;
+        let expected = 1.0 * width + offset;
         assert!(
             (m.lane_offset_right_m - expected).abs() < 1e-4,
-            "expected {} (2.5*width + offset), got {}",
+            "expected {} (1.0*width + offset), got {}",
             expected,
             m.lane_offset_right_m
         );
-        // Must NOT be the inner-most lane center (0.5*width + offset).
-        let inner = 0.5 * width + offset;
+        // Must NOT be the middle lane centre (index 1 → offset 0 + road_offset).
+        let middle = 0.0 * width + offset;
         assert!(
-            (m.lane_offset_right_m - inner).abs() > 1e-3,
-            "must NOT target inner-most lane ({}), got {}",
-            inner,
+            (m.lane_offset_right_m - middle).abs() > 1e-3,
+            "must NOT target middle lane ({}), got {}",
+            middle,
             m.lane_offset_right_m
         );
+    }
+
+    /// Model B formula: lane offsets from road median for lanes 1–4 at w=3.75, ro=0.
+    #[test]
+    fn lane_offset_formula_model_b_lanes_1_to_4() {
+        const W: f32 = 3.75;
+        let cases: [(u8, f32); 4] = [(1, 0.0), (2, 1.875), (3, 3.75), (4, 5.625)];
+        for (lanes, expected) in cases {
+            let got = compute_lane_offset_right_m(lanes, W, 0.0);
+            assert!(
+                (got - expected).abs() < 1e-4,
+                "lanes={lanes}: expected {expected}, got {got}"
+            );
+        }
     }
 
     #[test]
@@ -1476,5 +1514,67 @@ mod tests {
             stats.fallback_tangents, 2,
             "both endpoints should use fallback"
         );
+    }
+
+    /// Backward-Edge Reversal: forward- und backward-Segment müssen dieselbe Kurve beschreiben
+    /// (reverse(t) == forward(1-t)) wenn Tangenten korrekt negiert werden.
+    ///
+    /// Fängt den Fehler "nur negiert" vs "negiert+getauscht" ab, weil der Graph
+    /// backward-Edges bereits mit getauschten from/to speichert — daher ist
+    /// NUR negieren (in den Quaternion-Zweigen) die korrekte Transformation.
+    #[test]
+    fn backward_edge_produces_reversed_curve() {
+        use crate::graph::GraphNode;
+
+        // Asymmetrische Kurve: von A(0,0,0) nach B(10,0,0).
+        // A's Quaternion: East-Richtung (zeigt +x).
+        // B's Quaternion: NordOst (~45°).
+        let s_east = (2.0f32).sqrt() / 2.0; // 90° Yaw um Y → East
+        // 45° Yaw: sin(22.5°) ≈ 0.3827, cos(22.5°) ≈ 0.9239 → [0.9239, 0, -0.3827, 0]
+        let q_ne = [0.9239f32, 0.0, -0.3827, 0.0];
+
+        let graph = MapGraph {
+            nodes: vec![
+                GraphNode { uid: 1, x: 0.0, y: 0.0, z: 0.0, rotation: [s_east, 0.0, -s_east, 0.0] },
+                GraphNode { uid: 2, x: 10.0, y: 0.0, z: 0.0, rotation: q_ne },
+            ],
+            edges: vec![
+                // Forward edge A→B
+                GraphEdge {
+                    uid: 10, from: 1, to: 2, distance_m: 10.0,
+                    speed_limit_kmh: None, lanes: 1, direction: "forward".to_string(),
+                    dlc_guard: 0, is_hidden: false, gps_avoid: false, road_look_token: 0,
+                    lanes_opposite: 0, lane_width_m: 3.75, road_offset_m: 0.0,
+                },
+                // Backward edge B→A
+                GraphEdge {
+                    uid: 11, from: 2, to: 1, distance_m: 10.0,
+                    speed_limit_kmh: None, lanes: 1, direction: "backward".to_string(),
+                    dlc_guard: 0, is_hidden: false, gps_avoid: false, road_look_token: 0,
+                    lanes_opposite: 0, lane_width_m: 3.75, road_offset_m: 0.0,
+                },
+            ],
+            ..MapGraph::default()
+        };
+
+        let (segs, _stats) = build_splines(&graph);
+        assert_eq!(segs.len(), 2, "must produce exactly 2 segments");
+
+        let fwd = &segs[0]; // forward A→B
+        let bwd = &segs[1]; // backward B→A
+
+        // Prüfe: bwd.evaluate(t) ≈ fwd.evaluate(1-t) für t = 0, 0.25, 0.5, 0.75, 1
+        let tolerance = 0.01_f32;
+        for &t in &[0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            let p_fwd = evaluate(fwd, 1.0 - t);
+            let p_bwd = evaluate(bwd, t);
+            let dx = (p_fwd.x - p_bwd.x).abs();
+            let dz = (p_fwd.z - p_bwd.z).abs();
+            assert!(
+                dx < tolerance && dz < tolerance,
+                "at t={t}: fwd(1-t)=({:.4},{:.4}) ≠ bwd(t)=({:.4},{:.4})  Δ=({dx:.4},{dz:.4})",
+                p_fwd.x, p_fwd.z, p_bwd.x, p_bwd.z
+            );
+        }
     }
 }

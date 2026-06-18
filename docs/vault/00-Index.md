@@ -115,6 +115,10 @@ WebSocket IPC zur Tauri/React/shadcn UI, vJoy als Output-Layer.
 
 - [[01-Phases/Phase-A2-Camera-Pose-D3D11-Hook-Pivot]] — **PIVOT 2026-05-29** (zurückgestellt auf Phase 7+, Spike-Code NICHT in master): Camera-Pose via D3D11-Present-Hook für drift-freies AR-Overlay. Blt-Dummy → `present_hook` feuert nie → V-VTABLE-MISMATCH → Flip-Dummy (`CreateSwapChainForHwnd`+`FLIP_DISCARD`, ABI 3× verifiziert, sauber installiert) → live WEITER kein `[scan]`. **Verdikt: ETS2 präsentiert über D3D12, nicht D3D11-DXGI** — D3D11-VTable-Patch trifft ungenutzte VTable. STOP-Gate verhinderte Vollausbau. Nutzbar bleibt: Stale-Deploy-Fix (committed `a7521891`), Overlay-B DS14-Marker (commit-reif), Erkenntnis ETS2=D3D12. Siehe [[05-Decisions/ADR-002-Camera-Pose-Render-Hook-Deferred]].
 
+- [[01-Phases/Phase-6.6a-2-Route-Visibility-Fix]] — **CLOSED 2026-06-15**: Route-Linie beginnt jetzt ab Truck-Position (segmentFootPoint + truck als synthetischer erster Vertex, near-plane-geclippt). densify() ≤12 m Schrittweite. ROUTE_RANGE_M 300→600 m. DEBUG_DIAG off. 51/51 Tests grün.
+
+- [[01-Phases/Phase-A1-A3-PPD-Diagnostics-Dual-CW-Guard]] — **CLOSED 2026-06-18**: PPD-Diagnostic-Counter (token_miss/archive_miss/parse_err/chain_broken). Ergebnis: 0% PPD-Failures, 90.293 Chain-Breaks = echte Dead-Ends (nicht fixierbar). A.3-Fix: +116 Edges (marginal). Dual-CW-Guard (12m/30%-Ratio) verhindert Vollanschlag auf Gegenspur. C.1: BB-Key nearest→total_route_navcurve_count. Graph 36.6% CC, 52.5% Isolation = Ghost-Nodes aus Sektor-Recovery.
+
 ## Reviews
 
 - [[03-Reviews/DeepSeek-Review]]
