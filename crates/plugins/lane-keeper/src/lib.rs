@@ -27,7 +27,7 @@ use truckpilot_map_parser::{
         ArcLengthLUT,
     },
     spline::{evaluate, evaluate_tangent, HermiteSegment, Vec3},
-    spline_index::HeadingFilteredHit,
+    spline_index::{HeadingFilteredHit, NearestHit},
     SplineIndex,
 };
 use truckpilot_plugin_api::graph::RouterGraph;
@@ -55,12 +55,13 @@ const SPLINE_LOOKAHEAD_MAX_HOPS: usize = 64;
 /// liegt der Truck bis ~17m (5-spurig) von der Centerline.
 ///
 /// Phase 2h-Befund3-Fix: 40 â†’ 50 m. Diagnose an Kreuzung 1051105/1051103 zeigte:
-/// der korrekte On-Route-Hop 1051103 liegt im Eintrittsfenster (t=6.3â€“9.8)
-/// durchgehend bei 40.15â€“41.77 m â€” KNAPP Ã¼ber 40 m. Der dist-Filter verwarf ihn
+/// der korrekte On-Route-Hop 1051103 liegt im Eintrittsfenster (t=6.3â€”9.8)
+/// durchgehend bei 40.15â€”41.77 m â€” KNAPP Ã¼ber 40 m. Der dist-Filter verwarf ihn
 /// â†’ Fallback auf globalen nearest â†’ Abbieger 1051105 â†’ off_route â†’ Catmull. 50 m
 /// deckt die gemessenen 42 m mit Marge ab, bleibt aber moderat genug um legitime
 /// nahe Off-Route-Segmente (echter Spurwechsel) nicht zu Ã¼berstimmen.
-const MAX_HOP_PROJECTION_DIST_M: f32 = 50.0;
+/// 50 â†’ 65 m: Live-Diag zeigte On-Route-Segment bei 51.12 m (1.12 m Ã¼ber Gate).
+const MAX_HOP_PROJECTION_DIST_M: f32 = 65.0;
 /// Dual-CW-Guard: Route-Treffer ablehnen wenn der physisch nÃ¤chste Treffer
 /// < DUAL_CW_REJECT_RATIO * route_dist. Verhindert Vollausschlag-Lenkung auf
 /// Gegenfahrbahn/Parallelfahrspur die ~40m entfernt ist (Dual Carriageway).
@@ -123,7 +124,11 @@ const CATMULL_MAX_ROUTE_HOPS: usize = 2;
 /// finden. HÃ¶her als die globale Query (8), weil der On-Route-Ast an Kreuzungen
 /// etwas weiter weg liegen kann als der geometrisch nÃ¤chste Abbieger. R-tree-kNN
 /// (`take(N)`), KEIN Linearscan Ã¼ber alle Segmente.
-const ROUTE_NEAREST_CANDIDATES: usize = 24;
+const ROUTE_NEAREST_CANDIDATES: usize = 256;
+/// NavCurve-Prioritaets-Margin: NavCurve gewinnt ueber Road-Segment wenn
+/// dist_navcurve <= dist_road + MARGIN. Topologie schlaegt Proximity-Wettbewerb
+/// (ETS2LA-Ansatz). 50 m = ~2 s bei 90 km/h Autobahn.
+const NAVCURVE_PRIORITY_MARGIN_M: f32 = 50.0;
 /// Laufender Reanchor: maximal so viele Hops rÃ¼ckwÃ¤rts erlaubt (Jitter-Toleranz).
 const REANCHOR_BACKWARD_WINDOW: usize = 2;
 /// Laufender Reanchor: maximal so viele Hops vorwÃ¤rts erlaubt.
@@ -388,6 +393,14 @@ pub struct LaneKeeperPlugin {
     /// Phase 2h-Safety: Sekunden (dt-akkumuliert) seit Eintritt in AutoReplan ohne
     /// Erholung. Tick-Rate-robust statt Frame-ZÃ¤hler. Reset bei Stage-Recovery.
     safety_autoreplan_secs: f64,
+    /// Heading-Fehler (rad), gegen den der heading_mismatch-Safety-Gate prueft.
+    /// WICHTIG: das ist NICHT der Steuer-Fehler (der zielt auf den fernen Lookahead-
+    /// Punkt und spiked in Kurven). Hier steht der LOKALE Fehler (Truck-Heading vs
+    /// Tangente des nearest-Segments) im Spline-Pfad bzw. der Lookahead-Fehler im
+    /// Catmull-Fallback. So bremst der Truck nur bei echter Fehlausrichtung, nicht
+    /// bloss weil der 15m-Lookahead um eine Kurve greift (ETS2LA-Ansatz: Heading
+    /// gegen die nahe Centerline messen, nicht gegen den fernen Zielpunkt).
+    heading_mismatch_herr_rad: f64,
     /// Schritt 2: akkumulierte Zeit im Junction-Failsafe-Grace (hart bremsen statt
     /// sofort disengage). Reset bei Recovery / Off / Re-Engage.
     junction_failsafe_secs: f64,
@@ -497,6 +510,7 @@ impl Default for LaneKeeperPlugin {
             prev_lane_offset_m: 0.0,
             prev_lateral_source: String::new(),
             safety_autoreplan_secs: 0.0,
+            heading_mismatch_herr_rad: 0.0,
             junction_failsafe_secs: 0.0,
             kink_stuck_secs: 0.0,
             kink_stuck_hop: (0, 0),
@@ -925,6 +939,57 @@ impl LaneKeeperPlugin {
                 route_seg_set.contains(&idx)
             })
         };
+        // Junction-NavCurve-Force (ETS2LA-Ansatz): IMMER topologisch nach NavCurves
+        // fuer die naechsten Hops im Scan-Fenster suchen — kein Proximity-Wettbewerb.
+        // NavCurve gewinnt gegenueber Road-Segment wenn dist_nav <= dist_road + MARGIN
+        // (Topologie schlaegt Proximity, analog ETS2LA accepted_lanes). Greift auch
+        // wenn raw_route_hit schon ein Road-Segment gefunden hat (das war der Fehler:
+        // das Road-Segment 51m entfernt gewann, NavCurve wurde ignoriert).
+        let junction_navcurve_best = {
+            let cursor = self.node_progress_idx;
+            let lo = cursor.saturating_sub(REANCHOR_BACKWARD_WINDOW);
+            let hi = (cursor + REANCHOR_FORWARD_WINDOW + 1).min(route.len());
+            let mut best: Option<NearestHit> = None;
+            for k in lo..hi.saturating_sub(1) {
+                let Some(navs) = self.navcurve_by_from_to.get(&(route[k], route[k + 1])) else {
+                    continue;
+                };
+                for &nav_idx in navs {
+                    let Some((t, dist_m)) = index.project_on_segment(nav_idx, query) else {
+                        continue;
+                    };
+                    if best.as_ref().map_or(true, |b| dist_m < b.dist_m) {
+                        let seg = &index.segments[nav_idx];
+                        let tan = evaluate_tangent(seg, t);
+                        let heading_deg =
+                            f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
+                        let point_on_curve = evaluate(seg, t);
+                        best = Some(NearestHit {
+                            segment_idx: nav_idx,
+                            t,
+                            point_on_curve,
+                            dist_m,
+                            heading_deg,
+                            heading_filter_applied: true,
+                        });
+                    }
+                }
+            }
+            best
+        };
+        let (raw_route_hit, junction_navcurve_forced) =
+            match (raw_route_hit, junction_navcurve_best) {
+                // NavCurve vorhanden UND nah genug — Topologie gewinnt.
+                (Some(road), Some(nav))
+                    if nav.dist_m <= road.dist_m + NAVCURVE_PRIORITY_MARGIN_M =>
+                {
+                    (Some(nav), true)
+                }
+                // Kein Road-Treffer, aber NavCurve gefunden.
+                (None, Some(nav)) => (Some(nav), true),
+                // Road-Treffer klar besser oder keine NavCurve — unveraendert.
+                (road, _) => (road, false),
+            };
         let route_query_hits = u8::from(raw_route_hit.is_some());
         let (route_best_dist, route_best_hop, route_heading_diff) = match &raw_route_hit {
             Some(h) => {
@@ -941,29 +1006,41 @@ impl LaneKeeperPlugin {
         // Dual-CW-Guard: prÃ¼fen BEVOR route_hit-Filter, da raw_route_hit danach consumed wird.
         // Wenn global_hit (physisch nÃ¤chstes Segment) deutlich nÃ¤her als der Route-Treffer,
         // fÃ¤hrt der Truck auf einer Parallelfahrbahn â†’ Route-Treffer ablehnen.
+        // Ausnahme: NavCurve-Segmente (Index >= road_seg_count) sind NIEMALS Parallel-
+        // fahrbahnen — sie sind Junction-Pfade. Der Guard darf sie nicht verwerfen, auch
+        // wenn die geometrisch nÃ¤here Geradeaus-Road im selben Abschnitt liegt.
         let dual_cw_guard = match (&raw_route_hit, &global_hit) {
             (Some(rh), Some(gh)) => {
-                gh.dist_m < PHYSICAL_CLOSE_DIST_M && gh.dist_m < rh.dist_m * DUAL_CW_REJECT_RATIO
+                let route_is_navcurve = rh.segment_idx >= self.road_seg_count;
+                !route_is_navcurve
+                    && gh.dist_m < PHYSICAL_CLOSE_DIST_M
+                    && gh.dist_m < rh.dist_m * DUAL_CW_REJECT_RATIO
             }
             _ => false,
         };
 
-        // Gate anwenden (dist â‰¤ MAX_HOP_PROJECTION_DIST_M UND heading â‰¤60Â°) â€” Logik
-        // unverÃ¤ndert ggÃ¼. dem deployten Stand. nearest_with_projection_filtered hat
-        // KEINEN Heading-Filter; das Gate â‰¤60Â° spiegelt dotâ‰¥0.5 der globalen Query
-        // (heading_deg und truck_heading_deg teilen dieselbe CW-von-Nord-Konvention).
+        // Gate anwenden (dist â‰¤ MAX_HOP_PROJECTION_DIST_M UND heading â‰¤90Â°) â€” Logik
+        // GeÃ¤ndert: Heading-Gate 60Â° â†’ 90Â° fÃ¼r On-Route-Segmente. Der globale
+        // Query (global_hit) nutzt weiterhin 60Â° (cos0.5). FÃ¼r Route-Segmente
+        // kÃ¶nnen wir vertrauen, dass es die richtige Kante ist â€” Truck nÃ¤hert sich
+        // einer Kurve oder Ausfahrt von einem Winkel an (64Â° live beobachtet).
+        // GegenlÃ¤ufige Segmente (>90Â°) bleiben weiterhin gesperrt.
         let route_hit = raw_route_hit.filter(|h| {
             if dual_cw_guard {
                 return false; // Parallel-Fahrbahn â†’ kein Route-Lock
             }
-            if h.dist_m > MAX_HOP_PROJECTION_DIST_M {
+            // NavCurves (junction_navcurve_forced) umgehen das Dist-Gate:
+            // Ihr Abstand ist per NAVCURVE_PRIORITY_MARGIN_M bereits selektiert;
+            // das harte 65m-Gate wuerde sie sonst bei 52m+ trotzdem verwerfen.
+            let is_navcurve = h.segment_idx >= self.road_seg_count;
+            if !is_navcurve && h.dist_m > MAX_HOP_PROJECTION_DIST_M {
                 return false;
             }
             let mut d = (h.heading_deg - truck_heading_deg).rem_euclid(360.0);
             if d > 180.0 {
                 d -= 360.0;
             }
-            d.abs() <= 60.0
+            d.abs() <= 90.0
         });
         let route_gate_rejected = u8::from(route_query_hits == 1 && route_hit.is_none());
         // Diag-Keys IMMER setzen (vor jedem Branch/early-return), damit das
@@ -988,6 +1065,10 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.dual_cw_guard_active",
             u8::from(dual_cw_guard).to_string(),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.junction_navcurve_forced",
+            u8::from(junction_navcurve_forced).to_string(),
         );
         ctx.blackboard.set(
             "lane_keeper.nearest_route_best_dist_m",
@@ -1085,6 +1166,13 @@ impl LaneKeeperPlugin {
             "lane_keeper.heading_error_deg",
             format!("{:.1}", seg_heading_diff.abs()),
         );
+        // ETS2LA-Fix: lokalen Heading-Fehler (Truck vs Tangente des nearest-Segments)
+        // als Safety-Gate-Referenz festhalten. Spiked NICHT in Kurven, anders als der
+        // ferne Lookahead-`err` weiter unten. Der heading_mismatch-Gate prueft gegen
+        // DIESEN Wert, damit der Truck nur bei echter Fehlausrichtung bremst statt nur
+        // weil der 15m-Lookahead um eine Kurve greift. Spline-Some-returns tragen ihn;
+        // None-returns werden vom Catmull-Fallback ueberschrieben.
+        self.heading_mismatch_herr_rad = (seg_heading_diff as f64).to_radians();
 
         // Route-Relevanz-PrÃ¼fung (Route-Constraint), windowed:
         //   Erst-Anchor (route_changed=true): globaler Scan 0..route.len()
@@ -1134,7 +1222,8 @@ impl LaneKeeperPlugin {
             //       (sonst RÃ¼ckwÃ¤rts-/U-turn-Route ohne Forward-Segment).
             let accept_feeds_into = hit.heading_filter_applied
                 && k + 1 < route.len()
-                && self.seg_by_from_to.contains_key(&(route[k], route[k + 1]));
+                && (self.seg_by_from_to.contains_key(&(route[k], route[k + 1]))
+                    || self.navcurve_by_from_to.contains_key(&(route[k], route[k + 1])));
             if !accept_feeds_into {
                 let detail = if !hit.heading_filter_applied {
                     "feeds_into_no_heading"
@@ -1716,11 +1805,15 @@ impl LaneKeeperPlugin {
         ctx.blackboard
             .set("lane_keeper.lookahead_final_t", format!("{final_t:.3}"));
         let look_point = evaluate(seg, final_t);
-        let (lane_offset, source): (f32, &str) = match index.metadata[final_seg] {
-            Some(m) if m.is_prefab => (0.0, "spline_prefab"),
-            Some(m) => (m.lane_offset_right_m + cal, "spline_road"),
-            None => (LANE_OFFSET_RIGHT_M as f32 + cal, "spline_road"),
+        let (lane_offset, source, lanes_in_dir): (f32, &str, u8) = match index.metadata[final_seg] {
+            Some(m) if m.is_prefab => (0.0, "spline_prefab", 0),
+            Some(m) => (m.lane_offset_right_m + cal, "spline_road", m.lanes_in_direction),
+            None => (LANE_OFFSET_RIGHT_M as f32 + cal, "spline_road", 2),
         };
+        ctx.blackboard.set(
+            "lane_keeper.spline_seg_lanes_in_direction",
+            lanes_in_dir.to_string(),
+        );
 
         // Right-Normal an der lokalen Tangente (Fahrtrichtung = p0â†’p1, nur forward-Hops): n=(-tz,tx)/|t|.
         let tan = evaluate_tangent(seg, final_t);
@@ -1907,18 +2000,22 @@ impl LaneKeeperPlugin {
             .blackboard
             .get_f64("plugin.lane_keeper.lane_offset_cal_m")
             .unwrap_or(0.0) as f32;
-        let catmull_offset = match self.last_nearest_seg.and_then(|idx| {
+        let (catmull_offset, catmull_lanes) = match self.last_nearest_seg.and_then(|idx| {
             self.index
                 .as_ref()
                 .and_then(|ix| ix.metadata.get(idx).copied())
         }) {
-            Some(Some(m)) if m.is_prefab => 0.0_f32,
-            Some(Some(m)) => m.lane_offset_right_m + cal,
-            _ => LANE_OFFSET_RIGHT_M as f32 + cal,
+            Some(Some(m)) if m.is_prefab => (0.0_f32, 0u8),
+            Some(Some(m)) => (m.lane_offset_right_m + cal, m.lanes_in_direction),
+            _ => (LANE_OFFSET_RIGHT_M as f32 + cal, 2u8),
         };
         ctx.blackboard.set(
             "lane_keeper.lane_offset_applied_m",
             format!("{catmull_offset:.3}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.catmull_seg_lanes_in_direction",
+            catmull_lanes.to_string(),
         );
         let offset_delta = catmull_offset - self.prev_lane_offset_m;
         let source_changed = if "catmullrom_fallback" != self.prev_lateral_source.as_str() {
@@ -2291,7 +2388,22 @@ impl LaneKeeperPlugin {
         let err =
             self.compute_heading_error(t.position[0], t.position[2], t.heading, t.speed_ms, ctx);
 
-        if err.abs() > HEADING_MISMATCH_THRESHOLD_RAD {
+        // ETS2LA-Fix: der heading_mismatch-Safety-Gate prueft gegen den LOKALEN Heading-
+        // Fehler (Truck vs nahe Segment-Tangente), NICHT gegen den fernen Lookahead-`err`
+        // (der spiked in Kurven -> Truck bremste dort grundlos hart und fror ein, weil
+        // gestoppt das Heading nie korrigiert). Spline-Pfad: try_spline hat
+        // heading_mismatch_herr_rad bereits auf den lokalen Fehler gesetzt. Catmull-
+        // Fallback / Early-Return (kein Spline aktiv): Lookahead-`err` wie bisher.
+        if !self.was_spline_active {
+            self.heading_mismatch_herr_rad = err;
+        }
+        let mismatch_herr = self.heading_mismatch_herr_rad;
+        ctx.blackboard.set(
+            "lane_keeper.mismatch_herr_deg",
+            format!("{:.1}", mismatch_herr.to_degrees()),
+        );
+
+        if mismatch_herr.abs() > HEADING_MISMATCH_THRESHOLD_RAD {
             // Phase 2h-Safety: heading_mismatch (>1.4 rad / >80Â°) is the most
             // dangerous situation â€” must brake, not coast silently. Recoverable,
             // so accumulate time like AutoReplan.
@@ -2301,7 +2413,7 @@ impl LaneKeeperPlugin {
                 false,
                 t.speed_ms,
                 dt,
-                err,
+                mismatch_herr,
                 ctx,
             );
         }
@@ -3485,6 +3597,13 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.lane_offset_applied_m",
             format!("{lane_offset:.3}"),
+        );
+        ctx.blackboard.set(
+            "lane_keeper.nearest_seg_lanes_in_direction",
+            match meta_cur {
+                Some(m) if !m.is_prefab => m.lanes_in_direction.to_string(),
+                _ => "0".to_string(),
+            },
         );
         ctx.blackboard
             .set("lane_keeper.lookahead_m", format!("{look_ahead:.2}"));
