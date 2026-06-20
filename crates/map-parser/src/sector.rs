@@ -1495,51 +1495,282 @@ fn skip_traffic_area(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Type 39 — BezierPatch. Full layout (Phase 6.2b-Fix-5c: vegetation=3 entries).
-/// Layout: kdop(53) + 16×vec3(192) + tess(4) + node(8) + seed(4)
-///        + vegetation 3×(u64+u16+u8)=33 + sphere_count×20
-///        + TerrainQuadData: mat_count×10, col_count×4, rows, cols,
-///          quad_count×4, off_count×16, norm_count×16
-/// Empty-patch fixed overhead: 318 bytes (all list counts = 0).
+/// Fixed header of a BezierPatch item body, before the variable-length
+/// vegetation / TerrainQuadData section:
+/// kdop(53) + 16×vec3(192) + tess_x u16(2) + tess_z u16(2) + node u64(8)
+/// + random_seed u32(4) = 261 bytes. Empirically confirmed across all 12
+/// failing sectors (BEZIER_DIAG dumps aligned exactly at body+261).
+const BEZIER_FIXED_HEADER: usize = 261;
+/// Smallest plausible variable section: vegetation(44) + at least a few
+/// count words. Kept conservative so the candidate scan never skips the
+/// real boundary.
+const BEZIER_VAR_FLOOR: usize = 48;
+/// Upper bound on the variable section we will scan for. The densest real
+/// patches seen carry ~1.4 KB of variable data; 128 KB is a 90× safety
+/// margin and the wrong-candidate fast-fail keeps the scan cheap.
+const BEZIER_MAX_VAR: usize = 128 * 1024;
+
+/// Type 39 — BezierPatch.
+///
+/// The variable section after the 261-byte fixed header (3 vegetation slots,
+/// a vegetation-sphere list, then a `TerrainQuadData` block of materials /
+/// colors / quads / offsets / normals) is variable-length. The documented
+/// v907 layout ([`bezier_fixed_skip`]) measures it correctly for almost every
+/// patch, but in ~12 sectors a sphere/material count prefix shifts by a few
+/// bytes and the structural skip desyncs — the exact silent cursor desync
+/// (ghost nodes, mis-parsed successors) this item is responsible for.
+///
+/// Two tiers:
+/// * **Fast path** — run [`bezier_fixed_skip`], then confirm its landing
+///   offset by replaying the remaining item list to the sector's node block
+///   ([`sector_items_end`]). A confirmed skip is accepted with no scanning, so
+///   the common case stays cheap.
+/// * **Slow path** — only when the fixed skip fails to confirm: self-
+///   synchronise via [`bezier_end_resync`], scanning candidate end offsets for
+///   the unique one whose remaining items land exactly on the node block.
+///   Nested beziers inside that validation use the *fixed* skip, never another
+///   scan, so the slow path stays polynomial instead of recursing into nested
+///   scans (the bug that made an earlier all-resync version blow up).
+///
+/// If neither tier yields a self-consistent length the handler errors and the
+/// walker keeps its existing partial-accept recovery — so this can only
+/// recover sectors that previously failed, never regress one that parsed.
 fn skip_bezier_patch(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
+    let body_start = cur.position() as usize;
+
+    let items_end = {
+        let data: &[u8] = cur.get_ref();
+        sector_items_end(data)
+    };
+
+    // Fast path: the structural skip is correct for almost every patch.
+    if bezier_fixed_skip(cur).is_ok() {
+        let fixed_pos = cur.position() as usize;
+        let confirmed = match items_end {
+            Some(end) => {
+                let data: &[u8] = cur.get_ref();
+                fixed_pos <= end && validate_item_chain(data, fixed_pos, end)
+            }
+            // No recoverable node tail to confirm against: trust the structural
+            // skip (the legacy behaviour that parsed these sectors cleanly)
+            // rather than regress to a hard error.
+            None => true,
+        };
+        if confirmed {
+            return Ok(()); // cursor already sits at fixed_pos
+        }
+    }
+
+    // Slow path: the fixed skip mis-measured this patch. Resync against the
+    // node tail. Reached only by the handful of desyncing sectors.
+    cur.set_position(body_start as u64);
+    let end = {
+        let data: &[u8] = cur.get_ref();
+        items_end.and_then(|e| bezier_end_resync(data, body_start, e))
+    }
+    .ok_or_else(|| {
+        ParseError::Binary("bezier_patch: no self-consistent body length found".into())
+    })?;
+    cur.set_position(end as u64);
+    Ok(())
+}
+
+/// Structural skip of a bezier body using the documented v907 layout: the
+/// fixed header (kdop, 16 control points, tessellation, node, seed), 3
+/// vegetation slots, a vegetation-sphere list, then the `TerrainQuadData`
+/// block (materials, colors, rows/cols, quads, offsets, normals). Returns Err
+/// on an absurd count or a body that runs past the buffer; the caller reads
+/// that as "fixed skip not applicable" and falls back to the resync.
+fn bezier_fixed_skip(cur: &mut Cursor<&[u8]>) -> Result<(), ParseError> {
     let _ = read_kdop_item(cur)?; // 53
     for _ in 0..16 {
         skip_vector3(cur)?; // 16×12 = 192
     }
-    let _ = read_u16(cur)?; // tess_x u16
-    let _ = read_u16(cur)?; // tess_z u16
+    let _ = read_u16(cur)?; // tess_x
+    let _ = read_u16(cur)?; // tess_z
     let _ = read_u64(cur)?; // node uid
     let _ = read_u32(cur)?; // random seed
-                            // Vegetation[0..3]: each entry = u64 token + u16 density + u8 type = 11 bytes
-    skip(cur, 3 * 11)?; // 33 bytes
-                        // VegetationSpheres: u32 count + count × 20 bytes (vec3 + f32 radius + u32 type)
+    skip(cur, 3 * 11)?; // Vegetation[0..3]: u64 token + u16 density + u8 type
     let sphere_count = read_u32(cur)? as usize;
     ensure_count(sphere_count as u32, "bezier_patch vegetation spheres")?;
     skip(cur, sphere_count * 20)?;
-    // TerrainQuadData
-    // Materials: u16 count + count × 10 bytes (u64 token + u16 rotation)
     let mat_count = read_u16(cur)? as usize;
     ensure_count(mat_count as u32, "bezier_patch materials")?;
     skip(cur, mat_count * 10)?;
-    // Colors: u16 count + count × 4 bytes (RGBA)
     let col_count = read_u16(cur)? as usize;
     ensure_count(col_count as u32, "bezier_patch colors")?;
     skip(cur, col_count * 4)?;
     let _ = read_u16(cur)?; // rows
     let _ = read_u16(cur)?; // cols
-                            // Quads: u32 count + count × 4 bytes (u32 index)
     let quad_count = read_u32(cur)? as usize;
     ensure_count(quad_count as u32, "bezier_patch quads")?;
     skip(cur, quad_count * 4)?;
-    // Offsets: u32 count + count × 16 bytes (u16 X + u16 Y + vec3)
     let off_count = read_u32(cur)? as usize;
     ensure_count(off_count as u32, "bezier_patch offsets")?;
     skip(cur, off_count * 16)?;
-    // Normals: u32 count + count × 16 bytes
     let norm_count = read_u32(cur)? as usize;
     ensure_count(norm_count as u32, "bezier_patch normals")?;
     skip(cur, norm_count * 16)?;
     Ok(())
+}
+
+/// Find the byte offset at which the trailing node block of a legacy sector
+/// begins — i.e. the offset of the `node_count u32` that follows the last
+/// item. This is the same `(M, N)` tail-matching used by
+/// [`recover_nodes_from_tail`], but it returns the anchor offset instead of
+/// materialising the nodes, so the bezier resync can validate against it.
+fn sector_items_end(data: &[u8]) -> Option<usize> {
+    const NODE_BYTES: usize = 56;
+    const MAX_N: usize = 4096;
+    const MAX_M: usize = 4096;
+
+    let total = data.len();
+    for m in 0..=MAX_M {
+        let vis_block = 4 + m * 8;
+        if vis_block > total {
+            break;
+        }
+        let vis_count_pos = total - vis_block;
+        if vis_count_pos < 4 + 16 {
+            continue;
+        }
+        let vis_count = u32::from_le_bytes(data[vis_count_pos..vis_count_pos + 4].try_into().ok()?);
+        if vis_count as usize != m {
+            continue;
+        }
+
+        let nodes_end = vis_count_pos;
+        for n in 0..=MAX_N {
+            let block = 4 + n * NODE_BYTES;
+            if block > nodes_end {
+                break;
+            }
+            let count_pos = nodes_end - block;
+            if count_pos < 16 {
+                break;
+            }
+            let count_at = u32::from_le_bytes(data[count_pos..count_pos + 4].try_into().ok()?);
+            if count_at as usize != n {
+                continue;
+            }
+
+            // Same plausibility gate as recover_nodes_from_tail: ≥ 50 % of
+            // parsed node uids must be non-zero, rejecting all-zero matches.
+            let mut node_cur = Cursor::new(&data[count_pos + 4..nodes_end]);
+            let mut nonzero = 0usize;
+            let mut ok = true;
+            for _ in 0..n {
+                match parse_node(&mut node_cur) {
+                    Ok(node) => {
+                        if node.uid != 0 {
+                            nonzero += 1;
+                        }
+                    }
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && (n == 0 || nonzero * 2 >= n) {
+                return Some(count_pos);
+            }
+        }
+    }
+    None
+}
+
+/// Scan candidate end offsets for a bezier body and return the first one
+/// from which the remaining items chain cleanly to `items_end`.
+fn bezier_end_resync(data: &[u8], body_start: usize, items_end: usize) -> Option<usize> {
+    let var_start = body_start.checked_add(BEZIER_FIXED_HEADER)?;
+    if var_start >= items_end || var_start > data.len() {
+        return None;
+    }
+    let max_end = items_end.min(var_start.saturating_add(BEZIER_MAX_VAR));
+    let mut end = var_start.checked_add(BEZIER_VAR_FLOOR)?;
+    while end <= max_end {
+        if validate_item_chain(data, end, items_end) {
+            return Some(end);
+        }
+        end += 1;
+    }
+    None
+}
+
+/// Parse items starting at `start`, returning `true` iff the chain lands
+/// exactly on `items_end` (the sector's node block) with every item parsing
+/// cleanly. A wrong candidate fast-fails on the first mis-aligned item.
+fn validate_item_chain(data: &[u8], start: usize, items_end: usize) -> bool {
+    let mut cur = Cursor::new(data);
+    cur.set_position(start as u64);
+    loop {
+        let pos = cur.position() as usize;
+        if pos == items_end {
+            return true;
+        }
+        if pos > items_end || pos + 4 > data.len() {
+            return false;
+        }
+        let item_type = match read_u32(&mut cur) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        if !is_known_item_type(item_type) {
+            return false;
+        }
+        if skip_item_for_resync(&mut cur, item_type).is_err() {
+            return false;
+        }
+        let new_pos = cur.position() as usize;
+        if new_pos <= pos {
+            // No forward progress — guards against a 0-byte handler looping.
+            return false;
+        }
+    }
+}
+
+/// Skip-only dispatch used while validating a bezier resync candidate.
+/// Mirrors the top-level walker dispatch; road/prefab/compound reuse the
+/// capturing parsers with a throwaway sector. Nested beziers use the cheap
+/// [`bezier_fixed_skip`] (never another scan) so validation stays polynomial.
+fn skip_item_for_resync(cur: &mut Cursor<&[u8]>, item_type: u32) -> Result<(), ParseError> {
+    let mut scratch = ParsedSector::default();
+    match item_type {
+        ITEM_TYPE_ROAD => parse_road(cur, &mut scratch),
+        ITEM_TYPE_PREFAB => parse_prefab(cur, &mut scratch),
+        ITEM_TYPE_TERRAIN => skip_terrain(cur),
+        ITEM_TYPE_BUILDINGS => skip_buildings(cur),
+        ITEM_TYPE_MODEL => skip_model(cur),
+        ITEM_TYPE_COMPANY => skip_company(cur),
+        ITEM_TYPE_SERVICE => skip_service(cur),
+        ITEM_TYPE_CUT_PLANE => skip_cut_plane(cur),
+        ITEM_TYPE_CITY => skip_city(cur),
+        ITEM_TYPE_MAP_OVERLAY => skip_map_overlay(cur),
+        ITEM_TYPE_FERRY => skip_ferry(cur),
+        ITEM_TYPE_GARAGE => skip_garage(cur),
+        ITEM_TYPE_TRIGGER => skip_trigger(cur),
+        ITEM_TYPE_FUEL_PUMP => skip_fuel_pump(cur),
+        ITEM_TYPE_SIGN => skip_sign(cur),
+        ITEM_TYPE_BUS_STOP => skip_bus_stop(cur),
+        ITEM_TYPE_TRAFFIC_AREA => skip_traffic_area(cur),
+        ITEM_TYPE_BEZIER_PATCH => bezier_fixed_skip(cur),
+        ITEM_TYPE_TRAJECTORY => skip_trajectory(cur),
+        ITEM_TYPE_MAP_AREA => skip_map_area(cur),
+        ITEM_TYPE_FAR_MODEL => skip_far_model(cur),
+        ITEM_TYPE_CURVE => skip_curve(cur),
+        ITEM_TYPE_CUTSCENE => skip_cutscene(cur),
+        ITEM_TYPE_VISIBILITY_AREA => skip_visibility_area(cur),
+        ITEM_TYPE_MOVER => skip_mover(cur),
+        ITEM_TYPE_NO_WEATHER => skip_no_weather(cur),
+        ITEM_TYPE_HINGE => skip_hinge(cur),
+        ITEM_TYPE_CAMERA_POINT => skip_camera_point(cur),
+        ITEM_TYPE_COMPOUND => parse_compound(cur, &mut scratch),
+        ITEM_TYPE_CAMERA_PATH => skip_camera_path(cur),
+        ITEM_TYPE_HOOKUP => skip_hookup(cur),
+        ITEM_TYPE_GATE => skip_gate(cur),
+        other => Err(ParseError::Binary(format!("unsupported item type {other}"))),
+    }
 }
 
 /// Type 41 — Trajectory. Ref: `skip_trajectory` lines 879-891.
