@@ -353,7 +353,26 @@ struct SnapResult {
     tier: &'static str,
 }
 
-fn snap_city(city: &ResolvedCity, graph: &MapGraph) -> SnapResult {
+/// UIDs of nodes that carry at least one edge — i.e. routable road/prefab
+/// nodes. City snapping MUST restrict to these: the node table also holds
+/// hundreds of thousands of edge-less anchor nodes (terrain/model/sign) that
+/// sit geometrically nearby but route nowhere, so snapping to one yields a
+/// spurious NO PATH. Production snapping (`RouterGraph::find_nearest_*`) applies
+/// the same `nodes_with_edges` filter — this keeps the route test faithful to it.
+fn road_node_set(graph: &MapGraph) -> std::collections::HashSet<u64> {
+    let mut set = std::collections::HashSet::with_capacity(graph.nodes.len());
+    for e in &graph.edges {
+        set.insert(e.from);
+        set.insert(e.to);
+    }
+    set
+}
+
+fn snap_city(
+    city: &ResolvedCity,
+    graph: &MapGraph,
+    road_nodes: &std::collections::HashSet<u64>,
+) -> SnapResult {
     let (primary_r, fallback_r) = match city.source {
         CoordSource::CitySii => (SNAP_RADIUS_SII_PRIMARY_M, Some(SNAP_RADIUS_SII_FALLBACK_M)),
         _ => (SNAP_RADIUS_TOML_M, None), // global fallback for toml
@@ -362,6 +381,9 @@ fn snap_city(city: &ResolvedCity, graph: &MapGraph) -> SnapResult {
     let mut best_uid: Option<u64> = None;
     let mut best_d2 = f64::INFINITY;
     for n in &graph.nodes {
+        if !road_nodes.contains(&n.uid) {
+            continue;
+        }
         let dx = n.x - city.x;
         let dz = n.z - city.z;
         let d2 = dx * dx + dz * dz;
@@ -403,10 +425,18 @@ fn snap_city(city: &ResolvedCity, graph: &MapGraph) -> SnapResult {
 }
 
 /// Snap using toml coords + 20km primary + global fallback (for A/B pre column).
-fn snap_toml(toml_x: f64, toml_z: f64, graph: &MapGraph) -> SnapResult {
+fn snap_toml(
+    toml_x: f64,
+    toml_z: f64,
+    graph: &MapGraph,
+    road_nodes: &std::collections::HashSet<u64>,
+) -> SnapResult {
     let mut best_uid: Option<u64> = None;
     let mut best_d2 = f64::INFINITY;
     for n in &graph.nodes {
+        if !road_nodes.contains(&n.uid) {
+            continue;
+        }
         let dx = n.x - toml_x;
         let dz = n.z - toml_z;
         let d2 = dx * dx + dz * dz;
@@ -480,11 +510,20 @@ fn main() {
 
     // Compute pre-snap (toml) AND post-snap (resolved) for each city.
     // Pre is shown in the A/B comparison; post drives routing.
+    // Restrict city snapping to routable nodes (those with >=1 edge), exactly
+    // as production RouterGraph::find_nearest_* does — see road_node_set.
+    let road_nodes = road_node_set(&graph);
+    eprintln!(
+        "routable nodes (with >=1 edge): {} of {}",
+        road_nodes.len(),
+        graph.nodes.len()
+    );
+
     let snapped: Vec<(ResolvedCity, SnapResult, SnapResult)> = resolved
         .into_iter()
         .map(|city| {
-            let pre = snap_toml(city.toml_x, city.toml_z, &graph);
-            let post = snap_city(&city, &graph);
+            let pre = snap_toml(city.toml_x, city.toml_z, &graph, &road_nodes);
+            let post = snap_city(&city, &graph, &road_nodes);
             (city, pre, post)
         })
         .collect();
