@@ -733,8 +733,14 @@ impl LaneKeeperPlugin {
         use truckpilot_telemetry::nav_route::NavRouteReader;
         if self.nav_route_reader.is_none() {
             match NavRouteReader::open() {
-                Ok(r) => self.nav_route_reader = Some(r),
-                Err(_) => return,
+                Ok(r) => {
+                    ctx.blackboard.set("router.ets2_nav_status", "shm_open");
+                    self.nav_route_reader = Some(r);
+                }
+                Err(e) => {
+                    ctx.blackboard.set("router.ets2_nav_status", &format!("shm_err:{e}"));
+                    return;
+                }
             }
         }
         let reader = match self.nav_route_reader.as_mut() {
@@ -743,8 +749,25 @@ impl LaneKeeperPlugin {
         };
         let snap = match reader.read_if_changed() {
             Some(s) => s,
-            None => return,
+            None => {
+                let diag = if let Some(code) = reader.peek_diag_code() {
+                    let step = match code {
+                        0xD1A6_0001 => "gps_aob_fail",
+                        0xD1A6_0002 => "trip_dist_fail",
+                        0xD1A6_0003 => "route_task_fail",
+                        0xD1A6_0004 => "uid_buf_empty",
+                        _ => "unknown",
+                    };
+                    format!("dll_err:{step}")
+                } else {
+                    format!("shm_open:count={}", reader.peek_item_count().unwrap_or(0))
+                };
+                ctx.blackboard.set("router.ets2_nav_status", &diag);
+                return;
+            }
         };
+        let uid_total = snap.uids.len();
+        ctx.blackboard.set("router.ets2_uid_total", &uid_total.to_string());
         let rg = match &self.router_graph {
             Some(rg) => rg.clone(),
             None => {
@@ -757,9 +780,7 @@ impl LaneKeeperPlugin {
             .iter()
             .filter_map(|uid| rg.positions.get(uid).map(|&(x, z)| [x, z]))
             .collect();
-        let uid_total = snap.uids.len();
         let uid_matched = pts.len();
-        ctx.blackboard.set("router.ets2_uid_total", &uid_total.to_string());
         ctx.blackboard.set("router.ets2_uid_matched", &uid_matched.to_string());
         if pts.len() < 2 {
             tracing::warn!(
@@ -3842,7 +3863,6 @@ impl LaneKeeperPlugin {
 
         // Heading stage gate.
         self.heading_stage = ctx.blackboard.get("state.heading_stage");
-        self.maybe_inject_ets2_route(ctx);
         let stage = self.heading_stage.as_deref().unwrap_or("Normal");
         if matches!(stage, "AutoReplan" | "Disengaging") {
             ctx.blackboard
@@ -4162,6 +4182,7 @@ impl Plugin for LaneKeeperPlugin {
         ctx: &PluginContext,
     ) {
         self.heading_stage = ctx.blackboard.get("state.heading_stage");
+        self.maybe_inject_ets2_route(ctx);
 
         if self.mode == LaneKeeperMode::RouteFollowing
             && ctx.blackboard.get("router.active").as_deref() == Some("true")

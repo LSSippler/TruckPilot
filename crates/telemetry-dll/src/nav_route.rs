@@ -212,6 +212,19 @@ mod win {
         }
     }
 
+    /// Write a diagnostic step code into `sequence` when item_count stays 0.
+    /// The reader exposes this via `peek_diag_code()`.
+    unsafe fn write_diag_to_shm(code: u32) {
+        if NR_SHM_PTR.is_null() {
+            return;
+        }
+        let shm = &mut *NR_SHM_PTR;
+        // Only overwrite when there is no real route to avoid clobbering real data.
+        if ptr::read_volatile(&shm.item_count) == 0 {
+            ptr::write_volatile(&mut shm.sequence, code);
+        }
+    }
+
     unsafe fn write_route_to_shm(uids: &[u64]) {
         if NR_SHM_PTR.is_null() {
             return;
@@ -391,17 +404,25 @@ mod win {
                         state.cached_gps = g;
                         g
                     }
-                    None => return,
+                    None => {
+                        write_diag_to_shm(0xD1A6_0001); // step 1 = GPS AOB scan failed
+                        return;
+                    }
                 }
             };
 
+            // Step 2: trip distance check — write diag code if it fails.
             if verify_trip_distance(gps).is_none() {
+                write_diag_to_shm(0xD1A6_0002); // step 2 = trip_dist gate
                 return;
             }
 
             let route_task = match resolve_route_task(gps) {
                 Some(rt) => rt,
-                None => return,
+                None => {
+                    write_diag_to_shm(0xD1A6_0003); // step 3 = route_task failed
+                    return;
+                }
             };
 
             let size_field =
@@ -410,6 +431,7 @@ mod win {
             log_walk_warnings(stop, size_field);
 
             if state.uid_buf.is_empty() {
+                write_diag_to_shm(0xD1A6_0004); // step 4 = uid_buf empty after walk
                 return;
             }
 

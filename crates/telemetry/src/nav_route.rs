@@ -85,6 +85,31 @@ impl NavRouteReader {
         self.last_sequence = snap.sequence;
         Some(snap)
     }
+
+    /// Returns the raw item_count from SHM (0 if no route, None if magic invalid).
+    pub fn peek_item_count(&self) -> Option<u32> {
+        let layout = self.inner.read_layout()?;
+        if layout.magic != NAV_ROUTE_SHM_MAGIC || layout.version != NAV_ROUTE_SHM_VERSION {
+            return None;
+        }
+        Some(layout.item_count)
+    }
+
+    /// Returns the diagnostic step code written by the DLL when the route walk fails.
+    /// 0xD1A60001 = GPS AOB scan failed
+    /// 0xD1A60002 = trip_distance not plausible (< 100 m or not finite)
+    /// 0xD1A60003 = route_task pointer chain failed
+    /// 0xD1A60004 = uid_buf empty after walking items
+    pub fn peek_diag_code(&self) -> Option<u32> {
+        let layout = self.inner.read_layout()?;
+        if layout.magic != NAV_ROUTE_SHM_MAGIC || layout.version != NAV_ROUTE_SHM_VERSION {
+            return None;
+        }
+        if layout.item_count == 0 && layout.sequence >= 0xD1A6_0000 {
+            return Some(layout.sequence);
+        }
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
