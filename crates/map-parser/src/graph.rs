@@ -993,12 +993,14 @@ impl GraphBuilder {
                     .entry(raw.template_token)
                     .or_insert_with(|| desc.clone());
 
-                // Generate AI paths
+                // Generate AI paths — pass full raw.nodes + origin so
+                // build_prefab_ai_paths can apply ETS2LA-style rotation.
                 let (paths, broken) = build_prefab_ai_paths(
                     desc,
                     &origin_pos,
                     &origin_rot,
-                    &valid_nodes,
+                    &raw.nodes,
+                    raw.origin_node_index as usize,
                     &node_pos_map,
                 );
                 prefab_ai_paths.extend(paths);
@@ -1241,26 +1243,39 @@ fn sample_nav_curve(
 
 /// Build PrefabAiPath records by walking NavCurves within a PrefabDescriptor,
 /// mapping control nodes to world-space GraphNode UIDs.
+///
+/// `all_node_uids` is the **full**, unfiltered `RawPrefab.nodes` list.
+/// `origin_node_index` rotates it into PPD-local ordering:
+///   world_uid_for(control_nodes[i]) = all_node_uids[(origin + i) % n]
+/// This mirrors ETS2LA's `rotate_right(node_uids, origin_node_index)`.
+/// `node_lookup` is used to skip UIDs not yet resolved (cross-sector nodes).
 fn build_prefab_ai_paths(
     desc: &PrefabDescriptor,
     origin_pos: &[f32; 3],
     _origin_rot: &[f32; 4],
-    node_uids: &[u64],
-    _node_pos_map: &HashMap<u64, [f32; 3]>,
+    all_node_uids: &[u64],
+    origin_node_index: usize,
+    node_lookup: &HashMap<u64, [f32; 3]>,
 ) -> (Vec<PrefabAiPath>, usize) {
     let mut paths = Vec::new();
     let mut chain_broken = 0usize;
+
+    let n = all_node_uids.len();
+    if n == 0 {
+        return (paths, chain_broken);
+    }
 
     // For each ControlNode in the PPD, map its output lines to paths.
     // Each output line (NavCurve index) from a ControlNode represents a path
     // starting at that control node.
     for (cn_idx, cn) in desc.control_nodes.iter().enumerate() {
-        // Map this ControlNode to a world-space GraphNode UID
-        let from_node_uid = if cn_idx < node_uids.len() {
-            node_uids[cn_idx]
-        } else {
-            continue; // No corresponding world node
-        };
+        // ETS2LA-style: rotate all_node_uids by origin_node_index
+        // so that control_nodes[cn_idx] ↔ all_node_uids[(origin + cn_idx) % n]
+        let rotated_from = (origin_node_index + cn_idx) % n;
+        let from_node_uid = all_node_uids[rotated_from];
+        if !node_lookup.contains_key(&from_node_uid) {
+            continue; // cross-sector node not yet resolved
+        }
 
         // Walk each output line (NavCurve) from this ControlNode
         for &curve_idx_raw in &cn.output_lines {
@@ -1285,15 +1300,16 @@ fn build_prefab_ai_paths(
                 chain_broken += 1;
             }
 
-            if to_node_idx >= desc.control_nodes.len() as u32 {
+            if to_node_idx as usize >= desc.control_nodes.len() {
                 continue;
             }
 
-            let to_node_uid = if (to_node_idx as usize) < node_uids.len() {
-                node_uids[to_node_idx as usize]
-            } else {
-                continue;
-            };
+            // Apply same rotation for the destination control node
+            let rotated_to = (origin_node_index + to_node_idx as usize) % n;
+            let to_node_uid = all_node_uids[rotated_to];
+            if !node_lookup.contains_key(&to_node_uid) {
+                continue; // cross-sector destination node
+            }
 
             // Don't create self-loops
             if from_node_uid == to_node_uid {

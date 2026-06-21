@@ -79,6 +79,10 @@ pub struct RawPrefab {
     pub template_token: u64,
     pub node_count: u8,
     pub nodes: Vec<u64>,
+    /// Index into `nodes` that aligns node[0] of the PPD control-node list.
+    /// ETS2 stores this as a u16; rotating `nodes` right by this value gives
+    /// the PPD-local ordering used by `input_lines`/`output_lines`.
+    pub origin_node_index: u8,
 }
 
 /// A ferry/train item (Type 19). Phase 5.22 — items sharing a `port_token`
@@ -985,6 +989,7 @@ fn parse_sized_prefab(cur: &mut Cursor<&[u8]>) -> Result<RawPrefab, ParseError> 
         template_token: token,
         node_count: (node_count.min(255)) as u8,
         nodes,
+        origin_node_index: 0, // sized format: origin not yet decoded
     })
 }
 
@@ -1076,8 +1081,10 @@ fn parse_prefab(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<()
     let m = read_u32(cur)? as usize;
     skip(cur, m * 8)?;
 
-    // ferryLinkUid(u64=8) + origin(u16=2)
-    skip(cur, 10)?;
+    // ferryLinkUid(u64=8)
+    skip(cur, 8)?;
+    // origin(u16) — which node in `nodes[]` aligns with PPD control_node[0]
+    let origin_node_index = read_u16(cur)?.min(node_count.max(1) as u16 - 1) as u8;
 
     // corner terrain: node_count × (quadrant_random u64 + sphere_radius f32) = 12 bytes each
     skip(cur, node_count * 12)?;
@@ -1090,6 +1097,7 @@ fn parse_prefab(cur: &mut Cursor<&[u8]>, sector: &mut ParsedSector) -> Result<()
         template_token: model_token,
         node_count: node_count.min(255) as u8,
         nodes,
+        origin_node_index,
     });
     Ok(())
 }
