@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 truckpilot-plugin-api = { path = "../../plugin-api" }
 truckpilot-map-parser  = { path = "../../map-parser" }
+truckpilot-telemetry   = { path = "../../telemetry" }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 tracing    = { workspace = true }

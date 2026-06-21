@@ -538,6 +538,9 @@ pub unsafe extern "system" fn scs_telemetry_init(
 
     nav_resolve::diagnose_once();
 
+    // Create the separate nav-route SHM (Phase R3 — ETS2 route → TruckPilot).
+    let _ = nav_route::init_shm();
+
     debug_log("scs_telemetry_init done — all channels registered");
     SCS_RESULT_OK
 }
@@ -549,6 +552,7 @@ pub unsafe extern "system" fn scs_telemetry_init(
 #[no_mangle]
 pub unsafe extern "system" fn scs_telemetry_shutdown() {
     debug_log("scs_telemetry_shutdown");
+    nav_route::cleanup_shm();
     if !SHM_PTR.is_null() {
         UnmapViewOfFile(SHM_PTR as LPVOID);
         SHM_PTR = ptr::null_mut();

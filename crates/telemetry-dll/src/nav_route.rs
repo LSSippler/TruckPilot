@@ -12,6 +12,38 @@
 
 use crate::nav_resolve::{resolve_gps_manager, verify_trip_distance};
 
+// ---------------------------------------------------------------------------
+// Nav-route SHM constants — must match `crates/telemetry/src/nav_route.rs`.
+// ---------------------------------------------------------------------------
+
+pub const NAV_ROUTE_SHM_MAGIC: u32 = 0x54504E52; // "TPNR"
+pub const NAV_ROUTE_SHM_VERSION: u32 = 1;
+pub const NAV_ROUTE_SHM_NAME: &str = "Local\\TruckPilotNavRoute";
+/// Maximum route items stored in SHM. Covers routes up to ~2000 road segments.
+pub const NAV_ROUTE_MAX_ITEMS: usize = 2048;
+
+/// Route SHM layout — DLL writes, Core reads on every route change.
+/// Must stay byte-for-byte identical to `NavRouteShmLayout` in
+/// `crates/telemetry/src/nav_route.rs`.
+#[repr(C)]
+pub struct NavRouteShmLayout {
+    pub magic: u32,       // NAV_ROUTE_SHM_MAGIC
+    pub version: u32,     // NAV_ROUTE_SHM_VERSION
+    pub sequence: u32,    // increments on every route change
+    pub item_count: u32,  // number of valid UIDs in `items`
+    pub items: [u64; NAV_ROUTE_MAX_ITEMS],
+}
+
+// Compile-time layout guard.
+const _: () = {
+    use std::mem;
+    assert!(mem::offset_of!(NavRouteShmLayout, magic) == 0);
+    assert!(mem::offset_of!(NavRouteShmLayout, version) == 4);
+    assert!(mem::offset_of!(NavRouteShmLayout, sequence) == 8);
+    assert!(mem::offset_of!(NavRouteShmLayout, item_count) == 12);
+    assert!(mem::offset_of!(NavRouteShmLayout, items) == 16);
+};
+
 // --- 1.59 offsets (verified, see outputs/nav_offsets_1_59.md) ----------------
 
 const OFF_SIMPLE_ROUTE_SRC: usize = 0x08;
@@ -102,6 +134,97 @@ mod win {
 
     extern "system" {
         fn OutputDebugStringA(lpOutputString: *const u8);
+        fn CreateFileMappingW(
+            hFile: isize,
+            lpAttr: *const core::ffi::c_void,
+            flProtect: u32,
+            dwSizeHigh: u32,
+            dwSizeLow: u32,
+            lpName: *const u16,
+        ) -> isize;
+        fn MapViewOfFile(
+            hMapping: isize,
+            dwAccess: u32,
+            offHigh: u32,
+            offLow: u32,
+            n: usize,
+        ) -> *mut core::ffi::c_void;
+        fn UnmapViewOfFile(base: *mut core::ffi::c_void) -> i32;
+        fn CloseHandle(h: isize) -> i32;
+    }
+
+    const INVALID_FILE_HANDLE: isize = -1isize;
+    const PAGE_READWRITE: u32 = 0x04;
+    const FILE_MAP_WRITE: u32 = 0x02;
+
+    static mut NR_SHM_HANDLE: isize = 0;
+    static mut NR_SHM_PTR: *mut NavRouteShmLayout = ptr::null_mut();
+    static mut NR_SEQUENCE: u32 = 0;
+
+    fn wide_nr(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn init_shm() -> bool {
+        unsafe {
+            let name = wide_nr(NAV_ROUTE_SHM_NAME);
+            let size = std::mem::size_of::<NavRouteShmLayout>();
+            let h = CreateFileMappingW(
+                INVALID_FILE_HANDLE,
+                ptr::null(),
+                PAGE_READWRITE,
+                0,
+                size as u32,
+                name.as_ptr(),
+            );
+            if h == 0 {
+                nav_warn("init_shm: CreateFileMappingW failed");
+                return false;
+            }
+            let raw = MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, size);
+            if raw.is_null() {
+                CloseHandle(h);
+                nav_warn("init_shm: MapViewOfFile failed");
+                return false;
+            }
+            let shm = raw as *mut NavRouteShmLayout;
+            (*shm).magic = NAV_ROUTE_SHM_MAGIC;
+            (*shm).version = NAV_ROUTE_SHM_VERSION;
+            (*shm).sequence = 0;
+            (*shm).item_count = 0;
+            NR_SHM_HANDLE = h;
+            NR_SHM_PTR = shm;
+            nav_log(&format!("nav_route SHM ready ({size} bytes)"));
+            true
+        }
+    }
+
+    pub fn cleanup_shm() {
+        unsafe {
+            if !NR_SHM_PTR.is_null() {
+                UnmapViewOfFile(NR_SHM_PTR as *mut core::ffi::c_void);
+                NR_SHM_PTR = ptr::null_mut();
+            }
+            if NR_SHM_HANDLE != 0 {
+                CloseHandle(NR_SHM_HANDLE);
+                NR_SHM_HANDLE = 0;
+            }
+        }
+    }
+
+    unsafe fn write_route_to_shm(uids: &[u64]) {
+        if NR_SHM_PTR.is_null() {
+            return;
+        }
+        let shm = &mut *NR_SHM_PTR;
+        let count = uids.len().min(NAV_ROUTE_MAX_ITEMS);
+        // Write items first, then publish count + sequence atomically last.
+        for (i, &uid) in uids[..count].iter().enumerate() {
+            shm.items[i] = uid;
+        }
+        NR_SEQUENCE = NR_SEQUENCE.wrapping_add(1);
+        ptr::write_volatile(&mut shm.item_count, count as u32);
+        ptr::write_volatile(&mut shm.sequence, NR_SEQUENCE);
     }
 
     fn nav_log(msg: &str) {
@@ -299,6 +422,8 @@ mod win {
                     state.uid_buf.len(),
                     format_first5(&state.uid_buf),
                 ));
+                // Seed SHM with the initial route so Core gets it immediately.
+                write_route_to_shm(&state.uid_buf);
                 return;
             }
 
@@ -309,6 +434,7 @@ mod win {
                     state.uid_buf.len(),
                     format_first5(&state.uid_buf),
                 ));
+                write_route_to_shm(&state.uid_buf);
             }
         }
     }
@@ -316,10 +442,18 @@ mod win {
 
 #[cfg(windows)]
 #[allow(unused_imports)] // public API for R3 / diagnostics
-pub use win::{resolve_route_task, tick};
+pub use win::{cleanup_shm, init_shm, resolve_route_task, tick};
 
 #[cfg(not(windows))]
 pub fn tick(_timestamp_us: u64) {}
+
+#[cfg(not(windows))]
+pub fn init_shm() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn cleanup_shm() {}
 
 #[cfg(not(windows))]
 pub unsafe fn resolve_route_task(_gps: *const u8) -> Option<*const u8> {

@@ -475,6 +475,9 @@ pub struct LaneKeeperPlugin {
     /// Ticks in Folge, in denen BEIDE Capture-Exit-Bedingungen erfÃ¼llt sind
     /// (Hysterese gegen Flackern an der Schwelle).
     capture_exit_ticks: u32,
+
+    // -- Phase R3: ETS2 native route reader --
+    nav_route_reader: Option<truckpilot_telemetry::nav_route::NavRouteReader>,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -538,6 +541,7 @@ impl Default for LaneKeeperPlugin {
             capture_active: false,
             capture_exit_ticks: 0,
             engage_max_lateral_m: DEFAULT_ENGAGE_MAX_LATERAL_M,
+            nav_route_reader: None,
         }
     }
 }
@@ -725,6 +729,53 @@ impl LaneKeeperPlugin {
 // â”€â”€ Route-following implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 impl LaneKeeperPlugin {
+        fn maybe_inject_ets2_route(&mut self, ctx: &PluginContext) {
+        use truckpilot_telemetry::nav_route::NavRouteReader;
+        if self.nav_route_reader.is_none() {
+            match NavRouteReader::open() {
+                Ok(r) => self.nav_route_reader = Some(r),
+                Err(_) => return,
+            }
+        }
+        let reader = match self.nav_route_reader.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let snap = match reader.read_if_changed() {
+            Some(s) => s,
+            None => return,
+        };
+        let rg = match &self.router_graph {
+            Some(rg) => rg.clone(),
+            None => {
+                tracing::debug!("[ets2-route] router_graph not loaded yet");
+                return;
+            }
+        };
+        let pts: Vec<[f64; 2]> = snap
+            .uids
+            .iter()
+            .filter_map(|uid| rg.positions.get(uid).map(|&(x, z)| [x, z]))
+            .collect();
+        let uid_total = snap.uids.len();
+        let uid_matched = pts.len();
+        ctx.blackboard.set("router.ets2_uid_total", &uid_total.to_string());
+        ctx.blackboard.set("router.ets2_uid_matched", &uid_matched.to_string());
+        if pts.len() < 2 {
+            tracing::warn!(
+                "[ets2-route] seq={} {} UIDs {} matched (may be road-UIDs not node-UIDs)",
+                snap.sequence, uid_total, uid_matched,
+            );
+            return;
+        }
+        if let Ok(json) = serde_json::to_string(&pts) {
+            ctx.blackboard.set("router.waypoints", &json);
+            tracing::info!(
+                "[ets2-route] seq={} {} UIDs {} positions written to router.waypoints",
+                snap.sequence, uid_total, uid_matched,
+            );
+        }
+    }
     fn load_waypoints_from_blackboard(&mut self, ctx: &PluginContext) {
         if let Some(json) = ctx.blackboard.get("router.waypoints") {
             if let Ok(pts) = serde_json::from_str::<Vec<[f64; 2]>>(&json) {
@@ -3791,6 +3842,7 @@ impl LaneKeeperPlugin {
 
         // Heading stage gate.
         self.heading_stage = ctx.blackboard.get("state.heading_stage");
+        self.maybe_inject_ets2_route(ctx);
         let stage = self.heading_stage.as_deref().unwrap_or("Normal");
         if matches!(stage, "AutoReplan" | "Disengaging") {
             ctx.blackboard

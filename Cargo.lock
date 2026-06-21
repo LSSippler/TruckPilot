@@ -5208,6 +5208,7 @@ dependencies = [
  "tracing",
  "truckpilot-map-parser",
  "truckpilot-plugin-api",
+ "truckpilot-telemetry",
 ]
 
 [[package]]
@@ -5348,6 +5349,7 @@ dependencies = [
  "tracing-subscriber",
  "truckpilot-ipc-protocol",
  "url",
+ "windows-sys 0.59.0",
  "winreg 0.52.0",
 ]
 
