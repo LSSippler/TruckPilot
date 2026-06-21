@@ -984,11 +984,19 @@ impl LaneKeeperPlugin {
                         diag_t_filtered += 1;
                         continue;
                     }
+                    // Heading-Filter: NavCurve ablehnen wenn > 60° vom Truck-Heading abweicht.
+                    // Verhindert, dass ein geometrisch naehes aber perpendiculares NavCurve
+                    // (z.B. Querspange, falscher Abfahrtsast) als "bestes" gewaehlt wird.
+                    let seg = &index.segments[nav_idx];
+                    let tan = evaluate_tangent(seg, t);
+                    let heading_deg =
+                        f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
+                    let mut hd = (heading_deg - truck_heading_deg).rem_euclid(360.0);
+                    if hd > 180.0 { hd -= 360.0; }
+                    if hd.abs() > 60.0 {
+                        continue;
+                    }
                     if best.as_ref().map_or(true, |b| dist_m < b.dist_m) {
-                        let seg = &index.segments[nav_idx];
-                        let tan = evaluate_tangent(seg, t);
-                        let heading_deg =
-                            f32::atan2(tan.x, -tan.z).to_degrees().rem_euclid(360.0);
                         let point_on_curve = evaluate(seg, t);
                         best = Some(NearestHit {
                             segment_idx: nav_idx,
