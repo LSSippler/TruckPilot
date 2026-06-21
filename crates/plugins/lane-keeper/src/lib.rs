@@ -945,12 +945,15 @@ impl LaneKeeperPlugin {
         // (Topologie schlaegt Proximity, analog ETS2LA accepted_lanes). Greift auch
         // wenn raw_route_hit schon ein Road-Segment gefunden hat (das war der Fehler:
         // das Road-Segment 51m entfernt gewann, NavCurve wurde ignoriert).
+        // Scan die GESAMTE Route nach NavCurves — nicht nur cursor±window.
+        // Der cursor-basierte Scan versagt wenn der Cursor bei Hop 3 steht aber
+        // die Junction-NavCurve bei Hop 50 liegt (ausserhalb 0..32-Fenster).
+        // Der Distance-Check (NAVCURVE_PRIORITY_MARGIN_M) verhindert Fruehzugriff
+        // auf weit entfernte Junctions. Guard t>0.95: keine bereits passierten
+        // NavCurves (Projektion am Ende = Truck hat sie ueberholt).
         let junction_navcurve_best = {
-            let cursor = self.node_progress_idx;
-            let lo = cursor.saturating_sub(REANCHOR_BACKWARD_WINDOW);
-            let hi = (cursor + REANCHOR_FORWARD_WINDOW + 1).min(route.len());
             let mut best: Option<NearestHit> = None;
-            for k in lo..hi.saturating_sub(1) {
+            for k in 0..route.len().saturating_sub(1) {
                 let Some(navs) = self.navcurve_by_from_to.get(&(route[k], route[k + 1])) else {
                     continue;
                 };
@@ -958,6 +961,10 @@ impl LaneKeeperPlugin {
                     let Some((t, dist_m)) = index.project_on_segment(nav_idx, query) else {
                         continue;
                     };
+                    // t > 0.95: Truck hat diese NavCurve bereits passiert → ueberspringen.
+                    if t > 0.95 {
+                        continue;
+                    }
                     if best.as_ref().map_or(true, |b| dist_m < b.dist_m) {
                         let seg = &index.segments[nav_idx];
                         let tan = evaluate_tangent(seg, t);
