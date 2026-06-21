@@ -354,6 +354,11 @@ pub struct LaneKeeperPlugin {
     road_seg_count: usize,
     /// Fix C: Anzahl On-Route-NavCurves in `cached_route_seg_set` (Diagnostik).
     cached_route_navcurve_count: usize,
+    // Diagnose-Felder fuer NavCurve-Force-Scan (jeden Tick ueberschrieben).
+    dbg_force_candidates: u32,
+    dbg_force_proj_ok:    u32,
+    dbg_force_t_filtered: u32,
+    dbg_force_best_dist:  f32,
     cached_route_node_ids: Vec<u64>,
     cached_route_hash: u64,
     /// Phase 2h-Befund3-Fix: Menge der Segment-Indizes, die auf der aktuellen
@@ -498,6 +503,10 @@ impl Default for LaneKeeperPlugin {
             navcurve_by_from_to: HashMap::new(),
             road_seg_count: 0,
             cached_route_navcurve_count: 0,
+            dbg_force_candidates: 0,
+            dbg_force_proj_ok:    0,
+            dbg_force_t_filtered: 0,
+            dbg_force_best_dist:  -1.0,
             cached_route_node_ids: Vec::new(),
             cached_route_hash: 0,
             cached_route_seg_set: std::collections::HashSet::new(),
@@ -953,16 +962,26 @@ impl LaneKeeperPlugin {
         // NavCurves (Projektion am Ende = Truck hat sie ueberholt).
         let junction_navcurve_best = {
             let mut best: Option<NearestHit> = None;
+            let mut diag_candidates = 0u32;   // NavCurves via .get() gefunden
+            let mut diag_proj_ok = 0u32;      // project_on_segment lieferte Some
+            let mut diag_t_filtered = 0u32;   // durch t>0.95 gefiltert
+            let mut diag_best_dist = f32::MAX; // beste Distanz vor t-Filter
             for k in 0..route.len().saturating_sub(1) {
                 let Some(navs) = self.navcurve_by_from_to.get(&(route[k], route[k + 1])) else {
                     continue;
                 };
+                diag_candidates += navs.len() as u32;
                 for &nav_idx in navs {
                     let Some((t, dist_m)) = index.project_on_segment(nav_idx, query) else {
                         continue;
                     };
+                    diag_proj_ok += 1;
+                    if dist_m < diag_best_dist {
+                        diag_best_dist = dist_m;
+                    }
                     // t > 0.95: Truck hat diese NavCurve bereits passiert → ueberspringen.
                     if t > 0.95 {
+                        diag_t_filtered += 1;
                         continue;
                     }
                     if best.as_ref().map_or(true, |b| dist_m < b.dist_m) {
@@ -982,6 +1001,10 @@ impl LaneKeeperPlugin {
                     }
                 }
             }
+            self.dbg_force_candidates = diag_candidates;
+            self.dbg_force_proj_ok    = diag_proj_ok;
+            self.dbg_force_t_filtered = diag_t_filtered;
+            self.dbg_force_best_dist  = if diag_best_dist < f32::MAX { diag_best_dist } else { -1.0 };
             best
         };
         let (raw_route_hit, junction_navcurve_forced) =
@@ -1076,6 +1099,23 @@ impl LaneKeeperPlugin {
         ctx.blackboard.set(
             "lane_keeper.junction_navcurve_forced",
             u8::from(junction_navcurve_forced).to_string(),
+        );
+        // Diagnose NavCurve-Force-Scan: was hat der Scan intern gesehen?
+        ctx.blackboard.set(
+            "lk.force_candidates",
+            self.dbg_force_candidates.to_string(),
+        );
+        ctx.blackboard.set(
+            "lk.force_proj_ok",
+            self.dbg_force_proj_ok.to_string(),
+        );
+        ctx.blackboard.set(
+            "lk.force_t_filtered",
+            self.dbg_force_t_filtered.to_string(),
+        );
+        ctx.blackboard.set(
+            "lk.force_best_dist_m",
+            format!("{:.2}", self.dbg_force_best_dist),
         );
         ctx.blackboard.set(
             "lane_keeper.nearest_route_best_dist_m",
