@@ -881,6 +881,10 @@ pub unsafe fn resolve_game_ctrl_cached(
     force_full_scan: bool,
     allow_full_scan: bool,
 ) -> Result<(GameCtrlSessionCache, bool), GpsResolveError> {
+    if crate::safe_mem::route_resolver_mode().is_off() {
+        crate::resolver_metrics::note_off_mode_blocked_call();
+        return Err(GpsResolveError::GameCtrlNull);
+    }
     if !force_full_scan {
         if let Some(entry) = session_cache_snapshot() {
             if cache_still_valid(entry) {
@@ -1055,6 +1059,10 @@ mod win {
     }
 
     pub(super) unsafe fn resolve_game_ctrl_manager_full() -> Result<GpsResolveSuccess, GpsResolveError> {
+        if crate::safe_mem::route_resolver_mode().is_off() {
+            crate::resolver_metrics::note_off_mode_blocked_call();
+            return Err(GpsResolveError::GameCtrlNull);
+        }
         let base_ptr = main_module_base().ok_or(GpsResolveError::ModuleNotFound)?;
         let base = base_ptr as usize;
         let size = pe_size_of_image(base_ptr).ok_or(GpsResolveError::PeParseFailed)?;

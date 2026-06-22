@@ -291,23 +291,46 @@ pub fn bump_enable_file_generation() {
     ENABLE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[cfg(windows)]
-fn enable_file_exists(name: &str) -> bool {
+#[cfg(test)]
+std::thread_local! {
+    static TEST_ENABLE_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Override enable-file directory for unit tests (thread-local temp dirs).
+#[cfg(test)]
+pub fn set_test_enable_dir(dir: Option<std::path::PathBuf>) {
+    TEST_ENABLE_DIR.with(|cell| {
+        *cell.borrow_mut() = dir;
+    });
+}
+
+#[cfg(test)]
+fn test_enable_dir() -> Option<std::path::PathBuf> {
+    TEST_ENABLE_DIR.with(|cell| cell.borrow().clone())
+}
+
+fn enable_dir() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(dir) = test_enable_dir() {
+            return Some(dir);
+        }
+    }
     crate::diag_log::plugin_dir()
+}
+
+fn enable_file_exists(name: &str) -> bool {
+    enable_dir()
         .map(|dir| dir.join(name).is_file())
         .unwrap_or(false)
 }
 
-#[cfg(not(windows))]
-fn enable_file_exists(_name: &str) -> bool {
-    false
-}
-
-/// Detect effective mode from enable files only (no env overrides).
-pub fn detect_resolver_mode_selection() -> ResolverModeSelection {
+/// Detect effective mode from enable files in `dir` (offline-testable).
+pub fn detect_resolver_mode_selection_from_dir(dir: &std::path::Path) -> ResolverModeSelection {
     let mut present = Vec::new();
     for (file, mode) in RESOLVER_ENABLE_FILES {
-        if enable_file_exists(file) {
+        if dir.join(file).is_file() {
             present.push((file, mode));
         }
     }
@@ -327,32 +350,33 @@ pub fn detect_resolver_mode_selection() -> ResolverModeSelection {
     }
 }
 
+/// True when legacy `truckpilot_route_scan.enable` exists (ignored for mode selection).
+pub fn legacy_route_scan_enable_present(dir: &std::path::Path) -> bool {
+    dir.join("truckpilot_route_scan.enable").is_file()
+}
+
+/// Detect effective mode from enable files only (no env overrides).
+pub fn detect_resolver_mode_selection() -> ResolverModeSelection {
+    enable_dir()
+        .map(|dir| detect_resolver_mode_selection_from_dir(&dir))
+        .unwrap_or(ResolverModeSelection {
+            mode: RouteResolverMode::SafeDefault,
+            source_file: "none",
+            ignored_lower_priority: Vec::new(),
+        })
+}
+
 /// Log resolver mode once at DLL init (Sidecar).
 pub fn log_route_resolver_mode_at_init() {
     use std::sync::Once;
     static LOGGED: Once = Once::new();
     LOGGED.call_once(|| {
         let sel = detect_resolver_mode_selection();
-        crate::diag_log::event_force(&format!(
-            "route resolver mode={}",
-            sel.mode.sidecar_label()
-        ));
+        for line in crate::resolver_guard::format_mode_init_log_lines(&sel) {
+            crate::diag_log::event_force(&line);
+        }
         if sel.mode.is_off() {
-            crate::diag_log::event_force("route resolver disabled safe mode");
-            crate::diag_log::event_force("route resolver worker parked");
             crate::resolver_metrics::set_resolver_parked(true);
-        } else {
-            crate::diag_log::event_force(&format!(
-                "route resolver mode selected={} source={}",
-                sel.mode.sidecar_label(),
-                sel.source_file
-            ));
-            if !sel.ignored_lower_priority.is_empty() {
-                crate::diag_log::event_force(&format!(
-                    "ignored lower-priority resolver mode files: {}",
-                    sel.ignored_lower_priority.join(", ")
-                ));
-            }
         }
     });
 }
@@ -453,6 +477,10 @@ pub fn select_route_resolver_mode(
 
 /// Effective resolver mode for this process.
 pub fn route_resolver_mode() -> RouteResolverMode {
+    #[cfg(test)]
+    if let Some(ref dir) = test_enable_dir() {
+        return detect_resolver_mode_selection_from_dir(dir).mode;
+    }
     *RESOLVER_MODE.get_or_init(|| detect_resolver_mode_selection().mode)
 }
 

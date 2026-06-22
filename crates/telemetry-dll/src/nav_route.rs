@@ -888,29 +888,40 @@ mod win {
             };
             sched.note_enable_generation(crate::safe_mem::enable_file_generation());
 
-            if sched.parked {
-                if state.last_resolve_status != RESOLVE_ROUTE_RESOLVER_PARKED {
-                    record_resolve_status(state, RESOLVE_ROUTE_RESOLVER_PARKED, timestamp_us);
-                    write_bb_resolve_diag(state, false);
+            match crate::resolver_guard::decide_walk(
+                crate::safe_mem::route_resolver_mode(),
+                &sched,
+                timestamp_us,
+            ) {
+                crate::resolver_guard::WalkDecision::OffModePark => {
+                    drop(sched);
+                    handle_resolver_off(state, timestamp_us);
+                    return;
                 }
-                return;
-            }
-
-            if sched.diagnostic_parked {
-                write_bb_resolve_diag(state, false);
-                return;
-            }
-
-            if !sched.should_run_walk(timestamp_us) {
-                if state.last_resolve_status != RESOLVE_ROUTE_RESOLVER_BACKOFF {
-                    record_resolve_status(state, RESOLVE_ROUTE_RESOLVER_BACKOFF, timestamp_us);
-                    write_bb_resolve_diag(state, false);
+                crate::resolver_guard::WalkDecision::ScheduledParked => {
+                    if state.last_resolve_status != RESOLVE_ROUTE_RESOLVER_PARKED {
+                        record_resolve_status(state, RESOLVE_ROUTE_RESOLVER_PARKED, timestamp_us);
+                        write_bb_resolve_diag(state, false);
+                    }
+                    return;
                 }
-                return;
+                crate::resolver_guard::WalkDecision::DiagnosticParked => {
+                    write_bb_resolve_diag(state, false);
+                    return;
+                }
+                crate::resolver_guard::WalkDecision::BackoffWait => {
+                    if state.last_resolve_status != RESOLVE_ROUTE_RESOLVER_BACKOFF {
+                        record_resolve_status(state, RESOLVE_ROUTE_RESOLVER_BACKOFF, timestamp_us);
+                        write_bb_resolve_diag(state, false);
+                    }
+                    return;
+                }
+                crate::resolver_guard::WalkDecision::Proceed => {}
             }
 
             sched.note_walk_started(timestamp_us);
             drop(sched);
+            crate::resolver_metrics::note_resolver_walk_proceeded();
 
             if state.tick_milestone.should_log(state.route_tick_count) {
                 state.rate_log.event(

@@ -761,6 +761,9 @@ pub fn diagnose_gps_pointer_table(gps: usize) -> (GpsTableDiagnostic, Vec<String
 
 /// Run `gps_table_only` diagnostic — logs table once per GPS pointer, no chain walk.
 pub fn run_gps_table_only_diagnostic(gps: usize) -> u32 {
+    if let Some(st) = crate::resolver_guard::block_if_resolver_off() {
+        return st;
+    }
     let (diag, lines) = diagnose_gps_pointer_table(gps);
     log_gps_table_only_sidecar(gps, &lines);
     if !diag.base_read_ok || diag.slots_attempted != GPS_TABLE_SLOT_COUNT {
@@ -935,6 +938,9 @@ pub fn format_game_ctrl_table_lines_mem<R: MemRead>(mem: &R, game_ctrl: usize) -
 
 /// Run `game_ctrl_table` diagnostic — logs table once per `game_ctrl` pointer, no chain walk.
 pub fn run_game_ctrl_table_only_diagnostic(game_ctrl: usize) -> u32 {
+    if let Some(st) = crate::resolver_guard::block_if_resolver_off() {
+        return st;
+    }
     let (diag, lines) = diagnose_game_ctrl_pointer_table(game_ctrl);
     log_game_ctrl_table_only_sidecar(game_ctrl, &lines);
     if !diag.base_read_ok || diag.slots_attempted != GAME_CTRL_TABLE_SLOT_COUNT {
@@ -1118,6 +1124,9 @@ pub fn diagnose_route_candidate_table(game_ctrl: usize) -> (RouteCandidateTableD
 }
 
 pub fn run_route_candidate_table_only_diagnostic(game_ctrl: usize) -> u32 {
+    if let Some(st) = crate::resolver_guard::block_if_resolver_off() {
+        return st;
+    }
     let (diag, lines) = diagnose_route_candidate_table(game_ctrl);
     log_route_candidate_table_only_sidecar(game_ctrl, &lines);
     if !diag.base_read_ok
@@ -1698,7 +1707,18 @@ fn log_chain_attempt(
 mod tests {
     use super::*;
     use crate::route_status::RESOLVE_WAYPOINTS_COLLECTED;
-    use crate::safe_mem::RouteScanPolicy;
+    use crate::safe_mem::{self, RouteScanPolicy, RouteResolverMode};
+
+    fn with_enable_file(enable_name: &str, f: impl FnOnce()) {
+        let dir = std::env::temp_dir().join(format!("tp-rc-{enable_name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::File::create(dir.join(enable_name)).unwrap();
+        safe_mem::set_test_enable_dir(Some(dir.clone()));
+        f();
+        safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn full_scan_policy() -> RouteScanPolicy {
         RouteScanPolicy {
@@ -1760,10 +1780,12 @@ mod tests {
 
     #[test]
     fn route_candidate_table_only_rejects_null_game_ctrl() {
-        assert_eq!(
-            run_route_candidate_table_only_diagnostic(0),
-            RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.route_candidate_table", || {
+            assert_eq!(
+                run_route_candidate_table_only_diagnostic(0),
+                RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]
@@ -1813,23 +1835,28 @@ mod tests {
 
     #[test]
     fn route_candidate_table_only_does_not_invoke_chain_walk() {
-        let mem = FakeMem::default();
-        let game_ctrl = 0x10_0000usize;
-        let chain_err = resolve_route_chain_with_policy(&mem, game_ctrl, RouteScanPolicy::safe_default());
-        assert!(chain_err.is_err());
-        let status = run_route_candidate_table_only_diagnostic(game_ctrl);
-        assert!(
-            status == RESOLVE_ROUTE_CANDIDATE_TABLE_DONE
-                || status == RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.route_candidate_table", || {
+            let mem = FakeMem::default();
+            let game_ctrl = 0x10_0000usize;
+            let chain_err =
+                resolve_route_chain_with_policy(&mem, game_ctrl, RouteScanPolicy::safe_default());
+            assert!(chain_err.is_err());
+            let status = run_route_candidate_table_only_diagnostic(game_ctrl);
+            assert!(
+                status == RESOLVE_ROUTE_CANDIDATE_TABLE_DONE
+                    || status == RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]
     fn game_ctrl_table_only_rejects_null_game_ctrl() {
-        assert_eq!(
-            run_game_ctrl_table_only_diagnostic(0),
-            RESOLVE_GAME_CTRL_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.game_ctrl_table", || {
+            assert_eq!(
+                run_game_ctrl_table_only_diagnostic(0),
+                RESOLVE_GAME_CTRL_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]
@@ -1867,23 +1894,28 @@ mod tests {
 
     #[test]
     fn game_ctrl_table_only_does_not_invoke_chain_walk() {
-        let mem = FakeMem::default();
-        let game_ctrl = 0x10_0000usize;
-        let chain_err = resolve_route_chain_with_policy(&mem, game_ctrl, RouteScanPolicy::safe_default());
-        assert!(chain_err.is_err());
-        let status = run_game_ctrl_table_only_diagnostic(game_ctrl);
-        assert!(
-            status == RESOLVE_GAME_CTRL_TABLE_ONLY_DONE
-                || status == RESOLVE_GAME_CTRL_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.game_ctrl_table", || {
+            let mem = FakeMem::default();
+            let game_ctrl = 0x10_0000usize;
+            let chain_err =
+                resolve_route_chain_with_policy(&mem, game_ctrl, RouteScanPolicy::safe_default());
+            assert!(chain_err.is_err());
+            let status = run_game_ctrl_table_only_diagnostic(game_ctrl);
+            assert!(
+                status == RESOLVE_GAME_CTRL_TABLE_ONLY_DONE
+                    || status == RESOLVE_GAME_CTRL_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]
     fn gps_table_only_rejects_null_gps() {
-        assert_eq!(
-            run_gps_table_only_diagnostic(0),
-            RESOLVE_GPS_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.gps_table", || {
+            assert_eq!(
+                run_gps_table_only_diagnostic(0),
+                RESOLVE_GPS_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]
@@ -1913,15 +1945,18 @@ mod tests {
 
     #[test]
     fn gps_table_only_does_not_invoke_chain_walk() {
-        let mem = FakeMem::default();
-        let gps = 0x10_0000usize;
-        let chain_err = resolve_route_chain_with_policy(&mem, gps, RouteScanPolicy::safe_default());
-        assert!(chain_err.is_err());
-        let status = run_gps_table_only_diagnostic(gps);
-        assert_ne!(status, RESOLVE_WAYPOINTS_COLLECTED);
-        assert!(
-            status == RESOLVE_GPS_TABLE_ONLY_DONE || status == RESOLVE_GPS_TABLE_READ_FAILED
-        );
+        with_enable_file("truckpilot_route_resolver.gps_table", || {
+            let mem = FakeMem::default();
+            let gps = 0x10_0000usize;
+            let chain_err =
+                resolve_route_chain_with_policy(&mem, gps, RouteScanPolicy::safe_default());
+            assert!(chain_err.is_err());
+            let status = run_gps_table_only_diagnostic(gps);
+            assert_ne!(status, RESOLVE_WAYPOINTS_COLLECTED);
+            assert!(
+                status == RESOLVE_GPS_TABLE_ONLY_DONE || status == RESOLVE_GPS_TABLE_READ_FAILED
+            );
+        });
     }
 
     #[test]

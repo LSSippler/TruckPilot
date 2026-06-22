@@ -41,5 +41,37 @@ path = "src/bin/telemetry_probe.rs"
 name = "shm-sim"
 path = "src/bin/shm_sim.rs"
 
+[[bin]]
+name = "route-shm-sim"
+path = "src/bin/route_shm_sim.rs"
+
+[[bin]]
+name = "route-log-analyze"
+path = "src/bin/route_log_analyze.rs"
+
+[[bin]]
+name = "route-shm-dump"
+path = "src/bin/route_shm_dump.rs"
+
+[[bin]]
+name = "ets2-dll-check"
+path = "src/bin/ets2_dll_check.rs"
+
+[[bin]]
+name = "route-distance-recorder"
+path = "src/bin/route_distance_recorder.rs"
+
+[[bin]]
+name = "route-distance-report"
+path = "src/bin/route_distance_report.rs"
+
+[[bin]]
+name = "route-distance-meta-report"
+path = "src/bin/route_distance_meta_report.rs"
+
+[[bin]]
+name = "route-distance-verify"
+path = "src/bin/route_distance_verify.rs"
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

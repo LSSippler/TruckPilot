@@ -17,6 +17,7 @@ TruckPilot.TelemetryDLL/build/
 
 # Stack traces / temporary logs
 *.log
+!crates/telemetry/tests/fixtures/*.log
 live_test_*.log
 
 # OS

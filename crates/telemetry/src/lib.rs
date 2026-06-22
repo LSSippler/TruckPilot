@@ -16,6 +16,7 @@ pub mod http;
 pub mod memory;
 pub mod nav_route;
 pub mod route_distance_log;
+pub mod route_log_analyze;
 pub mod shm;
 
 #[cfg(test)]

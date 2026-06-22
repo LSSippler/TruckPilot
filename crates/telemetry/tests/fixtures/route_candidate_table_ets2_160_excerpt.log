@@ -1,0 +1,44 @@
+route resolver worker started
+route resolver mode=route_candidate_table
+module scan success candidate=game_ctrl_load_lea_wc slot_rva=0x354F398 game_ctrl=0x1F8D37D0DD8 gps_slot_addr=0x1F8D37D4C08 gps_slot_value=0x0
+candidate source game_ctrl+0x3AC0 value=0x1F8D37D48B0
+candidate table done source=+0x3AC0 slots=33 nonzero=0
+candidate source game_ctrl+0x4038 value=0x1F8D97A3480
+candidate table source=+0x4038 candidate=0x1F8D97A3480
+  +0x00 = 0x1F8D97A3480
+  +0x08 = 0x7665682F646566
+... contains vehicle/def, transmission, .sii ...
+candidate table done source=+0x4038 slots=33 nonzero=30
+candidate source game_ctrl+0x4130 value=0x1F8D37D4F20
+candidate table source=+0x4130 candidate=0x1F8D37D4F20
+  +0x00 = 0x1F8D37D4F20
+  +0x08 = 0x696E76656E746F72
+... contains name/type/cabin_accessory/inventory ...
+candidate table done source=+0x4130 slots=33 nonzero=29
+candidate source game_ctrl+0x41B0 value=0x1F8D37D4FA0
+candidate table source=+0x41B0 candidate=0x1F8D37D4FA0
+  +0x08 = 0x636162696E5F6163
+... contains inventory/cabin_accessory ...
+candidate table done source=+0x41B0 slots=33 nonzero=23
+candidate source game_ctrl+0x4228 value=0x1F8D37D5000
+candidate table source=+0x4228 candidate=0x1F8D37D5000
+  +0x00 = 0x1F8D37D5000
+  +0x08 = 0x1F8D37D5008
+candidate table done source=+0x4228 slots=33 nonzero=17
+candidate source game_ctrl+0x4230 value=0x1F8D37D5000
+candidate table source=+0x4230 candidate=0x1F8D37D5000
+  +0x00 = 0x1F8D37D5000
+  +0x08 = 0x1F8D37D5008
+candidate table done source=+0x4230 slots=33 nonzero=17
+candidate source game_ctrl+0x4390 value=0x1F8D37D5178
+candidate table source=+0x4390 candidate=0x1F8D37D5178
+  +0x00 = 0x1F8D37D5178
+  +0x08 = 0x696E76656E746F72
+... contains inventory_item_metadata ...
+candidate table done source=+0x4390 slots=33 nonzero=33
+candidate source game_ctrl+0x4580 value=0x1F8D37D5370
+candidate table source=+0x4580 candidate=0x1F8D37D5370
+  +0x08 = 0x636162696E5F6163
+... contains inventory/cabin_accessory ...
+candidate table done source=+0x4580 slots=33 nonzero=31
+resolver attempt count=7 status=route_candidate_table_done

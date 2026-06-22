@@ -39,6 +39,7 @@ mod diag_log;
 mod ffi_guard;
 mod nav_resolve;
 mod nav_route;
+mod resolver_guard;
 mod resolver_metrics;
 mod resolver_sched;
 mod resolver_worker;
@@ -48,6 +49,9 @@ mod safe_mem;
 
 #[cfg(test)]
 mod production_safety_tests;
+
+#[cfg(test)]
+mod offline_stutter_tests;
 
 // ---------------------------------------------------------------------------
 // Windows API FFI (kernel32.dll / user32.dll)
