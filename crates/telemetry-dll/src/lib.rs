@@ -53,6 +53,9 @@ mod production_safety_tests;
 #[cfg(test)]
 mod offline_stutter_tests;
 
+#[cfg(test)]
+mod test_isolation;
+
 // ---------------------------------------------------------------------------
 // Windows API FFI (kernel32.dll / user32.dll)
 // ---------------------------------------------------------------------------

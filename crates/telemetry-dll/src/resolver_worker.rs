@@ -63,6 +63,7 @@ mod win {
 
     static mut WAKE_EVENT: HANDLE = 0;
 
+    #[allow(static_mut_refs)]
     pub fn create_wake_event() -> bool {
         unsafe {
             if WAKE_EVENT != 0 {
@@ -73,6 +74,7 @@ mod win {
         }
     }
 
+    #[allow(static_mut_refs)]
     pub fn signal_wake() {
         unsafe {
             if WAKE_EVENT != 0 {
@@ -81,6 +83,7 @@ mod win {
         }
     }
 
+    #[allow(static_mut_refs)]
     pub fn wait_wake_or_timeout(ms: u64) -> bool {
         unsafe {
             if WAKE_EVENT == 0 {
@@ -92,6 +95,7 @@ mod win {
         }
     }
 
+    #[allow(static_mut_refs)]
     pub fn close_wake_event() {
         unsafe {
             if WAKE_EVENT != 0 {
@@ -119,6 +123,7 @@ mod platform {
     pub fn close_wake_event() {}
 }
 
+#[allow(static_mut_refs)]
 pub fn start_worker() {
     if WORKER_STARTED.swap(true, Ordering::SeqCst) {
         return;
@@ -135,6 +140,7 @@ pub fn start_worker() {
     crate::diag_log::event_force("route resolver worker started");
 }
 
+#[allow(static_mut_refs)]
 pub fn stop_worker() {
     WORKER_STOP.store(true, Ordering::Release);
     platform::signal_wake();
@@ -188,6 +194,13 @@ pub fn reset_test_counters() {
     WORKER_WALK_COUNT.store(0, Ordering::Release);
     PENDING_RESOLVE.store(false, Ordering::Release);
     ROUTE_TICK_COUNT.store(0, Ordering::Release);
+    FRAME_CB_COUNT.store(0, Ordering::Release);
+    FRAME_START_COUNT.store(0, Ordering::Release);
+    FRAME_END_COUNT.store(0, Ordering::Release);
+    LAST_FRAME_END_US.store(0, Ordering::Release);
+    LAST_NOTIFY_US.store(0, Ordering::Release);
+    LAST_TICK_SOURCE.store(0, Ordering::Release);
+    RESOLVER_RESET_REQUESTED.store(false, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -196,8 +209,7 @@ mod tests {
 
     #[test]
     fn notify_frame_tick_schedules_worker_not_sync_resolver() {
-        reset_test_counters();
-        crate::resolver_metrics::reset_test_metrics();
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
         notify_frame_tick(1_000_000, RouteTickSource::FrameEnd);
         assert!(FRAME_SCHEDULED_WORKER.load(Ordering::Acquire));
         assert_eq!(ROUTE_TICK_COUNT.load(Ordering::Relaxed), 1);

@@ -1,7 +1,6 @@
 //! Offline frame-storm / stutter regression simulation — no ETS2, no SCS DLL.
 
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
 
 use crate::resolver_guard::{self, WalkDecision};
 use crate::resolver_metrics::{
@@ -13,22 +12,14 @@ use crate::resolver_sched::ResolverSchedule;
 use crate::resolver_worker;
 use crate::route_status::RouteTickSource;
 use crate::safe_mem::{self, RouteResolverMode};
-
-static STUTTER_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn isolated_stutter_test() -> std::sync::MutexGuard<'static, ()> {
-    let guard = STUTTER_TEST_LOCK.lock().unwrap();
-    resolver_metrics::reset_test_metrics();
-    resolver_worker::reset_test_counters();
-    guard
-}
+use crate::test_isolation::TestResolverStateGuard;
 
 const FRAME_STORM_COUNT: u32 = 100_000;
 const FRAME_END_STORM_COUNT: u32 = 1_000;
 
 #[test]
 fn frame_storm_notify_frame_tick_stays_o1_without_scans() {
-    let _lock = isolated_stutter_test();
+    let _guard = TestResolverStateGuard::acquire();
     let storm_dir = std::env::temp_dir().join(format!("tp-storm-off-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&storm_dir);
     safe_mem::set_test_enable_dir(Some(storm_dir.clone()));

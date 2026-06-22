@@ -5,19 +5,31 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Parsed fields extracted from a TruckPilot telemetry sidecar log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedLog {
+    /// `game_ctrl=` from `module scan success`.
     pub game_ctrl: Option<String>,
+    /// `gps_slot_addr=` from module scan line.
     pub gps_slot_addr: Option<String>,
+    /// `gps_slot_value=` from module scan line.
     pub gps_slot_value: Option<String>,
+    /// Count of `module scan success` lines.
     pub module_scan_success_count: u32,
+    /// Ordered set of `game_ctrl+0x…` candidate source offsets.
     pub candidate_sources: BTreeSet<usize>,
+    /// Parsed `+0xNN = 0x…` slot values per candidate source.
     pub candidate_table_values: BTreeMap<usize, Vec<u64>>,
+    /// `nonzero=` from each `candidate table done` line.
     pub candidate_done_nonzero: BTreeMap<usize, u32>,
+    /// `… contains …` hint text accumulated per candidate.
     pub candidate_hints: BTreeMap<usize, String>,
+    /// `value=` from each `candidate source` line.
     pub candidate_source_values: BTreeMap<usize, u64>,
+    /// Raw slot lines for debugging.
     pub table_slot_lines: Vec<String>,
+    /// Lines containing resolver status / `_done` / `_failed`.
     pub status_lines: Vec<String>,
 }
 
+/// Parse a saved sidecar log into structured fields.
 pub fn parse_log(text: &str) -> ParsedLog {
     let mut out = ParsedLog::default();
     let mut current_table: Option<usize> = None;

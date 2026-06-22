@@ -3,16 +3,24 @@
 /// High-level category for a `game_ctrl` candidate table region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateCategory {
+    /// All table slots read as zero.
     NullTable,
+    /// Mostly printable ASCII qwords without known game asset keywords.
     AsciiTextBlob,
+    /// Inventory, cabin accessory, vehicle def, or `.sii` strings.
     AssetOrInventoryText,
+    /// Pointer table whose entries point back into the same object.
     SelfRefContainer,
+    /// Mostly heap pointers without route-like structure.
     PointerTable,
+    /// Numeric data without strong text or pointer signals.
     NumericStruct,
+    /// Could not classify confidently.
     Unknown,
 }
 
 impl CandidateCategory {
+    /// Stable snake_case label for reports.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NullTable => "null_table",
@@ -29,12 +37,17 @@ impl CandidateCategory {
 /// Classification result for one candidate offset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassifiedCandidate {
+    /// `game_ctrl` source offset (hex in logs as `+0xXXXX`).
     pub offset: usize,
+    /// Heuristic category from slot bytes and optional log hints.
     pub category: CandidateCategory,
+    /// Non-zero slot count from log `nonzero=` or parsed slot lines.
     pub nonzero: u32,
+    /// True only when heuristics suggest a plausible route root (currently always false for 1.60 fixture).
     pub route_like: bool,
 }
 
+/// Classify using parsed slot qwords only.
 pub fn classify_candidate_values(offset: usize, values: &[u64]) -> ClassifiedCandidate {
     classify_candidate(offset, values, None, "")
 }

@@ -6,21 +6,31 @@ use super::parse::{ParsedLog, parse_log};
 /// Full offline analysis of a sidecar log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisReport {
+    /// Resolved `game_ctrl` pointer from module scan.
     pub game_ctrl: Option<String>,
+    /// GPS slot address derived from AOB resolution.
     pub gps_slot_addr: Option<String>,
+    /// First qword at the GPS slot (often `0x0` on broken 1.60 roots).
     pub gps_slot_value: Option<String>,
+    /// Per-candidate heuristic classifications.
     pub candidates: Vec<ClassifiedCandidate>,
+    /// Count of candidates marked `route_like`.
     pub route_like_candidates: u32,
+    /// Human-readable next step for offline research.
     pub recommended_next_step: String,
+    /// Number of successful module scan log lines.
     pub module_scan_success_count: u32,
+    /// Resolver status / done lines from the log tail.
     pub status_lines: Vec<String>,
 }
 
+/// Parse log text and classify all candidate tables.
 pub fn analyze_log_text(text: &str) -> AnalysisReport {
     let parsed = parse_log(text);
     build_report(parsed)
 }
 
+/// Build a report from an already parsed log (useful in tests).
 pub fn build_report(parsed: ParsedLog) -> AnalysisReport {
     let mut candidates = Vec::new();
 
@@ -58,6 +68,7 @@ pub fn build_report(parsed: ParsedLog) -> AnalysisReport {
     }
 }
 
+/// Render a stable, diff-friendly text report.
 pub fn render_report(report: &AnalysisReport) -> String {
     let mut out = String::new();
     if let Some(ref gc) = report.game_ctrl {

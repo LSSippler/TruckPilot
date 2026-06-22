@@ -1707,9 +1707,11 @@ fn log_chain_attempt(
 mod tests {
     use super::*;
     use crate::route_status::RESOLVE_WAYPOINTS_COLLECTED;
-    use crate::safe_mem::{self, RouteScanPolicy, RouteResolverMode};
+    use crate::safe_mem::{self, RouteScanPolicy};
+    use crate::test_isolation::TestResolverStateGuard;
 
     fn with_enable_file(enable_name: &str, f: impl FnOnce()) {
+        let _guard = TestResolverStateGuard::acquire();
         let dir = std::env::temp_dir().join(format!("tp-rc-{enable_name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -1,13 +1,11 @@
 //! Offline baseline safety invariants — no ETS2, no live memory.
 
 use std::fs::File;
-use std::sync::atomic::Ordering;
-use std::sync::{Mutex, MutexGuard};
 
 use crate::nav_resolve;
 use crate::resolver_guard::{self, WalkDecision};
 use crate::resolver_metrics::{
-    self, DIAGNOSTIC_TABLE_RUNS, FRAME_CALLBACK_SYNC_RESOLVER_CALLS,
+    DIAGNOSTIC_TABLE_RUNS, FRAME_CALLBACK_SYNC_RESOLVER_CALLS,
     OFF_MODE_BLOCKED_CALLS, PATTERN_SCANS_FROM_FRAME_CALLBACK, RESOLVER_PARKED,
     RESOLVER_WALK_PROCEEDED, RESOLVER_WORKER_PATTERN_SCAN_COUNT,
 };
@@ -18,15 +16,8 @@ use crate::route_status::{
     RouteTickSource, RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE,
 };
 use crate::safe_mem::{self, RouteResolverMode};
-
-static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn isolated_metrics_test() -> MutexGuard<'static, ()> {
-    let guard = METRICS_TEST_LOCK.lock().unwrap();
-    resolver_metrics::reset_test_metrics();
-    resolver_worker::reset_test_counters();
-    guard
-}
+use crate::test_isolation::TestResolverStateGuard;
+use std::sync::atomic::Ordering;
 
 fn temp_enable_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("tp-resolver-{prefix}-{}", std::process::id()));
@@ -37,6 +28,7 @@ fn temp_enable_dir(prefix: &str) -> std::path::PathBuf {
 
 #[test]
 fn no_enable_file_selects_off_mode() {
+    let _guard = TestResolverStateGuard::acquire();
     let dir = temp_enable_dir("none");
     safe_mem::set_test_enable_dir(Some(dir.clone()));
     let sel = safe_mem::detect_resolver_mode_selection_from_dir(&dir);
@@ -58,7 +50,7 @@ fn off_mode_status_constant_is_disabled_safe_mode() {
 
 #[test]
 fn off_mode_blocks_resolve_game_ctrl_cached_without_scan() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     safe_mem::set_test_enable_dir(Some(temp_enable_dir("off-cache")));
     let err = unsafe { nav_resolve::resolve_game_ctrl_cached(false, true) };
     assert!(err.is_err());
@@ -72,7 +64,7 @@ fn off_mode_blocks_resolve_game_ctrl_cached_without_scan() {
 
 #[test]
 fn off_mode_blocks_resolve_game_ctrl_manager_without_scan() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     safe_mem::set_test_enable_dir(Some(temp_enable_dir("off-mgr")));
     let err = unsafe { nav_resolve::resolve_game_ctrl_manager() };
     assert!(err.is_err());
@@ -85,7 +77,7 @@ fn off_mode_blocks_resolve_game_ctrl_manager_without_scan() {
 
 #[test]
 fn off_mode_blocks_route_chain_diagnostics_without_table_reads() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     safe_mem::set_test_enable_dir(Some(temp_enable_dir("off-chain")));
     let st = route_chain::run_route_candidate_table_only_diagnostic(0x10_0000);
     assert_eq!(st, RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE);
@@ -195,7 +187,7 @@ fn off_mode_walk_decision_parks_without_proceed() {
 
 #[test]
 fn worker_may_start_but_off_mode_parks_via_decision() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     let mut sched = ResolverSchedule::new();
     sched.park_resolver_off();
     assert!(RESOLVER_PARKED.load(Ordering::Relaxed));
@@ -207,7 +199,7 @@ fn worker_may_start_but_off_mode_parks_via_decision() {
 
 #[test]
 fn frame_callback_regression_metrics_stay_zero_on_notify() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     resolver_worker::notify_frame_tick(1, RouteTickSource::FrameEnd);
     assert_eq!(FRAME_CALLBACK_SYNC_RESOLVER_CALLS.load(Ordering::Relaxed), 0);
     assert_eq!(PATTERN_SCANS_FROM_FRAME_CALLBACK.load(Ordering::Relaxed), 0);
@@ -215,7 +207,7 @@ fn frame_callback_regression_metrics_stay_zero_on_notify() {
 
 #[test]
 fn off_mode_resolver_walk_proceeded_stays_zero() {
-    let _lock = isolated_metrics_test();
+    let _guard = TestResolverStateGuard::acquire();
     safe_mem::set_test_enable_dir(Some(temp_enable_dir("off-proceed")));
     let sched = ResolverSchedule::new();
     assert_eq!(

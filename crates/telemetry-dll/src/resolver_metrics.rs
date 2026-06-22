@@ -51,17 +51,18 @@ pub fn reset_test_metrics() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_isolation::TestResolverStateGuard;
 
     #[test]
     fn frame_callback_metrics_start_at_zero() {
-        reset_test_metrics();
+        let _guard = TestResolverStateGuard::acquire();
         assert_eq!(FRAME_CALLBACK_SYNC_RESOLVER_CALLS.load(Ordering::Relaxed), 0);
         assert_eq!(PATTERN_SCANS_FROM_FRAME_CALLBACK.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn worker_pattern_scan_counter_increments() {
-        reset_test_metrics();
+        let _guard = TestResolverStateGuard::acquire();
         note_worker_pattern_scan();
         assert_eq!(RESOLVER_WORKER_PATTERN_SCAN_COUNT.load(Ordering::Relaxed), 1);
     }
