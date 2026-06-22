@@ -43,6 +43,7 @@ pub fn fixture_telemetry() -> Telemetry {
         pitch: 0.0,
         roll: 0.0,
         speed_ms: 22.222,
+        engine_gear: 1,
         engine_rpm: 1500.0,
         cruise_control_kmh: 80.0,
         nav_speed_limit_kmh: 80.0,

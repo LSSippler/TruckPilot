@@ -35,8 +35,19 @@ use std::ptr;
 // Nav route memory resolution (Phase R1 — gps_manager AOB)
 // ---------------------------------------------------------------------------
 
+mod diag_log;
+mod ffi_guard;
 mod nav_resolve;
 mod nav_route;
+mod resolver_metrics;
+mod resolver_sched;
+mod resolver_worker;
+mod route_chain;
+mod route_status;
+mod safe_mem;
+
+#[cfg(test)]
+mod production_safety_tests;
 
 // ---------------------------------------------------------------------------
 // Windows API FFI (kernel32.dll / user32.dll)
@@ -106,8 +117,18 @@ const SCS_VALUE_TYPE_fvector: scs_u32_t = 8;
 const SCS_CHANNEL_FLAG_none: scs_u32_t = 0;
 const SCS_U32_NIL: scs_u32_t = 0xFFFF_FFFF;
 
-// SCS frame-end event ID
-const SCS_TELEMETRY_EVENT_frame_end: scs_u32_t = 2;
+// SCS telemetry events (scssdk_telemetry_event.h — 1.00+)
+const SCS_TELEMETRY_EVENT_started: scs_u32_t = 1;
+const SCS_TELEMETRY_EVENT_frame_start: scs_u32_t = 2;
+const SCS_TELEMETRY_EVENT_frame_end: scs_u32_t = 3;
+const SCS_TELEMETRY_EVENT_paused: scs_u32_t = 4;
+const SCS_TELEMETRY_EVENT_unpaused: scs_u32_t = 5;
+
+/// Payload for [`SCS_TELEMETRY_EVENT_frame_start`].
+#[repr(C)]
+struct ScsTelemetryFrameStart {
+    paused_simulation_time: u64,
+}
 
 // ---------------------------------------------------------------------------
 // Shared memory layout
@@ -383,6 +404,10 @@ unsafe fn reg_channel(
 // DLL entry points (exported to ETS2)
 // ---------------------------------------------------------------------------
 
+/// Deferred nav_resolve diagnostic — disabled during crash-safe phase.
+#[allow(dead_code)]
+static mut NAV_DIAG_PENDING: bool = true;
+
 /// Called by ETS2 when the DLL is loaded. Sets up SHM and registers callbacks.
 ///
 /// # Safety
@@ -392,17 +417,35 @@ pub unsafe extern "system" fn scs_telemetry_init(
     version: scs_u32_t,
     params: *const ScsTelemetryInitParamsV100,
 ) -> scs_result_t {
+    ffi_guard::guard_result("scs_telemetry_init", || unsafe {
+        scs_telemetry_init_inner(version, params)
+    })
+}
+
+unsafe fn scs_telemetry_init_inner(
+    version: scs_u32_t,
+    params: *const ScsTelemetryInitParamsV100,
+) -> scs_result_t {
+    diag_log::boot("DLL loaded / scs_telemetry_init entered");
+    debug_log("scs_telemetry_init entered");
+
     if params.is_null() {
+        diag_log::event_force("scs_telemetry_init returning failure (-2 null params)");
         return -2;
     }
     if version < 0x0001_0000 {
-        return -1; // unsupported SDK version
+        diag_log::event_force(&format!(
+            "scs_telemetry_init returning failure (-1 unsupported sdk_version=0x{version:08X})"
+        ));
+        return -1;
     }
 
-    let p = &*params;
-    debug_log("scs_telemetry_init v3 starting");
+    diag_log::event_force(&format!("sdk_version received: 0x{version:08X}"));
+    diag_log::init();
 
-    // Create the shared memory region.
+    let p = &*params;
+
+    diag_log::event_force("creating telemetry shm start");
     let name = wide_str(SHM_NAME);
     let shm_size = mem::size_of::<ShmLayout>();
     SHM_HANDLE = CreateFileMappingW(
@@ -414,39 +457,73 @@ pub unsafe extern "system" fn scs_telemetry_init(
         name.as_ptr(),
     );
     if SHM_HANDLE == NULL {
+        diag_log::event_force("creating telemetry shm error (CreateFileMappingW failed)");
         debug_log("CreateFileMappingW failed — SHM unavailable");
+        diag_log::event_force("scs_telemetry_init returning failure (-7 telemetry shm)");
         return -7;
     }
 
     SHM_PTR = MapViewOfFile(SHM_HANDLE, FILE_MAP_WRITE, 0, 0, shm_size) as *mut ShmLayout;
     if SHM_PTR.is_null() {
+        diag_log::event_force("creating telemetry shm error (MapViewOfFile failed)");
         debug_log("MapViewOfFile failed");
         CloseHandle(SHM_HANDLE);
         SHM_HANDLE = NULL;
+        diag_log::event_force("scs_telemetry_init returning failure (-7 telemetry shm map)");
         return -7;
     }
 
-    // Write initial magic so readers know the DLL is alive.
     (*SHM_PTR).magic = SHM_MAGIC;
     (*SHM_PTR).version = SHM_VERSION;
     (*SHM_PTR).sequence = 0;
+    diag_log::event_force("creating telemetry shm done (Local\\TruckPilotTelemetry)");
 
-    // Ready event — signalled after every frame flush.
     let ev_name = wide_str(SHM_EVENT_NAME);
     READY_EVENT = CreateEventW(ptr::null(), 1, 0, ev_name.as_ptr());
 
-    // Register frame-end event → flush all data to SHM.
-    let _ = (p.register_for_event)(SCS_TELEMETRY_EVENT_frame_end, frame_end_cb, ptr::null_mut());
+    diag_log::event_force("registering callbacks start");
+    let fs_reg = (p.register_for_event)(
+        SCS_TELEMETRY_EVENT_frame_start,
+        telemetry_frame_cb,
+        ptr::null_mut(),
+    );
+    if fs_reg != SCS_RESULT_OK {
+        diag_log::event_force(&format!(
+            "registering callbacks error (frame_start event failed: {fs_reg})"
+        ));
+    }
+    let fe_reg = (p.register_for_event)(
+        SCS_TELEMETRY_EVENT_frame_end,
+        telemetry_frame_cb,
+        ptr::null_mut(),
+    );
+    if fe_reg != SCS_RESULT_OK {
+        diag_log::event_force(&format!(
+            "registering callbacks error (frame_end event failed: {fe_reg})"
+        ));
+    }
+    let _ = (p.register_for_event)(
+        SCS_TELEMETRY_EVENT_paused,
+        telemetry_world_cb,
+        ptr::null_mut(),
+    );
+    let _ = (p.register_for_event)(
+        SCS_TELEMETRY_EVENT_unpaused,
+        telemetry_world_cb,
+        ptr::null_mut(),
+    );
+    let _ = (p.register_for_event)(
+        SCS_TELEMETRY_EVENT_started,
+        telemetry_world_cb,
+        ptr::null_mut(),
+    );
 
-    // --- Position & orientation ---
     reg_channel(
         p,
         "truck.world.placement",
         SCS_VALUE_TYPE_dplacement,
         cb_placement,
     );
-
-    // --- Motion ---
     reg_channel(p, "truck.speed", SCS_VALUE_TYPE_float, cb_speed);
     reg_channel(
         p,
@@ -460,8 +537,6 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_fvector,
         cb_local_accel,
     );
-
-    // --- Engine ---
     reg_channel(p, "truck.engine.rpm", SCS_VALUE_TYPE_float, cb_rpm);
     reg_channel(p, "truck.engine.gear", SCS_VALUE_TYPE_float, cb_engine_gear);
     reg_channel(
@@ -470,8 +545,6 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_float,
         cb_displayed_gear,
     );
-
-    // --- Driver inputs ---
     reg_channel(
         p,
         "truck.effective.throttle",
@@ -499,8 +572,6 @@ pub unsafe extern "system" fn scs_telemetry_init(
     );
     reg_channel(p, "truck.input.brake", SCS_VALUE_TYPE_float, cb_in_brake);
     reg_channel(p, "truck.input.clutch", SCS_VALUE_TYPE_float, cb_in_clutch);
-
-    // --- Fuel & navigation ---
     reg_channel(p, "truck.fuel.amount", SCS_VALUE_TYPE_float, cb_fuel);
     reg_channel(p, "truck.odometer", SCS_VALUE_TYPE_float, cb_odometer);
     reg_channel(p, "truck.cruise_control", SCS_VALUE_TYPE_float, cb_cruise);
@@ -510,8 +581,6 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_float,
         cb_nav_limit,
     );
-
-    // --- Lights & state ---
     reg_channel(p, "truck.lblinker", SCS_VALUE_TYPE_bool, cb_blinker_l);
     reg_channel(p, "truck.rblinker", SCS_VALUE_TYPE_bool, cb_blinker_r);
     reg_channel(p, "truck.hazard.warning", SCS_VALUE_TYPE_bool, cb_hazard);
@@ -521,8 +590,6 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_bool,
         cb_parking_brake,
     );
-
-    // --- Navigation ETA ---
     reg_channel(
         p,
         "truck.navigation.distance",
@@ -535,23 +602,35 @@ pub unsafe extern "system" fn scs_telemetry_init(
         SCS_VALUE_TYPE_float,
         cb_nav_time,
     );
+    diag_log::event_force("registering callbacks done");
 
-    nav_resolve::diagnose_once();
+    diag_log::event_force("creating route blackboard start");
+    let route_bb_ok = nav_route::init_shm();
+    if route_bb_ok {
+        nav_route::publish_initial_empty();
+        diag_log::event_force("creating route blackboard done (empty route published)");
+    } else {
+        diag_log::event_force(
+            "creating route blackboard error (non-fatal — telemetry continues)",
+        );
+        debug_log("WARN: RouteBlackboard SHM init failed");
+    }
 
-    // Create the separate nav-route SHM (Phase R3 — ETS2 route → TruckPilot).
-    let _ = nav_route::init_shm();
+    resolver_worker::start_worker();
+    safe_mem::log_route_resolver_mode_at_init();
 
+    let result = ffi_guard::telemetry_init_should_succeed(true, route_bb_ok);
     debug_log("scs_telemetry_init done — all channels registered");
-    SCS_RESULT_OK
+    if result == SCS_RESULT_OK {
+        diag_log::event_force("scs_telemetry_init returning success");
+    } else {
+        diag_log::event_force(&format!("scs_telemetry_init returning failure ({result})"));
+    }
+    result
 }
 
-/// Called by ETS2 when the DLL is unloaded. Releases all resources.
-///
-/// # Safety
-/// Called by ETS2 during shutdown. Must not be called from Rust.
-#[no_mangle]
-pub unsafe extern "system" fn scs_telemetry_shutdown() {
-    debug_log("scs_telemetry_shutdown");
+unsafe fn scs_telemetry_shutdown_inner() {
+    resolver_worker::stop_worker();
     nav_route::cleanup_shm();
     if !SHM_PTR.is_null() {
         UnmapViewOfFile(SHM_PTR as LPVOID);
@@ -567,21 +646,121 @@ pub unsafe extern "system" fn scs_telemetry_shutdown() {
     }
 }
 
+/// Called by ETS2 when the DLL is unloaded. Releases all resources.
+///
+/// # Safety
+/// Called by ETS2 during shutdown. Must not be called from Rust.
+#[no_mangle]
+pub unsafe extern "system" fn scs_telemetry_shutdown() {
+    ffi_guard::guard_void("scs_telemetry_shutdown", || unsafe {
+        diag_log::event_force("scs_telemetry_shutdown called");
+        debug_log("scs_telemetry_shutdown");
+        scs_telemetry_shutdown_inner();
+    });
+}
+
 // ---------------------------------------------------------------------------
-// Frame-end callback — atomically flushes all globals to SHM
+// Frame callbacks — flush SHM + route tick
 // ---------------------------------------------------------------------------
 
-unsafe extern "system" fn frame_end_cb(
-    _event: scs_u32_t,
+static mut FRAME_CB_COUNT: u32 = 0;
+
+fn qpc_timestamp_us() -> u64 {
+    type LARGE_INTEGER = i64;
+    extern "system" {
+        fn QueryPerformanceCounter(lp: *mut LARGE_INTEGER) -> i32;
+        fn QueryPerformanceFrequency(lp: *mut LARGE_INTEGER) -> i32;
+    }
+    unsafe {
+        static mut FREQ: u64 = 0;
+        if FREQ == 0 {
+            let mut f: LARGE_INTEGER = 0;
+            if QueryPerformanceFrequency(&mut f) == 0 || f <= 0 {
+                return 0;
+            }
+            FREQ = f as u64;
+        }
+        let mut c: LARGE_INTEGER = 0;
+        if QueryPerformanceCounter(&mut c) == 0 {
+            return 0;
+        }
+        ((c as u64).saturating_mul(1_000_000) / FREQ) as u64
+    }
+}
+
+static mut TELEMETRY_EVENT_LOG_COUNT: u32 = 0;
+static mut TELEMETRY_EVENT_SEEN: [bool; 16] = [false; 16];
+
+unsafe fn log_telemetry_event_probe(event: scs_u32_t, context: &str) {
+    let idx = (event as usize).min(15);
+    if !TELEMETRY_EVENT_SEEN[idx] {
+        if TELEMETRY_EVENT_LOG_COUNT < 10 {
+            TELEMETRY_EVENT_LOG_COUNT = TELEMETRY_EVENT_LOG_COUNT.saturating_add(1);
+            diag_log::event_force(&format!(
+                "event callback context={context} raw_id={event} mapped_name={}",
+                route_status::telemetry_event_name(event)
+            ));
+        }
+        TELEMETRY_EVENT_SEEN[idx] = true;
+    } else if event > 6 && TELEMETRY_EVENT_LOG_COUNT < 10 {
+        TELEMETRY_EVENT_LOG_COUNT = TELEMETRY_EVENT_LOG_COUNT.saturating_add(1);
+        diag_log::event_force(&format!(
+            "event callback context={context} raw_id={event} mapped_name=unknown"
+        ));
+    }
+}
+
+unsafe extern "system" fn telemetry_world_cb(
+    event: scs_u32_t,
     _info: *const c_void,
     _ctx: scs_context_t,
 ) {
+    ffi_guard::catch_callback("telemetry_world_cb", || {
+        log_telemetry_event_probe(event, "world");
+        let ts = qpc_timestamp_us();
+        nav_route::on_world_event(event, ts);
+    });
+}
+
+unsafe extern "system" fn telemetry_frame_cb(
+    event: scs_u32_t,
+    info: *const c_void,
+    ctx: scs_context_t,
+) {
+    ffi_guard::catch_callback("telemetry_frame_cb", || unsafe {
+        telemetry_frame_cb_inner(event, info, ctx);
+    });
+}
+
+unsafe fn telemetry_frame_cb_inner(
+    event: scs_u32_t,
+    info: *const c_void,
+    _ctx: scs_context_t,
+) {
+    log_telemetry_event_probe(event, "frame");
+
+    if event == SCS_TELEMETRY_EVENT_frame_start && !info.is_null() {
+        let frame = &*(info as *const ScsTelemetryFrameStart);
+        G_TIMESTAMP_US = frame.paused_simulation_time;
+    }
+
+    FRAME_CB_COUNT = FRAME_CB_COUNT.saturating_add(1);
+    let ts_qpc = qpc_timestamp_us();
+    nav_route::on_frame_event(event, FRAME_CB_COUNT, ts_qpc);
+
     if SHM_PTR.is_null() {
+        dispatch_route_tick(event, ts_qpc);
         return;
     }
 
     let seq = SEQUENCE.wrapping_add(1);
     SEQUENCE = seq;
+
+    let ts = if G_TIMESTAMP_US != 0 {
+        G_TIMESTAMP_US
+    } else {
+        ts_qpc
+    };
 
     let layout = ShmLayout {
         magic: SHM_MAGIC,
@@ -604,7 +783,7 @@ unsafe extern "system" fn frame_end_cb(
         local_velocity: [G_VEL_X, G_VEL_Y, G_VEL_Z],
         local_acceleration: [G_ACCEL_X, G_ACCEL_Y, G_ACCEL_Z],
         effective_throttle: G_THROTTLE,
-        distance_to_lead_m: -1.0, // not available via SCS SDK
+        distance_to_lead_m: -1.0,
         effective_brake: G_BRAKE,
         effective_clutch: G_CLUTCH,
         input_steering: G_IN_STEER,
@@ -619,20 +798,37 @@ unsafe extern "system" fn frame_end_cb(
         parking_brake: G_PARKING_BRAKE,
         paused: G_PAUSED,
         _reserved0: [0; 3],
-        timestamp_us: G_TIMESTAMP_US,
+        timestamp_us: ts,
         nav_distance_m: G_NAV_DISTANCE,
         nav_time_s: G_NAV_TIME,
     };
 
-    // Single atomic write — readers use sequence number to detect torn reads.
     ptr::copy_nonoverlapping(&layout, SHM_PTR, 1);
 
     if READY_EVENT != NULL {
         SetEvent(READY_EVENT);
     }
 
-    // Route UID walk — after SHM/event (throttled, not latency-critical).
-    nav_route::tick(G_TIMESTAMP_US);
+    // GPS diagnostics run from the throttled route tick after warmup (crash-safe).
+    // Do not scan game memory from the first frame callback during profile load.
+
+    dispatch_route_tick(event, ts_qpc);
+}
+
+fn dispatch_route_tick(event: scs_u32_t, ts_qpc: u64) {
+    use crate::route_status::RouteTickSource;
+
+    let source = if event == SCS_TELEMETRY_EVENT_frame_end {
+        RouteTickSource::FrameEnd
+    } else if event == SCS_TELEMETRY_EVENT_frame_start
+        && nav_route::should_tick_on_frame_start(ts_qpc)
+    {
+        RouteTickSource::FrameStartFallback
+    } else {
+        return;
+    };
+    // O(1): schedule background worker — never run resolver synchronously here.
+    resolver_worker::notify_frame_tick(ts_qpc, source);
 }
 
 // ---------------------------------------------------------------------------
@@ -647,9 +843,11 @@ macro_rules! float_cb {
             value: *const ScsValue,
             _: scs_context_t,
         ) {
-            if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
-                $global = (*value).value.value_float;
-            }
+            ffi_guard::catch_callback(stringify!($name), || unsafe {
+                if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
+                    $global = (*value).value.value_float;
+                }
+            });
         }
     };
 }
@@ -662,9 +860,11 @@ macro_rules! float_cb_f64 {
             value: *const ScsValue,
             _: scs_context_t,
         ) {
-            if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
-                $global = (*value).value.value_float as f64;
-            }
+            ffi_guard::catch_callback(stringify!($name), || unsafe {
+                if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
+                    $global = (*value).value.value_float as f64;
+                }
+            });
         }
     };
 }
@@ -677,9 +877,11 @@ macro_rules! bool_cb {
             value: *const ScsValue,
             _: scs_context_t,
         ) {
-            if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_bool {
-                $global = (*value).value.value_bool;
-            }
+            ffi_guard::catch_callback(stringify!($name), || unsafe {
+                if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_bool {
+                    $global = (*value).value.value_bool;
+                }
+            });
         }
     };
 }
@@ -690,17 +892,18 @@ unsafe extern "system" fn cb_placement(
     value: *const ScsValue,
     _: scs_context_t,
 ) {
-    if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_dplacement {
-        return;
-    }
-    let dp = (*value).value.value_dplacement;
-    G_X = dp.x;
-    G_Y = dp.y;
-    G_Z = dp.z;
-    // SDK euler block is 3×f32 — widen to f64 for SHM storage.
-    G_HEADING = dp.heading as f64;
-    G_PITCH = dp.pitch as f64;
-    G_ROLL = dp.roll as f64;
+    ffi_guard::catch_callback("cb_placement", || unsafe {
+        if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_dplacement {
+            return;
+        }
+        let dp = (*value).value.value_dplacement;
+        G_X = dp.x;
+        G_Y = dp.y;
+        G_Z = dp.z;
+        G_HEADING = dp.heading as f64;
+        G_PITCH = dp.pitch as f64;
+        G_ROLL = dp.roll as f64;
+    });
 }
 
 unsafe extern "system" fn cb_local_velocity(
@@ -709,13 +912,15 @@ unsafe extern "system" fn cb_local_velocity(
     value: *const ScsValue,
     _: scs_context_t,
 ) {
-    if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_fvector {
-        return;
-    }
-    let v = (*value).value.value_fvector;
-    G_VEL_X = v.x;
-    G_VEL_Y = v.y;
-    G_VEL_Z = v.z;
+    ffi_guard::catch_callback("cb_local_velocity", || unsafe {
+        if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_fvector {
+            return;
+        }
+        let v = (*value).value.value_fvector;
+        G_VEL_X = v.x;
+        G_VEL_Y = v.y;
+        G_VEL_Z = v.z;
+    });
 }
 
 unsafe extern "system" fn cb_local_accel(
@@ -724,13 +929,15 @@ unsafe extern "system" fn cb_local_accel(
     value: *const ScsValue,
     _: scs_context_t,
 ) {
-    if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_fvector {
-        return;
-    }
-    let v = (*value).value.value_fvector;
-    G_ACCEL_X = v.x;
-    G_ACCEL_Y = v.y;
-    G_ACCEL_Z = v.z;
+    ffi_guard::catch_callback("cb_local_accel", || unsafe {
+        if value.is_null() || (*value).value_type != SCS_VALUE_TYPE_fvector {
+            return;
+        }
+        let v = (*value).value.value_fvector;
+        G_ACCEL_X = v.x;
+        G_ACCEL_Y = v.y;
+        G_ACCEL_Z = v.z;
+    });
 }
 
 unsafe extern "system" fn cb_nav_limit(
@@ -739,11 +946,13 @@ unsafe extern "system" fn cb_nav_limit(
     value: *const ScsValue,
     _: scs_context_t,
 ) {
-    if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
-        let kmh = (*value).value.value_float as f64 * 3.6;
-        G_NAV_LIMIT = kmh;
-        G_NAV_LIMIT_VALID = if kmh > 0.0 { 1 } else { 0 };
-    }
+    ffi_guard::catch_callback("cb_nav_limit", || unsafe {
+        if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
+            let kmh = (*value).value.value_float as f64 * 3.6;
+            G_NAV_LIMIT = kmh;
+            G_NAV_LIMIT_VALID = if kmh > 0.0 { 1 } else { 0 };
+        }
+    });
 }
 
 unsafe extern "system" fn cb_engine_gear(
@@ -752,9 +961,11 @@ unsafe extern "system" fn cb_engine_gear(
     value: *const ScsValue,
     _: scs_context_t,
 ) {
-    if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
-        G_GEAR = (*value).value.value_float as i32;
-    }
+    ffi_guard::catch_callback("cb_engine_gear", || unsafe {
+        if !value.is_null() && (*value).value_type == SCS_VALUE_TYPE_float {
+            G_GEAR = (*value).value.value_float as i32;
+        }
+    });
 }
 
 unsafe extern "system" fn cb_displayed_gear(
@@ -925,13 +1136,30 @@ pub unsafe extern "system" fn scs_input_init(
     version: scs_u32_t,
     params: *const ScsInputInitParamsV100,
 ) -> scs_result_t {
+    ffi_guard::guard_result("scs_input_init", || unsafe {
+        scs_input_init_inner(version, params)
+    })
+}
+
+unsafe fn scs_input_init_inner(
+    version: scs_u32_t,
+    params: *const ScsInputInitParamsV100,
+) -> scs_result_t {
+    diag_log::boot("scs_input_init entered");
     if params.is_null() {
+        diag_log::event_force("scs_input_init returning failure (-2 null params)");
         return -2;
     }
     if version < SCS_INPUT_VERSION_1_00 {
+        diag_log::event_force(&format!(
+            "scs_input_init returning failure (-1 unsupported sdk_version=0x{version:08X})"
+        ));
         debug_log("scs_input_init: unsupported SDK version");
         return -1;
     }
+
+    diag_log::init();
+    diag_log::event_force(&format!("scs_input_init sdk_version=0x{version:08X}"));
 
     let name = wide_str(CTRL_SHM_NAME);
     let shm_size = mem::size_of::<ShmControlLayout>();
@@ -944,12 +1172,14 @@ pub unsafe extern "system" fn scs_input_init(
         name.as_ptr(),
     );
     if CTRL_SHM_HANDLE == NULL {
+        diag_log::event_force("scs_input_init control shm error (CreateFileMappingW failed)");
         debug_log("scs_input_init: CreateFileMappingW failed");
         return -7;
     }
     CTRL_SHM_PTR =
         MapViewOfFile(CTRL_SHM_HANDLE, FILE_MAP_WRITE, 0, 0, shm_size) as *mut ShmControlLayout;
     if CTRL_SHM_PTR.is_null() {
+        diag_log::event_force("scs_input_init control shm error (MapViewOfFile failed)");
         debug_log("scs_input_init: MapViewOfFile failed");
         CloseHandle(CTRL_SHM_HANDLE);
         CTRL_SHM_HANDLE = NULL;
@@ -964,6 +1194,7 @@ pub unsafe extern "system" fn scs_input_init(
     (*CTRL_SHM_PTR).throttle = 0.0;
     (*CTRL_SHM_PTR).brake = 0.0;
     (*CTRL_SHM_PTR).clutch = 0.0;
+    diag_log::event_force("scs_input_init control shm done");
 
     let inputs: [ScsInputDeviceInput; 4] = [
         ScsInputDeviceInput {
@@ -1003,19 +1234,22 @@ pub unsafe extern "system" fn scs_input_init(
         input_event_callback: input_event_cb,
     };
 
-    let _ = ((*params).register_device)(&device);
+    diag_log::event_force("scs_input_init register_device start");
+    let reg = ((*params).register_device)(&device);
+    if reg != SCS_RESULT_OK {
+        diag_log::event_force(&format!(
+            "scs_input_init register_device error ({reg}) — returning failure"
+        ));
+        return reg;
+    }
+    diag_log::event_force("scs_input_init register_device done");
 
     debug_log("scs_input_init done — TruckPilot semantical controller registered");
+    diag_log::event_force("scs_input_init returning success");
     SCS_RESULT_OK
 }
 
-/// Called by ETS2 on unload.
-///
-/// # Safety
-/// Called by ETS2 during shutdown.
-#[no_mangle]
-pub unsafe extern "system" fn scs_input_shutdown() {
-    debug_log("scs_input_shutdown");
+unsafe fn scs_input_shutdown_inner() {
     if !CTRL_SHM_PTR.is_null() {
         UnmapViewOfFile(CTRL_SHM_PTR as LPVOID);
         CTRL_SHM_PTR = ptr::null_mut();
@@ -1024,6 +1258,19 @@ pub unsafe extern "system" fn scs_input_shutdown() {
         CloseHandle(CTRL_SHM_HANDLE);
         CTRL_SHM_HANDLE = NULL;
     }
+}
+
+/// Called by ETS2 on unload.
+///
+/// # Safety
+/// Called by ETS2 during shutdown.
+#[no_mangle]
+pub unsafe extern "system" fn scs_input_shutdown() {
+    ffi_guard::guard_void("scs_input_shutdown", || unsafe {
+        diag_log::event_force("scs_input_shutdown called");
+        debug_log("scs_input_shutdown");
+        scs_input_shutdown_inner();
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,6 +1285,16 @@ pub unsafe extern "system" fn scs_input_shutdown() {
 /// Diagnostic: logs frame header + per-event info via OutputDebugStringA on frame 1
 /// and every 100 frames. View in Sysinternals DebugView (filter "[TruckPilot]").
 unsafe extern "system" fn input_event_cb(
+    event: *mut ScsInputEvent,
+    flags: scs_u32_t,
+    _ctx: scs_context_t,
+) -> scs_result_t {
+    ffi_guard::catch_callback_result("input_event_cb", SCS_RESULT_NOT_FOUND, || unsafe {
+        input_event_cb_inner(event, flags, _ctx)
+    })
+}
+
+unsafe fn input_event_cb_inner(
     event: *mut ScsInputEvent,
     flags: scs_u32_t,
     _ctx: scs_context_t,

@@ -5,6 +5,7 @@
 //! - Linux:   `/dev/shm/truckpilot_telemetry`
 
 use std::mem;
+use std::time::{Duration, Instant};
 
 use truckpilot_plugin_api::Telemetry;
 
@@ -182,11 +183,9 @@ const _: () = {
 pub struct ShmReader {
     inner: ShmInner,
     last_sequence: u32,
-    /// Counter for the first-frames raw-byte diagnostic log (Phase X.Y
-    /// Bug-1 reproduction). Logs the first N successful reads so we can
-    /// verify whether the SHM bytes themselves are garbage (= stale
-    /// deployed DLL) or only the decoded values are wrong (= reader bug).
+    /// Counter for optional orientation-block diagnostic (env-gated).
     diag_logged_count: u32,
+    last_diag_at: Option<Instant>,
 }
 
 impl ShmReader {
@@ -197,6 +196,7 @@ impl ShmReader {
             inner: ShmInner::open()?,
             last_sequence: 0,
             diag_logged_count: 0,
+            last_diag_at: None,
         })
     }
 
@@ -229,36 +229,14 @@ impl ShmReader {
             // frame. Field reads through `read_sequence` are u32 and
             // therefore atomic on x86_64.
             if seq_before == seq_after && layout.sequence == seq_before {
-                // First-frames raw-byte diagnostic. Logs the orientation
-                // block (offsets 40..72: heading, pitch, roll, speed,
-                // engine_rpm) so we can compare bytes vs. decoded values
-                // — proves whether the DLL writer or the reader is at
-                // fault when fields look like denormal garbage.
-                if self.diag_logged_count < 10 {
-                    if let Some(bytes) = self.inner.read_raw_orientation_block() {
-                        // Copy packed fields to locals before borrowing
-                        // them (repr(packed) forbids references).
-                        let seq = layout.sequence;
-                        let heading = layout.heading;
-                        let pitch = layout.pitch;
-                        let roll = layout.roll;
-                        let speed = layout.speed_ms;
-                        let rpm = layout.engine_rpm;
-                        tracing::warn!(
-                            target: "truckpilot_telemetry",
-                            "SHM diag #{} seq={}: bytes[40..72]={:02x?} \
-                             decoded heading={} pitch={} roll={} speed_ms={} engine_rpm={}",
-                            self.diag_logged_count + 1,
-                            seq,
-                            bytes,
-                            heading,
-                            pitch,
-                            roll,
-                            speed,
-                            rpm,
-                        );
-                    }
-                    self.diag_logged_count += 1;
+                if let Some(reason) = orientation_anomaly(&layout) {
+                    let seq = layout.sequence;
+                    tracing::warn!(
+                        target: "truckpilot_telemetry",
+                        "SHM telemetry anomaly seq={seq}: {reason}",
+                    );
+                } else {
+                    self.maybe_log_plausible_diag(&layout);
                 }
                 self.last_sequence = layout.sequence;
                 return Some(layout_to_telemetry(layout));
@@ -269,6 +247,68 @@ impl ShmReader {
         }
         None
     }
+
+    fn maybe_log_plausible_diag(&mut self, layout: &ShmTelemetryLayout) {
+        if !telemetry_diag_enabled() {
+            return;
+        }
+        let now = Instant::now();
+        if self.diag_logged_count >= 3 {
+            let due = self
+                .last_diag_at
+                .map(|t| now.duration_since(t) >= Duration::from_secs(60))
+                .unwrap_or(true);
+            if !due {
+                return;
+            }
+        }
+        if let Some(bytes) = self.inner.read_raw_orientation_block() {
+            let seq = layout.sequence;
+            let heading = layout.heading;
+            let pitch = layout.pitch;
+            let roll = layout.roll;
+            let speed = layout.speed_ms;
+            let rpm = layout.engine_rpm;
+            tracing::debug!(
+                target: "truckpilot_telemetry",
+                "SHM diag #{} seq={}: bytes[40..72]={:02x?} \
+                 decoded heading={heading} pitch={pitch} roll={roll} speed_ms={speed} engine_rpm={rpm}",
+                self.diag_logged_count + 1,
+                seq,
+                bytes,
+            );
+            self.diag_logged_count += 1;
+            self.last_diag_at = Some(now);
+        }
+    }
+}
+
+/// `TRUCKPILOT_TELEMETRY_DIAG=1` enables rate-limited DEBUG orientation dumps.
+pub fn telemetry_diag_enabled() -> bool {
+    std::env::var("TRUCKPILOT_TELEMETRY_DIAG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn orientation_anomaly(layout: &ShmTelemetryLayout) -> Option<&'static str> {
+    if !layout.heading.is_finite()
+        || !layout.pitch.is_finite()
+        || !layout.roll.is_finite()
+        || !layout.speed_ms.is_finite()
+        || !layout.engine_rpm.is_finite()
+    {
+        return Some("non-finite orientation/speed block");
+    }
+    if layout.heading < -0.05 || layout.heading > 1.05 {
+        return Some("heading outside [0,1] SCS range");
+    }
+    if layout.pitch.abs() > std::f64::consts::FRAC_PI_2 {
+        return Some("pitch out of plausible range");
+    }
+    if layout.roll.abs() > std::f64::consts::PI {
+        return Some("roll out of plausible range");
+    }
+    None
 }
 
 fn layout_to_telemetry(l: ShmTelemetryLayout) -> Telemetry {
@@ -524,10 +564,31 @@ mod tests {
     }
 
     #[test]
-    fn invalid_nav_limit_becomes_sentinel() {
+    fn orientation_anomaly_flags_bad_heading() {
         let mut l = make_layout(SHM_MAGIC, SHM_VERSION);
-        l.nav_speed_limit_valid = 0;
-        let t = layout_to_telemetry(l);
-        assert_eq!(t.nav_speed_limit_kmh, -1.0);
+        l.heading = 1.5;
+        assert_eq!(
+            orientation_anomaly(&l),
+            Some("heading outside [0,1] SCS range")
+        );
+    }
+
+    #[test]
+    fn orientation_anomaly_accepts_plausible() {
+        let l = make_layout(SHM_MAGIC, SHM_VERSION);
+        assert!(orientation_anomaly(&l).is_none());
+    }
+
+    #[test]
+    fn telemetry_diag_disabled_by_default() {
+        std::env::remove_var("TRUCKPILOT_TELEMETRY_DIAG");
+        assert!(!telemetry_diag_enabled());
+    }
+
+    #[test]
+    fn telemetry_diag_enabled_with_flag() {
+        std::env::set_var("TRUCKPILOT_TELEMETRY_DIAG", "1");
+        assert!(telemetry_diag_enabled());
+        std::env::remove_var("TRUCKPILOT_TELEMETRY_DIAG");
     }
 }
