@@ -12,6 +12,7 @@
 
 #![warn(missing_docs)]
 
+pub mod ets2_bin_analyze;
 pub mod http;
 pub mod memory;
 pub mod nav_route;

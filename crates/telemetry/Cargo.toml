@@ -34,6 +34,10 @@ windows = { version = "0.52", features = [
 libc = "0.2"
 
 [[bin]]
+name = "ets2-bin-analyze"
+path = "src/bin/ets2_bin_analyze.rs"
+
+[[bin]]
 name = "telemetry-probe"
 path = "src/bin/telemetry_probe.rs"
 
