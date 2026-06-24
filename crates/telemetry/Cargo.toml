@@ -54,6 +54,10 @@ name = "route-shm-dump"
 path = "src/bin/route_shm_dump.rs"
 
 [[bin]]
+name = "truckpilot-status"
+path = "src/bin/truckpilot_status.rs"
+
+[[bin]]
 name = "ets2-dll-check"
 path = "src/bin/ets2_dll_check.rs"
 
