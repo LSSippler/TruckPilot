@@ -11,15 +11,18 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::mem;
 use std::path::Path;
 use std::time::Duration;
+#[cfg(windows)]
+use std::mem;
 
 use truckpilot_telemetry::nav_route::{
-    count_waypoints_with_flag, route_uid_hash, RouteBlackboardLayout, RouteWaypoint,
-    MAX_ROUTE_WAYPOINTS, ROUTE_MAGIC, ROUTE_SHM_NAME, ROUTE_VERSION, ROUTE_WP_FLAG_HAS_DISTANCE,
+    count_waypoints_with_flag, route_uid_hash, RouteWaypoint,
+    MAX_ROUTE_WAYPOINTS, ROUTE_SHM_NAME, ROUTE_WP_FLAG_HAS_DISTANCE,
     ROUTE_WP_FLAG_HAS_POSITION, ROUTE_WP_FLAG_HAS_TIME,
 };
+#[cfg(windows)]
+use truckpilot_telemetry::nav_route::{RouteBlackboardLayout, ROUTE_MAGIC, ROUTE_VERSION};
 
 fn parse_usize_arg(flag: &str, default: usize) -> usize {
     let args: Vec<String> = std::env::args().collect();
@@ -363,6 +366,7 @@ mod writer {
 
 #[cfg(not(windows))]
 mod writer {
+    use super::RouteWaypoint;
     pub struct RouteWriter;
 
     impl RouteWriter {
