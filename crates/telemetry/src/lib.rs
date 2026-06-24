@@ -12,14 +12,18 @@
 
 #![warn(missing_docs)]
 
+#[cfg(windows)]
 pub mod dll_perf;
 pub mod ets2_bin_analyze;
 pub mod http;
+pub mod lane_debug;
 pub mod memory;
 pub mod nav_route;
+pub mod overlay_snapshot;
 pub mod route_distance_log;
 pub mod route_log_analyze;
 pub mod shm;
+pub mod status_report;
 
 #[cfg(test)]
 pub mod mock;
