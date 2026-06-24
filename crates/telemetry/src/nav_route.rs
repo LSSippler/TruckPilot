@@ -150,6 +150,10 @@ pub const RESOLVE_ROUTE_RESOLVER_CACHE_HIT: u32 = 44;
 pub const RESOLVE_ROUTE_RESOLVER_SCAN_LIMITED: u32 = 45;
 /// Default crash-safe mode — resolver fully disabled (no memory walks).
 pub const RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE: u32 = 46;
+/// GPS offset one-shot probe completed (`gps_offset_probe` mode).
+pub const RESOLVE_GPS_OFFSET_PROBE_DONE: u32 = 47;
+/// `game_ctrl` resolved but `game_ctrl+0x40F8` unreadable (`gps_offset_probe` mode).
+pub const RESOLVE_GPS_OFFSET_PROBE_READ_FAILED: u32 = 48;
 
 /// No publish yet.
 pub const PUBLISH_NONE: u32 = 0;
@@ -226,6 +230,8 @@ pub fn route_resolve_status_name(code: u32) -> &'static str {
         RESOLVE_ROUTE_RESOLVER_CACHE_HIT => "route_resolver_cache_hit",
         RESOLVE_ROUTE_RESOLVER_SCAN_LIMITED => "route_resolver_scan_limited",
         RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE => "route_resolver_disabled_safe_mode",
+        RESOLVE_GPS_OFFSET_PROBE_DONE => "gps_offset_probe_done",
+        RESOLVE_GPS_OFFSET_PROBE_READ_FAILED => "gps_offset_probe_read_failed",
         _ => "unknown",
     }
 }

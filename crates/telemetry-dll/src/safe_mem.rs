@@ -169,11 +169,13 @@ pub const GPS_TABLE_SLOT_COUNT: u32 = (GPS_TABLE_SAFE_END / 8) as u32 + 1;
 
 /// Route resolver operating mode (file/env gated, cached once per process).
 ///
-/// Priority (highest wins): `full` > `static` > `route_candidate_table` > `game_ctrl_table` > `gps_table` > off.
+/// Priority (highest wins): `full` > `static` > `gps_offset_probe` > `route_candidate_table` > `game_ctrl_table` > `gps_table` > off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteResolverMode {
     /// Default — resolver disabled; no memory reads or scans.
     SafeDefault,
+    /// One-shot: `safe_read_u64(game_ctrl + 0x40F8)` only — no chain/table walk.
+    GpsOffsetProbeOnly,
     /// Diagnostic: log `gps+0x00..0x100` via `safe_read_u64` only (no follow derefs).
     GpsTableOnly,
     /// Diagnostic: log `game_ctrl+0x0000..0x5000` via `safe_read_u64` only.
@@ -190,6 +192,7 @@ impl RouteResolverMode {
     pub const fn sidecar_label(self) -> &'static str {
         match self {
             Self::SafeDefault => "off",
+            Self::GpsOffsetProbeOnly => "gps_offset_probe",
             Self::GpsTableOnly => "gps_table",
             Self::GameCtrlTableOnly => "game_ctrl_table",
             Self::RouteCandidateTableOnly => "route_candidate_table",
@@ -211,7 +214,10 @@ impl RouteResolverMode {
     pub const fn is_table_diagnostic(self) -> bool {
         matches!(
             self,
-            Self::GpsTableOnly | Self::GameCtrlTableOnly | Self::RouteCandidateTableOnly
+            Self::GpsOffsetProbeOnly
+                | Self::GpsTableOnly
+                | Self::GameCtrlTableOnly
+                | Self::RouteCandidateTableOnly
         )
     }
 }
@@ -261,9 +267,13 @@ static RESOLVER_MODE: OnceLock<RouteResolverMode> = OnceLock::new();
 static ENABLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Enable-file names in priority order (highest first).
-pub const RESOLVER_ENABLE_FILES: [(&'static str, RouteResolverMode); 5] = [
+pub const RESOLVER_ENABLE_FILES: [(&'static str, RouteResolverMode); 6] = [
     ("truckpilot_route_resolver.full", RouteResolverMode::FullDeep),
     ("truckpilot_route_resolver.static", RouteResolverMode::StaticChain),
+    (
+        "truckpilot_route_resolver.gps_offset_probe",
+        RouteResolverMode::GpsOffsetProbeOnly,
+    ),
     (
         "truckpilot_route_resolver.route_candidate_table",
         RouteResolverMode::RouteCandidateTableOnly,
@@ -292,6 +302,11 @@ pub fn bump_enable_file_generation() {
 }
 
 #[cfg(test)]
+pub fn reset_enable_file_generation_for_test() {
+    ENABLE_GENERATION.store(1, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
 std::thread_local! {
     static TEST_ENABLE_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
         const { std::cell::RefCell::new(None) };
@@ -310,7 +325,7 @@ fn test_enable_dir() -> Option<std::path::PathBuf> {
     TEST_ENABLE_DIR.with(|cell| cell.borrow().clone())
 }
 
-fn enable_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn enable_dir() -> Option<std::path::PathBuf> {
     #[cfg(test)]
     {
         if let Some(dir) = test_enable_dir() {
@@ -378,7 +393,51 @@ pub fn log_route_resolver_mode_at_init() {
         if sel.mode.is_off() {
             crate::resolver_metrics::set_resolver_parked(true);
         }
+        crate::route_dispatch::init_dispatch_wake_baseline();
     });
+}
+
+/// True when `truckpilot_minimal_telemetry.enable` exists in the plugin directory.
+pub fn minimal_telemetry_enabled() -> bool {
+    minimal_telemetry_file_exists()
+}
+
+fn minimal_telemetry_file_exists() -> bool {
+    enable_dir()
+        .map(|dir| dir.join("truckpilot_minimal_telemetry.enable").is_file())
+        .unwrap_or(false)
+}
+
+/// Log minimal telemetry mode once at DLL init (Sidecar).
+pub fn log_minimal_telemetry_at_init() {
+    use std::sync::Once;
+    static LOGGED: Once = Once::new();
+    LOGGED.call_once(|| {
+        if !minimal_telemetry_enabled() {
+            crate::frame_perf::set_minimal_telemetry_enabled(false);
+            return;
+        }
+        let sel = detect_resolver_mode_selection();
+        for line in crate::minimal_telemetry::format_minimal_init_log_lines(
+            !sel.mode.is_off(),
+            sel.source_file,
+        ) {
+            crate::diag_log::event_force(&line);
+        }
+        crate::resolver_metrics::set_resolver_parked(true);
+        crate::frame_perf::set_minimal_telemetry_enabled(true);
+    });
+}
+
+/// True when `truckpilot_input.disable` exists in the plugin directory.
+pub fn input_plugin_disabled() -> bool {
+    input_disable_file_exists()
+}
+
+fn input_disable_file_exists() -> bool {
+    enable_dir()
+        .map(|dir| dir.join("truckpilot_input.disable").is_file())
+        .unwrap_or(false)
 }
 
 fn env_deep_scan_enabled() -> bool {
@@ -452,11 +511,12 @@ fn full_scan_enabled() -> bool {
     file_full_scan_enabled() || env_full_scan_enabled()
 }
 
-/// Resolve effective mode from enable files (priority: full > static > route_candidate_table > game_ctrl_table > gps_table > off).
+/// Resolve effective mode from enable files (priority: full > static > gps_offset_probe > route_candidate_table > game_ctrl_table > gps_table > off).
 pub fn select_route_resolver_mode(
     gps_table_file: bool,
     game_ctrl_table_file: bool,
     route_candidate_table_file: bool,
+    gps_offset_probe_file: bool,
     static_file: bool,
     full_file: bool,
 ) -> RouteResolverMode {
@@ -464,6 +524,8 @@ pub fn select_route_resolver_mode(
         RouteResolverMode::FullDeep
     } else if static_file {
         RouteResolverMode::StaticChain
+    } else if gps_offset_probe_file {
+        RouteResolverMode::GpsOffsetProbeOnly
     } else if route_candidate_table_file {
         RouteResolverMode::RouteCandidateTableOnly
     } else if game_ctrl_table_file {
@@ -477,6 +539,14 @@ pub fn select_route_resolver_mode(
 
 /// Effective resolver mode for this process.
 pub fn route_resolver_mode() -> RouteResolverMode {
+    // Any active diag bisect level (other than normal) forces the resolver off
+    // and makes route enable files inert — diagnosis must never escalate work.
+    if crate::diag_level::resolver_forced_off() {
+        return RouteResolverMode::SafeDefault;
+    }
+    if minimal_telemetry_enabled() {
+        return RouteResolverMode::SafeDefault;
+    }
     #[cfg(test)]
     if let Some(ref dir) = test_enable_dir() {
         return detect_resolver_mode_selection_from_dir(dir).mode;
@@ -495,6 +565,7 @@ pub fn route_scan_policy() -> RouteScanPolicy {
         },
         RouteResolverMode::StaticChain => RouteScanPolicy::static_chain_only(),
         RouteResolverMode::SafeDefault
+        | RouteResolverMode::GpsOffsetProbeOnly
         | RouteResolverMode::GpsTableOnly
         | RouteResolverMode::GameCtrlTableOnly
         | RouteResolverMode::RouteCandidateTableOnly => RouteScanPolicy::safe_default(),
@@ -563,7 +634,7 @@ mod tests {
     #[test]
     fn resolver_mode_gps_table_file_wins_over_default() {
         assert_eq!(
-            select_route_resolver_mode(true, false, false, false, false),
+            select_route_resolver_mode(true, false, false, false, false, false),
             RouteResolverMode::GpsTableOnly
         );
     }
@@ -571,7 +642,7 @@ mod tests {
     #[test]
     fn resolver_mode_game_ctrl_table_beats_gps_table() {
         assert_eq!(
-            select_route_resolver_mode(true, true, false, false, false),
+            select_route_resolver_mode(true, true, false, false, false, false),
             RouteResolverMode::GameCtrlTableOnly
         );
     }
@@ -579,15 +650,31 @@ mod tests {
     #[test]
     fn resolver_mode_route_candidate_table_beats_game_ctrl_table() {
         assert_eq!(
-            select_route_resolver_mode(true, true, true, false, false),
+            select_route_resolver_mode(true, true, true, false, false, false),
             RouteResolverMode::RouteCandidateTableOnly
+        );
+    }
+
+    #[test]
+    fn resolver_mode_gps_offset_probe_beats_route_candidate_table() {
+        assert_eq!(
+            select_route_resolver_mode(true, true, true, true, false, false),
+            RouteResolverMode::GpsOffsetProbeOnly
+        );
+    }
+
+    #[test]
+    fn resolver_mode_static_beats_gps_offset_probe() {
+        assert_eq!(
+            select_route_resolver_mode(true, true, true, true, true, false),
+            RouteResolverMode::StaticChain
         );
     }
 
     #[test]
     fn resolver_mode_static_beats_route_candidate_table() {
         assert_eq!(
-            select_route_resolver_mode(true, true, true, true, false),
+            select_route_resolver_mode(true, true, true, false, true, false),
             RouteResolverMode::StaticChain
         );
     }
@@ -602,7 +689,7 @@ mod tests {
     #[test]
     fn no_enable_files_selects_off() {
         assert_eq!(
-            select_route_resolver_mode(false, false, false, false, false),
+            select_route_resolver_mode(false, false, false, false, false, false),
             RouteResolverMode::SafeDefault
         );
     }
@@ -610,7 +697,7 @@ mod tests {
     #[test]
     fn resolver_mode_full_beats_static_and_tables() {
         assert_eq!(
-            select_route_resolver_mode(true, true, true, true, true),
+            select_route_resolver_mode(true, true, true, true, true, true),
             RouteResolverMode::FullDeep
         );
     }
@@ -642,7 +729,7 @@ mod tests {
     #[test]
     fn resolver_mode_static_beats_gps_table() {
         assert_eq!(
-            select_route_resolver_mode(true, false, false, true, false),
+            select_route_resolver_mode(true, false, false, false, true, false),
             RouteResolverMode::StaticChain
         );
     }
@@ -650,9 +737,22 @@ mod tests {
     #[test]
     fn resolver_mode_full_beats_gps_table_and_static() {
         assert_eq!(
-            select_route_resolver_mode(true, false, false, true, true),
+            select_route_resolver_mode(true, false, false, false, true, true),
             RouteResolverMode::FullDeep
         );
+    }
+
+    #[test]
+    fn gps_offset_probe_mode_sidecar_label() {
+        assert_eq!(
+            RouteResolverMode::GpsOffsetProbeOnly.sidecar_label(),
+            "gps_offset_probe"
+        );
+    }
+
+    #[test]
+    fn gps_offset_probe_is_table_diagnostic() {
+        assert!(RouteResolverMode::GpsOffsetProbeOnly.is_table_diagnostic());
     }
 
     #[test]
@@ -661,5 +761,19 @@ mod tests {
             RouteResolverMode::GpsTableOnly.sidecar_label(),
             "gps_table"
         );
+    }
+
+    #[test]
+    fn minimal_and_input_disable_files_detected_together() {
+        let dir = std::env::temp_dir().join(format!("tp-minimal-input-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("truckpilot_minimal_telemetry.enable"), b"").expect("minimal");
+        std::fs::write(dir.join("truckpilot_input.disable"), b"").expect("input off");
+        set_test_enable_dir(Some(dir.clone()));
+        assert!(minimal_telemetry_enabled());
+        assert!(input_plugin_disabled());
+        set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

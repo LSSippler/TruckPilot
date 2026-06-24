@@ -23,5 +23,8 @@ description = "ETS2 native telemetry plugin DLL — writes live truck data to sh
 name = "truckpilot_telemetry"
 crate-type = ["cdylib"]
 
+[features]
+dangerous-route-scan = []
+
 # No external dependencies — pure Win32 FFI + std.
 [dependencies]

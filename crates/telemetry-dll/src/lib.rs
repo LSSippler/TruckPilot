@@ -24,7 +24,8 @@
 #![allow(
     non_camel_case_types,
     non_upper_case_globals,
-    clippy::upper_case_acronyms
+    clippy::upper_case_acronyms,
+    dead_code // optional resolver/diagnostic paths unused in default/off production mode
 )]
 
 use std::ffi::c_void;
@@ -35,8 +36,11 @@ use std::ptr;
 // Nav route memory resolution (Phase R1 — gps_manager AOB)
 // ---------------------------------------------------------------------------
 
+mod diag_level;
 mod diag_log;
+mod frame_perf;
 mod ffi_guard;
+mod minimal_telemetry;
 mod nav_resolve;
 mod nav_route;
 mod resolver_guard;
@@ -44,6 +48,7 @@ mod resolver_metrics;
 mod resolver_sched;
 mod resolver_worker;
 mod route_chain;
+mod route_dispatch;
 mod route_status;
 mod safe_mem;
 
@@ -52,6 +57,9 @@ mod production_safety_tests;
 
 #[cfg(test)]
 mod offline_stutter_tests;
+
+#[cfg(test)]
+mod diag_bisect_tests;
 
 #[cfg(test)]
 mod test_isolation;
@@ -450,6 +458,41 @@ unsafe fn scs_telemetry_init_inner(
     diag_log::event_force(&format!("sdk_version received: 0x{version:08X}"));
     diag_log::init();
 
+    // --- Diagnostic bisect level --------------------------------------------
+    // Cache the level for the per-frame hot path and log the full component map.
+    let diag_sel = diag_level::detect_level_selection();
+    let diag = diag_level::active();
+    let resolver_enable_present = !safe_mem::detect_resolver_mode_selection().mode.is_off();
+    let minimal_present = safe_mem::minimal_telemetry_enabled();
+    // Effective input state: sidecar log and perf SHM must agree, so both derive
+    // from the same value (false for any diag level, and for normal + input.disable).
+    let input_will_register = diag_level::effective_input_registered();
+    for line in diag_level::format_level_init_log_lines(
+        &diag_sel,
+        input_will_register,
+        resolver_enable_present,
+        minimal_present,
+    ) {
+        diag_log::event_force(&line);
+    }
+    diag_level::publish_config(diag, input_will_register);
+
+    if diag.is_normal() {
+        safe_mem::log_route_resolver_mode_at_init();
+        safe_mem::log_minimal_telemetry_at_init();
+    } else {
+        // Diag levels force resolver off and ignore minimal telemetry.
+        frame_perf::set_minimal_telemetry_enabled(false);
+        crate::resolver_metrics::set_resolver_parked(true);
+    }
+
+    // load_only: prove DLL load + scs_telemetry_init success, create nothing else.
+    if !diag.creates_shm_at_init() {
+        debug_log("scs_telemetry_init load_only — no shm/callbacks/worker");
+        diag_log::event_force("scs_telemetry_init returning success");
+        return SCS_RESULT_OK;
+    }
+
     let p = &*params;
 
     diag_log::event_force("creating telemetry shm start");
@@ -483,32 +526,88 @@ unsafe fn scs_telemetry_init_inner(
     (*SHM_PTR).magic = SHM_MAGIC;
     (*SHM_PTR).version = SHM_VERSION;
     (*SHM_PTR).sequence = 0;
+    diag_log::event_force("creating dll perf shm start");
+    match frame_perf::init_perf_shm() {
+        Ok(()) => diag_log::event_force("creating dll perf shm done (Local\\TruckPilotDllPerf)"),
+        Err(e) => diag_log::event_force(&format!("creating dll perf shm failed: {e}")),
+    }
+    // Publish once now so route-shm-dump --perf shows the diag level/config even
+    // for init_only (no frame callbacks) and callback_noop (no per-frame publish).
+    frame_perf::publish_live_snapshot(0, 0, 0);
     diag_log::event_force("creating telemetry shm done (Local\\TruckPilotTelemetry)");
 
     let ev_name = wide_str(SHM_EVENT_NAME);
     READY_EVENT = CreateEventW(ptr::null(), 1, 0, ev_name.as_ptr());
 
-    diag_log::event_force("registering callbacks start");
-    let fs_reg = (p.register_for_event)(
-        SCS_TELEMETRY_EVENT_frame_start,
-        telemetry_frame_cb,
-        ptr::null_mut(),
-    );
-    if fs_reg != SCS_RESULT_OK {
-        diag_log::event_force(&format!(
-            "registering callbacks error (frame_start event failed: {fs_reg})"
-        ));
+    if diag.registers_callbacks() {
+        diag_log::event_force("registering callbacks start");
+        // frame_start + frame_end drive the hot path for every callback level.
+        let fs_reg = (p.register_for_event)(
+            SCS_TELEMETRY_EVENT_frame_start,
+            telemetry_frame_cb,
+            ptr::null_mut(),
+        );
+        if fs_reg != SCS_RESULT_OK {
+            diag_log::event_force(&format!(
+                "registering callbacks error (frame_start event failed: {fs_reg})"
+            ));
+        }
+        let fe_reg = (p.register_for_event)(
+            SCS_TELEMETRY_EVENT_frame_end,
+            telemetry_frame_cb,
+            ptr::null_mut(),
+        );
+        if fe_reg != SCS_RESULT_OK {
+            diag_log::event_force(&format!(
+                "registering callbacks error (frame_end event failed: {fe_reg})"
+            ));
+        }
+        if diag.is_normal() {
+            // World events + full channel set only in the normal path. Diag
+            // callback levels deliberately register only the 2 frame events so
+            // the bisect measures the frame callback in isolation.
+            register_world_and_channels(p);
+        } else {
+            diag_log::event_force(
+                "registering callbacks: frame_start/frame_end only (diagnostic level)",
+            );
+        }
+        diag_log::event_force("registering callbacks done");
+    } else {
+        diag_log::event_force("callbacks disabled by diagnostic level");
     }
-    let fe_reg = (p.register_for_event)(
-        SCS_TELEMETRY_EVENT_frame_end,
-        telemetry_frame_cb,
-        ptr::null_mut(),
-    );
-    if fe_reg != SCS_RESULT_OK {
-        diag_log::event_force(&format!(
-            "registering callbacks error (frame_end event failed: {fe_reg})"
-        ));
+
+    diag_log::event_force("creating route blackboard start");
+    let route_bb_ok = nav_route::init_shm();
+    if route_bb_ok {
+        nav_route::publish_initial_empty();
+        diag_log::event_force("creating route blackboard done (empty route published)");
+    } else {
+        diag_log::event_force(
+            "creating route blackboard error (non-fatal — telemetry continues)",
+        );
+        debug_log("WARN: RouteBlackboard SHM init failed");
     }
+
+    if diag.worker_enabled() && !safe_mem::minimal_telemetry_enabled() {
+        resolver_worker::start_worker();
+    } else if !diag.worker_enabled() {
+        diag_log::event_force("worker disabled by diagnostic level");
+    }
+
+    let result = ffi_guard::telemetry_init_should_succeed(true, route_bb_ok);
+    debug_log("scs_telemetry_init done — all channels registered");
+    if result == SCS_RESULT_OK {
+        diag_log::event_force("scs_telemetry_init returning success");
+    } else {
+        diag_log::event_force(&format!("scs_telemetry_init returning failure ({result})"));
+    }
+    result
+}
+
+/// Register the SCS world-event callbacks and full telemetry channel set.
+/// Only the normal path calls this; diag levels register frame events only.
+unsafe fn register_world_and_channels(p: &ScsTelemetryInitParamsV100) {
     let _ = (p.register_for_event)(
         SCS_TELEMETRY_EVENT_paused,
         telemetry_world_cb,
@@ -609,36 +708,12 @@ unsafe fn scs_telemetry_init_inner(
         SCS_VALUE_TYPE_float,
         cb_nav_time,
     );
-    diag_log::event_force("registering callbacks done");
-
-    diag_log::event_force("creating route blackboard start");
-    let route_bb_ok = nav_route::init_shm();
-    if route_bb_ok {
-        nav_route::publish_initial_empty();
-        diag_log::event_force("creating route blackboard done (empty route published)");
-    } else {
-        diag_log::event_force(
-            "creating route blackboard error (non-fatal — telemetry continues)",
-        );
-        debug_log("WARN: RouteBlackboard SHM init failed");
-    }
-
-    resolver_worker::start_worker();
-    safe_mem::log_route_resolver_mode_at_init();
-
-    let result = ffi_guard::telemetry_init_should_succeed(true, route_bb_ok);
-    debug_log("scs_telemetry_init done — all channels registered");
-    if result == SCS_RESULT_OK {
-        diag_log::event_force("scs_telemetry_init returning success");
-    } else {
-        diag_log::event_force(&format!("scs_telemetry_init returning failure ({result})"));
-    }
-    result
 }
 
 unsafe fn scs_telemetry_shutdown_inner() {
     resolver_worker::stop_worker();
     nav_route::cleanup_shm();
+    frame_perf::cleanup_perf_shm();
     if !SHM_PTR.is_null() {
         UnmapViewOfFile(SHM_PTR as LPVOID);
         SHM_PTR = ptr::null_mut();
@@ -725,7 +800,9 @@ unsafe extern "system" fn telemetry_world_cb(
     ffi_guard::catch_callback("telemetry_world_cb", || {
         log_telemetry_event_probe(event, "world");
         let ts = qpc_timestamp_us();
-        nav_route::on_world_event(event, ts);
+        if !safe_mem::minimal_telemetry_enabled() {
+            nav_route::on_world_event(event, ts);
+        }
     });
 }
 
@@ -744,7 +821,17 @@ unsafe fn telemetry_frame_cb_inner(
     info: *const c_void,
     _ctx: scs_context_t,
 ) {
-    log_telemetry_event_probe(event, "frame");
+    // Diagnostic bisect levels fully own the frame path. Intercepted before the
+    // FrameCbTotal guard so callback_noop measures the raw SCS callback dispatch
+    // with zero added QPC/profiling. `active()` is OnceLock-cached in production,
+    // so this adds no per-frame filesystem access.
+    let diag = diag_level::active();
+    if diag.intercepts_frame_path() {
+        diag_handle_frame(diag, event, info);
+        return;
+    }
+
+    let _frame_guard = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::FrameCbTotal);
 
     if event == SCS_TELEMETRY_EVENT_frame_start && !info.is_null() {
         let frame = &*(info as *const ScsTelemetryFrameStart);
@@ -752,11 +839,28 @@ unsafe fn telemetry_frame_cb_inner(
     }
 
     FRAME_CB_COUNT = FRAME_CB_COUNT.saturating_add(1);
-    let ts_qpc = qpc_timestamp_us();
-    nav_route::on_frame_event(event, FRAME_CB_COUNT, ts_qpc);
+
+    if safe_mem::minimal_telemetry_enabled() {
+        minimal_telemetry::handle_frame(FRAME_CB_COUNT);
+        return;
+    }
+
+    log_telemetry_event_probe(event, "frame");
+    let ts_qpc = frame_perf::qpc_now_us();
+
+    {
+        let _nav_guard = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::OnFrameEvent);
+        nav_route::on_frame_event(event, FRAME_CB_COUNT, ts_qpc);
+    }
 
     if SHM_PTR.is_null() {
         dispatch_route_tick(event, ts_qpc);
+        frame_perf::publish_live_snapshot(
+            FRAME_CB_COUNT,
+            crate::resolver_worker::WORKER_WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+            crate::resolver_metrics::RESOLVER_WORKER_PATTERN_SCAN_COUNT
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         return;
     }
 
@@ -769,7 +873,46 @@ unsafe fn telemetry_frame_cb_inner(
         ts_qpc
     };
 
-    let layout = ShmLayout {
+    let layout = build_shm_layout(seq, ts);
+
+    {
+        let _shm_guard =
+            frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::TelemetryShmWrite);
+        ptr::copy_nonoverlapping(&layout, SHM_PTR, 1);
+        frame_perf::note_shm_write();
+    }
+
+    if READY_EVENT != NULL {
+        let _evt_guard = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::ReadyEventSet);
+        SetEvent(READY_EVENT);
+        frame_perf::note_ready_event_set();
+    }
+
+    // GPS diagnostics run from the throttled route tick after warmup (crash-safe).
+    // Do not scan game memory from the first frame callback during profile load.
+
+    dispatch_route_tick(event, ts_qpc);
+    frame_perf::publish_live_snapshot(
+        FRAME_CB_COUNT,
+        crate::resolver_worker::WORKER_WALK_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        crate::resolver_metrics::RESOLVER_WORKER_PATTERN_SCAN_COUNT
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
+}
+
+fn dispatch_route_tick(event: scs_u32_t, ts_qpc: u64) {
+    route_dispatch::dispatch_route_tick(event, ts_qpc);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic bisect frame path — one isolated hot-path component per level
+// ---------------------------------------------------------------------------
+
+/// Assemble the telemetry [`ShmLayout`] from the current channel globals.
+/// Shared by the normal frame write and the `telemetry_shm` diag component so
+/// both measure the identical memory copy.
+unsafe fn build_shm_layout(seq: u32, ts: u64) -> ShmLayout {
+    ShmLayout {
         magic: SHM_MAGIC,
         version: SHM_VERSION,
         sequence: seq,
@@ -808,34 +951,96 @@ unsafe fn telemetry_frame_cb_inner(
         timestamp_us: ts,
         nav_distance_m: G_NAV_DISTANCE,
         nav_time_s: G_NAV_TIME,
-    };
+    }
+}
 
-    ptr::copy_nonoverlapping(&layout, SHM_PTR, 1);
+/// `telemetry_shm` diag component: full SHM copy + counter. The counter rises
+/// even when SHM_PTR is null (offline tests); the memcpy runs only when mapped.
+unsafe fn diag_write_telemetry_shm() {
+    let _g = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::TelemetryShmWrite);
+    if !SHM_PTR.is_null() {
+        let seq = SEQUENCE.wrapping_add(1);
+        SEQUENCE = seq;
+        let ts = if G_TIMESTAMP_US != 0 {
+            G_TIMESTAMP_US
+        } else {
+            frame_perf::qpc_now_us()
+        };
+        let layout = build_shm_layout(seq, ts);
+        ptr::copy_nonoverlapping(&layout, SHM_PTR, 1);
+    }
+    frame_perf::note_shm_write();
+}
 
+/// `ready_event` diag component: SetEvent + counter (counter rises even without
+/// a live event handle so offline tests observe it).
+unsafe fn diag_set_ready_event() {
+    let _g = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::ReadyEventSet);
     if READY_EVENT != NULL {
         SetEvent(READY_EVENT);
     }
-
-    // GPS diagnostics run from the throttled route tick after warmup (crash-safe).
-    // Do not scan game memory from the first frame callback during profile load.
-
-    dispatch_route_tick(event, ts_qpc);
+    frame_perf::note_ready_event_set();
 }
 
-fn dispatch_route_tick(event: scs_u32_t, ts_qpc: u64) {
-    use crate::route_status::RouteTickSource;
+static DIAG_FRAME_PATH_LOGGED: std::sync::Once = std::sync::Once::new();
 
-    let source = if event == SCS_TELEMETRY_EVENT_frame_end {
-        RouteTickSource::FrameEnd
-    } else if event == SCS_TELEMETRY_EVENT_frame_start
-        && nav_route::should_tick_on_frame_start(ts_qpc)
-    {
-        RouteTickSource::FrameStartFallback
+/// Per-frame work for diagnostic bisect levels. Each level increments only its
+/// own component counter; SHM/ready/RouteBlackboard work is cumulative from the
+/// level that introduces it. `callback_noop` deliberately does not publish a
+/// snapshot per frame (keeps the raw-callback baseline pure).
+///
+/// # Safety
+/// Invoked only from the guarded SCS frame callback.
+pub(crate) unsafe fn diag_handle_frame(level: diag_level::DiagLevel, event: scs_u32_t, info: *const c_void) {
+    use diag_level::DiagLevel;
+
+    DIAG_FRAME_PATH_LOGGED.call_once(|| {
+        diag_log::event_force(&format!("diagnostic frame path active level={}", level.label()));
+    });
+
+    // Keep the frame timestamp fresh for the telemetry SHM copy in higher levels.
+    if event == SCS_TELEMETRY_EVENT_frame_start && !info.is_null() {
+        let frame = &*(info as *const ScsTelemetryFrameStart);
+        G_TIMESTAMP_US = frame.paused_simulation_time;
+    }
+
+    // Optional QPC frame timing (callback_qpc and up).
+    let _frame_guard = if level.qpc_frame_timing() {
+        Some(frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::FrameCbTotal))
     } else {
-        return;
+        None
     };
-    // O(1): schedule background worker — never run resolver synchronously here.
-    resolver_worker::notify_frame_tick(ts_qpc, source);
+
+    match level {
+        DiagLevel::CallbackNoop => frame_perf::note_callback_noop(),
+        DiagLevel::CallbackCounter => frame_perf::note_callback_counter(),
+        DiagLevel::CallbackQpc => frame_perf::note_callback_qpc(),
+        DiagLevel::PerfSnapshot => frame_perf::note_perf_snapshot_component(),
+        DiagLevel::TelemetryShm => {
+            frame_perf::note_telemetry_shm_component();
+            diag_write_telemetry_shm();
+        }
+        DiagLevel::ReadyEvent => {
+            frame_perf::note_ready_event_component();
+            diag_write_telemetry_shm();
+            diag_set_ready_event();
+        }
+        DiagLevel::RouteBb => {
+            frame_perf::note_route_bb_component();
+            diag_write_telemetry_shm();
+            diag_set_ready_event();
+            nav_route::diag_write_bb_frame();
+        }
+        // load_only / init_only never register callbacks; normal uses the full path.
+        DiagLevel::LoadOnly | DiagLevel::InitOnly | DiagLevel::Normal => {}
+    }
+
+    // callback_noop is the only callback level that does not publish per frame.
+    // In diag mode the per-level `*_count` fields carry the signal, so the
+    // generic frame_cb_count is left at 0.
+    if level.publishes_per_frame() {
+        frame_perf::publish_live_snapshot(0, 0, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,6 +1371,30 @@ unsafe fn scs_input_init_inner(
     }
 
     diag_log::init();
+    let diag = diag_level::active();
+    if !diag.input_allowed() {
+        // Every diag bisect level (load_only..route_bb) keeps input cold so the
+        // SCS input SDK is never a variable below normal_default_off.
+        frame_perf::set_input_enabled(false);
+        diag_log::event_force(&format!(
+            "scs_input_init disabled by diagnostic level={}",
+            diag.label()
+        ));
+        diag_log::event_force("scs_input_init returning success");
+        return SCS_RESULT_OK;
+    }
+    if safe_mem::input_plugin_disabled() {
+        frame_perf::set_input_enabled(false);
+        diag_log::event_force("scs_input_init disabled by truckpilot_input.disable");
+        static INPUT_DISABLE_LOGGED: std::sync::Once = std::sync::Once::new();
+        INPUT_DISABLE_LOGGED.call_once(|| {
+            diag_log::event_force("input plugin disabled by truckpilot_input.disable");
+        });
+        diag_log::event_force("scs_input_init returning success");
+        return SCS_RESULT_OK;
+    }
+    frame_perf::set_input_enabled(true);
+
     diag_log::event_force(&format!("scs_input_init sdk_version=0x{version:08X}"));
 
     let name = wide_str(CTRL_SHM_NAME);
@@ -1306,6 +1535,8 @@ unsafe fn input_event_cb_inner(
     flags: scs_u32_t,
     _ctx: scs_context_t,
 ) -> scs_result_t {
+    let _perf = frame_perf::PerfGuard::begin(frame_perf::PerfBucketId::InputEventCb);
+    frame_perf::note_input_event_cb();
     CTRL_CB_TOTAL += 1;
     let cb_total = CTRL_CB_TOTAL;
 

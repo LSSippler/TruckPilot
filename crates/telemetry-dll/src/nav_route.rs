@@ -24,6 +24,7 @@ use crate::route_status::{
     RESOLVE_GPS_MANAGER_NOT_RESOLVED,
     RESOLVE_GPS_TABLE_ONLY_DONE, RESOLVE_GPS_TABLE_READ_FAILED,
     RESOLVE_GAME_CTRL_TABLE_ONLY_DONE, RESOLVE_GAME_CTRL_TABLE_READ_FAILED,
+    RESOLVE_GPS_OFFSET_PROBE_DONE, RESOLVE_GPS_OFFSET_PROBE_READ_FAILED,
     RESOLVE_ROUTE_CANDIDATE_TABLE_DONE, RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED,
     RESOLVE_ROUTE_RESOLVER_WORKER_ACTIVE, RESOLVE_ROUTE_RESOLVER_PARKED,
     RESOLVE_ROUTE_RESOLVER_BACKOFF, RESOLVE_ROUTE_RESOLVER_CACHE_HIT,
@@ -246,6 +247,10 @@ mod win {
     static mut RB_SHM_HANDLE: isize = 0;
     static mut RB_SHM_PTR: *mut RouteBlackboard = ptr::null_mut();
     static mut RB_SEQUENCE: u32 = 0;
+    static LAST_BB_WRITE_FRAME_CB: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(u32::MAX);
+    static LAST_BB_WRITE_ROUTE_TICK: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(u32::MAX);
 
     fn wide_nr(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -309,6 +314,7 @@ mod win {
                     &mut shm.reserved[1],
                     RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE,
                 );
+                ptr::write_volatile(&mut shm.reserved[3], PUBLISH_EMPTY);
             } else {
                 ptr::write_volatile(&mut shm.reserved[1], 0);
             }
@@ -603,15 +609,26 @@ mod win {
 
     /// Lightweight RouteBlackboard frame fields — safe from SCS callback thread.
     pub fn write_bb_frame_from_atomics() {
+        let _guard = crate::frame_perf::PerfGuard::begin(
+            crate::frame_perf::PerfBucketId::RouteBbFrameWrite,
+        );
         unsafe {
             if RB_SHM_PTR.is_null() {
                 return;
             }
-            let state = &*std::ptr::addr_of!(NAV_ROUTE);
             let frame_cb = FRAME_CB_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let route_tick = ROUTE_TICK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let prev_fc = LAST_BB_WRITE_FRAME_CB.load(std::sync::atomic::Ordering::Relaxed);
+            let prev_rt = LAST_BB_WRITE_ROUTE_TICK.load(std::sync::atomic::Ordering::Relaxed);
+            if prev_fc == frame_cb && prev_rt == route_tick {
+                crate::frame_perf::note_route_bb_frame_write_suppressed_duplicate();
+                return;
+            }
+            crate::frame_perf::note_route_bb_frame_write();
+            let state = &*std::ptr::addr_of!(NAV_ROUTE);
             let frame_start = FRAME_START_COUNT.load(std::sync::atomic::Ordering::Relaxed);
             let frame_end = FRAME_END_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-            let route_tick = ROUTE_TICK_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let tick_source = crate::resolver_worker::last_tick_source();
             let shm = &mut *RB_SHM_PTR;
             let mut bits = ptr::read_volatile(&shm.reserved[0]);
             bits |= ROUTE_BB_STATUS_DLL_ACTIVE | ROUTE_BB_STATUS_FRAME_CB_SEEN;
@@ -631,7 +648,7 @@ mod win {
             } else {
                 bits &= !ROUTE_BB_STATUS_FRAME_END_MISSING;
             }
-            if state.last_tick_source == RouteTickSource::FrameStartFallback {
+            if tick_source == RouteTickSource::FrameStartFallback {
                 bits |= ROUTE_BB_STATUS_TICK_SOURCE_FALLBACK;
             } else {
                 bits &= !ROUTE_BB_STATUS_TICK_SOURCE_FALLBACK;
@@ -649,7 +666,21 @@ mod win {
                     frame_end,
                 ),
             );
+            if crate::safe_mem::route_resolver_mode().is_off() {
+                ptr::write_volatile(
+                    &mut shm.reserved[1],
+                    RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE,
+                );
+                ptr::write_volatile(&mut shm.reserved[3], PUBLISH_EMPTY);
+            }
+            LAST_BB_WRITE_FRAME_CB.store(frame_cb, std::sync::atomic::Ordering::Release);
+            LAST_BB_WRITE_ROUTE_TICK.store(route_tick, std::sync::atomic::Ordering::Release);
         }
+    }
+
+    pub fn frame_event_will_dispatch_route_tick(event_id: u32, timestamp_us: u64) -> bool {
+        event_id == SCS_EVENT_FRAME_END
+            || (event_id == SCS_EVENT_FRAME_START && should_tick_on_frame_start(timestamp_us))
     }
 
     unsafe fn handle_resolver_off(state: &mut NavRouteState, timestamp_us: u64) {
@@ -672,8 +703,10 @@ mod win {
                 | RESOLVE_GPS_TABLE_READ_FAILED
                 | RESOLVE_GAME_CTRL_TABLE_ONLY_DONE
                 | RESOLVE_GAME_CTRL_TABLE_READ_FAILED
-                | RESOLVE_ROUTE_CANDIDATE_TABLE_DONE
+                |             RESOLVE_ROUTE_CANDIDATE_TABLE_DONE
                 | RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED
+                | RESOLVE_GPS_OFFSET_PROBE_DONE
+                | RESOLVE_GPS_OFFSET_PROBE_READ_FAILED
         ) {
             crate::resolver_metrics::note_diagnostic_table_run();
             if let Ok(mut sched) = RESOLVER_SCHEDULE.lock() {
@@ -833,7 +866,9 @@ mod win {
                 );
             }
         }
-        write_bb_frame_from_atomics();
+        if !frame_event_will_dispatch_route_tick(event_id, timestamp_us) {
+            write_bb_frame_from_atomics();
+        }
     }
 
     /// Legacy wrapper — prefer [`on_frame_event`].
@@ -921,6 +956,7 @@ mod win {
 
             sched.note_walk_started(timestamp_us);
             drop(sched);
+            crate::frame_perf::note_resolver_attempt();
             crate::resolver_metrics::note_resolver_walk_proceeded();
 
             if state.tick_milestone.should_log(state.route_tick_count) {
@@ -1035,7 +1071,8 @@ mod win {
 
             if matches!(
                 resolver_mode,
-                crate::safe_mem::RouteResolverMode::GameCtrlTableOnly
+                crate::safe_mem::RouteResolverMode::GpsOffsetProbeOnly
+                    | crate::safe_mem::RouteResolverMode::GameCtrlTableOnly
                     | crate::safe_mem::RouteResolverMode::RouteCandidateTableOnly
             ) {
                 let game_ctrl = match resolve_game_ctrl_for_walk(state, timestamp_us, false) {
@@ -1049,12 +1086,17 @@ mod win {
                     }
                 };
                 set_bb_route_task_ok(false);
-                let st = if resolver_mode
-                    == crate::safe_mem::RouteResolverMode::RouteCandidateTableOnly
-                {
-                    route_chain::run_route_candidate_table_only_diagnostic(game_ctrl as usize)
-                } else {
-                    route_chain::run_game_ctrl_table_only_diagnostic(game_ctrl as usize)
+                let st = match resolver_mode {
+                    crate::safe_mem::RouteResolverMode::RouteCandidateTableOnly => {
+                        route_chain::run_route_candidate_table_only_diagnostic(game_ctrl as usize)
+                    }
+                    crate::safe_mem::RouteResolverMode::GameCtrlTableOnly => {
+                        route_chain::run_game_ctrl_table_only_diagnostic(game_ctrl as usize)
+                    }
+                    crate::safe_mem::RouteResolverMode::GpsOffsetProbeOnly => {
+                        route_chain::run_gps_offset_probe_diagnostic(game_ctrl as usize)
+                    }
+                    _ => unreachable!("handled by outer match"),
                 };
                 park_diagnostic_after_run(state, st, timestamp_us);
                 return;
@@ -1274,6 +1316,33 @@ mod win {
         ptr::write_volatile(&mut shm.sequence, RB_SEQUENCE);
     }
 
+    /// `route_bb` diag component: always counts the frame write and performs a
+    /// minimal RouteBlackboard update (seqlock bump + frame_cb field) when mapped.
+    /// Dedicated to the bisect so the counter rises in offline tests (RB_SHM_PTR
+    /// null) without the dedup/state machinery of the normal frame path.
+    pub fn diag_write_bb_frame() {
+        let _guard = crate::frame_perf::PerfGuard::begin(
+            crate::frame_perf::PerfBucketId::RouteBbFrameWrite,
+        );
+        crate::frame_perf::note_route_bb_frame_write();
+        unsafe {
+            if RB_SHM_PTR.is_null() {
+                return;
+            }
+            let shm = &mut *RB_SHM_PTR;
+            let seq = ptr::read_volatile(&shm.sequence);
+            let odd = seq.wrapping_add(1) | 1;
+            ptr::write_volatile(&mut shm.sequence, odd);
+            let frame_cb = FRAME_CB_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            ptr::write_volatile(&mut shm.reserved[4], frame_cb);
+            let mut bits = ptr::read_volatile(&shm.reserved[0]);
+            bits |= ROUTE_BB_STATUS_DLL_ACTIVE | ROUTE_BB_STATUS_FRAME_CB_SEEN;
+            ptr::write_volatile(&mut shm.reserved[0], bits);
+            RB_SEQUENCE = odd.wrapping_add(1);
+            ptr::write_volatile(&mut shm.sequence, RB_SEQUENCE);
+        }
+    }
+
     unsafe fn write_route_blackboard_invalid() {
         if RB_SHM_PTR.is_null() {
             return;
@@ -1407,10 +1476,15 @@ mod win {
 #[cfg(windows)]
 #[allow(unused_imports)]
 pub use win::{
-    cleanup_shm, init_shm, on_frame_callback, on_frame_event, on_world_event,
+    cleanup_shm, diag_write_bb_frame, init_shm, on_frame_callback, on_frame_event, on_world_event,
     publish_initial_empty, resolve_route_task, resolver_walk, should_tick_on_frame_start,
     tick, write_bb_frame_from_atomics,
 };
+
+#[cfg(not(windows))]
+pub fn diag_write_bb_frame() {
+    crate::frame_perf::note_route_bb_frame_write();
+}
 
 #[cfg(not(windows))]
 pub fn publish_initial_empty() {}

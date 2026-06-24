@@ -17,7 +17,9 @@
 use crate::nav_resolve::GPS_OFFSET_IN_GAME_CTRL;
 use crate::route_status::{
     RateLog, RESOLVE_FIRST_UID_ZERO, RESOLVE_GAME_CTRL_TABLE_ONLY_DONE,
-    RESOLVE_GAME_CTRL_TABLE_READ_FAILED, RESOLVE_GPS_TABLE_ONLY_DONE, RESOLVE_GPS_TABLE_READ_FAILED,
+    RESOLVE_GAME_CTRL_TABLE_READ_FAILED, RESOLVE_GPS_OFFSET_PROBE_DONE,
+    RESOLVE_GPS_OFFSET_PROBE_READ_FAILED, RESOLVE_GPS_TABLE_ONLY_DONE,
+    RESOLVE_GPS_TABLE_READ_FAILED,
     RESOLVE_ROUTE_CANDIDATE_TABLE_DONE, RESOLVE_ROUTE_CANDIDATE_TABLE_READ_FAILED,
     RESOLVE_ROUTE_CHAIN_ALL_FAILED, RESOLVE_ROUTE_CHAIN_CANDIDATE_FAILED,
     RESOLVE_ROUTE_ITEMS_CANDIDATE_NULL, RESOLVE_ROUTE_ITEMS_EMPTY,
@@ -934,6 +936,134 @@ pub fn format_game_ctrl_table_lines_mem<R: MemRead>(mem: &R, game_ctrl: usize) -
         GAME_CTRL_TABLE_SLOT_COUNT
     ));
     lines
+}
+
+/// ETS2 1.60 offline candidate: `lea rsi,[rdi+0x40F8]` after `mov rdi,[rip+game_ctrl]`.
+pub const GPS_OFFSET_PROBE_OFFSET: usize = 0x40F8;
+/// Offline singleton slot hint from `ets2-bin-analyze` (sidecar context only).
+pub const GPS_OFFSET_PROBE_SINGLETON_RVA_HINT: usize = 0x354F398;
+
+/// Outcome of the one-shot `game_ctrl + GPS_OFFSET_PROBE_OFFSET` read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpsOffsetProbeDiagnostic {
+    pub read_ok: bool,
+    pub value: u64,
+}
+
+/// Format probe lines via `MemRead` (unit tests — no VirtualQuery).
+pub fn format_gps_offset_probe_lines_mem<R: MemRead>(mem: &R, game_ctrl: usize) -> Vec<String> {
+    let offset = GPS_OFFSET_PROBE_OFFSET;
+    let mut lines = vec![
+        format!(
+            "gps offset probe start singleton_rva=0x{GPS_OFFSET_PROBE_SINGLETON_RVA_HINT:X} offset=0x{offset:X}"
+        ),
+        format!("gps offset probe game_ctrl=0x{game_ctrl:X}"),
+    ];
+    if game_ctrl == 0 {
+        lines.push(format!(
+            "gps offset probe read failed game_ctrl=0x{game_ctrl:X} offset=0x{offset:X}"
+        ));
+        lines.push("gps offset probe done; parking resolver".into());
+        return lines;
+    }
+    match mem.read_u64(game_ctrl.saturating_add(offset)) {
+        Some(value) => {
+            lines.push(format!(
+                "gps offset probe read game_ctrl+0x{offset:X} value=0x{value:X}"
+            ));
+        }
+        None => {
+            lines.push(format!(
+                "gps offset probe read failed game_ctrl=0x{game_ctrl:X} offset=0x{offset:X}"
+            ));
+        }
+    }
+    lines.push("gps offset probe done; parking resolver".into());
+    lines
+}
+
+/// One `safe_read_u64(game_ctrl + 0x40F8)` — no pointer follow, no tables, no chain.
+pub fn diagnose_gps_offset_probe(game_ctrl: usize) -> (GpsOffsetProbeDiagnostic, Vec<String>) {
+    if game_ctrl == 0 || !safe_mem::addr_canonical(game_ctrl) {
+        let lines = format_gps_offset_probe_lines_mem(&FakeMem::default(), game_ctrl);
+        return (
+            GpsOffsetProbeDiagnostic {
+                read_ok: false,
+                value: 0,
+            },
+            lines,
+        );
+    }
+
+    let offset = GPS_OFFSET_PROBE_OFFSET;
+    let mut lines = vec![
+        format!(
+            "gps offset probe start singleton_rva=0x{GPS_OFFSET_PROBE_SINGLETON_RVA_HINT:X} offset=0x{offset:X}"
+        ),
+        format!("gps offset probe game_ctrl=0x{game_ctrl:X}"),
+    ];
+    match safe_mem::safe_read_u64(game_ctrl.saturating_add(offset)) {
+        Ok(value) => {
+            lines.push(format!(
+                "gps offset probe read game_ctrl+0x{offset:X} value=0x{value:X}"
+            ));
+            lines.push("gps offset probe done; parking resolver".into());
+            (
+                GpsOffsetProbeDiagnostic {
+                    read_ok: true,
+                    value,
+                },
+                lines,
+            )
+        }
+        Err(_) => {
+            lines.push(format!(
+                "gps offset probe read failed game_ctrl=0x{game_ctrl:X} offset=0x{offset:X}"
+            ));
+            lines.push("gps offset probe done; parking resolver".into());
+            (
+                GpsOffsetProbeDiagnostic {
+                    read_ok: false,
+                    value: 0,
+                },
+                lines,
+            )
+        }
+    }
+}
+
+fn log_gps_offset_probe_sidecar(game_ctrl: usize, lines: &[String]) {
+    #[cfg(windows)]
+    {
+        static LOGGED_GAME_CTRL: std::sync::Mutex<Option<usize>> = std::sync::Mutex::new(None);
+        let mut guard = LOGGED_GAME_CTRL.lock().unwrap();
+        if *guard == Some(game_ctrl) {
+            return;
+        }
+        *guard = Some(game_ctrl);
+        drop(guard);
+        for line in lines {
+            crate::diag_log::event_force(line);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (game_ctrl, lines);
+    }
+}
+
+/// Run `gps_offset_probe` diagnostic — exactly one pointer-sized read, then park.
+pub fn run_gps_offset_probe_diagnostic(game_ctrl: usize) -> u32 {
+    if let Some(st) = crate::resolver_guard::block_if_resolver_off() {
+        return st;
+    }
+    let (diag, lines) = diagnose_gps_offset_probe(game_ctrl);
+    log_gps_offset_probe_sidecar(game_ctrl, &lines);
+    if diag.read_ok {
+        RESOLVE_GPS_OFFSET_PROBE_DONE
+    } else {
+        RESOLVE_GPS_OFFSET_PROBE_READ_FAILED
+    }
 }
 
 /// Run `game_ctrl_table` diagnostic — logs table once per `game_ctrl` pointer, no chain walk.
@@ -1885,6 +2015,77 @@ mod tests {
         let lines = format_game_ctrl_table_lines_mem(&mem, game_ctrl);
         assert!(lines.iter().any(|l| l.contains("game_ctrl slot +0x0100 = 0xDEADBEEF")));
         assert!(!lines.iter().any(|l| l.contains("game_ctrl slot +0x0108 =")));
+    }
+
+    #[test]
+    fn gps_offset_probe_only_rejects_null_game_ctrl() {
+        with_enable_file("truckpilot_route_resolver.gps_offset_probe", || {
+            assert_eq!(
+                run_gps_offset_probe_diagnostic(0),
+                RESOLVE_GPS_OFFSET_PROBE_READ_FAILED
+            );
+        });
+    }
+
+    #[test]
+    fn gps_offset_probe_reads_single_offset_via_mem() {
+        let mut mem = FakeMem::default();
+        let game_ctrl = 0x10_0000usize;
+        mem.set(game_ctrl + GPS_OFFSET_PROBE_OFFSET, 0xDEAD_BEEF_CAFE);
+        let lines = format_gps_offset_probe_lines_mem(&mem, game_ctrl);
+        assert!(lines.iter().any(|l| l.contains("singleton_rva=0x354F398")));
+        assert!(lines.iter().any(|l| l.contains("offset=0x40F8")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("gps offset probe read game_ctrl+0x40F8 value=0xDEADBEEFCAFE")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("gps offset probe done; parking resolver")));
+    }
+
+    #[test]
+    fn gps_offset_probe_mem_performs_exactly_one_read() {
+        struct CountingMem {
+            inner: FakeMem,
+            reads: std::cell::Cell<u32>,
+        }
+        impl MemRead for CountingMem {
+            fn read_u64(&self, addr: usize) -> Option<u64> {
+                self.reads.set(self.reads.get() + 1);
+                self.inner.read_u64(addr)
+            }
+
+            fn read_u32(&self, addr: usize) -> Option<u32> {
+                self.inner.read_u32(addr)
+            }
+        }
+        let mut inner = FakeMem::default();
+        let game_ctrl = 0x10_0000usize;
+        inner.set(game_ctrl + GPS_OFFSET_PROBE_OFFSET, 0x1234);
+        let mem = CountingMem {
+            inner,
+            reads: std::cell::Cell::new(0),
+        };
+        let lines = format_gps_offset_probe_lines_mem(&mem, game_ctrl);
+        assert_eq!(mem.reads.get(), 1);
+        assert!(lines.iter().any(|l| l.contains("value=0x1234")));
+    }
+
+    #[test]
+    fn gps_offset_probe_only_does_not_invoke_chain_walk() {
+        with_enable_file("truckpilot_route_resolver.gps_offset_probe", || {
+            let mem = FakeMem::default();
+            let game_ctrl = 0x10_0000usize;
+            let chain_err =
+                resolve_route_chain_with_policy(&mem, game_ctrl, RouteScanPolicy::safe_default());
+            assert!(chain_err.is_err());
+            let status = run_gps_offset_probe_diagnostic(game_ctrl);
+            assert!(
+                status == RESOLVE_GPS_OFFSET_PROBE_DONE
+                    || status == RESOLVE_GPS_OFFSET_PROBE_READ_FAILED
+            );
+            assert_ne!(status, RESOLVE_WAYPOINTS_COLLECTED);
+        });
     }
 
     #[test]

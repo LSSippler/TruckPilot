@@ -27,7 +27,6 @@ static WORKER_STOP: AtomicBool = AtomicBool::new(false);
 static PENDING_RESOLVE: AtomicBool = AtomicBool::new(false);
 static LAST_NOTIFY_US: AtomicU64 = AtomicU64::new(0);
 static LAST_TICK_SOURCE: AtomicU32 = AtomicU32::new(0);
-
 static mut WORKER_HANDLE: Option<JoinHandle<()>> = None;
 
 pub fn last_tick_source() -> RouteTickSource {
@@ -45,9 +44,7 @@ mod win {
     type HANDLE = isize;
     type DWORD = u32;
 
-    const INFINITE: DWORD = 0xFFFF_FFFF;
     const WAIT_OBJECT_0: DWORD = 0;
-    const WAIT_TIMEOUT: DWORD = 0x102;
 
     extern "system" {
         fn CreateEventW(
@@ -154,8 +151,8 @@ pub fn stop_worker() {
     crate::diag_log::event_force("route resolver worker stopped");
 }
 
-/// O(1) frame-path notification — no resolver work.
-pub fn notify_frame_tick(timestamp_us: u64, source: RouteTickSource) {
+/// Apply route tick atomics without worker notify (off-mode dispatch suppress path).
+pub fn apply_route_tick_dispatch(timestamp_us: u64, source: RouteTickSource) {
     ROUTE_TICK_COUNT.fetch_add(1, Ordering::Relaxed);
     LAST_NOTIFY_US.store(timestamp_us, Ordering::Release);
     LAST_TICK_SOURCE.store(
@@ -165,11 +162,28 @@ pub fn notify_frame_tick(timestamp_us: u64, source: RouteTickSource) {
         },
         Ordering::Relaxed,
     );
-    PENDING_RESOLVE.store(true, Ordering::Release);
     FRAME_SCHEDULED_WORKER.store(true, Ordering::Release);
-    WORKER_WAKE_COUNT.fetch_add(1, Ordering::Relaxed);
-    platform::signal_wake();
-    crate::nav_route::write_bb_frame_from_atomics();
+}
+
+/// O(1) frame-path notification — no resolver work, no RouteBlackboard write (dispatch owns BB).
+pub fn notify_frame_tick(timestamp_us: u64, source: RouteTickSource, force_wake: bool) {
+    apply_route_tick_dispatch(timestamp_us, source);
+    crate::frame_perf::note_notify_frame_tick();
+    if !force_wake && crate::resolver_guard::resolver_is_parked_for_frame_notify() {
+        crate::frame_perf::note_worker_parked_no_wake();
+        return;
+    }
+    schedule_worker_wake();
+}
+
+fn schedule_worker_wake() {
+    if PENDING_RESOLVE.swap(true, Ordering::AcqRel) {
+        crate::frame_perf::note_worker_pending_already_set();
+    } else {
+        WORKER_WAKE_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::frame_perf::note_worker_wake_set_event();
+        platform::signal_wake();
+    }
 }
 
 fn worker_main() {
@@ -178,13 +192,28 @@ fn worker_main() {
         if WORKER_STOP.load(Ordering::Acquire) {
             break;
         }
-        if !PENDING_RESOLVE.swap(false, Ordering::AcqRel) {
-            continue;
-        }
-        let ts = LAST_NOTIFY_US.load(Ordering::Acquire);
-        WORKER_WALK_COUNT.fetch_add(1, Ordering::Relaxed);
-        crate::nav_route::resolver_walk(ts);
+        let _ = process_one_pending_resolve();
     }
+}
+
+/// One worker iteration after wake — coalesces pending ticks, skips when resolver parked.
+fn process_one_pending_resolve() -> bool {
+    if !PENDING_RESOLVE.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    if crate::resolver_guard::resolver_is_parked_for_frame_notify() {
+        crate::frame_perf::note_worker_parked_skip();
+        return false;
+    }
+    let ts = LAST_NOTIFY_US.load(Ordering::Acquire);
+    WORKER_WALK_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::nav_route::resolver_walk(ts);
+    true
+}
+
+#[cfg(test)]
+pub fn clear_pending_resolve_for_test() {
+    PENDING_RESOLVE.store(false, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -193,6 +222,7 @@ pub fn reset_test_counters() {
     WORKER_WAKE_COUNT.store(0, Ordering::Release);
     WORKER_WALK_COUNT.store(0, Ordering::Release);
     PENDING_RESOLVE.store(false, Ordering::Release);
+    crate::frame_perf::reset_test_counters();
     ROUTE_TICK_COUNT.store(0, Ordering::Release);
     FRAME_CB_COUNT.store(0, Ordering::Release);
     FRAME_START_COUNT.store(0, Ordering::Release);
@@ -201,19 +231,39 @@ pub fn reset_test_counters() {
     LAST_NOTIFY_US.store(0, Ordering::Release);
     LAST_TICK_SOURCE.store(0, Ordering::Release);
     RESOLVER_RESET_REQUESTED.store(false, Ordering::Release);
+    crate::route_dispatch::reset_dispatch_wake_test_state();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn temp_probe_enable_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tp-active-wake-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp enable dir");
+        std::fs::write(
+            dir.join("truckpilot_route_resolver.gps_offset_probe"),
+            b"",
+        )
+        .expect("probe enable file");
+        dir
+    }
+
     #[test]
     fn notify_frame_tick_schedules_worker_not_sync_resolver() {
         let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
-        notify_frame_tick(1_000_000, RouteTickSource::FrameEnd);
+        let dir = temp_probe_enable_dir();
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        assert!(!crate::safe_mem::route_resolver_mode().is_off());
+        notify_frame_tick(1_000_000, RouteTickSource::FrameEnd, false);
         assert!(FRAME_SCHEDULED_WORKER.load(Ordering::Acquire));
         assert_eq!(ROUTE_TICK_COUNT.load(Ordering::Relaxed), 1);
         assert_eq!(WORKER_WAKE_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
         assert_eq!(
             crate::resolver_metrics::FRAME_CALLBACK_SYNC_RESOLVER_CALLS.load(Ordering::Relaxed),
             0
@@ -222,6 +272,210 @@ mod tests {
             crate::resolver_metrics::PATTERN_SCANS_FROM_FRAME_CALLBACK.load(Ordering::Relaxed),
             0
         );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wake_coalescing_skips_setevent_when_pending() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = temp_probe_enable_dir();
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        assert!(!crate::safe_mem::route_resolver_mode().is_off());
+        notify_frame_tick(1, RouteTickSource::FrameEnd, false);
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        for _ in 0..999 {
+            notify_frame_tick(2, RouteTickSource::FrameEnd, false);
+        }
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_PENDING_ALREADY_SET_COUNT.load(Ordering::Relaxed),
+            999
+        );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parked_resolver_consumes_pending_without_walk() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        crate::resolver_metrics::set_resolver_parked(true);
+        PENDING_RESOLVE.store(true, Ordering::Release);
+        assert!(!process_one_pending_resolve());
+        assert_eq!(WORKER_WALK_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_SKIP_COUNT.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn parked_resolver_skips_worker_wake_on_frame_tick() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        crate::resolver_metrics::set_resolver_parked(true);
+        for i in 0..1000 {
+            notify_frame_tick(i, RouteTickSource::FrameEnd, false);
+        }
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_NO_WAKE_COUNT.load(Ordering::Relaxed),
+            1000
+        );
+        assert_eq!(WORKER_WAKE_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(ROUTE_TICK_COUNT.load(Ordering::Relaxed), 1000);
+    }
+
+    #[test]
+    fn off_mode_live_path_skips_worker_wake_without_parked_atomic() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = std::env::temp_dir().join(format!("tp-off-wake-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        crate::resolver_metrics::set_resolver_parked(false);
+        assert!(crate::safe_mem::route_resolver_mode().is_off());
+        for i in 0..10_000 {
+            crate::route_dispatch::dispatch_route_tick(
+                crate::route_status::SCS_EVENT_FRAME_END,
+                i,
+            );
+        }
+        assert_eq!(
+            crate::frame_perf::NOTIFY_FRAME_TICK_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_SKIP_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            crate::frame_perf::OFF_MODE_NOTIFY_SUPPRESSED_COUNT.load(Ordering::Relaxed),
+            10_000
+        );
+        assert_eq!(WORKER_WAKE_COUNT.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            crate::resolver_metrics::RESOLVER_WORKER_PATTERN_SCAN_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gps_offset_probe_allows_wake_before_park_not_after() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = std::env::temp_dir().join(format!("tp-probe-wake-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let probe = dir.join("truckpilot_route_resolver.gps_offset_probe");
+        std::fs::write(&probe, b"").unwrap();
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        assert!(!crate::safe_mem::route_resolver_mode().is_off());
+        crate::route_dispatch::dispatch_route_tick(crate::route_status::SCS_EVENT_FRAME_END, 1);
+        assert_eq!(
+            crate::frame_perf::NOTIFY_FRAME_TICK_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        crate::resolver_metrics::set_resolver_parked(true);
+        for i in 0..100 {
+            crate::route_dispatch::dispatch_route_tick(
+                crate::route_status::SCS_EVENT_FRAME_END,
+                i + 2,
+            );
+        }
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_NO_WAKE_COUNT.load(Ordering::Relaxed),
+            100
+        );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enable_generation_change_allows_single_wake_while_parked() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = temp_probe_enable_dir();
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        crate::resolver_metrics::set_resolver_parked(true);
+        crate::route_dispatch::dispatch_route_tick(crate::route_status::SCS_EVENT_FRAME_END, 1);
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_NO_WAKE_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        crate::safe_mem::bump_enable_file_generation();
+        crate::route_dispatch::dispatch_route_tick(crate::route_status::SCS_EVENT_FRAME_END, 2);
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        crate::route_dispatch::dispatch_route_tick(crate::route_status::SCS_EVENT_FRAME_END, 3);
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parked_no_wake_allows_wake_on_reset_request() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = temp_probe_enable_dir();
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        crate::resolver_metrics::set_resolver_parked(true);
+        RESOLVER_RESET_REQUESTED.store(true, Ordering::Release);
+        notify_frame_tick(1, RouteTickSource::FrameEnd, true);
+        assert_eq!(
+            crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            crate::frame_perf::WORKER_PARKED_NO_WAKE_COUNT.load(Ordering::Relaxed),
+            0
+        );
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bb_write_dedupe_suppresses_duplicate_same_frame_tick() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        if !crate::nav_route::init_shm() {
+            return;
+        }
+        FRAME_CB_COUNT.store(42, Ordering::Release);
+        ROUTE_TICK_COUNT.store(7, Ordering::Release);
+        crate::nav_route::write_bb_frame_from_atomics();
+        crate::nav_route::write_bb_frame_from_atomics();
+        assert_eq!(
+            crate::frame_perf::ROUTE_BB_FRAME_WRITE_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            crate::frame_perf::ROUTE_BB_FRAME_WRITE_SUPPRESSED_DUPLICATE_COUNT.load(Ordering::Relaxed),
+            1
+        );
+        crate::nav_route::cleanup_shm();
     }
 
     #[test]

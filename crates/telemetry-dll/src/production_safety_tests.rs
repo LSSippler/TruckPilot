@@ -40,6 +40,44 @@ fn no_enable_file_selects_off_mode() {
 }
 
 #[test]
+fn off_mode_notify_hotpath_matches_live_baseline() {
+    let _guard = TestResolverStateGuard::acquire();
+    let dir = temp_enable_dir("off-notify-baseline");
+    safe_mem::set_test_enable_dir(Some(dir.clone()));
+    assert!(safe_mem::route_resolver_mode().is_off());
+    for i in 0..10_000 {
+        crate::route_dispatch::dispatch_route_tick(
+            crate::route_status::SCS_EVENT_FRAME_END,
+            i,
+        );
+    }
+    assert_eq!(
+        crate::frame_perf::NOTIFY_FRAME_TICK_COUNT.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        crate::frame_perf::WORKER_WAKE_SET_EVENT_COUNT.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        crate::frame_perf::WORKER_PARKED_SKIP_COUNT.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        crate::frame_perf::OFF_MODE_NOTIFY_SUPPRESSED_COUNT.load(Ordering::Relaxed),
+        10_000
+    );
+    assert_eq!(
+        crate::frame_perf::ROUTE_TICK_DISPATCH_COUNT.load(Ordering::Relaxed),
+        10_000
+    );
+    assert_eq!(resolver_worker::WORKER_WALK_COUNT.load(Ordering::Relaxed), 0);
+    assert_eq!(RESOLVER_WORKER_PATTERN_SCAN_COUNT.load(Ordering::Relaxed), 0);
+    safe_mem::set_test_enable_dir(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn off_mode_status_constant_is_disabled_safe_mode() {
     assert_eq!(
         RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE,
@@ -90,7 +128,51 @@ fn off_mode_blocks_route_chain_diagnostics_without_table_reads() {
         route_chain::run_game_ctrl_table_only_diagnostic(0x30_0000),
         RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE
     );
+    assert_eq!(
+        route_chain::run_gps_offset_probe_diagnostic(0x30_0000),
+        RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE
+    );
     safe_mem::set_test_enable_dir(None);
+}
+
+#[test]
+fn only_gps_offset_probe_enable_file_selects_probe_mode() {
+    let dir = temp_enable_dir("gop");
+    File::create(dir.join("truckpilot_route_resolver.gps_offset_probe")).unwrap();
+    let sel = safe_mem::detect_resolver_mode_selection_from_dir(&dir);
+    assert_eq!(sel.mode, RouteResolverMode::GpsOffsetProbeOnly);
+    assert_eq!(sel.source_file, "truckpilot_route_resolver.gps_offset_probe");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gps_offset_probe_beats_route_candidate_table_in_priority() {
+    let dir = temp_enable_dir("gop-pri");
+    File::create(dir.join("truckpilot_route_resolver.gps_offset_probe")).unwrap();
+    File::create(dir.join("truckpilot_route_resolver.route_candidate_table")).unwrap();
+    let sel = safe_mem::detect_resolver_mode_selection_from_dir(&dir);
+    assert_eq!(sel.mode, RouteResolverMode::GpsOffsetProbeOnly);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn static_beats_gps_offset_probe_in_priority() {
+    let dir = temp_enable_dir("static-gop");
+    File::create(dir.join("truckpilot_route_resolver.static")).unwrap();
+    File::create(dir.join("truckpilot_route_resolver.gps_offset_probe")).unwrap();
+    let sel = safe_mem::detect_resolver_mode_selection_from_dir(&dir);
+    assert_eq!(sel.mode, RouteResolverMode::StaticChain);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn gps_offset_probe_diagnostic_parks_after_one_shot() {
+    let mut sched = ResolverSchedule::new();
+    sched.park_diagnostic_done();
+    assert_eq!(
+        resolver_guard::decide_walk(RouteResolverMode::GpsOffsetProbeOnly, &sched, u64::MAX),
+        WalkDecision::DiagnosticParked
+    );
 }
 
 #[test]
@@ -200,7 +282,7 @@ fn worker_may_start_but_off_mode_parks_via_decision() {
 #[test]
 fn frame_callback_regression_metrics_stay_zero_on_notify() {
     let _guard = TestResolverStateGuard::acquire();
-    resolver_worker::notify_frame_tick(1, RouteTickSource::FrameEnd);
+    resolver_worker::notify_frame_tick(1, RouteTickSource::FrameEnd, false);
     assert_eq!(FRAME_CALLBACK_SYNC_RESOLVER_CALLS.load(Ordering::Relaxed), 0);
     assert_eq!(PATTERN_SCANS_FROM_FRAME_CALLBACK.load(Ordering::Relaxed), 0);
 }

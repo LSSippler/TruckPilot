@@ -28,7 +28,11 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Reset counters, metrics, enable-dir override, and session cache before/after isolated tests.
 pub fn reset_all_resolver_test_state() {
     crate::resolver_metrics::reset_test_metrics();
+    #[cfg(test)]
+    crate::frame_perf::reset_test_counters();
     crate::resolver_worker::reset_test_counters();
+    crate::safe_mem::reset_enable_file_generation_for_test();
+    crate::route_dispatch::reset_dispatch_wake_test_state();
     crate::safe_mem::set_test_enable_dir(None);
     crate::nav_resolve::invalidate_session_cache();
 }

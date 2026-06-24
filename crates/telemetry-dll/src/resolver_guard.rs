@@ -36,14 +36,26 @@ pub fn decide_walk(mode: RouteResolverMode, sched: &ResolverSchedule, now_us: u6
     WalkDecision::Proceed
 }
 
-/// Block resolver/diagnostic entry points when mode is off.
+/// Block resolver/diagnostic entry points when mode is off or minimal telemetry is active.
 pub fn block_if_resolver_off() -> Option<u32> {
-    if crate::safe_mem::route_resolver_mode().is_off() {
+    if crate::safe_mem::minimal_telemetry_enabled()
+        || crate::safe_mem::route_resolver_mode().is_off()
+    {
         crate::resolver_metrics::note_off_mode_blocked_call();
         Some(RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE)
     } else {
         None
     }
+}
+
+/// Shared gate for frame notify and worker skip — off mode, minimal telemetry, or resolver parked.
+pub fn resolver_is_parked_for_frame_notify() -> bool {
+    if crate::safe_mem::minimal_telemetry_enabled()
+        || crate::safe_mem::route_resolver_mode().is_off()
+    {
+        return true;
+    }
+    crate::resolver_metrics::RESOLVER_PARKED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Sidecar lines emitted once at init for a mode selection (offline-testable).
@@ -82,6 +94,30 @@ mod tests {
         assert_eq!(
             decide_walk(RouteResolverMode::SafeDefault, &sched, 1),
             WalkDecision::OffModePark
+        );
+    }
+
+    #[test]
+    fn parked_for_frame_notify_true_in_off_mode_without_parked_atomic() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        let dir = std::env::temp_dir().join(format!("tp-off-notify-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        crate::safe_mem::set_test_enable_dir(Some(dir.clone()));
+        crate::resolver_metrics::set_resolver_parked(false);
+        assert!(crate::safe_mem::route_resolver_mode().is_off());
+        assert!(resolver_is_parked_for_frame_notify());
+        crate::safe_mem::set_test_enable_dir(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parked_for_frame_notify_matches_worker_skip_gate() {
+        let _guard = crate::test_isolation::TestResolverStateGuard::acquire();
+        crate::resolver_metrics::set_resolver_parked(true);
+        assert_eq!(
+            resolver_is_parked_for_frame_notify(),
+            crate::resolver_metrics::RESOLVER_PARKED.load(std::sync::atomic::Ordering::Acquire)
+                || crate::safe_mem::route_resolver_mode().is_off()
         );
     }
 

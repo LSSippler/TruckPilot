@@ -28,10 +28,10 @@ fn frame_storm_notify_frame_tick_stays_o1_without_scans() {
     let ticks_before = resolver_worker::ROUTE_TICK_COUNT.load(Ordering::Relaxed);
     let t0 = std::time::Instant::now();
     for i in 0..FRAME_STORM_COUNT {
-        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameStartFallback);
+        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameStartFallback, false);
     }
     for i in 0..FRAME_END_STORM_COUNT {
-        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameEnd);
+        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameEnd, false);
     }
     let elapsed = t0.elapsed();
     let ticks_after = resolver_worker::ROUTE_TICK_COUNT.load(Ordering::Relaxed);
@@ -87,7 +87,7 @@ fn offline_microbench_notify_frame_tick_100k() {
     resolver_worker::reset_test_counters();
     let t0 = std::time::Instant::now();
     for i in 0..FRAME_STORM_COUNT {
-        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameEnd);
+        resolver_worker::notify_frame_tick(i as u64, RouteTickSource::FrameEnd, false);
     }
     eprintln!(
         "100k notify_frame_tick: {:?}, scans={}",

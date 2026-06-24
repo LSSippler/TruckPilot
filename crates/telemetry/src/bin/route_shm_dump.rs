@@ -1,7 +1,7 @@
 //! Read `Local\TruckPilotRouteBlackboard` and dump route diagnostics (Phase 5j).
 //!
 //! ```text
-//! cargo run -p truckpilot-telemetry --bin route-shm-dump -- --once
+//! cargo run -p truckpilot-telemetry --bin route-shm-dump -- --once --perf
 //! cargo run -p truckpilot-telemetry --bin route-shm-dump -- --json route.json
 //! cargo run -p truckpilot-telemetry --bin route-shm-dump -- --csv route.csv
 //! ```
@@ -9,6 +9,7 @@
 use std::fs;
 use std::path::Path;
 
+use truckpilot_telemetry::dll_perf::{format_perf_lines, format_perf_unavailable, DllPerfReader};
 use truckpilot_telemetry::nav_route::{
     route_publish_status_name, route_resolve_status_name, world_reset_reason_name,
     RouteBlackboardReader, RouteSnapshot, RESOLVE_NONE,
@@ -171,6 +172,19 @@ pub fn format_route_diag_lines(snap: &RouteSnapshot) -> Vec<String> {
     {
         lines.push(
             "hint=game_ctrl resolved but safe_read failed for route candidate tables".into(),
+        );
+    }
+    if snap.resolve_status == truckpilot_telemetry::nav_route::RESOLVE_GPS_OFFSET_PROBE_DONE {
+        lines.push(
+            "hint=gps offset probe logged one pointer-sized value; no chain scan performed"
+                .into(),
+        );
+    }
+    if snap.resolve_status
+        == truckpilot_telemetry::nav_route::RESOLVE_GPS_OFFSET_PROBE_READ_FAILED
+    {
+        lines.push(
+            "hint=gps offset probe read failed; no chain scan performed".into(),
         );
     }
     if snap.resolve_status
@@ -423,6 +437,7 @@ pub fn format_dump_csv(snap: &RouteSnapshot) -> String {
 
 fn main() {
     let once = has_flag("--once");
+    let perf = has_flag("--perf");
     let json_path = arg_value("--json");
     let csv_path = arg_value("--csv");
 
@@ -454,6 +469,20 @@ fn main() {
         _ => {}
     }
 
+    if perf {
+        match DllPerfReader::open() {
+            Ok(reader) => match reader.read() {
+                Some(perf_snap) => {
+                    for line in format_perf_lines(&perf_snap) {
+                        println!("{line}");
+                    }
+                }
+                None => println!("{}", format_perf_unavailable("DllPerf SHM mapped but snapshot invalid")),
+            },
+            Err(e) => println!("{}", format_perf_unavailable(&e)),
+        }
+    }
+
     if let Some(path) = json_path {
         let json = format_dump_json(&snap).expect("serialize route dump");
         fs::write(&path, &json).unwrap_or_else(|e| {
@@ -483,6 +512,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use truckpilot_telemetry::dll_perf::{DllPerfSnapshot, DLL_PERF_MAGIC, DLL_PERF_VERSION};
     use truckpilot_telemetry::nav_route::{
         RouteWaypoint, ROUTE_BB_RESERVED_PUBLISH_STATUS, ROUTE_BB_RESERVED_RESOLVE_ATTEMPTS,
         ROUTE_BB_RESERVED_RESOLVE_STATUS, ROUTE_BB_RESERVED_ROUTE_TICK_COUNT,
@@ -707,6 +737,35 @@ mod tests {
     }
 
     #[test]
+    fn gps_offset_probe_done_status_shows_hint() {
+        let snap = RouteSnapshot {
+            resolve_status: truckpilot_telemetry::nav_route::RESOLVE_GPS_OFFSET_PROBE_DONE,
+            resolve_attempts: 2,
+            ..Default::default()
+        };
+        let lines = format_route_diag_lines(&snap);
+        assert!(lines.iter().any(|l| l.contains("gps_offset_probe_done")));
+        assert!(lines.iter().any(|l| {
+            l.contains("gps offset probe logged one pointer-sized value; no chain scan performed")
+        }));
+    }
+
+    #[test]
+    fn gps_offset_probe_read_failed_status_shows_hint() {
+        let snap = RouteSnapshot {
+            resolve_status:
+                truckpilot_telemetry::nav_route::RESOLVE_GPS_OFFSET_PROBE_READ_FAILED,
+            resolve_attempts: 2,
+            ..Default::default()
+        };
+        let lines = format_route_diag_lines(&snap);
+        assert!(lines.iter().any(|l| l.contains("gps_offset_probe_read_failed")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("gps offset probe read failed; no chain scan performed")));
+    }
+
+    #[test]
     fn srs_offset_unknown_status_shows_hint() {
         let snap = RouteSnapshot {
             resolve_status:
@@ -797,5 +856,65 @@ mod tests {
         assert_eq!(ROUTE_BB_RESERVED_RESOLVE_ATTEMPTS, 2);
         assert_eq!(ROUTE_BB_RESERVED_PUBLISH_STATUS, 3);
         assert_eq!(ROUTE_BB_RESERVED_ROUTE_TICK_COUNT, 5);
+    }
+
+    #[test]
+    fn route_shm_dump_renders_perf_snapshot_lines() {
+        let snap = DllPerfSnapshot {
+            magic: DLL_PERF_MAGIC,
+            version: DLL_PERF_VERSION,
+            worker_wake_set_event_count: 7,
+            ..Default::default()
+        };
+        let lines = format_perf_lines(&snap);
+        assert!(lines.iter().any(|l| l.starts_with("perf:")));
+        assert!(lines.iter().any(|l| l.contains("worker_wake_set_event_count=7")));
+    }
+
+    fn count_substring(haystack: &str, needle: &str) -> usize {
+        haystack.match_indices(needle).count()
+    }
+
+    #[test]
+    fn empty_route_message_prints_route_status_once() {
+        let snap = RouteSnapshot {
+            sequence: 1,
+            route_hash: 0,
+            valid: false,
+            flags: 0,
+            bb_status: ROUTE_BB_STATUS_DLL_ACTIVE,
+            resolve_status: RESOLVE_NONE,
+            resolve_attempts: 0,
+            publish_status: PUBLISH_EMPTY,
+            frame_cb_count: 0,
+            route_tick_count: 0,
+            frame_start_count: 0,
+            last_waypoint_count: 0,
+            frame_end_count: 0,
+            world_reset_count: 0,
+            last_world_reset_reason: 0,
+            world_reset_suppressed_count: 0,
+            waypoints: vec![],
+        };
+        let msg = format_empty_route_message(&snap);
+        assert_eq!(count_substring(&msg, "dll_active="), 1);
+        assert_eq!(count_substring(&msg, "route_resolve_status="), 1);
+    }
+
+    #[test]
+    fn active_route_summary_prints_route_status_once() {
+        let msg = format_active_route_summary(&sample_snap());
+        assert_eq!(count_substring(&msg, "dll_active="), 1);
+        assert_eq!(count_substring(&msg, "route_resolve_status="), 1);
+    }
+
+    #[test]
+    fn perf_unavailable_line_matches_expected_format() {
+        use truckpilot_telemetry::dll_perf::format_perf_unavailable;
+        let line = format_perf_unavailable("OpenFileMappingW failed for Local\\TruckPilotDllPerf");
+        assert_eq!(
+            line,
+            "perf: unavailable (OpenFileMappingW failed for Local\\TruckPilotDllPerf)"
+        );
     }
 }

@@ -12,6 +12,7 @@
 
 #![warn(missing_docs)]
 
+pub mod dll_perf;
 pub mod ets2_bin_analyze;
 pub mod http;
 pub mod memory;
