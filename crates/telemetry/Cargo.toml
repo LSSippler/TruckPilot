@@ -46,10 +46,6 @@ name = "route-shm-sim"
 path = "src/bin/route_shm_sim.rs"
 
 [[bin]]
-name = "route-log-analyze"
-path = "src/bin/route_log_analyze.rs"
-
-[[bin]]
 name = "route-shm-dump"
 path = "src/bin/route_shm_dump.rs"
 
