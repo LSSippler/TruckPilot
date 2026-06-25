@@ -1,0 +1,42 @@
+stages:
+  - build
+  - clippy
+  - test
+
+# Pipelines nur auf dev-Branch und in Merge Requests
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+default:
+  tags:
+    - geekom
+  before_script:
+    - source "$HOME/.cargo/env"
+  # Cache nur target/ (projektrelativ). cargo-Registry liegt auf der
+  # dedizierten Maschine ohnehin lokal warm, deshalb kein globaler Cache
+  # fuer ~/.cargo/registry (wuerde absolute Pfade erfordern).
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - target/
+
+build:
+  stage: build
+  script:
+    - cargo build --release -p truckpilot-core -p truckpilot-map-parser
+
+clippy:
+  stage: clippy
+  script:
+    # Kein -D warnings: es gibt bekannte Pre-existing Warnings.
+    # Nur echte clippy-Errors (Exit != 0) schlagen fehl.
+    - cargo clippy --release -p truckpilot-core -p truckpilot-map-parser
+
+test:
+  stage: test
+  script:
+    - cargo test --release -p truckpilot-core -p truckpilot-map-parser
