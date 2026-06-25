@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { subscribeBlackboardKeys } from "@/lib/ipc";
 import { OVERLAY_BB_KEYS } from "@/components/overlay/overlay-lib";
 import { AccPanel } from "@/components/overlay/AccPanel";
@@ -6,6 +6,9 @@ import { StatePanel } from "@/components/overlay/StatePanel";
 import { NotificationBar } from "@/components/overlay/NotificationBar";
 import { NavPanel } from "@/components/overlay/NavPanel";
 import { VehiclePanel } from "@/components/overlay/VehiclePanel";
+import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
+import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
+import { resolveOverlaySnapshot } from "@/components/overlay/overlay-snapshot";
 
 /// Transparent, click-through HUD overlay (Phase 6.5a). Rendered in the
 /// dedicated `overlay` Tauri window (route `/overlay`). It reuses the existing
@@ -13,6 +16,11 @@ import { VehiclePanel } from "@/components/overlay/VehiclePanel";
 /// blackboard keys via this window's own instance of the existing poller — NO
 /// second daemon connection (the WebSocket stays single, in Rust).
 export function Overlay() {
+  const snapshot = useMemo(
+    () => resolveOverlaySnapshot(new URLSearchParams(window.location.search)),
+    [],
+  );
+
   useEffect(() => {
     // Make THIS window's document see-through (only affects the overlay webview;
     // the window itself is `transparent: true` on the Rust side).
@@ -35,9 +43,11 @@ export function Overlay() {
   // sichtbar), dann ACC, State, Nav, Vehicle.
   return (
     <div className="pointer-events-none fixed inset-0 select-none text-xs">
+      {snapshot ? <LaneDebugCanvas snapshot={snapshot} /> : null}
       <div className="absolute left-3 top-3 flex max-h-[calc(100vh-1.5rem)] w-60 flex-col gap-2 overflow-hidden">
         <NotificationBar />
         <AccPanel />
+        {snapshot ? <SnapshotDebugPanel snapshot={snapshot} /> : null}
         <StatePanel />
         <NavPanel />
         <VehiclePanel />
