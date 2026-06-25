@@ -9,6 +9,9 @@
 //   cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay > snap.json
 //   paste into DevTools → localStorage.setItem("truckpilot.overlay_snapshot_json", `<json>`)
 //   open /overlay?overlay_snapshot=storage
+//
+// File import (SnapshotDebugPanel → "Import JSON"):
+//   validates via parseOverlaySnapshot, writes localStorage, re-renders like storage mode.
 
 import fixtureJson from "./overlay-snapshot.fixture.json";
 
@@ -234,6 +237,26 @@ export function readOverlaySnapshotFromStorage(): OverlaySnapshot | null {
   } catch {
     return null;
   }
+}
+
+/** True when `/overlay?overlay_snapshot=…` enables snapshot debug UI (not `off`). */
+export function isOverlaySnapshotDebugMode(search: URLSearchParams): boolean {
+  const mode = search.get("overlay_snapshot");
+  if (!mode || mode === "off" || mode === "0") return false;
+  return true;
+}
+
+/** Validate JSON, persist raw string to localStorage, return parsed snapshot or null. */
+export function saveOverlaySnapshotToStorage(raw: string): OverlaySnapshot | null {
+  const trimmed = raw.trim();
+  const snap = parseOverlaySnapshot(trimmed);
+  if (!snap) return null;
+  try {
+    localStorage.setItem(OVERLAY_SNAPSHOT_STORAGE_KEY, trimmed);
+  } catch {
+    return null;
+  }
+  return snap;
 }
 
 /** Resolve snapshot source from overlay route search params. */

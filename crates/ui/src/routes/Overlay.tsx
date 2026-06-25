@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { subscribeBlackboardKeys } from "@/lib/ipc";
 import { OVERLAY_BB_KEYS } from "@/components/overlay/overlay-lib";
 import { AccPanel } from "@/components/overlay/AccPanel";
@@ -8,7 +8,11 @@ import { NavPanel } from "@/components/overlay/NavPanel";
 import { VehiclePanel } from "@/components/overlay/VehiclePanel";
 import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
 import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
-import { resolveOverlaySnapshot } from "@/components/overlay/overlay-snapshot";
+import {
+  isOverlaySnapshotDebugMode,
+  resolveOverlaySnapshot,
+  type OverlaySnapshot,
+} from "@/components/overlay/overlay-snapshot";
 
 /// Transparent, click-through HUD overlay (Phase 6.5a). Rendered in the
 /// dedicated `overlay` Tauri window (route `/overlay`). It reuses the existing
@@ -16,9 +20,13 @@ import { resolveOverlaySnapshot } from "@/components/overlay/overlay-snapshot";
 /// blackboard keys via this window's own instance of the existing poller — NO
 /// second daemon connection (the WebSocket stays single, in Rust).
 export function Overlay() {
-  const snapshot = useMemo(
-    () => resolveOverlaySnapshot(new URLSearchParams(window.location.search)),
+  const search = useMemo(
+    () => new URLSearchParams(window.location.search),
     [],
+  );
+  const snapshotDebugMode = isOverlaySnapshotDebugMode(search);
+  const [snapshot, setSnapshot] = useState<OverlaySnapshot | null>(() =>
+    resolveOverlaySnapshot(search),
   );
 
   useEffect(() => {
@@ -47,7 +55,12 @@ export function Overlay() {
       <div className="absolute left-3 top-3 flex max-h-[calc(100vh-1.5rem)] w-60 flex-col gap-2 overflow-hidden">
         <NotificationBar />
         <AccPanel />
-        {snapshot ? <SnapshotDebugPanel snapshot={snapshot} /> : null}
+        {snapshotDebugMode ? (
+          <SnapshotDebugPanel
+            snapshot={snapshot}
+            onSnapshotImported={setSnapshot}
+          />
+        ) : null}
         <StatePanel />
         <NavPanel />
         <VehiclePanel />
