@@ -9,6 +9,39 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 - Wertformat: alles als `String`, numerische via `to_string()` / `get_f64()`.
 - Fehlt ein Key: semantisch "nicht vorhanden", nicht "0" (sentinel-frei).
 
+## ETS2-Route-Pipeline (Phase 5h)
+
+| Stufe | Komponente | Rolle |
+|---|---|---|
+| Quelle | ETS2 + `truckpilot_telemetry.dll` | Schreibt Route-UIDs ausschließlich in `Local\TruckPilotRouteBlackboard` |
+| Ingest | `core/ets2_route` | Liest RouteBlackboard-SHM, publiziert `navigation.ets2_route.*` |
+| Owner | **router plugin** | Match, Gap-Repair (5g), Trim, Live-Progress → schreibt `router.waypoints`, `router.route_node_ids`, `router.active` |
+| Consumer | **lane-keeper** | Liest nur Router-Vertrag + Telemetrie; schreibt **keine** Router-Keys |
+
+**SHM (removed Phase 5h):** `Local\TruckPilotNavRoute` — UID-only Legacy-Spike; DLL schreibt dort nicht mehr, kein Reader im Repo.
+
+Legacy entfernt in Phase 5f: Lane-Keeper öffnete früher `Local\TruckPilotNavRoute` und schrieb direkt `router.waypoints` (`maybe_inject_ets2_route`). Dieser Pfad existiert nicht mehr.
+
+Phase 5g: Fehlende ETS2-Hops zwischen gematchten Ankern werden im **Router** per `RouterGraph::plan` (A*) geschlossen, bevor Trim/Import. Lane-Keeper bleibt reiner Router-Output-Verbraucher.
+
+Phase 5i: DLL füllt `RouteWaypoint`-Felder (UID + optional `distance` @ item+0x14, unverified). Position/time aus ETS2-Item derzeit nicht extrahiert (kein verifizierter Offset). Core publiziert Koordinat-Diagnose; Router vergleicht optional ETS2- vs Graph-Positionen, nutzt aber weiterhin **Graph-Geometrie** für `router.waypoints`.
+
+Phase 5j: Core analysiert Distance-Monotonie (`distance_monotonic_status`, …). Router vergleicht ETS2-Restdistanz mit Graph-Routenlänge (`distance_graph_*`, rein diagnostisch). `route-shm-dump` exportiert RouteBlackboard als JSON/CSV. **`distance @+0x14` bleibt UNTRUSTED** bis Live-Verifikation; beeinflusst kein Routing.
+
+Phase 5k: `route-distance-recorder` / `route-distance-report` — Logging und Auswertung über echte Fahrten. Siehe [ets2_route_distance_verification.md](ets2_route_distance_verification.md).
+
+Phase 5l: `route-distance-meta-report` — Aggregierter Meta-Report über mehrere CSV-Logs; Entscheidungsvorbereitung für Entfernung von `UNTRUSTED` (noch nicht entfernt).
+
+Phase 5m: `route-distance-verify` — Strenges Promotion-Gate (passed/failed/inconclusive). Entfernt `UNTRUSTED` **nicht** automatisch; siehe [ets2_route_distance_verification.md](ets2_route_distance_verification.md).
+
+Entfernte Lane-Keeper-Diagnose-Keys (kein Writer mehr, Phase 5f):
+
+| Key (removed) | ehem. Writer |
+|---|---|
+| `router.ets2_nav_status` | lane-keeper legacy injector |
+| `router.ets2_uid_total` | lane-keeper legacy injector |
+| `router.ets2_uid_matched` | lane-keeper legacy injector |
+
 ## Key-Inventar
 
 | Key | Owner (Writer) | Readers | Format | Default | Lifetime |
@@ -22,7 +55,8 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 | `autopilot.intervention_brake` | (pending Watchdog 6.2g) | stats-logger | `"true"`/`"false"` | absent | per-tick |
 | `plugins.loaded` | core/plugin_manager publish_loaded_names | core/state_machine critical_plugins_check | CSV plugin names | `""` | persistent |
 | `router.active` | router plugin | core/state_machine, lane-keeper | `"true"`/`"false"` | `"false"` | per-PhaseA-tick |
-| `router.waypoints` | router plugin | lane-keeper | JSON `[[x,z],...]` | absent | per-replan (PhaseA, 1Hz) |
+| `router.waypoints` | router plugin | lane-keeper | JSON `[[x,z],...]` | absent | per-replan / ETS2 import (PhaseA, 1Hz) |
+| `router.route_node_ids` | router plugin | lane-keeper, diag | JSON `[uid,...]` | absent | per-replan / ETS2 import |
 | `router.graph_path` | UI/config | router (on_load) | path string | (default) | persistent |
 | `router.last_planning_attempt_at` | router plugin | diag | u64 epoch ms | `""` | per-request |
 | `router.last_snap_dist` | router plugin | diag | f64 metres `"{:.1}"` | `"0"` | per-replan |
@@ -70,6 +104,72 @@ Empirisch erhoben per Grep ueber `crates/` am 2026-05-11.
 | `telemetry.accel_longitudinal` | core/main | (consumer pending) | f64 | absent | per-tick |
 | `telemetry.fuel_liters` | core/main | fuel-stops | f64 | absent | per-tick |
 | `telemetry.odometer_km` | core/main | stats-logger | f64 | absent | per-tick |
+| `navigation.ets2_route.available` | core/ets2_route | router (planned), diag | `"true"`/`"false"` | `"false"` | per-500ms poll |
+| `navigation.ets2_route.valid` | core/ets2_route | router (planned), diag | `"true"`/`"false"` | absent when unavailable | per-route-change |
+| `navigation.ets2_route.sequence` | core/ets2_route | diag | u32 seqlock generation | absent | per-route-change |
+| `navigation.ets2_route.hash` | core/ets2_route | router (planned), diag | u64 FNV-1a over UIDs | absent | per-route-change |
+| `navigation.ets2_route.waypoint_count` | core/ets2_route | router (planned), diag | usize | absent | per-route-change |
+| `navigation.ets2_route.source` | core/ets2_route | diag | `"ets2_shm"` | absent | per-route-change |
+| `navigation.ets2_route.position_count` | core/ets2_route | diag | usize waypoints with `HAS_POSITION` flag | absent when unavailable | per SHM poll |
+| `navigation.ets2_route.position_ratio` | core/ets2_route | diag | f64 `0..1` `{:.4}` | absent | per SHM poll |
+| `navigation.ets2_route.distance_count` | core/ets2_route | diag | usize waypoints with `HAS_DISTANCE` flag | absent | per SHM poll |
+| `navigation.ets2_route.time_count` | core/ets2_route | diag | usize waypoints with `HAS_TIME` flag | absent | per SHM poll |
+| `navigation.ets2_route.first_position` | core/ets2_route | diag | `"x,y,z"` first positioned waypoint or absent | absent | per SHM poll |
+| `navigation.ets2_route.last_position` | core/ets2_route | diag | `"x,y,z"` last positioned waypoint or absent | absent | per SHM poll |
+| `navigation.ets2_route.coord_source` | core/ets2_route | diag | `none`/`ets2_waypoint`/`graph_only`/`mixed` | absent | per SHM poll |
+| `navigation.ets2_route.coord_status` | core/ets2_route | diag | `unavailable`/`available`/`partial`/`untrusted` | absent | per SHM poll |
+| `navigation.ets2_route.distance_untrusted_count` | core/ets2_route | diag | usize waypoints with distance+untrusted | absent | per SHM poll |
+| `navigation.ets2_route.distance_first_m` | core/ets2_route | diag | f64 first remaining distance | absent | per SHM poll |
+| `navigation.ets2_route.distance_last_m` | core/ets2_route | diag | f64 last remaining distance | absent | per SHM poll |
+| `navigation.ets2_route.distance_min_m` | core/ets2_route | diag | f64 min remaining distance | absent | per SHM poll |
+| `navigation.ets2_route.distance_max_m` | core/ets2_route | diag | f64 max remaining distance | absent | per SHM poll |
+| `navigation.ets2_route.distance_monotonic_status` | core/ets2_route | diag | `none`/`ok`/`flat`/`increasing`/`jumpy`/`partial` | absent | per SHM poll |
+| `navigation.ets2_route.distance_increase_count` | core/ets2_route | diag | usize steps where distance rose >0.5m | absent | per SHM poll |
+| `navigation.ets2_route.distance_drop_max_m` | core/ets2_route | diag | f64 max step drop between samples | absent | per SHM poll |
+| `navigation.ets2_route.distance_step_avg_m` | core/ets2_route | diag | f64 avg abs step between distance samples | absent | per SHM poll |
+| `navigation.ets2_route.coord_graph_delta_avg_m` | router plugin | diag | f64 avg horizontal delta ETS2 x/z vs graph node | absent when no ETS2 positions | per ETS2 import |
+| `navigation.ets2_route.coord_graph_delta_max_m` | router plugin | diag | f64 max horizontal delta | absent | per ETS2 import |
+| `navigation.ets2_route.coord_graph_delta_count` | router plugin | diag | usize compared waypoints | absent | per ETS2 import |
+| `navigation.ets2_route.distance_graph_total_m` | router plugin | diag | f64 graph path length of imported route | absent when no ETS2 distance | per ETS2 import |
+| `navigation.ets2_route.distance_first_vs_graph_delta_m` | router plugin | diag | f64 \|ETS2 first distance − graph total\| | absent | per ETS2 import |
+| `navigation.ets2_route.distance_graph_ratio` | router plugin | diag | f64 ETS2 first distance / graph total | absent | per ETS2 import |
+| `navigation.ets2_route.distance_graph_status` | router plugin | diag | `none`/`ok`/`mismatch`/`partial`/`untrusted` — **no import impact** | absent | per ETS2 import |
+| `navigation.ets2_route.raw_uids` | core/main | diag (debug) | JSON `[i64,...]` max 64 UIDs | absent when route >64 or invalid | per-route-change |
+| `navigation.ets2_route.match_status` | core/ets2_route | router (planned), diag | `unavailable`/`invalid`/`matched`/`partial`/`failed` | absent when SHM unavailable | per-route-change |
+| `navigation.ets2_route.matched_count` | core/ets2_route | diag | usize | absent | per-route-change |
+| `navigation.ets2_route.missing_count` | core/ets2_route | diag | usize | absent | per-route-change |
+| `navigation.ets2_route.match_ratio` | core/ets2_route | diag | f64 `0..1` formatted `{:.4}` | absent | per-route-change |
+| `navigation.ets2_route.first_missing_uid` | core/ets2_route | diag | u64 | absent when none missing | per-route-change |
+| `navigation.ets2_route.usable` | core/ets2_route | router (planned), diag | `"true"`/`"false"` | absent | per-route-change |
+| `navigation.ets2_route.import_error` | core/ets2_route, router | diag | string | absent when usable/import ok | per-route-change / import fail |
+| `navigation.ets2_route.imported` | router plugin | diag, UI | `"true"`/`"false"` | `"false"` | per ETS2 import attempt |
+| `navigation.ets2_route.imported_hash` | router plugin | diag | u64 route_hash last imported | absent when not imported | per successful import |
+| `navigation.ets2_route.imported_node_count` | router plugin | diag | usize matched nodes **after trim** | absent when not imported | per successful import |
+| `navigation.ets2_route.trimmed` | router plugin | diag | `"true"`/`"false"` — route start trimmed to truck progress | absent when not imported | per successful import |
+| `navigation.ets2_route.trim_start_index` | router plugin | diag | usize index into pre-trim matched node list | absent when not imported | per successful import |
+| `navigation.ets2_route.trim_original_node_count` | router plugin | diag | usize matched nodes before trim | absent when not imported | per successful import |
+| `navigation.ets2_route.trimmed_node_count` | router plugin | diag | usize nodes after trim (same as imported_node_count) | absent when not imported | per successful import |
+| `navigation.ets2_route.snap_dist_m` | router plugin | diag | f64 metres truck→nearest route segment | absent when not imported | per successful import |
+| `navigation.ets2_route.snap_status` | router plugin | diag | `ok`/`too_far`/`no_position`/`too_short`/`fallback_zero` | absent when not imported | per import attempt |
+| `navigation.ets2_route.snap_heading_delta_deg` | router plugin | diag | f64 angle truck vs best segment (optional) | absent when no heading | per successful import |
+| `navigation.ets2_route.progress_start_index` | router plugin | diag | usize publizierter Startindex in voller ETS2-Route | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.progress_original_node_count` | router plugin | diag | usize volle importierte Node-Liste | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.progress_remaining_node_count` | router plugin | diag | usize aktuell publizierter Rest | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.progress_republished` | router plugin | diag | `"true"`/`"false"` — letztes Re-Trim hat Output geändert | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.progress_status` | router plugin | diag | `ok`/`unchanged`/`advanced`/`regression_ignored`/`snap_bad`/`released` | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.offroute_secs` | router plugin | diag | f64 Sekunden mit `too_far`-Snap während aktivem Import | absent when not imported | per active ETS2 tick |
+| `navigation.ets2_route.release_reason` | router plugin | diag | `none`/`route_lost`/`invalid`/`unusable`/`too_short`/`ets2_off_route`/`build_error` | `none` on load | on release / import fail |
+| `navigation.ets2_route.repair_status` | router plugin | diag | `none`/`not_needed`/`repaired`/`partial_unrepaired`/`failed`/`disabled` | absent when not imported | per ETS2 import attempt |
+| `navigation.ets2_route.repair_gap_count` | router plugin | diag | usize gaps detected | absent | per import attempt |
+| `navigation.ets2_route.repair_success_count` | router plugin | diag | usize gaps closed via A* | absent | per import attempt |
+| `navigation.ets2_route.repair_failed_count` | router plugin | diag | usize gaps that failed repair | absent | per import attempt |
+| `navigation.ets2_route.repair_inserted_node_count` | router plugin | diag | usize intermediate nodes inserted | absent | per import attempt |
+| `navigation.ets2_route.repair_first_failed_gap` | router plugin | diag | `"from_uid->to_uid"` or absent | absent | on repair failure |
+| `navigation.ets2_route.repair_error` | router plugin | diag | string reason or absent | absent | on repair failure |
+| `navigation.ets2_route.import_state` | router plugin | diag | `inactive`/`active`/`lost`/`invalid`/`unusable`/`fallback_astar` | `inactive` on load | per ETS2 lifecycle tick |
+| `navigation.ets2_route.fallback_reason` | router plugin | diag | `no_snapshot`/`invalid_snapshot`/`unusable_match`/`build_error`/`route_lost`/`manual_goal_astar`/`ets2_off_route` | absent when active | on fallback/release |
+| `navigation.ets2_route.last_imported_hash` | router plugin | diag | u64 last successful import | absent until first import | persists after release |
+| `navigation.ets2_route.last_imported_sequence` | router plugin | diag | u32 last successful import | absent until first import | persists after release |
 | `cruise.target_kmh` | (no writer found in code) | speed-controller | f64 | absent | persistent (UI-Pfad fehlt) |
 
 ## Lane-Keeper Phase 2c/2d Diagnose-Keys (read-only Instrumentierung)
