@@ -3,6 +3,7 @@
 //! No daemon, no game-memory reads, no steering, no resolver activation.
 //! Used by `truckpilot-status` and the overlay snapshot layer.
 
+#[cfg(windows)]
 use crate::dll_perf::{diag_level_name, DllPerfReader, DllPerfSnapshot};
 use crate::nav_route::{
     route_resolve_status_name, RouteBlackboardReader, RouteSnapshot,
@@ -25,7 +26,8 @@ pub enum StatusVerdict {
 /// Raw inputs gathered from SHM (separated from logic so it is testable offline).
 #[derive(Debug, Clone, Default)]
 pub struct RawStatusInputs {
-    /// Perf SHM snapshot, if mapped.
+    /// Perf SHM snapshot, if mapped (Windows only — `dll_perf` uses `std::os::windows`).
+    #[cfg(windows)]
     pub perf: Option<DllPerfSnapshot>,
     /// Route blackboard snapshot, if mapped.
     pub route: Option<RouteSnapshot>,
@@ -94,6 +96,7 @@ pub fn status_exit_code(v: StatusVerdict) -> i32 {
 /// Read current SHM inputs without evaluation.
 pub fn read_raw_inputs() -> RawStatusInputs {
     RawStatusInputs {
+        #[cfg(windows)]
         perf: DllPerfReader::open().ok().and_then(|r| r.read()),
         route: RouteBlackboardReader::open().ok().and_then(|r| r.read()),
         telemetry_shm_present: ShmReader::open().is_ok(),
@@ -108,7 +111,10 @@ pub fn read_live_status() -> StatusReport {
 
 /// Pure status evaluation from raw SHM inputs.
 pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
+    #[cfg(windows)]
     let perf_shm_available = inp.perf.is_some();
+    #[cfg(not(windows))]
+    let perf_shm_available = false;
     let route_bb_available = inp.route.is_some();
 
     if !perf_shm_available && !route_bb_available {
@@ -138,7 +144,6 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         };
     }
 
-    let perf = inp.perf.as_ref();
     let route = inp.route.as_ref();
 
     let dll_active = route
@@ -146,29 +151,41 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         .unwrap_or(false)
         || perf_shm_available;
 
-    let diag_level = perf
-        .map(|p| diag_level_name(p.diag_level_code).to_string())
-        .unwrap_or_else(|| "unknown".into());
+    // Perf-SHM values (Windows only; all default to zero/unknown on other platforms).
+    #[cfg(windows)]
+    let (diag_level, resolver_attempts_from_perf, pattern_scan_count,
+         worker_walk_count, worker_wake_set_event_count, worker_parked_skip_count,
+         input_enabled, frame_cb_count_from_perf, frame_cb_us_max, frame_cb_over_1000us) = {
+        let p = inp.perf.as_ref();
+        (
+            p.map(|p| diag_level_name(p.diag_level_code).to_string())
+             .unwrap_or_else(|| "unknown".into()),
+            p.map(|p| p.resolver_attempts),
+            p.map(|p| p.pattern_scan_count).unwrap_or(0),
+            p.map(|p| p.worker_walk_count).unwrap_or(0),
+            p.map(|p| p.worker_wake_set_event_count).unwrap_or(0),
+            p.map(|p| p.worker_parked_skip_count).unwrap_or(0),
+            p.map(|p| p.input_enabled != 0).unwrap_or(false),
+            p.map(|p| p.frame_cb_count),
+            p.map(|p| p.buckets[0].max_us).unwrap_or(0),
+            p.map(|p| p.buckets[0].over_1000us).unwrap_or(0),
+        )
+    };
+    #[cfg(not(windows))]
+    let (diag_level, resolver_attempts_from_perf, pattern_scan_count,
+         worker_walk_count, worker_wake_set_event_count, worker_parked_skip_count,
+         input_enabled, frame_cb_count_from_perf, frame_cb_us_max, frame_cb_over_1000us):
+        (String, Option<u32>, u32, u32, u32, u32, bool, Option<u32>, u64, u64) =
+        ("unknown".to_string(), None, 0, 0, 0, 0, false, None, 0, 0);
 
-    let resolver_attempts = perf
-        .map(|p| p.resolver_attempts)
+    let resolver_attempts = resolver_attempts_from_perf
         .or_else(|| route.map(|r| r.resolve_attempts))
         .unwrap_or(0);
-    let pattern_scan_count = perf.map(|p| p.pattern_scan_count).unwrap_or(0);
-    let worker_walk_count = perf.map(|p| p.worker_walk_count).unwrap_or(0);
-    let worker_wake_set_event_count = perf.map(|p| p.worker_wake_set_event_count).unwrap_or(0);
-    let worker_parked_skip_count = perf.map(|p| p.worker_parked_skip_count).unwrap_or(0);
     let worker_asleep = worker_walk_count == 0 && worker_wake_set_event_count == 0;
-
-    let input_enabled = perf.map(|p| p.input_enabled != 0).unwrap_or(false);
     let input_disabled = !input_enabled;
-
-    let frame_cb_count = perf
-        .map(|p| p.frame_cb_count)
+    let frame_cb_count = frame_cb_count_from_perf
         .or_else(|| route.map(|r| r.frame_cb_count))
         .unwrap_or(0);
-    let frame_cb_us_max = perf.map(|p| p.buckets[0].max_us).unwrap_or(0);
-    let frame_cb_over_1000us = perf.map(|p| p.buckets[0].over_1000us).unwrap_or(0);
 
     let resolve_status = route
         .map(|r| route_resolve_status_name(r.resolve_status).to_string())
@@ -347,8 +364,10 @@ pub fn format_status_json(r: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use crate::dll_perf::{DLL_PERF_MAGIC, DLL_PERF_VERSION};
 
+    #[cfg(windows)]
     fn safe_off_perf() -> DllPerfSnapshot {
         DllPerfSnapshot {
             magic: DLL_PERF_MAGIC,
@@ -375,6 +394,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn safe_off_is_cold_and_exit_zero() {
         let r = evaluate_status(&RawStatusInputs {
@@ -389,6 +409,7 @@ mod tests {
         assert_eq!(r.waypoint_count, 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn resolver_attempts_makes_it_hot() {
         let mut perf = safe_off_perf();

@@ -266,6 +266,7 @@ mod tests {
     use super::*;
     use crate::nav_route::{RouteSnapshot, RouteWaypoint, ROUTE_WP_FLAG_HAS_POSITION};
     use crate::status_report::{evaluate_status, RawStatusInputs, StatusVerdict};
+    #[cfg(windows)]
     use crate::dll_perf::{DllPerfSnapshot, DLL_PERF_MAGIC, DLL_PERF_VERSION};
     use crate::nav_route::{RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE};
 
@@ -294,6 +295,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn resolver_off_yields_invalid_mock_lane() {
         let mut perf = DllPerfSnapshot {
@@ -319,6 +321,7 @@ mod tests {
         assert!(!lane_keeper_allowed(&status, &lane));
     }
 
+    #[cfg(windows)]
     #[test]
     fn route_blackboard_builds_centerline_when_valid() {
         let mut perf = DllPerfSnapshot {

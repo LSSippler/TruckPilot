@@ -41,11 +41,13 @@ pub fn format_overlay_json(snap: &OverlaySnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use crate::dll_perf::{DllPerfSnapshot, DLL_PERF_MAGIC, DLL_PERF_VERSION};
     use crate::lane_debug::LaneDataSource;
     use crate::nav_route::{RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE, RouteSnapshot};
     use crate::status_report::{evaluate_status, RawStatusInputs};
 
+    #[cfg(windows)]
     #[test]
     fn overlay_json_includes_status_and_lane() {
         let perf = DllPerfSnapshot {
@@ -80,6 +82,7 @@ mod tests {
         assert!(parsed["status"]["dll_active"].as_bool().unwrap());
     }
 
+    #[cfg(windows)]
     #[test]
     fn overlay_safe_off_lane_is_mock_not_error() {
         let perf = DllPerfSnapshot {
