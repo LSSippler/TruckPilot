@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import fixtureJson from "@/components/overlay/overlay-snapshot.fixture.json";
 import {
+  isOverlaySnapshotDebugMode,
   loadOverlaySnapshotFixture,
   mapLanePointsToSchematic,
+  OVERLAY_SNAPSHOT_STORAGE_KEY,
   parseOverlaySnapshot,
   resolveOverlaySnapshot,
+  saveOverlaySnapshotToStorage,
   type OverlaySnapshot,
 } from "@/components/overlay/overlay-snapshot";
 
@@ -44,6 +47,35 @@ describe("resolveOverlaySnapshot", () => {
 
   it("returns null when explicitly off", () => {
     expect(resolveOverlaySnapshot(new URLSearchParams("overlay_snapshot=off"))).toBeNull();
+  });
+});
+
+describe("isOverlaySnapshotDebugMode", () => {
+  it("is true for fixture and storage modes", () => {
+    expect(isOverlaySnapshotDebugMode(new URLSearchParams("overlay_snapshot=fixture"))).toBe(true);
+    expect(isOverlaySnapshotDebugMode(new URLSearchParams("overlay_snapshot=storage"))).toBe(true);
+  });
+
+  it("is false when off or absent", () => {
+    expect(isOverlaySnapshotDebugMode(new URLSearchParams("overlay_snapshot=off"))).toBe(false);
+    expect(isOverlaySnapshotDebugMode(new URLSearchParams(""))).toBe(false);
+  });
+});
+
+describe("saveOverlaySnapshotToStorage", () => {
+  it("persists valid JSON and returns parsed snapshot", () => {
+    localStorage.removeItem(OVERLAY_SNAPSHOT_STORAGE_KEY);
+    const raw = JSON.stringify(fixtureJson);
+    const snap = saveOverlaySnapshotToStorage(raw);
+    expect(snap).not.toBeNull();
+    expect(snap!.lane.source).toBe("mock");
+    expect(localStorage.getItem(OVERLAY_SNAPSHOT_STORAGE_KEY)).toBe(raw);
+  });
+
+  it("returns null for invalid JSON without writing storage", () => {
+    localStorage.setItem(OVERLAY_SNAPSHOT_STORAGE_KEY, "keep");
+    expect(saveOverlaySnapshotToStorage("{not valid")).toBeNull();
+    expect(localStorage.getItem(OVERLAY_SNAPSHOT_STORAGE_KEY)).toBe("keep");
   });
 });
 
