@@ -249,6 +249,7 @@ mod tests {
             roll: 0.0,
             speed_ms,
             engine_rpm: 1200.0,
+            engine_gear: 0,
             cruise_control_kmh: cruise_kmh,
             nav_speed_limit_kmh: -1.0,
             lead_vehicle_distance_m: lead_dist,
