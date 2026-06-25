@@ -1,0 +1,103 @@
+# .graphifyignore — controls what graphify walks when building the knowledge graph.
+#
+# WHY THIS FILE EXISTS:
+# graphify prefers .graphifyignore over .gitignore PER DIRECTORY (it reads one or
+# the other, never both). So this file must MIRROR .gitignore to avoid regressing
+# the excludes graphify already relied on, PLUS add ML-data/capture dumps that are
+# committed to git on purpose (data/captures/ has ~3k tracked files) but are pure
+# noise for a CODE knowledge graph.
+#
+# If you change .gitignore, mirror the relevant lines here too.
+# Build/dep dirs (target, node_modules, dist, build, .venv, __pycache__, ...) are
+# ALWAYS skipped by graphify internally — no need to list them.
+
+# ---- mirror of .gitignore ----
+/target
+TruckPilot.NET/**/bin/
+TruckPilot.NET/**/obj/
+TruckPilot.TelemetryDLL/build/
+.vs/
+.vscode/
+*.suo
+*.user
+*.log
+live_test_*.log
+Thumbs.db
+.DS_Store
+truckpilot_bundle.txt
+*.tmp
+~syncthing~*
+.env
+.env.*
+!.env.example
+crates/map-parser/tests/fixtures/*.bin
+.aider*
+.claude/settings.local.json
+.opencode/
+featherless-models.json
+fallback_proxy.py
+test-fallbacks.sh
+test-models.sh
+test-results.md
+crates/ui/node_modules/
+crates/ui/dist/
+crates/ui/.svelte-kit/
+crates/ui/build/
+node_modules/
+plugins/*.so
+plugins/*.dll
+plugins/*.dylib
+hashfs_reader/target/
+graph.json
+hashes.txt
+parse_full.txt
+outputs/
+parse_output.txt
+road_dump_*.txt
+skip_audit*.txt
+sector_audit*.txt
+uid_resolution*.txt
+aux_inspection*.txt
+*.bak
+docs/vault/
+android-server-monitor/app/build/
+android-server-monitor/.gradle/
+android-server-monitor/local.properties
+android-server-monitor/app/release/
+release/
+docs/api/
+ets2_nodes.json
+ets2_map_data.json
+audit_report.txt
+*_report.txt
+*_results.txt
+probe.log
+last_route_uids*.txt
+mod_order.json
+perf.data*
+__pycache__/
+*.egg-info/
+.venv/
+*-v*.zip
+**/obj/
+tools/vision-live-demo/
+models/
+stats.db
+.claude/worktrees/
+capture_frames/
+tools/cvat-setup/vendor/
+tools/model-tools/sign_crops/
+tools/model-tools/sign_crops_labeled/
+.auto-claude/
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.worktrees/
+.security-key
+logs/security/
+
+# ---- graphify-only: ML training data & capture dumps (committed, but not code) ----
+# These hold ~54k .jpg/.txt/.png files that bloat the manifest and slow `update`.
+tools/vision-training-collector/data/
+data/captures/
+tools/ufld-test/output/
