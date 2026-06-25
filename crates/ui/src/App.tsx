@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { RouteShell } from "@/components/layout/RouteShell";
@@ -11,21 +11,29 @@ import { Logs } from "@/routes/Logs";
 import { Blackboard } from "@/routes/Blackboard";
 import { ExternalDashboard } from "@/routes/ExternalDashboard";
 import { Overlay } from "@/routes/Overlay";
+import { isOverlaySnapshotStandaloneMode } from "@/components/overlay/overlay-snapshot";
 import { initIpcSubscriptions } from "@/lib/ipc";
 import { HotkeyHandler } from "@/components/HotkeyHandler";
 import { AutopilotToastWatcher } from "@/components/AutopilotToastWatcher";
 
 export function App() {
+  const location = useLocation();
+  const skipIpc = useMemo(() => {
+    if (!location.pathname.startsWith("/overlay")) return false;
+    return isOverlaySnapshotStandaloneMode(new URLSearchParams(location.search));
+  }, [location.pathname, location.search]);
+
   useEffect(() => {
+    if (skipIpc) return;
     const teardown = initIpcSubscriptions();
     return () => {
       void teardown.then((fn) => fn());
     };
-  }, []);
+  }, [skipIpc]);
 
   // The overlay window renders chrome-less and must NOT mount global chrome
   // (toasts/hotkeys) — it shares this App but lives in its own webview.
-  const isOverlay = useLocation().pathname.startsWith("/overlay");
+  const isOverlay = location.pathname.startsWith("/overlay");
 
   return (
     <>

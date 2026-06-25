@@ -12,6 +12,8 @@ export default defineConfig({
     },
   },
   clearScreen: false,
+  // Dev server: desk-only UI work. Do not use `npm run dev` while driving ETS2;
+  // overlay in-game needs a Tauri release build (see overlay-snapshot.ts).
   server: {
     port: 1420,
     strictPort: true,

@@ -1,10 +1,14 @@
 //! Snap-to-game + visibility loop for the HUD overlay window (Phase 6.5).
 //!
-//! Every 200 ms the overlay is shown while ETS2 is the FOREGROUND window and not
-//! minimized, then moved/sized to exactly cover the ETS2 window. On minimize or
-//! focus loss it is hidden. A short hysteresis (see `HYST_POLLS`) debounces
-//! show/hide so brief focus changes don't flicker the overlay. The window is
-//! created hidden, so it only ever appears under those conditions.
+//! Every 750 ms the overlay is shown while ETS2 is the FOREGROUND window and not
+//! minimized, then moved/sized to exactly cover the ETS2 window (only when the
+//! rect changes). On minimize or focus loss it is hidden; while hidden, no
+//! position/size Win32 calls are made. A short hysteresis (see `HYST_POLLS`)
+//! debounces show/hide so brief focus changes don't flicker the overlay.
+//!
+//! Perf: do not test this overlay with `npm run dev` while driving — use a Tauri
+//! release build. Snapshot fixture/import (`?overlay_snapshot=fixture|storage`)
+//! is read-only and needs no daemon.
 //!
 //! NOTE (Phase 6.5b): hiding in the pause/main menu is intentionally NOT done
 //! here. Both candidate signals were empirically disproven — the telemetry
@@ -33,7 +37,7 @@ pub fn start(app: tauri::AppHandle, label: &'static str) {
         .chain(std::iter::once(0))
         .collect();
 
-    const POLL: Duration = Duration::from_millis(200);
+    const POLL: Duration = Duration::from_millis(750);
     // Hysteresis: require this many consecutive polls agreeing on the desired
     // visibility before toggling, to avoid flicker on brief focus changes.
     const HYST_POLLS: u32 = 2;
@@ -43,6 +47,7 @@ pub fn start(app: tauri::AppHandle, label: &'static str) {
         // which the desired state disagrees with `shown`.
         let mut shown = false;
         let mut pending: u32 = 0;
+        let mut last_applied_rect: Option<(i32, i32, u32, u32)> = None;
 
         loop {
             // Stop the loop once the overlay window no longer exists.
@@ -73,13 +78,6 @@ pub fn start(app: tauri::AppHandle, label: &'static str) {
                 }
             }
 
-            // Keep the overlay aligned to the game window whenever we have
-            // geometry (cheap; keeps a soon-to-show window in place).
-            if let Some((x, y, w, h)) = rect_opt {
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-                let _ = window.set_size(PhysicalSize::new(w, h));
-            }
-
             // Hysteresis: only flip show/hide after HYST_POLLS agree.
             let want = rect_opt.is_some();
             if want == shown {
@@ -91,9 +89,22 @@ pub fn start(app: tauri::AppHandle, label: &'static str) {
                         let _ = window.show();
                     } else {
                         let _ = window.hide();
+                        last_applied_rect = None;
                     }
                     shown = want;
                     pending = 0;
+                }
+            }
+
+            // Align overlay only while visible and only when ETS2 rect changed.
+            if shown {
+                if let Some((x, y, w, h)) = rect_opt {
+                    let rect = (x, y, w, h);
+                    if last_applied_rect != Some(rect) {
+                        let _ = window.set_position(PhysicalPosition::new(x, y));
+                        let _ = window.set_size(PhysicalSize::new(w, h));
+                        last_applied_rect = Some(rect);
+                    }
                 }
             }
 

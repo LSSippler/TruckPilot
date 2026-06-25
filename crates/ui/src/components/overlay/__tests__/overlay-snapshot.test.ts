@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fixtureJson from "@/components/overlay/overlay-snapshot.fixture.json";
 import {
+  isOverlaySnapshotStandaloneMode,
   loadOverlaySnapshotFixture,
   mapLanePointsToSchematic,
   parseOverlaySnapshot,
@@ -44,6 +45,27 @@ describe("resolveOverlaySnapshot", () => {
 
   it("returns null when explicitly off", () => {
     expect(resolveOverlaySnapshot(new URLSearchParams("overlay_snapshot=off"))).toBeNull();
+  });
+});
+
+describe("isOverlaySnapshotStandaloneMode", () => {
+  it("is true for fixture, mock, and storage modes", () => {
+    expect(isOverlaySnapshotStandaloneMode(new URLSearchParams("overlay_snapshot=fixture"))).toBe(
+      true,
+    );
+    expect(isOverlaySnapshotStandaloneMode(new URLSearchParams("overlay_snapshot=mock"))).toBe(
+      true,
+    );
+    expect(isOverlaySnapshotStandaloneMode(new URLSearchParams("overlay_snapshot=storage"))).toBe(
+      true,
+    );
+  });
+
+  it("is false when off or on normal overlay route", () => {
+    expect(isOverlaySnapshotStandaloneMode(new URLSearchParams("overlay_snapshot=off"))).toBe(
+      false,
+    );
+    expect(isOverlaySnapshotStandaloneMode(new URLSearchParams(""))).toBe(false);
   });
 });
 

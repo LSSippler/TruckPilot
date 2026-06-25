@@ -10,6 +10,7 @@ import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
 import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
 import {
   isOverlaySnapshotDebugMode,
+  isOverlaySnapshotStandaloneMode,
   resolveOverlaySnapshot,
   type OverlaySnapshot,
 } from "@/components/overlay/overlay-snapshot";
@@ -25,6 +26,7 @@ export function Overlay() {
     [],
   );
   const snapshotDebugMode = isOverlaySnapshotDebugMode(search);
+  const snapshotStandalone = isOverlaySnapshotStandaloneMode(search);
   const [snapshot, setSnapshot] = useState<OverlaySnapshot | null>(() =>
     resolveOverlaySnapshot(search),
   );
@@ -33,14 +35,15 @@ export function Overlay() {
     // Make THIS window's document see-through (only affects the overlay webview;
     // the window itself is `transparent: true` on the Rust side).
     document.documentElement.classList.add("overlay-active");
-    // Register the keys our panels render so the shared 500 ms poller fetches
-    // exactly these (and no more).
-    const unsubscribe = subscribeBlackboardKeys(OVERLAY_BB_KEYS);
+    // Snapshot fixture/storage/mock: read-only local data — no daemon blackboard poll.
+    const unsubscribe = snapshotStandalone
+      ? () => {}
+      : subscribeBlackboardKeys(OVERLAY_BB_KEYS);
     return () => {
       document.documentElement.classList.remove("overlay-active");
       unsubscribe();
     };
-  }, []);
+  }, [snapshotStandalone]);
 
   // Layout (Phase 6.5b): EINE Safe-Zone-Spalte am linken Rand, oben verankert und
   // gestapelt. ETS2 besitzt sein eigenes HUD — Karte/Minimap unten-rechts,

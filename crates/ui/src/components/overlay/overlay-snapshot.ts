@@ -3,7 +3,11 @@
 // Activation (no daemon required):
 //   /overlay?overlay_snapshot=fixture     → embedded fixture (MOCK lane lines)
 //   /overlay?overlay_snapshot=storage     → localStorage paste from CLI output
+//   /overlay?overlay_snapshot=mock        → same as fixture
 //   localStorage key `truckpilot.overlay_snapshot_json` = full JSON string
+//
+// Dev / perf: snapshot modes skip IPC (no daemon, no blackboard poll). Do not drive
+// with `npm run dev` — use a Tauri release build for in-game overlay tests.
 //
 // Paste workflow:
 //   cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay > snap.json
@@ -244,6 +248,19 @@ export function isOverlaySnapshotDebugMode(search: URLSearchParams): boolean {
   const mode = search.get("overlay_snapshot");
   if (!mode || mode === "off" || mode === "0") return false;
   return true;
+}
+
+/** Snapshot-only overlay: no daemon IPC, blackboard poll, or telemetry subscriptions. */
+export function isOverlaySnapshotStandaloneMode(search: URLSearchParams): boolean {
+  const mode = search.get("overlay_snapshot");
+  if (!mode || mode === "off" || mode === "0") return false;
+  return (
+    mode === "fixture" ||
+    mode === "mock" ||
+    mode === "1" ||
+    mode === "storage" ||
+    mode === "local"
+  );
 }
 
 /** Validate JSON, persist raw string to localStorage, return parsed snapshot or null. */
