@@ -148,3 +148,20 @@ tools/model-tools/sign_crops_labeled/
 .worktrees/
 .security-key
 logs/security/
+
+# Graphify cache and generated HTML (regenerated on demand)
+graphify-out/cache/
+graphify-out/*.html
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Standalone sub-projects (local only, not part of this repo)
+flask/
+tools/discord/
+
+# Compiled plugin DLLs / deployment directory (build artifacts, root-level only)
+/plugins/
+
+# Named graph snapshots / baselines kept locally
+baselines/

@@ -147,12 +147,19 @@ pub struct PluginManager {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin updates
     /// this each tick; the state machine reads it for engage-time checks.
     pub route_node_ids: Arc<RwLock<HashSet<u64>>>,
+    /// Read-only ETS2 route snapshot + graph match cache (Phase 5a).
+    pub ets2_route: Arc<RwLock<truckpilot_plugin_api::ets2_route::Ets2RouteSharedState>>,
     /// Shared SplineIndex (Road + NavCurves, Phase 2b). Built at daemon startup;
     /// Arc-shared across all plugins and the HUD IPC layer.
     pub spline_index: Option<Arc<truckpilot_map_parser::SplineIndex>>,
     /// Number of road-derived segments at the front of `spline_index`.
     /// NavCurve segments start at this index. 0 when spline_index is None.
     pub spline_index_road_seg_count: usize,
+    /// Precomputed road-segment lookup (built in core on the main thread).
+    pub road_seg_by_from_to: Option<Arc<std::collections::HashMap<(u64, u64), usize>>>,
+    /// Precomputed NavCurve lookup (built in core on the main thread).
+    pub navcurve_seg_by_from_to:
+        Option<Arc<std::collections::HashMap<(u64, u64), Vec<usize>>>>,
     /// Per-plugin configuration loaded from `truckpilot.toml`.
     /// Key = plugin name. Missing key → default enabled=true, no extra keys.
     plugin_configs: HashMap<String, PluginTomlConfig>,
@@ -204,8 +211,13 @@ impl PluginManager {
             _watcher: watcher,
             graph: None,
             route_node_ids: Arc::new(RwLock::new(HashSet::new())),
+            ets2_route: Arc::new(RwLock::new(
+                truckpilot_plugin_api::ets2_route::Ets2RouteSharedState::default(),
+            )),
             spline_index: None,
             spline_index_road_seg_count: 0,
+            road_seg_by_from_to: None,
+            navcurve_seg_by_from_to: None,
             plugin_configs,
         }
     }
@@ -229,8 +241,17 @@ impl PluginManager {
     }
 
     fn load_plugin(&mut self, path: &Path) {
+        eprintln!(
+            "[core] init: loading plugin {:?}",
+            path.file_name().unwrap_or_default()
+        );
+        warn_plugin_profile_mismatch(path);
         match unsafe { load_plugin_from_path(path) } {
             Ok(mut loaded) => {
+                eprintln!(
+                    "[core] init: plugin DLL loaded: {} v{}",
+                    loaded.name, loaded.version
+                );
                 // Apply enabled flag from config; default to true for backwards compat.
                 if let Some(cfg) = self.plugin_configs.get(&loaded.name) {
                     loaded.enabled = cfg.enabled;
@@ -243,6 +264,7 @@ impl PluginManager {
                         }
                     }
                     self.run_plugin_on_load(&mut loaded);
+                    eprintln!("[core] init: plugin on_load done: {}", loaded.name);
                     info!("Loaded plugin: {} v{}", loaded.name, loaded.version);
                 } else {
                     info!(
@@ -473,6 +495,7 @@ impl PluginManager {
                 .with_log_sink(make_log_sink());
             ctx.graph = self.graph.clone();
             ctx.route_node_ids = Some(Arc::clone(&self.route_node_ids));
+            ctx.ets2_route = Some(Arc::clone(&self.ets2_route));
 
             // Side-effect path: blackboard writes, internal state, etc.
             // AssertUnwindSafe: we accept that a panicking plugin may
@@ -513,14 +536,11 @@ impl PluginManager {
                 }
             }
             let plugin_elapsed = plugin_start.elapsed();
-            if plugin_elapsed.as_millis() > 30 {
-                warn!(
-                    "[tick-profile] plugin '{}' took {} ms (tick={})",
-                    p.name,
-                    plugin_elapsed.as_millis(),
-                    tick_count
-                );
-            }
+            crate::tick_profile::maybe_warn_plugin_slow(
+                &p.name,
+                plugin_elapsed.as_millis(),
+                tick_count,
+            );
         }
 
         // Refresh the blackboard list if any plugin was panic-disabled above.
@@ -596,14 +616,11 @@ impl PluginManager {
                         p.plugin.tick(telemetry, output, &ctx);
                     }));
                     let plugin_elapsed = plugin_start.elapsed();
-                    if plugin_elapsed.as_millis() > 30 {
-                        warn!(
-                            "[tick-profile] plugin '{}' took {} ms (tick={})",
-                            p.name,
-                            plugin_elapsed.as_millis(),
-                            tick_count
-                        );
-                    }
+                    crate::tick_profile::maybe_warn_plugin_slow(
+                        &p.name,
+                        plugin_elapsed.as_millis(),
+                        tick_count,
+                    );
                     if let Err(panic) = tick_result {
                         log_plugin_panic(&p.name, "tick", panic);
                         p.enabled = false;
@@ -660,16 +677,22 @@ impl PluginManager {
             let frame_store = Arc::clone(&self.frame_store);
             let graph = self.graph.clone();
             let route_node_ids = Arc::clone(&self.route_node_ids);
+            let ets2_route = Arc::clone(&self.ets2_route);
             let spline_index = self.spline_index.clone();
             let spline_index_road_seg_count = self.spline_index_road_seg_count;
+            let road_seg_by_from_to = self.road_seg_by_from_to.clone();
+            let navcurve_seg_by_from_to = self.navcurve_seg_by_from_to.clone();
             Self::run_on_load_for(
                 &mut self.plugins[idx],
                 &blackboard,
                 &frame_store,
                 &graph,
                 &route_node_ids,
+                &ets2_route,
                 &spline_index,
                 spline_index_road_seg_count,
+                &road_seg_by_from_to,
+                &navcurve_seg_by_from_to,
             );
         }
         info!(
@@ -689,8 +712,11 @@ impl PluginManager {
             &self.frame_store,
             &self.graph,
             &self.route_node_ids,
+            &self.ets2_route,
             &self.spline_index,
             self.spline_index_road_seg_count,
+            &self.road_seg_by_from_to,
+            &self.navcurve_seg_by_from_to,
         );
     }
 
@@ -700,8 +726,13 @@ impl PluginManager {
         frame_store: &Arc<SharedFrameStore>,
         graph: &Option<Arc<RouterGraph>>,
         route_node_ids: &Arc<RwLock<HashSet<u64>>>,
+        ets2_route: &Arc<RwLock<truckpilot_plugin_api::ets2_route::Ets2RouteSharedState>>,
         spline_index: &Option<Arc<truckpilot_map_parser::SplineIndex>>,
         spline_index_road_seg_count: usize,
+        road_seg_by_from_to: &Option<Arc<std::collections::HashMap<(u64, u64), usize>>>,
+        navcurve_seg_by_from_to: &Option<
+            Arc<std::collections::HashMap<(u64, u64), Vec<usize>>>,
+        >,
     ) {
         debug_assert!(!loaded.initialized, "on_load must not run twice");
         let mut ctx = PluginContext::new(loaded.name.clone(), blackboard.clone())
@@ -709,9 +740,11 @@ impl PluginManager {
             .with_log_sink(make_log_sink());
         ctx.graph = graph.clone();
         ctx.route_node_ids = Some(Arc::clone(route_node_ids));
-        if let Some(si) = spline_index {
-            ctx = ctx.with_spline_index(Arc::clone(si), spline_index_road_seg_count);
-        }
+        ctx.ets2_route = Some(Arc::clone(ets2_route));
+        // Do not pass `Arc<SplineIndex>` or lookup `Arc`s into cdylib plugins —
+        // `Arc`/`Box` across DLL boundaries is UB on Windows. Core keeps the
+        // SplineIndex for IPC; plugins load lookup tables from SPLINE_LOOKUP_CACHE.
+        let _ = (spline_index, spline_index_road_seg_count, road_seg_by_from_to, navcurve_seg_by_from_to);
         loaded.plugin.on_load(&ctx);
         loaded.initialized = true;
     }
@@ -891,6 +924,39 @@ fn is_plugin_file(path: &Path) -> bool {
         path.extension().and_then(|s| s.to_str()),
         Some("dll" | "so" | "dylib")
     )
+}
+
+/// Warn when a debug `truckpilot-core` loads release-sized plugin DLLs.
+/// Mixing profiles causes `STATUS_ACCESS_VIOLATION` at the first `on_load` that
+/// crosses the cdylib boundary with an incompatible `PluginContext` layout.
+fn warn_plugin_profile_mismatch(path: &Path) {
+    #[cfg(debug_assertions)]
+    {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return;
+        };
+        // Map-heavy debug plugin DLLs in this workspace are typically > 1.4 MiB.
+        const DEBUG_PLUGIN_MIN_BYTES: u64 = 1_400_000;
+        if meta.len() >= DEBUG_PLUGIN_MIN_BYTES {
+            return;
+        }
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            return;
+        };
+        if name.contains("lane_follower")
+            || name.contains("lane_keeper")
+            || name.contains("router")
+            || name.contains("sign_reader")
+        {
+            eprintln!(
+                "WARNING: {name} ({} bytes) looks like a release plugin DLL while \
+                 truckpilot-core is a debug build.\n\
+                 Run: cargo xtask copy-plugins --debug\n\
+                 Profile-mismatched plugins crash with STATUS_ACCESS_VIOLATION at on_load.",
+                meta.len()
+            );
+        }
+    }
 }
 
 unsafe fn load_plugin_from_path(path: &Path) -> Result<LoadedPlugin, String> {

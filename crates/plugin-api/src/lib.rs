@@ -16,7 +16,11 @@
 //! re-introducing `abi_stable` or by using a stable C ABI boundary).
 
 pub mod graph;
+pub mod ets2_route;
+pub mod optional_shm;
 pub mod pid;
+
+pub use optional_shm::OptionalShmGate;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -476,6 +480,9 @@ pub struct PluginContext {
     /// Shared route node IDs (Phase 6.5q.1). The router plugin writes this
     /// each tick; the state machine reads it for synchronous off-route checks.
     pub route_node_ids: Option<Arc<RwLock<std::collections::HashSet<u64>>>>,
+    /// Read-only ETS2 in-game route snapshot + graph match result (Phase 5a).
+    /// Updated by Core when the route SHM changes; router may consume in 5b.
+    pub ets2_route: Option<Arc<RwLock<crate::ets2_route::Ets2RouteSharedState>>>,
     /// Shared SplineIndex (Road + NavCurves, Phase 2b). Built once at daemon
     /// start; Arc-shared so all plugins pay zero marginal cost. `None` when
     /// graph.json is unavailable (non-critical, plugins fall back to self-load).
@@ -484,6 +491,12 @@ pub struct PluginContext {
     /// NavCurve segments start at index `spline_index_road_seg_count`.
     /// 0 when spline_index is None.
     pub spline_index_road_seg_count: usize,
+    /// Precomputed `(from_uid, to_uid) → road segment index` built in core so
+    /// plugins avoid iterating the full SplineIndex during `on_load`.
+    pub road_seg_by_from_to: Option<Arc<std::collections::HashMap<(u64, u64), usize>>>,
+    /// Precomputed NavCurve segment indices keyed by `(from_uid, to_uid)`.
+    pub navcurve_seg_by_from_to:
+        Option<Arc<std::collections::HashMap<(u64, u64), Vec<usize>>>>,
 }
 
 impl std::fmt::Debug for PluginContext {
@@ -495,6 +508,7 @@ impl std::fmt::Debug for PluginContext {
             .field("tick_count", &self.tick_count)
             .field("has_graph", &self.graph.is_some())
             .field("has_route_node_ids", &self.route_node_ids.is_some())
+            .field("has_ets2_route", &self.ets2_route.is_some())
             .field("has_spline_index", &self.spline_index.is_some())
             .finish()
     }
@@ -513,8 +527,11 @@ impl PluginContext {
             log_sink: None,
             graph: None,
             route_node_ids: None,
+            ets2_route: None,
             spline_index: None,
             spline_index_road_seg_count: 0,
+            road_seg_by_from_to: None,
+            navcurve_seg_by_from_to: None,
         }
     }
 
@@ -549,6 +566,17 @@ impl PluginContext {
         if let Some(sink) = &self.log_sink {
             (sink.0)(level, target, message);
         }
+    }
+
+    /// Attach precomputed spline lookup tables (built in core at startup).
+    pub fn with_spline_lookups(
+        mut self,
+        road: Arc<std::collections::HashMap<(u64, u64), usize>>,
+        navcurve: Arc<std::collections::HashMap<(u64, u64), Vec<usize>>>,
+    ) -> Self {
+        self.road_seg_by_from_to = Some(road);
+        self.navcurve_seg_by_from_to = Some(navcurve);
+        self
     }
 
     /// Attach the shared SplineIndex (Phase 2b). Builder-style.

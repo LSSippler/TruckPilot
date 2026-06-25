@@ -17,7 +17,8 @@
 use std::sync::Arc;
 
 use truckpilot_plugin_api::{
-    ctx_error, ctx_info, ctx_warn, ControlOutput, Plugin, PluginContext, SharedFrame, Telemetry,
+    ctx_error, ctx_info, ctx_warn, ControlOutput, OptionalShmGate, Plugin, PluginContext,
+    SharedFrame, Telemetry,
 };
 
 pub mod shm_reader;
@@ -59,7 +60,6 @@ impl Default for Settings {
     }
 }
 
-#[derive(Default)]
 pub struct VisionFrameSource {
     settings: Settings,
     shm_buf: Option<&'static [u8]>,
@@ -79,6 +79,22 @@ pub struct VisionFrameSource {
     /// Set the first time we detect a clock-source mismatch with the
     /// producer (apparent age > 1 h). Suppresses repeated warnings.
     clock_mismatch_warned: bool,
+    shm_gate: OptionalShmGate,
+}
+
+impl Default for VisionFrameSource {
+    fn default() -> Self {
+        Self {
+            settings: Settings::default(),
+            shm_buf: None,
+            last_published_id: 0,
+            consecutive_misses: 0,
+            tick_counter: 0,
+            has_published: false,
+            clock_mismatch_warned: false,
+            shm_gate: OptionalShmGate::default(),
+        }
+    }
 }
 
 impl VisionFrameSource {
@@ -99,24 +115,22 @@ impl VisionFrameSource {
     }
 
     fn try_map(&mut self, ctx: &PluginContext) {
+        const TARGET: &str = "truckpilot_plugin_vision_frame_source";
         match map_shm(&self.settings.shm_name, self.settings.buffer_bytes) {
             Ok(buf) => {
-                ctx_info!(
+                self.shm_gate.on_mapped(
                     ctx,
-                    target: "truckpilot_plugin_vision_frame_source",
-                    "mapped SHM region '{}' ({} bytes)",
-                    self.settings.shm_name,
-                    self.settings.buffer_bytes
+                    TARGET,
+                    &format!(
+                        "region '{}' ({} bytes)",
+                        self.settings.shm_name, self.settings.buffer_bytes
+                    ),
                 );
                 self.shm_buf = Some(buf);
                 ctx.blackboard.remove("vision.source.last_error");
             }
             Err(e) => {
-                ctx_warn!(
-                    ctx,
-                    target: "truckpilot_plugin_vision_frame_source",
-                    "SHM not available: {e}"
-                );
+                self.shm_gate.on_missing(ctx, TARGET, &e);
                 ctx.blackboard.set("vision.source.last_error", e);
             }
         }

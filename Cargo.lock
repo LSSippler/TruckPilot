@@ -5025,6 +5025,7 @@ dependencies = [
  "futures-util",
  "libloading 0.8.9",
  "notify",
+ "postcard",
  "serde",
  "serde_json",
  "tokio",
@@ -5203,12 +5204,12 @@ dependencies = [
 name = "truckpilot-plugin-lane-keeper"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "serde",
  "serde_json",
  "tracing",
  "truckpilot-map-parser",
  "truckpilot-plugin-api",
- "truckpilot-telemetry",
 ]
 
 [[package]]

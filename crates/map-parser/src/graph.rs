@@ -1770,6 +1770,7 @@ mod tests {
                 template_token: 0xABCD,
                 node_count: 2,
                 nodes: vec![1, 2],
+                origin_node_index: 0,
             }],
         ));
         let g = b.build();

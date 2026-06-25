@@ -5,10 +5,15 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+default-run = "truckpilot-core"
 
 [[bin]]
 name = "truckpilot-core"
 path = "src/main.rs"
+
+[[bin]]
+name = "graph-load-check"
+path = "src/bin/graph_load_check.rs"
 
 [features]
 # Default: no synthetic telemetry. The IPC server only forwards telemetry
@@ -35,3 +40,4 @@ serde_json = { workspace = true }
 futures-util = "0.3"
 dirs = "5.0"
 toml = "0.8"
+postcard = { workspace = true }

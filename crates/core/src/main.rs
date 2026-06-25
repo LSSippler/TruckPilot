@@ -11,13 +11,15 @@ use tokio::sync::broadcast;
 
 use tracing::{info, warn};
 use truckpilot_ipc_protocol::{CoreMessage, TelemetrySnapshot};
-use truckpilot_plugin_api::graph::RouterGraph;
 use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 
 mod heading_stage;
 mod ipc;
+mod ets2_route;
+mod graph_assets;
 mod plugin_manager;
 mod state_machine;
+mod tick_profile;
 mod watchdog;
 
 use plugin_manager::PluginManager;
@@ -491,91 +493,14 @@ fn plan_route_on_graph(
 
 fn load_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
     let path = PathBuf::from("graph.json");
-    if !path.exists() {
-        eprintln!("graph.json not found.");
-        eprintln!("Run first: truckpilot-core parse-map --ets2-dir <path>");
-        std::process::exit(1);
+    match truckpilot_map_parser::load_map_graph_from_path(&path, "core") {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            eprintln!("Run first: truckpilot-core parse-map --ets2-dir <path>");
+            std::process::exit(1);
+        }
     }
-    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        eprintln!("Cannot read graph.json: {e}");
-        std::process::exit(1);
-    });
-    serde_json::from_str(&json).unwrap_or_else(|e| {
-        eprintln!("Cannot parse graph.json: {e}");
-        std::process::exit(1);
-    })
-}
-
-/// Load `graph.json` once into a `MapGraph`.
-/// Hard-exits on missing file or parse errors — the daemon cannot operate without the graph.
-fn load_map_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
-    let path = PathBuf::from("graph.json");
-    if !path.exists() {
-        eprintln!("ERROR: graph.json not found.");
-        eprintln!("Run first: truckpilot-core parse-map --ets2-dir <path>");
-        std::process::exit(1);
-    }
-    let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
-    eprintln!("INFO: Loading graph from {:?}", abs);
-    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        eprintln!("ERROR: Cannot read graph.json: {e}");
-        std::process::exit(1);
-    });
-    serde_json::from_str::<truckpilot_map_parser::graph::MapGraph>(&json).unwrap_or_else(|e| {
-        eprintln!("ERROR: Cannot parse graph.json: {e}");
-        std::process::exit(1);
-    })
-}
-
-/// Build a [`RouterGraph`] for routing (Phase 6.5q.1).
-fn build_router_graph(map_graph: &truckpilot_map_parser::graph::MapGraph) -> RouterGraph {
-    let nodes: Vec<(u64, f64, f64)> = map_graph.nodes.iter().map(|n| (n.uid, n.x, n.z)).collect();
-    let edges: Vec<(u64, u64, f64)> = map_graph
-        .edges
-        .iter()
-        .map(|e| (e.from, e.to, e.distance_m))
-        .collect();
-    info!(
-        "Loaded routing graph: {} nodes, {} edges",
-        nodes.len(),
-        edges.len()
-    );
-    RouterGraph::new(nodes, edges)
-}
-
-/// Build the shared [`SplineIndex`] (Road + NavCurve segments, Phase 2b).
-///
-/// Returns `(index, road_seg_count)` where `road_seg_count` is the number of
-/// segments from `build_splines_ex` (i.e. non-NavCurve). NavCurve segments
-/// start at index `road_seg_count` in the returned index.
-///
-/// This is an optional, non-critical resource.  Returns `None` on any error
-/// so the daemon can continue running without spatial queries.
-fn build_spline_index_for_hud(
-    map_graph: &truckpilot_map_parser::graph::MapGraph,
-) -> Option<(truckpilot_map_parser::SplineIndex, usize)> {
-    let t0 = Instant::now();
-    let (mut segments, mut metadata, _stats) =
-        truckpilot_map_parser::spline::build_splines_ex(map_graph);
-    let road_seg_count = segments.len();
-
-    // Phase 2b: append NavCurve segments so junction geometry is covered.
-    // NavCurves have is_prefab=true and lane_offset_right_m=0.0 (already at lane-centre).
-    let (prefab_segs, prefab_meta) = map_graph.prefab_hermite_segments_with_metadata();
-    let navcurve_count = prefab_segs.len();
-    segments.extend(prefab_segs);
-    metadata.extend(prefab_meta);
-
-    let total_count = segments.len();
-    let index = truckpilot_map_parser::build_index_with_metadata(segments, metadata);
-    info!(
-        "SplineIndex built: {} segs ({} road + {} NavCurve) in {:.1}s",
-        total_count,
-        road_seg_count,
-        navcurve_count,
-        t0.elapsed().as_secs_f64()
-    );
-    Some((index, road_seg_count))
 }
 
 fn angle_diff(a: f64, b: f64) -> f64 {
@@ -593,8 +518,7 @@ fn angle_diff(a: f64, b: f64) -> f64 {
 // Daemon mode
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Check verbose flag and subcommand before tracing init.
     // parse-map is a diagnostic command: INFO is on by default so users see PPD/sector logs
     // without needing --verbose.  Daemon stays at WARN to avoid console spam.
@@ -626,12 +550,22 @@ async fn main() {
             cmd_autopilot(from, to, vjoy_device);
         }
         Command::Daemon => {
-            run_daemon().await;
+            // Heavy graph work on the OS main thread — not on a Tokio worker
+            // (avoids stack/memory pressure during multi-GB MapGraph + SplineIndex build).
+            let assets =
+                graph_assets::load_core_graph_assets_or_exit(&PathBuf::from("graph.json"));
+            graph_assets::log_init_stage("graph assets stored");
+
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build Tokio runtime");
+            rt.block_on(run_daemon(assets));
         }
     }
 }
 
-async fn run_daemon() {
+async fn run_daemon(assets: graph_assets::CoreGraphAssets) {
     info!("TruckPilot Core — daemon mode");
 
     // Load config before anything else so plugin enable-flags are available.
@@ -671,22 +605,49 @@ async fn run_daemon() {
         std::fs::create_dir_all(&plugin_dir).expect("create plugins dir");
     }
 
-    // ── Phase 6.5q.1: load routing graph + Phase 6.9: SplineIndex ─────
-    // Load MapGraph once; derive both RouterGraph and SplineIndex from it.
-    let map_graph = load_map_graph_or_exit();
-    let graph = Arc::new(build_router_graph(&map_graph));
-    let spline_index_opt = build_spline_index_for_hud(&map_graph);
-    // MapGraph can be dropped after both consumers are built.
-    drop(map_graph);
-
+    graph_assets::log_init_stage("plugin manager start");
     let mut manager = PluginManager::new(plugin_dir, plugin_configs);
-    manager.graph = Some(Arc::clone(&graph));
-    if let Some((index, road_seg_count)) = spline_index_opt {
-        manager.spline_index = Some(Arc::new(index));
-        manager.spline_index_road_seg_count = road_seg_count;
-    }
+    manager.graph = Some(Arc::clone(&assets.router_graph));
+    manager.spline_index = Some(Arc::clone(&assets.spline_index));
+    manager.spline_index_road_seg_count = assets.spline_index_road_seg_count;
+    manager.road_seg_by_from_to = Some(Arc::clone(&assets.road_seg_by_from_to));
+    manager.navcurve_seg_by_from_to = Some(Arc::clone(&assets.navcurve_seg_by_from_to));
+    let total_seg_count = assets.spline_index.segments.len();
+    let road_seg_count = assets.spline_index_road_seg_count;
+    let prefab_seg_count = total_seg_count.saturating_sub(road_seg_count);
+    manager.blackboard.set(
+        "map.spline.total_segments",
+        total_seg_count.to_string(),
+    );
+    manager
+        .blackboard
+        .set("map.spline.prefab_segments", prefab_seg_count.to_string());
+    manager.blackboard.set(
+        "map.spline.road_segments_count",
+        road_seg_count.to_string(),
+    );
+    manager.blackboard.set(
+        "map.spline.road_segment_idx_max",
+        road_seg_count.saturating_sub(1).to_string(),
+    );
+    manager.blackboard.set(
+        "map.spline.prefab_segment_idx_min",
+        road_seg_count.to_string(),
+    );
+    manager.blackboard.set(
+        "map.spline.prefab_segment_idx_max",
+        total_seg_count.saturating_sub(1).to_string(),
+    );
+    info!(
+        "Loaded routing graph: {} nodes, {} edges",
+        assets.router_graph.nodes.len(),
+        assets.router_graph.edges.len()
+    );
     let route_node_ids = Arc::clone(&manager.route_node_ids);
+    let ets2_route_cache = Arc::clone(&manager.ets2_route);
+    let graph = Arc::clone(&assets.router_graph);
     manager.load_all();
+    graph_assets::log_init_stage("plugin manager done");
     info!("Loaded {} plugin(s)", manager.list().len());
 
     // Phase 2h: seed the lane-keeper offset calibration constant from [steering].
@@ -720,8 +681,29 @@ async fn run_daemon() {
     // into the Arc<Mutex>. `SharedBlackboard` wraps an `Arc<Mutex<…>>`,
     // so this clone keeps pointing at the same inner map the plugins
     // see. Used by `publish_telemetry_to_blackboard` each tick.
+    graph_assets::log_init_stage("shared blackboard start");
     let blackboard = manager.blackboard.clone();
+    graph_assets::log_init_stage("shared blackboard done");
     let manager = Arc::new(Mutex::new(manager));
+
+    // ETS2 in-game route snapshot (Phase R4) — optional, DLL creates the SHM.
+    graph_assets::log_init_stage("route reader start");
+    let mut route_bb_reader =
+        match truckpilot_telemetry::nav_route::RouteBlackboardReader::open() {
+            Ok(r) => {
+                info!(
+                    "ETS2 route blackboard reader opened ({})",
+                    truckpilot_telemetry::nav_route::ROUTE_SHM_NAME
+                );
+                Some(r)
+            }
+            Err(e) => {
+                tracing::debug!("ETS2 route blackboard unavailable: {e}");
+                None
+            }
+        };
+    graph_assets::log_init_stage("route reader done");
+    let mut last_route_bb_poll = Instant::now();
 
     // Broadcast channel that carries `CoreMessage`s out to every
     // connected UI client. Producers: this loop (real telemetry frames)
@@ -729,7 +711,9 @@ async fn run_daemon() {
     // inside `ipc::start_ipc_server`. Capacity 256 absorbs short UI
     // stalls without dropping frames.
     let (ipc_tx, _ipc_rx) = broadcast::channel::<CoreMessage>(256);
+    graph_assets::log_init_stage("ipc server start");
     tokio::spawn(ipc::start_ipc_server(manager.clone(), ipc_tx.clone()));
+    graph_assets::log_init_stage("ipc server listening");
 
     #[cfg(feature = "mock_telemetry")]
     warn!(
@@ -779,6 +763,7 @@ async fn run_daemon() {
     let mut heading_stage_mgr = heading_stage::HeadingStageManager::new();
 
     info!("Running — press Ctrl+C to stop");
+    graph_assets::log_init_stage("daemon loop start");
 
     loop {
         // Read telemetry off the async executor — see `read_telemetry_async`
@@ -791,6 +776,17 @@ async fn run_daemon() {
         // see fresh `telemetry.*` values when their `tick` runs. The
         // blackboard has its own Mutex; no contention with the manager.
         publish_telemetry_to_blackboard(telemetry.as_ref(), &blackboard);
+
+        // ETS2 route blackboard — 500 ms poll matches DLL walk cadence.
+        if last_route_bb_poll.elapsed() >= Duration::from_millis(500) {
+            last_route_bb_poll = Instant::now();
+            ets2_route::poll_ets2_route(
+                route_bb_reader.as_mut(),
+                &graph,
+                &ets2_route_cache,
+                &blackboard,
+            );
+        }
 
         // IPC broadcast: real telemetry → UI clients, gated to one
         // frame per 50 ms. Compile-time off when `mock_telemetry` is
@@ -913,13 +909,12 @@ async fn run_daemon() {
 
         // Phase 6.5h: full-tick elapsed — covers sm + IPC send + plugins.
         let tick_elapsed = tick_start.elapsed();
-        if tick_elapsed.as_millis() > 80 {
+        {
             let plugins_count = manager.lock().await.list().len();
-            warn!(
-                "[tick-profile] FULL TICK took {} ms (state={}, plugins_count={})",
+            tick_profile::maybe_warn_full_tick(
                 tick_elapsed.as_millis(),
                 last_status_state.as_deref().unwrap_or("unknown"),
-                plugins_count
+                plugins_count,
             );
         }
 

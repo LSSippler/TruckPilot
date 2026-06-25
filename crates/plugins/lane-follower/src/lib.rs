@@ -372,6 +372,38 @@ fn road_tangent_lookahead(
 }
 
 impl LaneFollowerPlugin {
+    /// Build arc-length LUTs once, deferred from `on_load` to avoid a memory spike
+    /// while other plugins (e.g. ONNX lane-detection) are still initialising.
+    fn ensure_primary_luts(&mut self, ctx: &PluginContext) {
+        if self.index.is_none() {
+            let path = ctx
+                .blackboard
+                .get("plugin.lane-follower.graph_path")
+                .unwrap_or_else(|| DEFAULT_GRAPH_PATH.to_string());
+            self.load_index(&path, ctx);
+        }
+        if !self.luts.is_empty() {
+            return;
+        }
+        let Some(index) = self.index.as_ref() else {
+            return;
+        };
+        let t0 = std::time::Instant::now();
+        let luts = build_all_luts(&index.segments);
+        let forward_adj = build_forward_adjacency(&index.segments);
+        let lut_ms = t0.elapsed().as_millis();
+        let lut_kb = (luts.len() * std::mem::size_of::<ArcLengthLUT>()) as f32 / 1024.0;
+        ctx_info!(
+            ctx,
+            "lane-follower: built LUTs for {} segs in {}ms ({:.1}KB)",
+            luts.len(),
+            lut_ms,
+            lut_kb
+        );
+        self.luts = luts;
+        self.forward_adj = forward_adj;
+    }
+
     fn load_index(&mut self, path: &str, ctx: &PluginContext) {
         let data = match std::fs::read(path) {
             Ok(d) => d,
@@ -608,62 +640,15 @@ impl Plugin for LaneFollowerPlugin {
     }
 
     fn on_load(&mut self, ctx: &PluginContext) {
-        // Phase 2b: use daemon-provided shared SplineIndex when available.
-        // Saves ~140MB RAM and ~2s load time by avoiding a second graph.json read.
-        if let Some(shared_index) = &ctx.spline_index {
-            let road_seg_count = ctx.spline_index_road_seg_count;
-            let total_seg_count = shared_index.segments.len();
-            let prefab_seg_count = total_seg_count.saturating_sub(road_seg_count);
-
-            let t0 = std::time::Instant::now();
-            let luts = build_all_luts(&shared_index.segments);
-            let forward_adj = build_forward_adjacency(&shared_index.segments);
-            let lut_ms = t0.elapsed().as_millis();
-            let lut_kb = (luts.len() * std::mem::size_of::<ArcLengthLUT>()) as f32 / 1024.0;
-            ctx_info!(
-                ctx,
-                "lane-follower: shared SplineIndex {} segs ({} road + {} NavCurves); LUT {}ms {:.1}KB",
-                total_seg_count, road_seg_count, prefab_seg_count, lut_ms, lut_kb
-            );
-
-            ctx.blackboard
-                .set("map.spline.total_segments", total_seg_count.to_string());
-            ctx.blackboard
-                .set("map.spline.prefab_segments", prefab_seg_count.to_string());
-            ctx.blackboard
-                .set("map.spline.road_segments_count", road_seg_count.to_string());
-            ctx.blackboard.set(
-                "map.spline.road_segment_idx_max",
-                road_seg_count.saturating_sub(1).to_string(),
-            );
-            ctx.blackboard.set(
-                "map.spline.prefab_segment_idx_min",
-                road_seg_count.to_string(),
-            );
-            ctx.blackboard.set(
-                "map.spline.prefab_segment_idx_max",
-                total_seg_count.saturating_sub(1).to_string(),
-            );
-
-            self.road_seg_count = road_seg_count;
-            self.luts = luts;
-            self.forward_adj = forward_adj;
-            self.index = Some(Arc::clone(shared_index));
-
-            // RouterGraph from ctx (zero-copy Arc share) or skip (junction detection degrades gracefully).
-            if let Some(rg) = &ctx.graph {
-                self.router_graph = Some(Arc::clone(rg));
-            }
-        } else {
-            let path = ctx
-                .blackboard
-                .get("plugin.lane-follower.graph_path")
-                .unwrap_or_else(|| DEFAULT_GRAPH_PATH.to_string());
-            self.load_index(&path, ctx);
-        }
+        // SplineIndex + LUTs: first tick via `ensure_primary_luts` (reads graph.json locally).
+        // Core seeds `map.spline.*` on the blackboard; do not pass `Arc<SplineIndex>` across cdylib.
+        self.road_seg_count = ctx
+            .blackboard
+            .get("map.spline.road_segments_count")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         self.mode = LaneFollowerMode::from_bb(ctx);
 
-        // DS13d: load prefab-bias config (PluginManager seeds from truckpilot.toml).
         self.bias_radius_m = ctx
             .blackboard
             .get("lane_follower.junction_bias_radius_m")
@@ -674,15 +659,12 @@ impl Plugin for LaneFollowerPlugin {
             .get("lane_follower.junction_bias_max_prefab_dist_m")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(DEFAULT_BIAS_MAX_PREFAB_DIST_M);
-        // DS13e: heading-aware prefab query config.
         self.junction_max_heading_diff_rad = ctx
             .blackboard
             .get("lane_follower.junction_max_heading_diff_deg")
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(DEFAULT_JUNCTION_MAX_HEADING_DIFF_DEG)
             .to_radians();
-
-        // FIX 2: conservative junction-detection config (live-tunable).
         self.junction_detection_radius_m = ctx
             .blackboard
             .get("lane_follower.junction_detection_radius_m")
@@ -710,9 +692,8 @@ impl Plugin for LaneFollowerPlugin {
 
         ctx_info!(
             ctx,
-            "lane-follower: loaded (mode={}, index={}, bias_radius={:.1}m, bias_max_prefab={:.1}m, max_heading_diff={:.0}°)",
+            "lane-follower: loaded (mode={}, index=deferred, bias_radius={:.1}m, bias_max_prefab={:.1}m, max_heading_diff={:.0}°)",
             self.mode.as_str(),
-            if self.index.is_some() { "ok" } else { "none" },
             self.bias_radius_m,
             self.bias_max_prefab_dist_m,
             self.junction_max_heading_diff_rad.to_degrees(),
@@ -762,6 +743,7 @@ impl Plugin for LaneFollowerPlugin {
 
         // VMM-6: refresh minimap spline index from blackboard (cheap no-op if unchanged).
         self.try_refresh_minimap(ctx);
+        self.ensure_primary_luts(ctx);
 
         self.mode = LaneFollowerMode::from_bb(ctx);
 

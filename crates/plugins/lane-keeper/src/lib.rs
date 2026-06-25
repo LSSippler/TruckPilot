@@ -9,7 +9,10 @@
 //! Level 2: Confidence-drop (EMA).  Level 3: Heading-hold.  Level 4: Disengage.
 //!
 //! ## Route-following mode
-//! Reads waypoints from `router.waypoints`.  Speed-adaptive look-ahead.
+//! Reads waypoints from `router.waypoints` (written by the **router** plugin only).
+//! ETS2 in-game routes flow: SHM → Core → Router → `router.waypoints` / `router.route_node_ids`
+//! → Lane-Keeper. The lane-keeper does **not** open route SHM or write router keys.
+//! Speed-adaptive look-ahead.
 //! `look_ahead_m = BASE_LOOK_AHEAD + speed_kmh * SPEED_FACTOR`
 
 mod extrapolation;
@@ -475,9 +478,6 @@ pub struct LaneKeeperPlugin {
     /// Ticks in Folge, in denen BEIDE Capture-Exit-Bedingungen erfÃ¼llt sind
     /// (Hysterese gegen Flackern an der Schwelle).
     capture_exit_ticks: u32,
-
-    // -- Phase R3: ETS2 native route reader --
-    nav_route_reader: Option<truckpilot_telemetry::nav_route::NavRouteReader>,
 }
 
 impl Default for LaneKeeperPlugin {
@@ -541,7 +541,6 @@ impl Default for LaneKeeperPlugin {
             capture_active: false,
             capture_exit_ticks: 0,
             engage_max_lateral_m: DEFAULT_ENGAGE_MAX_LATERAL_M,
-            nav_route_reader: None,
         }
     }
 }
@@ -729,74 +728,6 @@ impl LaneKeeperPlugin {
 // â”€â”€ Route-following implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 impl LaneKeeperPlugin {
-        fn maybe_inject_ets2_route(&mut self, ctx: &PluginContext) {
-        use truckpilot_telemetry::nav_route::NavRouteReader;
-        if self.nav_route_reader.is_none() {
-            match NavRouteReader::open() {
-                Ok(r) => {
-                    ctx.blackboard.set("router.ets2_nav_status", "shm_open");
-                    self.nav_route_reader = Some(r);
-                }
-                Err(e) => {
-                    ctx.blackboard.set("router.ets2_nav_status", &format!("shm_err:{e}"));
-                    return;
-                }
-            }
-        }
-        let reader = match self.nav_route_reader.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
-        let snap = match reader.read_if_changed() {
-            Some(s) => s,
-            None => {
-                let diag = if let Some(code) = reader.peek_diag_code() {
-                    let step = match code {
-                        0xD1A6_0001 => "gps_aob_fail",
-                        0xD1A6_0002 => "trip_dist_fail",
-                        0xD1A6_0003 => "route_task_fail",
-                        0xD1A6_0004 => "uid_buf_empty",
-                        _ => "unknown",
-                    };
-                    format!("dll_err:{step}")
-                } else {
-                    format!("shm_open:count={}", reader.peek_item_count().unwrap_or(0))
-                };
-                ctx.blackboard.set("router.ets2_nav_status", &diag);
-                return;
-            }
-        };
-        let uid_total = snap.uids.len();
-        ctx.blackboard.set("router.ets2_uid_total", &uid_total.to_string());
-        let rg = match &self.router_graph {
-            Some(rg) => rg.clone(),
-            None => {
-                tracing::debug!("[ets2-route] router_graph not loaded yet");
-                return;
-            }
-        };
-        let pts: Vec<[f64; 2]> = snap
-            .uids
-            .iter()
-            .filter_map(|uid| rg.positions.get(uid).map(|&(x, z)| [x, z]))
-            .collect();
-        let uid_matched = pts.len();
-        ctx.blackboard.set("router.ets2_uid_matched", &uid_matched.to_string());
-        if pts.len() < 2 {
-            tracing::warn!(
-                "[ets2-route] seq={} {} UIDs {} matched (may be road-UIDs not node-UIDs)",
-                snap.sequence, uid_total, uid_matched,
-            );
-            return;
-        }
-        if let Ok(json) = serde_json::to_string(&pts) {
-            ctx.blackboard.set("router.waypoints", &json);
-            tracing::info!(
-                "[ets2-route] seq={} {} UIDs {} positions written to router.waypoints",
-                snap.sequence, uid_total, uid_matched,
-            );
-        }
-    }
     fn load_waypoints_from_blackboard(&mut self, ctx: &PluginContext) {
         if let Some(json) = ctx.blackboard.get("router.waypoints") {
             if let Ok(pts) = serde_json::from_str::<Vec<[f64; 2]>>(&json) {
@@ -4110,59 +4041,50 @@ impl Plugin for LaneKeeperPlugin {
             self.engage_max_lateral_m
         );
 
-        if let Some(shared) = &ctx.spline_index {
-            self.index = Some(Arc::clone(shared));
-            let road_n = ctx.spline_index_road_seg_count.min(shared.segments.len());
-            self.road_seg_count = road_n;
-            let mut map = HashMap::with_capacity(road_n);
-            for i in 0..road_n {
-                let s = &shared.segments[i];
-                map.insert((s.from_uid, s.to_uid), i);
+        if let Ok(bytes) = std::fs::read("plugins/.spline_lookups.bin") {
+            type LookupTables = (
+                HashMap<(u64, u64), usize>,
+                HashMap<(u64, u64), Vec<usize>>,
+            );
+            if let Ok((road, nc)) = postcard::from_bytes::<LookupTables>(&bytes) {
+                self.road_seg_count = ctx
+                    .blackboard
+                    .get("map.spline.road_segments_count")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(road.len());
+                self.seg_by_from_to = road;
+                self.navcurve_by_from_to = nc;
+                let nc_segs: usize = self.navcurve_by_from_to.values().map(|v| v.len()).sum();
+                let nc_pairs = self.navcurve_by_from_to.len();
+                tracing::info!(
+                    "[lane-keeper] spline lookup cache: {} road segs mapped, {} NavCurve segs in {} node-pairs",
+                    self.seg_by_from_to.len(),
+                    nc_segs,
+                    nc_pairs
+                );
+                ctx.blackboard
+                    .set("lane_keeper.spline_index_present", "true");
+                ctx.blackboard.set(
+                    "lane_keeper.seg_by_from_to_count",
+                    self.seg_by_from_to.len().to_string(),
+                );
+                ctx.blackboard.set(
+                    "lane_keeper.navcurve_by_from_to_count",
+                    nc_segs.to_string(),
+                );
+                ctx.blackboard.set("lane_keeper.router_graph_present", "false");
+            } else {
+                tracing::warn!("[lane-keeper] failed to decode plugins/.spline_lookups.bin");
+                ctx.blackboard
+                    .set("lane_keeper.spline_index_present", "false");
+                ctx.blackboard.set("lane_keeper.seg_by_from_to_count", "0");
+                ctx.blackboard
+                    .set("lane_keeper.router_graph_present", "false");
             }
-            self.seg_by_from_to = map;
-            // Fix C: NavCurve-Segmente (Index >= road_n) nach (from_uid,to_uid).
-            // Vec, weil ein Knotenpaar mehrere NavCurves tragen kann (Lanes/
-            // parallele Durchfahrten). Damit kann die On-Route-NavCurve an einer
-            // Junction in cached_route_seg_set aufgenommen werden.
-            let mut nc_map: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
-            for i in road_n..shared.segments.len() {
-                let s = &shared.segments[i];
-                nc_map.entry((s.from_uid, s.to_uid)).or_default().push(i);
-            }
-            let nc_pairs = nc_map.len();
-            let nc_segs: usize = nc_map.values().map(|v| v.len()).sum();
-            self.navcurve_by_from_to = nc_map;
-            if let Some(rg) = &ctx.graph {
-                self.router_graph = Some(Arc::clone(rg));
-            }
-            tracing::info!(
-                "[lane-keeper] shared SplineIndex: {} road segs mapped, {} NavCurve segs in {} node-pairs (graph={})",
-                self.seg_by_from_to.len(),
-                nc_segs,
-                nc_pairs,
-                self.router_graph.is_some()
-            );
-            // Phase 2c/2d-Diagnose (read-only): Index-Status auch ohne stdout per
-            // blackboard-query lesbar machen.
-            ctx.blackboard
-                .set("lane_keeper.spline_index_present", "true");
-            ctx.blackboard.set(
-                "lane_keeper.seg_by_from_to_count",
-                self.seg_by_from_to.len().to_string(),
-            );
-            ctx.blackboard.set(
-                "lane_keeper.navcurve_by_from_to_count",
-                nc_segs.to_string(),
-            );
-            ctx.blackboard.set(
-                "lane_keeper.router_graph_present",
-                self.router_graph.is_some().to_string(),
-            );
         } else {
             tracing::warn!(
-                "[lane-keeper] no shared SplineIndex; route-following uses Catmull-Rom fallback"
+                "[lane-keeper] no spline lookup cache; route-following uses Catmull-Rom fallback"
             );
-            // Phase 2c/2d-Diagnose (read-only): expliziter Negativ-Status.
             ctx.blackboard
                 .set("lane_keeper.spline_index_present", "false");
             ctx.blackboard.set("lane_keeper.seg_by_from_to_count", "0");
@@ -4182,7 +4104,6 @@ impl Plugin for LaneKeeperPlugin {
         ctx: &PluginContext,
     ) {
         self.heading_stage = ctx.blackboard.get("state.heading_stage");
-        self.maybe_inject_ets2_route(ctx);
 
         if self.mode == LaneKeeperMode::RouteFollowing
             && ctx.blackboard.get("router.active").as_deref() == Some("true")
@@ -4390,6 +4311,52 @@ mod tests {
         let pts = vec![[0.0, 0.0], [50.0, 10.0], [100.0, 0.0]];
         let smoothed = smooth_catmull_rom(&pts, 4);
         assert!(smoothed.len() > pts.len());
+    }
+
+    #[test]
+    fn lane_keeper_does_not_inject_router_output() {
+        let mut lk = LaneKeeperPlugin::default();
+        let bb = SharedBlackboard::new();
+        bb.set("router.active", "true");
+        let ctx = PluginContext::new("lane-keeper", bb.clone());
+        let mut out = ControlOutput::default();
+
+        lk.tick(None, &mut out, &ctx);
+
+        assert!(
+            bb.get("router.waypoints").is_none(),
+            "lane-keeper must not write router.waypoints"
+        );
+        assert!(
+            bb.get("router.route_node_ids").is_none(),
+            "lane-keeper must not write router.route_node_ids"
+        );
+        assert!(
+            bb.get("router.ets2_nav_status").is_none(),
+            "legacy ETS2 nav SHM diag must not be written"
+        );
+    }
+
+    #[test]
+    fn lane_keeper_reads_router_waypoints_without_overwriting() {
+        let mut lk = LaneKeeperPlugin::default();
+        lk.mode = LaneKeeperMode::RouteFollowing;
+        let bb = SharedBlackboard::new();
+        bb.set("router.active", "true");
+        bb.set(
+            "router.waypoints",
+            "[[0.0,0.0],[10.0,0.0],[20.0,0.0]]",
+        );
+        let ctx = PluginContext::new("lane-keeper", bb.clone());
+        let mut out = ControlOutput::default();
+
+        lk.tick(None, &mut out, &ctx);
+
+        assert_eq!(
+            bb.get("router.waypoints").as_deref(),
+            Some("[[0.0,0.0],[10.0,0.0],[20.0,0.0]]")
+        );
+        assert!(!lk.waypoints.is_empty(), "must consume router waypoints");
     }
 
     #[test]

@@ -23,6 +23,16 @@ impl RouterGraph {
         }
     }
 
+    /// Returns `true` when `uid` is a known graph node (with or without edges).
+    pub fn has_node(&self, uid: u64) -> bool {
+        self.positions.contains_key(&uid)
+    }
+
+    /// World `(x, z)` for a graph node, if known.
+    pub fn node_position(&self, uid: u64) -> Option<(f64, f64)> {
+        self.positions.get(&uid).copied()
+    }
+
     pub fn find_nearest_geometric(&self, x: f64, z: f64, max_dist_m: f64) -> Option<(u64, f64)> {
         let max_dist_sq = max_dist_m * max_dist_m;
         self.nodes

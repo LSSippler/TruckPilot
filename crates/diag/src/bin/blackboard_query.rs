@@ -8,14 +8,19 @@
 //!
 //! Options:
 //!   --url <ws-url>        Daemon WebSocket URL (default: ws://127.0.0.1:8765)
-//!   --prefix <prefix>     List all keys with this prefix
-//!   --keys <k1,k2,...>    Fetch specific keys by name
+//!   --prefix <prefix>     List keys with this prefix
+//!   --keys <k1,k2,...>    Fetch specific keys (outputs key=value)
+//!   --values              With --prefix: fetch and print key=value lines
+//!   --names-only          With --prefix: print key names only (default)
 //!   --help                Show this help
 
+use std::collections::HashMap;
 use std::net::TcpStream;
 
 use truckpilot_ipc_protocol::{CoreMessage, UiCommand};
 use tungstenite::{connect, stream::MaybeTlsStream, WebSocket};
+
+pub(crate) const MISSING: &str = "<missing>";
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -27,7 +32,10 @@ struct Config {
 }
 
 enum Mode {
-    List { prefix: Option<String> },
+    List {
+        prefix: Option<String>,
+        with_values: bool,
+    },
     Get { keys: Vec<String> },
     Set { key: String, value: String },
 }
@@ -38,6 +46,8 @@ impl Config {
         let mut url = "ws://127.0.0.1:8765".to_string();
         let mut prefix: Option<String> = None;
         let mut keys: Option<Vec<String>> = None;
+        let mut with_values = false;
+        let mut names_only = false;
 
         let mut set_kv: Option<(String, String)> = None;
         let mut i = 1;
@@ -52,8 +62,16 @@ impl Config {
                     i += 2;
                 }
                 "--keys" if i + 1 < args.len() => {
-                    keys = Some(args[i + 1].split(',').map(str::to_string).collect());
+                    keys = Some(args[i + 1].split(',').map(str::trim).map(str::to_string).collect());
                     i += 2;
+                }
+                "--values" => {
+                    with_values = true;
+                    i += 1;
+                }
+                "--names-only" => {
+                    names_only = true;
+                    i += 1;
                 }
                 "--set" if i + 1 < args.len() => {
                     let pair = &args[i + 1];
@@ -84,7 +102,10 @@ impl Config {
         } else {
             match keys {
                 Some(k) => Mode::Get { keys: k },
-                None => Mode::List { prefix },
+                None => Mode::List {
+                    prefix,
+                    with_values: with_values && !names_only,
+                },
             }
         };
 
@@ -100,15 +121,50 @@ fn print_help() {
     println!("Options:");
     println!("  --url <ws-url>       Daemon URL (default: ws://127.0.0.1:8765)");
     println!("  --prefix <prefix>    List keys with given prefix (default: all)");
-    println!("  --keys <k1,k2,...>   Fetch specific keys and their values");
+    println!("  --keys <k1,k2,...>   Fetch specific keys as key=value lines");
+    println!("  --values             With --prefix: fetch values (key=value output)");
+    println!("  --names-only         With --prefix: key names only (default)");
     println!("  --set <key>=<value>  Set a blackboard key in the running daemon");
     println!("  --help               Show this help");
     println!();
     println!("Examples:");
-    println!("  blackboard-query                              # list all keys");
-    println!("  blackboard-query --prefix vjoy               # list vjoy.* keys");
-    println!("  blackboard-query --keys vjoy.connected,autopilot.state");
+    println!("  blackboard-query --prefix navigation.ets2_route --values");
+    println!("  blackboard-query --keys navigation.ets2_route.imported,router.active");
+    println!("  blackboard-query --prefix vjoy --names-only");
     println!("  blackboard-query --set lane_keeper.mode=vision");
+}
+
+// ---------------------------------------------------------------------------
+// Output formatting (unit-tested)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn format_key_value(key: &str, value: Option<&str>) -> String {
+    match value {
+        Some(v) => format!("{key}={v}"),
+        None => format!("{key}={MISSING}"),
+    }
+}
+
+pub(crate) fn format_requested_keys(
+    requested: &[String],
+    values: &HashMap<String, String>,
+) -> Vec<String> {
+    requested
+        .iter()
+        .map(|k| format_key_value(k, values.get(k).map(String::as_str)))
+        .collect()
+}
+
+pub(crate) fn format_prefix_values(
+    keys: &[String],
+    values: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut sorted = keys.to_vec();
+    sorted.sort();
+    sorted
+        .iter()
+        .map(|k| format_key_value(k, values.get(k).map(String::as_str)))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +172,7 @@ fn print_help() {
 // ---------------------------------------------------------------------------
 
 fn open_ws(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
-    connect(url).map(|(ws, _)| ws).map_err(|e| e.to_string())
+    connect(url).map_err(|e| e.to_string()).map(|(ws, _)| ws)
 }
 
 fn send_cmd(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, cmd: &UiCommand) -> Result<(), String> {
@@ -141,6 +197,25 @@ fn recv_reply(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<CoreMessa
         }
     }
     Err("no relevant reply received".into())
+}
+
+fn fetch_values(
+    ws: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    keys: &[String],
+) -> Result<HashMap<String, String>, String> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    send_cmd(
+        ws,
+        &UiCommand::BlackboardGet {
+            keys: keys.to_vec(),
+        },
+    )?;
+    match recv_reply(ws)? {
+        CoreMessage::BlackboardSnapshot { values, .. } => Ok(values),
+        other => Err(format!("Unexpected reply: {other:?}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,43 +248,99 @@ fn main() {
         return;
     }
 
-    let cmd = match &cfg.mode {
-        Mode::List { prefix } => UiCommand::BlackboardList {
-            prefix: prefix.clone(),
-        },
-        Mode::Get { keys } => UiCommand::BlackboardGet { keys: keys.clone() },
+    match &cfg.mode {
+        Mode::List {
+            prefix,
+            with_values,
+        } => {
+            send_cmd(
+                &mut ws,
+                &UiCommand::BlackboardList {
+                    prefix: prefix.clone(),
+                },
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("Error sending command: {e}");
+                std::process::exit(1);
+            });
+
+            match recv_reply(&mut ws) {
+                Ok(CoreMessage::BlackboardKeys { keys, .. }) => {
+                    if *with_values {
+                        let values = fetch_values(&mut ws, &keys).unwrap_or_else(|e| {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        });
+                        for line in format_prefix_values(&keys, &values) {
+                            println!("{line}");
+                        }
+                    } else {
+                        for k in &keys {
+                            println!("{k}");
+                        }
+                    }
+                }
+                Ok(other) => {
+                    eprintln!("Unexpected reply: {other:?}");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Mode::Get { keys } => {
+            let values = fetch_values(&mut ws, keys).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            });
+            for line in format_requested_keys(keys, &values) {
+                println!("{line}");
+            }
+        }
         Mode::Set { .. } => unreachable!(),
-    };
-
-    if let Err(e) = send_cmd(&mut ws, &cmd) {
-        eprintln!("Error sending command: {e}");
-        std::process::exit(1);
-    }
-
-    match recv_reply(&mut ws) {
-        Ok(CoreMessage::BlackboardKeys { keys, .. }) => {
-            println!("{} key(s):", keys.len());
-            for k in &keys {
-                println!("  {k}");
-            }
-        }
-        Ok(CoreMessage::BlackboardSnapshot { values, .. }) => {
-            let mut pairs: Vec<_> = values.iter().collect();
-            pairs.sort_by_key(|(k, _)| k.as_str());
-            println!("{} key(s):", pairs.len());
-            for (k, v) in pairs {
-                println!("  {k} = {v}");
-            }
-        }
-        Ok(other) => {
-            eprintln!("Unexpected reply: {other:?}");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
     }
 
     let _ = ws.close(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_key_value_present_and_missing() {
+        assert_eq!(format_key_value("router.active", Some("false")), "router.active=false");
+        assert_eq!(
+            format_key_value("router.missing", None),
+            "router.missing=<missing>"
+        );
+    }
+
+    #[test]
+    fn format_requested_keys_preserves_order_and_missing() {
+        let requested = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ];
+        let mut values = HashMap::new();
+        values.insert("a".to_string(), "1".to_string());
+        values.insert("c".to_string(), "3".to_string());
+        let lines = format_requested_keys(&requested, &values);
+        assert_eq!(lines, vec!["a=1", "b=<missing>", "c=3"]);
+    }
+
+    #[test]
+    fn format_prefix_values_sorted() {
+        let keys = vec!["z".to_string(), "a".to_string()];
+        let mut values = HashMap::new();
+        values.insert("a".to_string(), "1".to_string());
+        values.insert("z".to_string(), "9".to_string());
+        assert_eq!(
+            format_prefix_values(&keys, &values),
+            vec!["a=1", "z=9"]
+        );
+    }
 }

@@ -117,8 +117,8 @@ def apply_hsv_mask(roi_bgr: np.ndarray, lower: np.ndarray, upper: np.ndarray) ->
         mask = cv2.inRange(hsv, lower, upper)
     else:
         # wrap-around (e.g. red: 170-180 + 0-10)
-        mask_lo = cv2.inRange(hsv, np.array([0, lower[1], lower[2]]), upper)
-        mask_hi = cv2.inRange(hsv, lower, np.array([179, upper[1], upper[2]]))
+        mask_lo = cv2.inRange(hsv, np.array([0, lower[1], lower[2]], dtype=np.uint8), upper)
+        mask_hi = cv2.inRange(hsv, lower, np.array([179, upper[1], upper[2]], dtype=np.uint8))
         mask = cv2.bitwise_or(mask_lo, mask_hi)
 
     # clean up noise

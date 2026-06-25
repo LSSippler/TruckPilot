@@ -146,7 +146,7 @@ fn main() {
 
     // Build SplineIndex segments
     eprintln!("building spline segments …");
-    let (segments, metadata, stats) = build_splines_ex(&graph);
+    let (segments, metadata, _stats) = build_splines_ex(&graph);
     eprintln!(
         "spline segments: {} total, {} road-with-metadata, {} without",
         segments.len(),
@@ -196,14 +196,14 @@ fn main() {
     // Aufgabe 3: Mismatch forensics — first 10 unmatched road edges
     // ---------------------------------------------------------------------------
 
-    let mut road_directions = ["forward", "backward", "bidirectional_unknown"];
+    let road_directions = ["forward", "backward", "bidirectional_unknown"];
     let mut mismatch_forensics: Vec<String> = Vec::new();
 
     let node_pos: HashMap<u64, (f64, f64)> =
         graph.nodes.iter().map(|n| (n.uid, (n.x, n.z))).collect();
 
     let mut mismatch_count = 0usize;
-    'outer: for edge in &graph.edges {
+    for edge in &graph.edges {
         if !road_directions.contains(&edge.direction.as_str()) {
             continue;
         }
@@ -421,7 +421,7 @@ fn main() {
     }
 
     // Sample: are there NavCurve segs for junction we drove?
-    let navcurve_by_from_to: HashMap<(u64, u64), usize> =
+    let _navcurve_by_from_to: HashMap<(u64, u64), usize> =
         navcurve_segs
             .iter()
             .enumerate()
@@ -458,7 +458,7 @@ fn main() {
         .iter()
         .map(|d| by_direction.get(*d).map_or(0, |b| b.matched))
         .sum();
-    let road_unmatched = road_total - road_matched;
+    let _road_unmatched = road_total - road_matched;
     let road_match_rate = if road_total > 0 {
         100.0 * road_matched as f64 / road_total as f64
     } else {

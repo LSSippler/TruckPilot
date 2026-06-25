@@ -8,7 +8,7 @@ fn main() {
     match args.next().as_deref() {
         Some("copy-plugins") => copy_plugins(args),
         Some("build-release") => build_release(),
-        Some("deploy-ets2-telemetry") => deploy_ets2_telemetry(args),
+        Some("copy-ets2-dll") | Some("deploy-ets2-telemetry") => deploy_ets2_telemetry(args),
         Some(cmd) => {
             eprintln!("Unknown command: {cmd}");
             eprintln!();
@@ -33,7 +33,13 @@ fn print_usage() {
     eprintln!(
         "  deploy-ets2-telemetry [DIR]  Build (msvc) + copy truckpilot_telemetry.dll to ETS2 plugins dir"
     );
+    eprintln!(
+        "  copy-ets2-dll [DIR]            Alias for deploy-ets2-telemetry"
+    );
     eprintln!();
+    eprintln!("Flags for copy-ets2-dll / deploy-ets2-telemetry:");
+    eprintln!("  --release   Build release profile (default)");
+    eprintln!("  --debug     Build debug profile");
     eprintln!("Flags for copy-plugins:");
     eprintln!("  --debug   Copy from target/debug/ instead of target/release/");
     eprintln!();
@@ -73,10 +79,10 @@ const TELEMETRY_TARGET: &str = "x86_64-pc-windows-msvc";
 const TELEMETRY_DLL: &str = "truckpilot_telemetry.dll";
 
 /// Directory the telemetry DLL is built into for [`TELEMETRY_TARGET`].
-fn telemetry_dll_build_path(root: &Path) -> PathBuf {
+fn telemetry_dll_build_path(root: &Path, profile: &str) -> PathBuf {
     root.join("target")
         .join(TELEMETRY_TARGET)
-        .join("release")
+        .join(profile)
         .join(TELEMETRY_DLL)
 }
 
@@ -117,17 +123,26 @@ fn is_stale(dll_mtime: Option<SystemTime>, newest_src_mtime: Option<SystemTime>)
     }
 }
 
-fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
+fn deploy_ets2_telemetry(args: impl Iterator<Item = String>) {
     let root = workspace_root();
+    let mut profile = "release";
+    let mut dst_arg: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--debug" => profile = "debug",
+            "--release" => profile = "release",
+            other => dst_arg = Some(other.to_string()),
+        }
+    }
 
-    // 1) Build fresh for the standard msvc target. This is the heart of the
-    //    stale-deploy fix: build and deploy now reference the SAME directory,
-    //    so a successful deploy can never ship an old DLL.
-    println!("==> cargo build --release --target {TELEMETRY_TARGET} -p truckpilot-telemetry-dll");
+    // 1) Build fresh for the standard msvc target.
+    println!(
+        "==> cargo build --{profile} --target {TELEMETRY_TARGET} -p truckpilot-telemetry-dll"
+    );
     let status = Command::new("cargo")
         .args([
             "build",
-            "--release",
+            &format!("--{profile}"),
             "--target",
             TELEMETRY_TARGET,
             "-p",
@@ -144,7 +159,7 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
         std::process::exit(status.code().unwrap_or(1));
     }
 
-    let src = telemetry_dll_build_path(&root);
+    let src = telemetry_dll_build_path(&root, profile);
 
     // 2) Stale guard (backstop). The build above should have produced a fresh
     //    DLL; if it is missing or older than the crate sources, abort loudly
@@ -168,8 +183,7 @@ fn deploy_ets2_telemetry(mut args: impl Iterator<Item = String>) {
     }
 
     // 3) Destination: explicit arg wins, else ETS2_PLUGINS_DIR.
-    let dst_dir = args
-        .next()
+    let dst_dir = dst_arg
         .or_else(|| std::env::var("ETS2_PLUGINS_DIR").ok())
         .unwrap_or_else(|| {
             eprintln!("No destination directory provided.");
@@ -556,17 +570,28 @@ mod tests {
     #[test]
     fn build_path_uses_msvc_triple_not_host_default() {
         let root = Path::new("X:").join("repo");
-        let p = telemetry_dll_build_path(&root);
-        assert!(p.ends_with("truckpilot_telemetry.dll"));
-        let s = p.to_string_lossy();
-        assert!(s.contains("x86_64-pc-windows-msvc"), "path: {s}");
-        assert!(s.contains("release"), "path: {s}");
+        for profile in ["release", "debug"] {
+            let p = telemetry_dll_build_path(&root, profile);
+            assert_eq!(
+                p.file_name().and_then(|s| s.to_str()),
+                Some("truckpilot_telemetry.dll")
+            );
+            let s = p.to_string_lossy();
+            assert!(s.contains("x86_64-pc-windows-msvc"), "path: {s}");
+            assert!(s.contains(profile), "path: {s}");
+        }
+        let p = telemetry_dll_build_path(&root, "release");
         // Must NOT be the host-default target/release/ path that silently
         // shipped stale DLLs.
         let host_default = Path::new("target")
             .join("release")
             .join("truckpilot_telemetry.dll");
-        assert!(!p.ends_with(&host_default), "must not be host-default: {s}");
+        assert!(
+            p.strip_prefix(&root)
+                .is_ok_and(|rel| !rel.ends_with(&host_default)),
+            "must not be host-default: {}",
+            p.to_string_lossy()
+        );
     }
 
     #[test]

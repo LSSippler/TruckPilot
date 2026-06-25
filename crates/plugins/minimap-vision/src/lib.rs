@@ -35,7 +35,8 @@ pub mod shm_reader;
 use std::collections::VecDeque;
 
 use truckpilot_plugin_api::{
-    ctx_info, ctx_warn, ControlOutput, Plugin, PluginContext, Telemetry, TickPhase,
+    ctx_info, ctx_warn, ControlOutput, OptionalShmGate, Plugin, PluginContext, Telemetry,
+    TickPhase,
 };
 
 use shm_reader::{map_shm, read_frame, ReadOutcome, BUFFER_BYTES, DEFAULT_SHM_NAME};
@@ -203,7 +204,6 @@ impl TemporalConfidence {
 
 // ── plugin struct ─────────────────────────────────────────────────────────────
 
-#[derive(Default)]
 pub struct MinimapVisionPlugin {
     settings: Settings,
     shm_buf: Option<&'static [u8]>,
@@ -212,6 +212,22 @@ pub struct MinimapVisionPlugin {
     tick_counter: u64,
     has_published: bool,
     temporal: TemporalConfidence,
+    shm_gate: OptionalShmGate,
+}
+
+impl Default for MinimapVisionPlugin {
+    fn default() -> Self {
+        Self {
+            settings: Settings::default(),
+            shm_buf: None,
+            last_published_seq: 0,
+            consecutive_misses: 0,
+            tick_counter: 0,
+            has_published: false,
+            temporal: TemporalConfidence::new(),
+            shm_gate: OptionalShmGate::default(),
+        }
+    }
 }
 
 impl MinimapVisionPlugin {
@@ -229,24 +245,22 @@ impl MinimapVisionPlugin {
     }
 
     fn try_map(&mut self, ctx: &PluginContext) {
+        const TARGET: &str = "truckpilot_plugin_minimap_vision";
         match map_shm(&self.settings.shm_name, BUFFER_BYTES) {
             Ok(buf) => {
-                ctx_info!(
+                self.shm_gate.on_mapped(
                     ctx,
-                    target: "truckpilot_plugin_minimap_vision",
-                    "mapped SHM '{}' ({} bytes)",
-                    self.settings.shm_name,
-                    BUFFER_BYTES,
+                    TARGET,
+                    &format!(
+                        "'{}' ({} bytes)",
+                        self.settings.shm_name, BUFFER_BYTES
+                    ),
                 );
                 self.shm_buf = Some(buf);
                 ctx.blackboard.remove("minimap.source.last_error");
             }
             Err(e) => {
-                ctx_warn!(
-                    ctx,
-                    target: "truckpilot_plugin_minimap_vision",
-                    "SHM not available: {e}"
-                );
+                self.shm_gate.on_missing(ctx, TARGET, &e);
                 ctx.blackboard.set("minimap.source.last_error", e);
             }
         }

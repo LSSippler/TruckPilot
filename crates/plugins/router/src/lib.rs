@@ -41,6 +41,13 @@ use std::thread::JoinHandle;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use truckpilot_plugin_api::graph::RouterGraph;
+use truckpilot_plugin_api::ets2_route::{
+    build_router_output_from_node_ids, build_trimmed_ets2_router_output,
+    compare_ets2_graph_coord_delta, compare_ets2_graph_distance, decide_ets2_route_progress,
+    find_route_start_index_for_truck, repair_ets2_route_gaps, trim_result_for_start_index,
+    Ets2RouteProgressDecision, Ets2RouteProgressStatus, Ets2RouteRepairResult,
+    Ets2RouteTrimResult,
+};
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
 
 const DEFAULT_GRAPH_PATH: &str = "graph.json";
@@ -236,6 +243,15 @@ pub struct RouterPlugin {
     snap_window_unique_edges: u8,
     snap_last_change_at_ms: u64,
     last_autopilot_state: String,
+    // ---- Phase 5b: ETS2 in-game route import ----
+    ets2_import_active: bool,
+    last_ets2_imported_hash: Option<u64>,
+    last_ets2_imported_sequence: Option<u32>,
+    /// Full matched ETS2 node list (pre-trim); used for live progress re-trim.
+    full_imported_route_node_ids: Vec<u64>,
+    last_published_start_index: usize,
+    ets2_offroute_since_ms: Option<u64>,
+    last_ets2_progress_republish_at_ms: u64,
 }
 
 impl Default for RouterPlugin {
@@ -270,6 +286,13 @@ impl Default for RouterPlugin {
             snap_window_unique_edges: 0,
             snap_last_change_at_ms: 0,
             last_autopilot_state: String::new(),
+            ets2_import_active: false,
+            last_ets2_imported_hash: None,
+            last_ets2_imported_sequence: None,
+            full_imported_route_node_ids: Vec::new(),
+            last_published_start_index: 0,
+            ets2_offroute_since_ms: None,
+            last_ets2_progress_republish_at_ms: 0,
         }
     }
 }
@@ -326,6 +349,9 @@ impl RouterPlugin {
         truck_heading: f64,
         ctx: &PluginContext,
     ) {
+        if self.ets2_import_active {
+            return;
+        }
         if let Some(chan) = &self.request_tx {
             ctx.blackboard
                 .set("router.last_planning_attempt_at", epoch_ms().to_string());
@@ -336,6 +362,878 @@ impl RouterPlugin {
                 goal_uid: self.goal_uid,
             });
             self.pending_request = true;
+        }
+    }
+
+    fn drain_worker_results(&mut self) {
+        if let Some(rx) = &self.result_rx {
+            while rx.lock().unwrap().try_recv().is_ok() {}
+            self.pending_request = false;
+        }
+    }
+
+    /// Heavy per-tick graph snap / off-route work — skip when idle (Off, no goal, no ETS2 import).
+    fn needs_heavy_router_work(&self, ctx: &PluginContext) -> bool {
+        self.goal_uid != 0
+            || self.ets2_import_active
+            || self.pending_request
+            || ctx.is_engaged()
+            || !self.current_route_node_ids.is_empty()
+    }
+
+    fn set_ets2_not_imported(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .set("navigation.ets2_route.imported", "false");
+        ctx.blackboard.remove("navigation.ets2_route.imported_hash");
+        ctx.blackboard.remove("navigation.ets2_route.imported_node_count");
+    }
+
+    fn clear_ets2_repair_keys(&self, ctx: &PluginContext) {
+        ctx.blackboard.remove("navigation.ets2_route.repair_status");
+        ctx.blackboard.remove("navigation.ets2_route.repair_gap_count");
+        ctx.blackboard.remove("navigation.ets2_route.repair_success_count");
+        ctx.blackboard.remove("navigation.ets2_route.repair_failed_count");
+        ctx.blackboard
+            .remove("navigation.ets2_route.repair_inserted_node_count");
+        ctx.blackboard
+            .remove("navigation.ets2_route.repair_first_failed_gap");
+        ctx.blackboard.remove("navigation.ets2_route.repair_error");
+    }
+
+    fn clear_ets2_coord_delta_keys(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .remove("navigation.ets2_route.coord_graph_delta_avg_m");
+        ctx.blackboard
+            .remove("navigation.ets2_route.coord_graph_delta_max_m");
+        ctx.blackboard
+            .remove("navigation.ets2_route.coord_graph_delta_count");
+    }
+
+    fn publish_ets2_coord_delta_keys(&self, ctx: &PluginContext) {
+        let Some(ets2_lock) = ctx.ets2_route.as_ref() else {
+            self.clear_ets2_coord_delta_keys(ctx);
+            return;
+        };
+        let Some(graph) = self.graph.as_ref() else {
+            self.clear_ets2_coord_delta_keys(ctx);
+            return;
+        };
+        let waypoints = ets2_lock
+            .read()
+            .ok()
+            .map(|g| g.waypoints.clone())
+            .unwrap_or_default();
+        let delta = compare_ets2_graph_coord_delta(graph, &waypoints);
+        if delta.count == 0 {
+            self.clear_ets2_coord_delta_keys(ctx);
+            return;
+        }
+        ctx.blackboard.set(
+            "navigation.ets2_route.coord_graph_delta_avg_m",
+            format!("{:.2}", delta.avg_m),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.coord_graph_delta_max_m",
+            format!("{:.2}", delta.max_m),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.coord_graph_delta_count",
+            delta.count.to_string(),
+        );
+    }
+
+    fn clear_ets2_distance_graph_keys(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .remove("navigation.ets2_route.distance_graph_total_m");
+        ctx.blackboard
+            .remove("navigation.ets2_route.distance_first_vs_graph_delta_m");
+        ctx.blackboard
+            .remove("navigation.ets2_route.distance_graph_ratio");
+        ctx.blackboard
+            .remove("navigation.ets2_route.distance_graph_status");
+    }
+
+    fn publish_ets2_distance_graph_keys(
+        &self,
+        ctx: &PluginContext,
+        route_node_ids: &[u64],
+    ) {
+        let Some(ets2_lock) = ctx.ets2_route.as_ref() else {
+            self.clear_ets2_distance_graph_keys(ctx);
+            return;
+        };
+        let Some(graph) = self.graph.as_ref() else {
+            self.clear_ets2_distance_graph_keys(ctx);
+            return;
+        };
+        let waypoints = ets2_lock
+            .read()
+            .ok()
+            .map(|g| g.waypoints.clone())
+            .unwrap_or_default();
+        let cmp = compare_ets2_graph_distance(graph, route_node_ids, &waypoints);
+        if cmp.status.as_str() == "none" {
+            self.clear_ets2_distance_graph_keys(ctx);
+            return;
+        }
+        ctx.blackboard.set(
+            "navigation.ets2_route.distance_graph_total_m",
+            format!("{:.1}", cmp.graph_total_m),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.distance_first_vs_graph_delta_m",
+            format!("{:.1}", cmp.first_vs_graph_delta_m),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.distance_graph_ratio",
+            format!("{:.4}", cmp.graph_ratio),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.distance_graph_status",
+            cmp.status.as_str(),
+        );
+    }
+
+    fn publish_ets2_repair_keys(&self, ctx: &PluginContext, repair: &Ets2RouteRepairResult) {
+        ctx.blackboard.set(
+            "navigation.ets2_route.repair_status",
+            repair.status.as_str(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.repair_gap_count",
+            repair.gap_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.repair_success_count",
+            repair.success_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.repair_failed_count",
+            repair.failed_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.repair_inserted_node_count",
+            repair.inserted_node_count.to_string(),
+        );
+        if let Some(ref gap) = repair.first_failed_gap {
+            ctx.blackboard.set(
+                "navigation.ets2_route.repair_first_failed_gap",
+                gap.as_str(),
+            );
+        } else {
+            ctx.blackboard
+                .remove("navigation.ets2_route.repair_first_failed_gap");
+        }
+        if let Some(ref err) = repair.error {
+            ctx.blackboard.set("navigation.ets2_route.repair_error", err.as_str());
+        } else {
+            ctx.blackboard.remove("navigation.ets2_route.repair_error");
+        }
+    }
+
+    fn clear_ets2_trim_keys(&self, ctx: &PluginContext) {
+        ctx.blackboard.remove("navigation.ets2_route.trimmed");
+        ctx.blackboard.remove("navigation.ets2_route.trim_start_index");
+        ctx.blackboard
+            .remove("navigation.ets2_route.trim_original_node_count");
+        ctx.blackboard.remove("navigation.ets2_route.trimmed_node_count");
+        ctx.blackboard.remove("navigation.ets2_route.snap_dist_m");
+        ctx.blackboard.remove("navigation.ets2_route.snap_status");
+        ctx.blackboard
+            .remove("navigation.ets2_route.snap_heading_delta_deg");
+    }
+
+    fn publish_ets2_trim_keys(&self, ctx: &PluginContext, trim: &Ets2RouteTrimResult) {
+        ctx.blackboard.set(
+            "navigation.ets2_route.trimmed",
+            if trim.trimmed { "true" } else { "false" },
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.trim_start_index",
+            trim.start_index.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.trim_original_node_count",
+            trim.original_node_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.trimmed_node_count",
+            trim.trimmed_node_count.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.snap_dist_m",
+            format!("{:.2}", trim.snap_dist_m),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.snap_status",
+            trim.snap_status.as_str(),
+        );
+        if let Some(deg) = trim.snap_heading_delta_deg {
+            ctx.blackboard.set(
+                "navigation.ets2_route.snap_heading_delta_deg",
+                format!("{:.1}", deg),
+            );
+        } else {
+            ctx.blackboard
+                .remove("navigation.ets2_route.snap_heading_delta_deg");
+        }
+    }
+
+    fn clear_ets2_progress_keys(&self, ctx: &PluginContext) {
+        ctx.blackboard.remove("navigation.ets2_route.progress_start_index");
+        ctx.blackboard
+            .remove("navigation.ets2_route.progress_original_node_count");
+        ctx.blackboard
+            .remove("navigation.ets2_route.progress_remaining_node_count");
+        ctx.blackboard.remove("navigation.ets2_route.progress_republished");
+        ctx.blackboard.remove("navigation.ets2_route.progress_status");
+        ctx.blackboard.remove("navigation.ets2_route.offroute_secs");
+    }
+
+    fn clear_ets2_import_progress_state(&mut self) {
+        self.full_imported_route_node_ids.clear();
+        self.last_published_start_index = 0;
+        self.ets2_offroute_since_ms = None;
+        self.last_ets2_progress_republish_at_ms = 0;
+    }
+
+    fn publish_ets2_progress_keys(
+        &self,
+        ctx: &PluginContext,
+        trim: &Ets2RouteTrimResult,
+        decision: &Ets2RouteProgressDecision,
+        offroute_secs: f64,
+        republished: bool,
+    ) {
+        let remaining = self
+            .full_imported_route_node_ids
+            .len()
+            .saturating_sub(self.last_published_start_index);
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_start_index",
+            self.last_published_start_index.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_original_node_count",
+            self.full_imported_route_node_ids.len().to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_remaining_node_count",
+            remaining.to_string(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_republished",
+            if republished { "true" } else { "false" },
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_status",
+            decision.progress_status.as_str(),
+        );
+        ctx.blackboard.set(
+            "navigation.ets2_route.offroute_secs",
+            format!("{:.2}", offroute_secs),
+        );
+        self.publish_ets2_trim_keys(ctx, trim);
+    }
+
+    fn publish_ets2_router_output(
+        &mut self,
+        ctx: &PluginContext,
+        output: truckpilot_plugin_api::ets2_route::Ets2RouterOutput,
+    ) {
+        self.waypoint_count = output.waypoints.len() as u32;
+        self.path_total_distance_m = output.distance_m;
+        self.current_route_node_ids = output.route_node_ids.iter().copied().collect();
+
+        if let Ok(json) = serde_json::to_string(&output.waypoints) {
+            ctx.blackboard.set("router.waypoints", &json);
+        }
+        if let Ok(route_json) = serde_json::to_string(&output.route_node_ids) {
+            ctx.blackboard.set("router.route_node_ids", &route_json);
+        }
+        if let Some(ref lock) = ctx.route_node_ids {
+            *lock.write().unwrap() = self.current_route_node_ids.clone();
+        }
+        ctx.blackboard.set(
+            "navigation.ets2_route.imported_node_count",
+            output.route_node_ids.len().to_string(),
+        );
+    }
+
+    fn update_ets2_live_progress(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+    ) {
+        if !self.ets2_import_active || self.full_imported_route_node_ids.is_empty() {
+            return;
+        }
+        let Some(graph) = self.graph.as_ref() else {
+            return;
+        };
+
+        let (truck_x, truck_z, heading) = Self::truck_pose_for_ets2_trim(telemetry, ctx);
+        let now_ms = epoch_ms();
+
+        let trim = match (truck_x, truck_z) {
+            (Some(x), Some(z)) => find_route_start_index_for_truck(
+                graph,
+                &self.full_imported_route_node_ids,
+                x,
+                z,
+                heading,
+            ),
+            _ => trim_result_for_start_index(
+                &self.full_imported_route_node_ids,
+                self.last_published_start_index,
+                0.0,
+                truckpilot_plugin_api::ets2_route::Ets2RouteSnapStatus::NoPosition,
+                None,
+            ),
+        };
+
+        if trim.snap_status == truckpilot_plugin_api::ets2_route::Ets2RouteSnapStatus::TooFar {
+            if self.ets2_offroute_since_ms.is_none() {
+                self.ets2_offroute_since_ms = Some(now_ms);
+            }
+        } else {
+            self.ets2_offroute_since_ms = None;
+        }
+
+        let offroute_secs = self
+            .ets2_offroute_since_ms
+            .map(|s| now_ms.saturating_sub(s) as f64 / 1000.0)
+            .unwrap_or(0.0);
+
+        let decision = decide_ets2_route_progress(
+            trim.start_index,
+            self.last_published_start_index,
+            self.full_imported_route_node_ids.len(),
+            &trim,
+            offroute_secs,
+            now_ms,
+            self.last_ets2_progress_republish_at_ms,
+        );
+
+        if decision.should_release {
+            let release_reason = decision.release_reason.unwrap_or("ets2_off_route");
+            let fallback = if release_reason == "too_short" {
+                "build_error"
+            } else {
+                "ets2_off_route"
+            };
+            self.release_ets2_import(
+                telemetry,
+                ctx,
+                "fallback_astar",
+                fallback,
+                release_reason,
+                &format!("ets2 progress release: {release_reason}"),
+            );
+            return;
+        }
+
+        if decision.should_republish {
+            let trimmed = &self.full_imported_route_node_ids[decision.effective_start_index..];
+            match build_router_output_from_node_ids(graph, trimmed) {
+                Ok(output) => {
+                    self.last_published_start_index = decision.effective_start_index;
+                    self.last_ets2_progress_republish_at_ms = now_ms;
+                    self.publish_ets2_router_output(ctx, output);
+                    let publish_trim = trim_result_for_start_index(
+                        &self.full_imported_route_node_ids,
+                        decision.effective_start_index,
+                        trim.snap_dist_m,
+                        trim.snap_status,
+                        trim.snap_heading_delta_deg,
+                    );
+                    self.publish_ets2_progress_keys(
+                        ctx,
+                        &publish_trim,
+                        &decision,
+                        offroute_secs,
+                        true,
+                    );
+                    tracing::debug!(
+                        "[router] ETS2 progress advanced: start={} remaining={}",
+                        decision.effective_start_index,
+                        self.full_imported_route_node_ids.len()
+                            - decision.effective_start_index,
+                    );
+                }
+                Err(e) => {
+                    self.release_ets2_import(
+                        telemetry,
+                        ctx,
+                        "fallback_astar",
+                        "build_error",
+                        "too_short",
+                        &e,
+                    );
+                }
+            }
+        } else {
+            let publish_trim = trim_result_for_start_index(
+                &self.full_imported_route_node_ids,
+                self.last_published_start_index,
+                trim.snap_dist_m,
+                trim.snap_status,
+                trim.snap_heading_delta_deg,
+            );
+            self.publish_ets2_progress_keys(
+                ctx,
+                &publish_trim,
+                &decision,
+                offroute_secs,
+                false,
+            );
+        }
+    }
+
+    fn truck_pose_for_ets2_trim(
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+    ) -> (Option<f64>, Option<f64>, Option<f64>) {
+        if let Some(tel) = telemetry {
+            return (
+                Some(tel.position[0]),
+                Some(tel.position[2]),
+                Some(tel.heading),
+            );
+        }
+        (
+            ctx.blackboard.get_f64("telemetry.position_x"),
+            ctx.blackboard.get_f64("telemetry.position_z"),
+            ctx.blackboard.get_f64("telemetry.heading"),
+        )
+    }
+
+    fn publish_ets2_lifecycle_idle(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .set("navigation.ets2_route.import_state", "inactive");
+        ctx.blackboard.remove("navigation.ets2_route.fallback_reason");
+    }
+
+    fn publish_ets2_lifecycle_active(&self, ctx: &PluginContext) {
+        ctx.blackboard
+            .set("navigation.ets2_route.import_state", "active");
+        ctx.blackboard.remove("navigation.ets2_route.fallback_reason");
+        ctx.blackboard.remove("navigation.ets2_route.import_error");
+    }
+
+    fn clear_ets2_router_output(&mut self, ctx: &PluginContext) {
+        self.active = false;
+        self.waypoint_count = 0;
+        self.path_total_distance_m = 0.0;
+        ctx.blackboard.remove("router.waypoints");
+        self.clear_ets2_trim_keys(ctx);
+        self.clear_ets2_progress_keys(ctx);
+        self.clear_ets2_repair_keys(ctx);
+        ctx.blackboard.remove("router.route_node_ids");
+        self.current_route_node_ids.clear();
+        if let Some(ref lock) = ctx.route_node_ids {
+            lock.write().unwrap().clear();
+        }
+    }
+
+    /// Drop ETS2-import mode and allow A* again. Clears stale router output if import was active.
+    fn release_ets2_import(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+        import_state: &str,
+        fallback_reason: &str,
+        release_reason: &str,
+        import_error: &str,
+    ) {
+        let was_active = self.ets2_import_active;
+        self.ets2_import_active = false;
+        self.clear_ets2_import_progress_state();
+        self.set_ets2_not_imported(ctx);
+        ctx.blackboard
+            .set("navigation.ets2_route.import_state", import_state);
+        ctx.blackboard
+            .set("navigation.ets2_route.fallback_reason", fallback_reason);
+        ctx.blackboard
+            .set("navigation.ets2_route.release_reason", release_reason);
+        ctx.blackboard
+            .set("navigation.ets2_route.import_error", import_error);
+        ctx.blackboard.set(
+            "navigation.ets2_route.progress_status",
+            Ets2RouteProgressStatus::Released.as_str(),
+        );
+        ctx.blackboard
+            .set("navigation.ets2_route.progress_republished", "false");
+        if was_active {
+            self.clear_ets2_router_output(ctx);
+            tracing::info!(
+                "[router] ETS2 import released: state={import_state} reason={fallback_reason} release={release_reason} ({import_error})"
+            );
+        }
+        if was_active && self.goal_uid != 0 {
+            let (pos_x, pos_z, truck_heading) = match telemetry {
+                Some(t) => (t.position[0], t.position[2], t.heading),
+                None => (
+                    ctx.blackboard.get_f64("telemetry.position_x").unwrap_or(0.0),
+                    ctx.blackboard.get_f64("telemetry.position_z").unwrap_or(0.0),
+                    ctx.blackboard.get_f64("telemetry.heading").unwrap_or(0.0),
+                ),
+            };
+            self.last_replan_reason = "ets2_release_replan".to_string();
+            ctx.blackboard
+                .set("router.last_replan_reason", &self.last_replan_reason);
+            self.send_route_request(pos_x, pos_z, truck_heading, ctx);
+            tracing::info!(
+                "[router] ETS2 release → immediate A* replan to goal_uid={}",
+                self.goal_uid
+            );
+        }
+    }
+
+    fn mark_astar_fallback_active(&self, ctx: &PluginContext) {
+        if self.last_ets2_imported_hash.is_some() && !self.ets2_import_active {
+            ctx.blackboard
+                .set("navigation.ets2_route.import_state", "fallback_astar");
+        }
+    }
+
+    fn apply_ets2_import(
+        &mut self,
+        ctx: &PluginContext,
+        route_hash: u64,
+        sequence: u32,
+        full_route_node_ids: Vec<u64>,
+        output: truckpilot_plugin_api::ets2_route::Ets2RouterOutput,
+        trim: &Ets2RouteTrimResult,
+        repair: &Ets2RouteRepairResult,
+    ) {
+        self.drain_worker_results();
+        self.ets2_import_active = true;
+        self.last_ets2_imported_hash = Some(route_hash);
+        self.last_ets2_imported_sequence = Some(sequence);
+        self.full_imported_route_node_ids = full_route_node_ids;
+        self.last_published_start_index = trim.start_index;
+        self.ets2_offroute_since_ms = None;
+        self.last_ets2_progress_republish_at_ms = 0;
+
+        self.active = true;
+        self.last_planning_result = "ok_ets2_import".to_string();
+        self.last_planning_error_detail = String::new();
+        self.last_planning_duration_ms = 0;
+        self.last_replan_reason = "ets2_route_import".to_string();
+        let imported_route_ids = output.route_node_ids.clone();
+        self.publish_ets2_router_output(ctx, output);
+
+        ctx.blackboard.set("navigation.ets2_route.imported", "true");
+        ctx.blackboard
+            .set("navigation.ets2_route.imported_hash", route_hash.to_string());
+        ctx.blackboard
+            .set("navigation.ets2_route.release_reason", "none");
+        self.publish_ets2_trim_keys(ctx, trim);
+        let initial_progress = Ets2RouteProgressDecision {
+            should_republish: false,
+            should_release: false,
+            release_reason: None,
+            effective_start_index: trim.start_index,
+            progress_status: Ets2RouteProgressStatus::Ok,
+            counts_as_offroute: false,
+        };
+        self.publish_ets2_progress_keys(ctx, trim, &initial_progress, 0.0, false);
+        self.publish_ets2_repair_keys(ctx, repair);
+        self.publish_ets2_coord_delta_keys(ctx);
+        self.publish_ets2_distance_graph_keys(ctx, &imported_route_ids);
+        ctx.blackboard
+            .set("navigation.ets2_route.last_imported_hash", route_hash.to_string());
+        ctx.blackboard
+            .set("navigation.ets2_route.last_imported_sequence", sequence.to_string());
+        self.publish_ets2_lifecycle_active(ctx);
+
+        self.publish_planning_diag(ctx);
+
+        tracing::info!(
+            "[router] ETS2 route imported: {} nodes (trimmed from {}), {} waypoints, {:.0}m, snap={} start={}, repair={}, hash={:#x} seq={}",
+            trim.trimmed_node_count,
+            trim.original_node_count,
+            self.waypoint_count,
+            self.path_total_distance_m,
+            trim.snap_status.as_str(),
+            trim.start_index,
+            repair.status.as_str(),
+            route_hash,
+            sequence,
+        );
+        if repair.gap_count > 0 {
+            tracing::info!(
+                "[router] ETS2 route repaired: gaps={} repaired={} failed={} inserted={} hash={:#x}",
+                repair.gap_count,
+                repair.success_count,
+                repair.failed_count,
+                repair.inserted_node_count,
+                route_hash,
+            );
+        }
+    }
+
+    /// Returns `true` when an ETS2 route is actively driving router output.
+    fn try_import_ets2_route(
+        &mut self,
+        telemetry: Option<&Telemetry>,
+        ctx: &PluginContext,
+    ) -> bool {
+        use truckpilot_plugin_api::ets2_route::Ets2RouteMatchStatus;
+
+        let was_active = self.ets2_import_active;
+
+        let Some(ets2_lock) = ctx.ets2_route.as_ref() else {
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "lost",
+                    "no_snapshot",
+                    "route_lost",
+                    "ets2_route_lost",
+                );
+            } else {
+                self.publish_ets2_lifecycle_idle(ctx);
+            }
+            return false;
+        };
+
+        let guard = match ets2_lock.read() {
+            Ok(g) => g,
+            Err(_) => {
+                if was_active {
+                    self.release_ets2_import(
+                        telemetry,
+                        ctx,
+                        "lost",
+                        "no_snapshot",
+                        "route_lost",
+                        "ets2_route_lost",
+                    );
+                }
+                return false;
+            }
+        };
+
+        let Some(snapshot) = guard.snapshot.as_ref() else {
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "lost",
+                    "no_snapshot",
+                    "route_lost",
+                    "ets2_route_lost",
+                );
+            } else {
+                self.publish_ets2_lifecycle_idle(ctx);
+            }
+            return false;
+        };
+
+        if !snapshot.valid {
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "invalid",
+                    "invalid_snapshot",
+                    "invalid",
+                    "ets2_route_invalid",
+                );
+            } else {
+                self.set_ets2_not_imported(ctx);
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_state", "invalid");
+                ctx.blackboard
+                    .set("navigation.ets2_route.fallback_reason", "invalid_snapshot");
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_error", "ets2_route_invalid");
+                ctx.blackboard
+                    .set("navigation.ets2_route.release_reason", "invalid");
+            }
+            return false;
+        }
+
+        let Some(match_result) = guard.match_result.as_ref() else {
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "lost",
+                    "no_snapshot",
+                    "route_lost",
+                    "ets2_route_lost",
+                );
+            } else {
+                self.publish_ets2_lifecycle_idle(ctx);
+            }
+            return false;
+        };
+
+        if !match_result.is_usable {
+            let import_state = match match_result.status {
+                Ets2RouteMatchStatus::Invalid => "invalid",
+                Ets2RouteMatchStatus::Unavailable => "lost",
+                _ => "unusable",
+            };
+            let import_error = match match_result.status {
+                Ets2RouteMatchStatus::Invalid => "ets2_route_invalid",
+                Ets2RouteMatchStatus::Unavailable => "ets2_route_lost",
+                _ => "ets2_route_unusable",
+            };
+            let release_reason = match match_result.status {
+                Ets2RouteMatchStatus::Invalid => "invalid",
+                Ets2RouteMatchStatus::Unavailable => "route_lost",
+                _ => "unusable",
+            };
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    import_state,
+                    "unusable_match",
+                    release_reason,
+                    import_error,
+                );
+            } else {
+                self.set_ets2_not_imported(ctx);
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_state", import_state);
+                ctx.blackboard
+                    .set("navigation.ets2_route.fallback_reason", "unusable_match");
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_error", import_error);
+                ctx.blackboard
+                    .set("navigation.ets2_route.release_reason", release_reason);
+            }
+            return false;
+        }
+
+        let route_hash = snapshot.route_hash;
+        let sequence = snapshot.sequence;
+        let changed = self.last_ets2_imported_hash != Some(route_hash)
+            || self.last_ets2_imported_sequence != Some(sequence);
+        let recover_inactive = !self.active;
+
+        if !changed && !recover_inactive && self.ets2_import_active {
+            return true;
+        }
+
+        let Some(graph) = self.graph.as_ref() else {
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "unusable",
+                    "build_error",
+                    "build_error",
+                    "router graph not loaded",
+                );
+            } else {
+                ctx.blackboard.set(
+                    "navigation.ets2_route.import_error",
+                    "router graph not loaded",
+                );
+                self.set_ets2_not_imported(ctx);
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_state", "unusable");
+                ctx.blackboard
+                    .set("navigation.ets2_route.fallback_reason", "build_error");
+                ctx.blackboard
+                    .set("navigation.ets2_route.release_reason", "build_error");
+            }
+            self.ets2_import_active = false;
+            return false;
+        };
+
+        let (truck_x, truck_z, heading) = Self::truck_pose_for_ets2_trim(telemetry, ctx);
+
+        let repair = repair_ets2_route_gaps(
+            graph,
+            &snapshot.uids,
+            &match_result.route_node_ids,
+        );
+        self.publish_ets2_repair_keys(ctx, &repair);
+
+        if !repair.import_allowed {
+            let err = repair
+                .error
+                .clone()
+                .unwrap_or_else(|| "ets2 route gap repair failed".into());
+            tracing::warn!("[router] ETS2 gap repair failed: {err}");
+            if was_active {
+                self.release_ets2_import(
+                    telemetry,
+                    ctx,
+                    "unusable",
+                    "build_error",
+                    "build_error",
+                    &err,
+                );
+            } else {
+                ctx.blackboard.set("navigation.ets2_route.import_error", err.clone());
+                self.set_ets2_not_imported(ctx);
+                ctx.blackboard
+                    .set("navigation.ets2_route.import_state", "unusable");
+                ctx.blackboard
+                    .set("navigation.ets2_route.fallback_reason", "build_error");
+                ctx.blackboard
+                    .set("navigation.ets2_route.release_reason", "build_error");
+            }
+            self.ets2_import_active = false;
+            return false;
+        }
+
+        let route_for_import = repair.route_node_ids.clone();
+
+        match build_trimmed_ets2_router_output(
+            graph,
+            &route_for_import,
+            truck_x,
+            truck_z,
+            heading,
+        ) {
+            Ok((output, trim)) => {
+                self.apply_ets2_import(
+                    ctx,
+                    route_hash,
+                    sequence,
+                    route_for_import,
+                    output,
+                    &trim,
+                    &repair,
+                );
+                true
+            }
+            Err((trim, e)) => {
+                self.publish_ets2_trim_keys(ctx, &trim);
+                tracing::warn!("[router] ETS2 import failed: {e}");
+                if was_active {
+                    self.release_ets2_import(
+                        telemetry,
+                        ctx,
+                        "unusable",
+                        "build_error",
+                        "build_error",
+                        &e,
+                    );
+                } else {
+                    ctx.blackboard
+                        .set("navigation.ets2_route.import_error", e.clone());
+                    self.set_ets2_not_imported(ctx);
+                    ctx.blackboard
+                        .set("navigation.ets2_route.import_state", "unusable");
+                    ctx.blackboard
+                        .set("navigation.ets2_route.fallback_reason", "build_error");
+                    ctx.blackboard
+                        .set("navigation.ets2_route.release_reason", "build_error");
+                }
+                self.ets2_import_active = false;
+                false
+            }
         }
     }
 }
@@ -580,6 +1478,12 @@ impl Plugin for RouterPlugin {
         ctx.blackboard.set("router.snap_stability", "0");
         ctx.blackboard.set("router.snap_window_unique_edges", "0");
         ctx.blackboard.set("router.snap_last_change_at", "");
+        ctx.blackboard
+            .set("navigation.ets2_route.imported", "false");
+        ctx.blackboard
+            .set("navigation.ets2_route.import_state", "inactive");
+        ctx.blackboard
+            .set("navigation.ets2_route.release_reason", "none");
         self.reset_snap_window();
     }
 
@@ -602,6 +1506,7 @@ impl Plugin for RouterPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
+        let tick_started = Instant::now();
         // ── 0. Phase 6.5q.1: consume synchronous replan from state machine ──
         if ctx.blackboard.get("router.sync_replan_done").as_deref() == Some("true") {
             ctx.blackboard.remove("router.sync_replan_done");
@@ -619,8 +1524,16 @@ impl Plugin for RouterPlugin {
             }
         }
 
-        // ── 1. Poll worker result (non-blocking, always first) ────────────────
-        if let Some(rx) = &self.result_rx {
+        // ── 1. ETS2 in-game route import (Phase 5b, preferred over A*) ───────
+        self.try_import_ets2_route(telemetry, ctx);
+        if self.ets2_import_active {
+            self.update_ets2_live_progress(telemetry, ctx);
+        }
+
+        // ── 2. Poll worker result (non-blocking; skipped when ETS2 active) ─
+        if self.ets2_import_active {
+            self.drain_worker_results();
+        } else if let Some(rx) = &self.result_rx {
             if let Ok(result) = rx.lock().unwrap().try_recv() {
                 self.pending_request = false;
 
@@ -663,6 +1576,7 @@ impl Plugin for RouterPlugin {
                                     result.distance_m / 1000.0,
                                     result.plan_ms,
                                 );
+                                self.mark_astar_fallback_active(ctx);
                             }
                             Err(e) => {
                                 self.last_planning_result = "serialise_error".to_string();
@@ -692,7 +1606,7 @@ impl Plugin for RouterPlugin {
             }
         }
 
-        // ── 2. Detect goal changes ────────────────────────────────────────────
+        // ── 3. Detect goal changes ────────────────────────────────────────────
         let goal_str = ctx.blackboard.get("router.goal_uid").unwrap_or_default();
         if goal_str != self.last_seen_goal_str {
             self.last_seen_goal_str = goal_str.clone();
@@ -733,6 +1647,10 @@ impl Plugin for RouterPlugin {
                             .unwrap_or((0.0, 0.0));
                         let truck_heading = telemetry.map(|t| t.heading).unwrap_or(0.0);
                         self.send_route_request(pos_x, pos_z, truck_heading, ctx);
+                        ctx.blackboard.set(
+                            "navigation.ets2_route.fallback_reason",
+                            "manual_goal_astar",
+                        );
                     }
                     Err(_) => {
                         self.goal_uid = 0;
@@ -752,40 +1670,42 @@ impl Plugin for RouterPlugin {
             }
         }
 
-        // ── 2.3. Per-tick snap → sliding-window vote (Phase 6.5t) ──────────────
-        if let (Some(tel), Some(graph)) = (telemetry, self.graph.as_ref()) {
-            let snap = graph
-                .find_nearest_with_heading(
-                    tel.position[0],
-                    tel.position[2],
-                    tel.heading,
-                    OFF_ROUTE_DETECT_RADIUS_M,
-                )
-                .map(|(uid, _, _)| uid);
-            self.snap_window.push_snap(snap);
+        // ── 3.1. Per-tick snap → sliding-window vote (Phase 6.5t) ──────────────
+        if self.needs_heavy_router_work(ctx) {
+            if let (Some(tel), Some(graph)) = (telemetry, self.graph.as_ref()) {
+                let snap = graph
+                    .find_nearest_with_heading(
+                        tel.position[0],
+                        tel.position[2],
+                        tel.heading,
+                        OFF_ROUTE_DETECT_RADIUS_M,
+                    )
+                    .map(|(uid, _, _)| uid);
+                self.snap_window.push_snap(snap);
+            }
+
+            let now_ms = epoch_ms();
+            let (stable_edge, stability, unique) = self.snap_window.vote(
+                self.stable_snap_edge_id,
+                SNAP_MAJORITY_THRESHOLD,
+                SNAP_HYSTERESIS_THRESHOLD,
+            );
+            if stable_edge != self.stable_snap_edge_id {
+                self.stable_snap_edge_id = stable_edge;
+                self.snap_last_change_at_ms = now_ms;
+            }
+            self.snap_stability = stability;
+            self.snap_window_unique_edges = unique;
         }
 
-        let now_ms = epoch_ms();
-        let (stable_edge, stability, unique) = self.snap_window.vote(
-            self.stable_snap_edge_id,
-            SNAP_MAJORITY_THRESHOLD,
-            SNAP_HYSTERESIS_THRESHOLD,
-        );
-        if stable_edge != self.stable_snap_edge_id {
-            self.stable_snap_edge_id = stable_edge;
-            self.snap_last_change_at_ms = now_ms;
-        }
-        self.snap_stability = stability;
-        self.snap_window_unique_edges = unique;
-
-        // ── 2.4. Autopilot state-change → reset snap window ───────────────────
+        // ── 3.2. Autopilot state-change → reset snap window ───────────────────
         let ap_state = ctx.blackboard.get("autopilot.state").unwrap_or_default();
         if ap_state != self.last_autopilot_state {
             self.last_autopilot_state = ap_state;
             self.reset_snap_window();
         }
 
-        // ── 2.5. Off-route auto-replan check (Phase 6.5q + 6.5s) ───────────────
+        // ── 3.3. Off-route auto-replan check (Phase 6.5q + 6.5s) ───────────────
         if self.goal_uid != 0 && !self.pending_request && !self.current_route_node_ids.is_empty() {
             if let Some(tel) = telemetry {
                 let pos_x = tel.position[0];
@@ -857,7 +1777,7 @@ impl Plugin for RouterPlugin {
             }
         }
 
-        // ── 3. Periodic replan (PhaseA cadence, skip if request in flight) ────
+        // ── 4. Periodic replan (PhaseA cadence, skip if request in flight) ────
         if ctx.is_replan_tick() && !self.pending_request && self.goal_uid != 0 {
             let (pos_x, pos_z) = telemetry
                 .map(|t| (t.position[0], t.position[2]))
@@ -866,7 +1786,7 @@ impl Plugin for RouterPlugin {
             self.send_route_request(pos_x, pos_z, truck_heading, ctx);
         }
 
-        // ── 4. Publish current state (every tick) ─────────────────────────────
+        // ── 5. Publish current state (every tick) ─────────────────────────────
         ctx.blackboard
             .set("router.active", if self.active { "true" } else { "false" });
         ctx.blackboard
@@ -915,6 +1835,23 @@ impl Plugin for RouterPlugin {
         } else {
             ctx.blackboard.set("router.snap_last_change_at", "");
         }
+
+        let tick_ms = tick_started.elapsed().as_millis();
+        ctx.blackboard
+            .set("router.last_tick_ms", tick_ms.to_string());
+        if tick_ms > 100 {
+            let reason = if self.ets2_import_active {
+                "ets2_import"
+            } else if self.needs_heavy_router_work(ctx) {
+                "snap_or_replan"
+            } else {
+                "idle_publish"
+            };
+            ctx.blackboard
+                .set("router.slow_tick_reason", reason);
+        } else {
+            ctx.blackboard.remove("router.slow_tick_reason");
+        }
     }
 }
 
@@ -937,6 +1874,18 @@ mod tests {
         (
             vec![(1, 0.0, 0.0), (2, 100.0, 0.0), (3, 200.0, 0.0)],
             vec![(1, 2, 100.0), (2, 3, 100.0)],
+        )
+    }
+
+    fn long_graph() -> (NodeList, EdgeList) {
+        (
+            vec![
+                (1, 0.0, 0.0),
+                (2, 100.0, 0.0),
+                (3, 200.0, 0.0),
+                (4, 300.0, 0.0),
+            ],
+            vec![(1, 2, 100.0), (2, 3, 100.0), (3, 4, 100.0)],
         )
     }
 
@@ -1053,6 +2002,27 @@ mod tests {
         assert_eq!(bb.get("router.active").as_deref(), Some("false"));
         assert!(bb.get("router.waypoints").is_none());
         assert!(!p.pending_request, "no request should be pending");
+    }
+
+    #[test]
+    fn idle_off_state_skips_heavy_snap_and_sets_last_tick_ms() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+
+        let bb = SharedBlackboard::new();
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(1);
+        assert!(!p.needs_heavy_router_work(&ctx));
+
+        let mut out = ControlOutput::default();
+        let t = fake_telemetry_at(50.0, 0.0);
+        p.tick(Some(&t), &mut out, &ctx);
+
+        assert_eq!(p.snap_stability, 0);
+        assert_eq!(p.snap_window_unique_edges, 0);
+        assert!(bb.get("router.last_tick_ms").is_some());
+        assert!(bb.get("router.slow_tick_reason").is_none());
     }
 
     #[test]
@@ -1839,6 +2809,861 @@ mod tests {
             change_count <= 5,
             "stable edge changed {} times, should be stable with hysteresis",
             change_count
+        );
+    }
+
+    // ── Phase 5b: ETS2 route import tests ─────────────────────────────────────
+
+    use std::collections::HashSet;
+    use std::sync::{Arc, RwLock};
+    use truckpilot_plugin_api::ets2_route::{
+        match_ets2_route_uids, Ets2RouteMatchResult,
+        Ets2RouteMatchStatus, Ets2RouteSharedState, Ets2RouteSnapshot, Ets2RouteWaypoint,
+        ETS2_WP_FLAG_HAS_DISTANCE, ETS2_WP_FLAG_HAS_POSITION, ETS2_WP_FLAG_UNTRUSTED,
+        Ets2GraphDistanceStatus,
+    };
+
+    fn ctx_with_ets2(
+        bb: SharedBlackboard,
+        graph: Arc<RouterGraph>,
+        state: Arc<RwLock<Ets2RouteSharedState>>,
+    ) -> PluginContext {
+        let mut ctx = PluginContext::new("test", bb)
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(1);
+        ctx.graph = Some(graph);
+        ctx.ets2_route = Some(state);
+        ctx.route_node_ids = Some(Arc::new(RwLock::new(HashSet::new())));
+        ctx
+    }
+
+    fn ctx_with_ets2_state(
+        bb: SharedBlackboard,
+        graph: Arc<RouterGraph>,
+        state: Ets2RouteSharedState,
+    ) -> PluginContext {
+        ctx_with_ets2(bb, graph, Arc::new(RwLock::new(state)))
+    }
+
+    fn usable_ets2_state(
+        graph: &RouterGraph,
+        uids: &[u64],
+        hash: u64,
+        seq: u32,
+    ) -> Ets2RouteSharedState {
+        Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: seq,
+                route_hash: hash,
+                valid: true,
+                uids: uids.to_vec(),
+            }),
+            match_result: Some(match_ets2_route_uids(graph, uids)),
+            waypoints: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ets2_import_uses_graph_not_ets2_positions_for_router_waypoints() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let mut state = usable_ets2_state(&graph, &uids, 0xDEAD, 10);
+        state.waypoints = vec![
+            Ets2RouteWaypoint {
+                uid: 1,
+                x: 999.0,
+                z: 999.0,
+                flags: ETS2_WP_FLAG_HAS_POSITION,
+                ..Default::default()
+            },
+            Ets2RouteWaypoint {
+                uid: 2,
+                x: 999.0,
+                z: 999.0,
+                flags: ETS2_WP_FLAG_HAS_POSITION,
+                ..Default::default()
+            },
+            Ets2RouteWaypoint {
+                uid: 3,
+                x: 999.0,
+                z: 999.0,
+                flags: ETS2_WP_FLAG_HAS_POSITION,
+                ..Default::default()
+            },
+        ];
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(graph.nodes.clone(), graph.edges.clone());
+        let mut out = ControlOutput::default();
+        p.tick(None, &mut out, &ctx);
+        let wp: Vec<[f64; 2]> =
+            serde_json::from_str(&bb.get("router.waypoints").unwrap()).unwrap();
+        assert!((wp[0][0] - 0.0).abs() < 0.01);
+        assert!((wp[2][0] - 200.0).abs() < 0.01);
+        assert_eq!(
+            bb.get("navigation.ets2_route.coord_graph_delta_count").as_deref(),
+            Some("3")
+        );
+        let max_m: f64 = bb
+            .get("navigation.ets2_route.coord_graph_delta_max_m")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(max_m > 100.0);
+    }
+
+    #[test]
+    fn ets2_import_publishes_distance_graph_diagnosis() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let mut state = usable_ets2_state(&graph, &uids, 0xBEEF, 11);
+        state.waypoints = vec![
+            Ets2RouteWaypoint {
+                uid: 1,
+                distance: 200.0,
+                flags: ETS2_WP_FLAG_HAS_DISTANCE | ETS2_WP_FLAG_UNTRUSTED,
+                ..Default::default()
+            },
+            Ets2RouteWaypoint {
+                uid: 2,
+                distance: 100.0,
+                flags: ETS2_WP_FLAG_HAS_DISTANCE | ETS2_WP_FLAG_UNTRUSTED,
+                ..Default::default()
+            },
+            Ets2RouteWaypoint {
+                uid: 3,
+                distance: 0.0,
+                flags: ETS2_WP_FLAG_HAS_DISTANCE | ETS2_WP_FLAG_UNTRUSTED,
+                ..Default::default()
+            },
+        ];
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(graph.nodes.clone(), graph.edges.clone());
+        let mut out = ControlOutput::default();
+        p.tick(None, &mut out, &ctx);
+        assert_eq!(
+            bb.get("navigation.ets2_route.distance_graph_status").as_deref(),
+            Some(Ets2GraphDistanceStatus::Untrusted.as_str())
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.distance_graph_total_m").as_deref(),
+            Some("200.0")
+        );
+    }
+
+    fn chain_graph(n: u64) -> (NodeList, EdgeList) {
+        let nodes: NodeList = (1..=n)
+            .map(|i| (i, (i - 1) as f64 * 100.0, 0.0))
+            .collect();
+        let edges: EdgeList = (1..n).map(|i| (i, i + 1, 100.0)).collect();
+        (nodes, edges)
+    }
+
+    #[test]
+    fn ets2_gap_repair_imports_astar_nodes() {
+        let (n, e) = chain_graph(6);
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 999, 998, 5, 6];
+        let state = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 60,
+                route_hash: 0x6001,
+                valid: true,
+                uids: uids.clone(),
+            }),
+            match_result: Some(Ets2RouteMatchResult {
+                status: Ets2RouteMatchStatus::Partial,
+                route_node_ids: vec![1, 2, 5, 6],
+                matched_count: 4,
+                missing_count: 2,
+                first_missing_uid: Some(999),
+                match_ratio: 1.0,
+                is_usable: true,
+                import_error: None,
+            }),
+            ..Default::default()
+        };
+
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+
+        assert_eq!(
+            bb.get("navigation.ets2_route.repair_status").as_deref(),
+            Some("repaired")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.repair_inserted_node_count").as_deref(),
+            Some("2")
+        );
+        let route_ids: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(route_ids, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn ets2_gap_repair_failure_rejects_import() {
+        let (n, e) = chain_graph(10);
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![
+            1_u64, 2,
+            901, 902, 903, 904, 905, 906, 907, 908, 909,
+            10,
+        ];
+        let state = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 61,
+                route_hash: 0x6002,
+                valid: true,
+                uids: uids.clone(),
+            }),
+            match_result: Some(Ets2RouteMatchResult {
+                status: Ets2RouteMatchStatus::Partial,
+                route_node_ids: vec![1, 2, 10],
+                matched_count: 3,
+                missing_count: 9,
+                first_missing_uid: Some(901),
+                match_ratio: 1.0,
+                is_usable: true,
+                import_error: None,
+            }),
+            ..Default::default()
+        };
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(chain_graph(10).0, chain_graph(10).1);
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.repair_status").as_deref(),
+            Some("failed")
+        );
+        assert!(bb.get("router.waypoints").is_none());
+    }
+
+    #[test]
+    fn ets2_import_publishes_router_contract() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let state = usable_ets2_state(&graph, &uids, 0xDEAD, 10);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+
+        assert_eq!(bb.get("router.active").as_deref(), Some("true"));
+        assert_eq!(
+            bb.get("router.last_planning_result").as_deref(),
+            Some("ok_ets2_import")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported_hash").as_deref(),
+            Some("57005")
+        );
+        let wp: Vec<[f64; 2]> =
+            serde_json::from_str(&bb.get("router.waypoints").unwrap()).unwrap();
+        assert_eq!(wp.len(), 3);
+        assert!((wp[2][0] - 200.0).abs() < 0.01);
+        let route_ids: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(route_ids, uids);
+        assert!(!p.pending_request, "ETS2 import must not leave A* pending");
+        assert_eq!(
+            bb.get("navigation.ets2_route.snap_status").as_deref(),
+            Some("no_position")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.trimmed").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn ets2_trim_snaps_to_truck_progress() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let state = usable_ets2_state(&graph, &uids, 0xFEED, 12);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(151.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+
+        let route_ids: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(route_ids, vec![2, 3]);
+        assert_eq!(
+            bb.get("navigation.ets2_route.trimmed").as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.trim_start_index").as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.snap_status").as_deref(),
+            Some("ok")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported_node_count").as_deref(),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn ets2_trim_too_short_rejects_import() {
+        let (graph, uids) = {
+            let nodes = vec![(1, 0.0, 0.0), (2, 100.0, 0.0)];
+            let edges = vec![(1, 2, 100.0)];
+            (
+                Arc::new(RouterGraph::new(nodes, edges)),
+                vec![1_u64, 2],
+            )
+        };
+        let state = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 5,
+                route_hash: 5,
+                valid: true,
+                uids: uids.clone(),
+            }),
+            match_result: Some(Ets2RouteMatchResult {
+                status: Ets2RouteMatchStatus::Matched,
+                route_node_ids: vec![1],
+                matched_count: 1,
+                missing_count: 0,
+                first_missing_uid: None,
+                match_ratio: 1.0,
+                is_usable: true,
+                import_error: None,
+            }),
+            ..Default::default()
+        };
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(simple_graph().0, simple_graph().1);
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.repair_status").as_deref(),
+            Some("failed")
+        );
+        assert!(bb.get("router.waypoints").is_none());
+    }
+
+    // ── Phase 5e: ETS2 live progress tests ──────────────────────────────────
+
+    #[test]
+    fn ets2_live_progress_advances_router_output() {
+        let (n, e) = long_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3, 4];
+        let state = usable_ets2_state(&graph, &uids, 0x5001, 50);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(5.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        let initial: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(initial.len(), 4);
+
+        p.tick(
+            Some(&fake_telemetry_at(151.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        let advanced: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert!(advanced.len() < initial.len());
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_status").as_deref(),
+            Some("advanced")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_republished").as_deref(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn ets2_live_progress_unchanged_without_movement() {
+        let (n, e) = long_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = usable_ets2_state(&graph, &[1, 2, 3, 4], 0x5002, 51);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(long_graph().0, long_graph().1);
+        let mut out = ControlOutput::default();
+        let tel = fake_telemetry_at(5.0, 0.0);
+
+        p.tick(Some(&tel), &mut out, &ctx);
+        let first: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+
+        p.tick(Some(&tel), &mut out, &ctx);
+        let second: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_status").as_deref(),
+            Some("unchanged")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_republished").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn ets2_live_progress_regression_ignored() {
+        let (n, e) = long_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = usable_ets2_state(&graph, &[1, 2, 3, 4], 0x5003, 52);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(long_graph().0, long_graph().1);
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(151.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        let mid: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+
+        p.tick(
+            Some(&fake_telemetry_at(5.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        let after_back: Vec<u64> =
+            serde_json::from_str(&bb.get("router.route_node_ids").unwrap()).unwrap();
+        assert_eq!(mid, after_back);
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_status").as_deref(),
+            Some("regression_ignored")
+        );
+    }
+
+    #[test]
+    fn ets2_single_offroute_tick_keeps_import() {
+        let (n, e) = long_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = usable_ets2_state(&graph, &[1, 2, 3, 4], 0x5004, 53);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(long_graph().0, long_graph().1);
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(5.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 90.0)),
+            &mut out,
+            &ctx,
+        );
+
+        assert!(p.ets2_import_active);
+        assert_eq!(
+            bb.get("navigation.ets2_route.progress_status").as_deref(),
+            Some("snap_bad")
+        );
+        assert!(bb.get("router.waypoints").is_some());
+    }
+
+    #[test]
+    fn ets2_release_triggers_immediate_astar_replan() {
+        let (n, e) = long_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let shared = Arc::new(RwLock::new(usable_ets2_state(
+            &graph,
+            &[1, 2, 3, 4],
+            0x5005,
+            54,
+        )));
+        let bb = SharedBlackboard::new();
+        bb.set("router.goal_uid", "4");
+        let ctx = ctx_with_ets2(bb.clone(), Arc::clone(&graph), Arc::clone(&shared));
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        p.goal_uid = 4;
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(5.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        assert!(p.ets2_import_active);
+
+        *shared.write().unwrap() = Ets2RouteSharedState::default();
+        p.tick(
+            Some(&fake_telemetry_at(5.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+
+        assert!(!p.ets2_import_active);
+        assert!(
+            p.pending_request,
+            "A* replan must be requested immediately after ETS2 release when goal is set"
+        );
+        assert_eq!(
+            bb.get("router.last_replan_reason").as_deref(),
+            Some("ets2_release_replan")
+        );
+    }
+
+    #[test]
+    fn ets2_unusable_does_not_import() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 1,
+                route_hash: 1,
+                valid: true,
+                uids: vec![1, 99, 3],
+            }),
+            match_result: Some(match_ets2_route_uids(&graph, &[1, 99, 3])),
+            ..Default::default()
+        };
+        assert!(!state.match_result.as_ref().unwrap().is_usable);
+
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(simple_graph().0, simple_graph().1);
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("false")
+        );
+        assert_eq!(bb.get("router.active").as_deref(), Some("false"));
+        assert!(bb.get("router.waypoints").is_none());
+    }
+
+    #[test]
+    fn ets2_same_hash_is_not_reimported() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let state = usable_ets2_state(&graph, &uids, 0xBEEF, 20);
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), Arc::clone(&graph), state);
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+        assert_eq!(
+            bb.get("router.last_planning_result").as_deref(),
+            Some("ok_ets2_import")
+        );
+
+        p.last_planning_result = "tampered".to_string();
+        p.tick(None, &mut out, &ctx);
+        assert_eq!(
+            p.last_planning_result, "tampered",
+            "same ETS2 hash must not re-run import"
+        );
+        assert_eq!(p.last_ets2_imported_hash, Some(0xBEEF));
+    }
+
+    #[test]
+    fn ets2_missing_position_prevents_import() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 3,
+                route_hash: 3,
+                valid: true,
+                uids: vec![1, 2, 99],
+            }),
+            match_result: Some(Ets2RouteMatchResult {
+                status: Ets2RouteMatchStatus::Partial,
+                route_node_ids: vec![1, 2, 99],
+                matched_count: 3,
+                missing_count: 0,
+                first_missing_uid: None,
+                match_ratio: 1.0,
+                is_usable: true,
+                import_error: None,
+            }),
+            ..Default::default()
+        };
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state);
+        let mut p = plugin_with_worker(simple_graph().0, simple_graph().1);
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("false")
+        );
+        assert!(bb
+            .get("navigation.ets2_route.import_error")
+            .unwrap()
+            .contains("99"));
+    }
+
+    // ── Phase 5c: ETS2 lifecycle / fallback tests ───────────────────────────
+
+    #[test]
+    fn ets2_lost_snapshot_releases_astar() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let uids = vec![1_u64, 2, 3];
+        let shared = Arc::new(RwLock::new(usable_ets2_state(
+            &graph,
+            &uids,
+            0xAA,
+            1,
+        )));
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2(bb.clone(), Arc::clone(&graph), Arc::clone(&shared));
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+        assert!(p.ets2_import_active);
+
+        *shared.write().unwrap() = Ets2RouteSharedState::default();
+        p.tick(None, &mut out, &ctx);
+
+        assert!(!p.ets2_import_active);
+        assert_eq!(
+            bb.get("navigation.ets2_route.import_state").as_deref(),
+            Some("lost")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.fallback_reason").as_deref(),
+            Some("no_snapshot")
+        );
+        assert!(bb.get("router.waypoints").is_none());
+
+        p.goal_uid = 3;
+        bb.set("router.goal_uid", "3");
+        let mut ctx_astar = ctx_with_ets2(bb.clone(), graph, shared);
+        ctx_astar.tick_phase = TickPhase::PhaseA;
+        ctx_astar.tick_count = 50;
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 0.0)),
+            &mut out,
+            &ctx_astar,
+        );
+        assert!(
+            p.pending_request,
+            "A* must be allowed after ETS2 route loss"
+        );
+    }
+
+    #[test]
+    fn ets2_unusable_after_active_releases_import() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let shared = Arc::new(RwLock::new(usable_ets2_state(
+            &graph,
+            &[1, 2, 3],
+            0xBB,
+            2,
+        )));
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2(bb.clone(), Arc::clone(&graph), Arc::clone(&shared));
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+        assert!(p.ets2_import_active);
+
+        *shared.write().unwrap() = Ets2RouteSharedState {
+            snapshot: Some(Ets2RouteSnapshot {
+                sequence: 3,
+                route_hash: 0xCC,
+                valid: true,
+                uids: vec![1, 99, 3],
+            }),
+            match_result: Some(match_ets2_route_uids(&graph, &[1, 99, 3])),
+            ..Default::default()
+        };
+        p.tick(None, &mut out, &ctx);
+
+        assert!(!p.ets2_import_active);
+        assert_eq!(
+            bb.get("navigation.ets2_route.import_state").as_deref(),
+            Some("unusable")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported").as_deref(),
+            Some("false")
+        );
+    }
+
+    #[test]
+    fn ets2_reimports_on_new_usable_hash() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let shared = Arc::new(RwLock::new(usable_ets2_state(
+            &graph,
+            &[1, 2, 3],
+            0xD1,
+            10,
+        )));
+        let bb = SharedBlackboard::new();
+        let ctx = ctx_with_ets2(bb.clone(), Arc::clone(&graph), Arc::clone(&shared));
+        let mut p = plugin_with_worker(
+            graph.nodes.clone(),
+            graph.edges.clone(),
+        );
+        let mut out = ControlOutput::default();
+
+        p.tick(None, &mut out, &ctx);
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported_hash").as_deref(),
+            Some("209")
+        );
+
+        *shared.write().unwrap() = usable_ets2_state(&graph, &[1, 2], 0xD2, 11);
+        p.tick(None, &mut out, &ctx);
+
+        assert!(p.ets2_import_active);
+        assert_eq!(
+            bb.get("navigation.ets2_route.imported_hash").as_deref(),
+            Some("210")
+        );
+        assert_eq!(
+            bb.get("navigation.ets2_route.last_imported_sequence").as_deref(),
+            Some("11")
+        );
+    }
+
+    #[test]
+    fn astar_works_without_ets2_channel() {
+        let (n, e) = simple_graph();
+        let mut p = plugin_with_worker(n, e);
+        p.goal_uid = 3;
+
+        let bb = SharedBlackboard::new();
+        bb.set("router.goal_uid", "3");
+        let ctx = PluginContext::new("test", bb.clone())
+            .with_phase(TickPhase::PhaseC)
+            .with_tick_count(7);
+        let mut out = ControlOutput::default();
+
+        p.tick(
+            Some(&fake_telemetry_at(0.0, 0.0)),
+            &mut out,
+            &ctx,
+        );
+        assert!(p.pending_request);
+        assert!(!p.ets2_import_active);
+        assert_eq!(
+            bb.get("navigation.ets2_route.import_state").as_deref(),
+            Some("inactive")
+        );
+    }
+
+    #[test]
+    fn ets2_import_blocks_astar_replan() {
+        let (n, e) = simple_graph();
+        let graph = Arc::new(RouterGraph::new(n, e));
+        let state = usable_ets2_state(&graph, &[1, 2, 3], 0xCAFE, 4);
+        let bb = SharedBlackboard::new();
+        bb.set("router.goal_uid", "3");
+        let ctx = ctx_with_ets2_state(bb.clone(), graph, state)
+            .with_phase(TickPhase::PhaseA)
+            .with_tick_count(50);
+        let mut p = plugin_with_worker(simple_graph().0, simple_graph().1);
+        p.goal_uid = 3;
+        let mut out = ControlOutput::default();
+
+        p.tick(Some(&fake_telemetry_at(0.0, 0.0)), &mut out, &ctx);
+
+        assert!(p.ets2_import_active);
+        assert!(!p.pending_request, "A* must not run while ETS2 route is active");
+        assert_eq!(
+            bb.get("router.last_planning_result").as_deref(),
+            Some("ok_ets2_import")
         );
     }
 }

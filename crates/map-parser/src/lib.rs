@@ -12,6 +12,7 @@ pub mod cityhash;
 pub mod drop_tracer;
 pub mod error;
 pub mod graph;
+pub mod graph_load;
 pub mod hashfs;
 pub mod mod_loader;
 pub mod ppd;
@@ -33,6 +34,10 @@ pub use drop_tracer::{DropCategory, DropEvent, DropTracer};
 pub use error::ParseError;
 pub use graph::RoadAuditResult;
 pub use graph::{GraphBuilder, GraphEdge, GraphNode, MapGraph};
+pub use graph_load::{
+    load_map_graph_from_bytes, load_map_graph_from_path, log_graph_load_stage, GraphLoadError,
+    GraphLoadPhase,
+};
 pub use hashfs::{parse_directory_listing, DirItem, HashFsArchive};
 pub use mod_loader::{load_and_build, parse_sectors_with_drop_tracer, ArchiveFile, ModLoadOrder};
 pub use spline::{build_splines_ex, compute_lane_offset_right_m, SegmentMetadata};
