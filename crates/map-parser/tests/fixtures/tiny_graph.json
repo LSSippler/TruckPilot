@@ -1,0 +1,33 @@
+{
+  "nodes": [
+    {"uid": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+    {"uid": 2, "x": 100.0, "y": 0.0, "z": 0.0}
+  ],
+  "edges": [
+    {
+      "uid": 10,
+      "from": 1,
+      "to": 2,
+      "distance_m": 100.0,
+      "speed_limit_kmh": null,
+      "lanes": 1,
+      "direction": "forward",
+      "dlc_guard": 0,
+      "is_hidden": false,
+      "gps_avoid": false
+    }
+  ],
+  "signs": [],
+  "prefabs": [],
+  "stats": {
+    "node_count": 2,
+    "edge_count": 1,
+    "sign_count": 0,
+    "prefab_count": 0,
+    "sectors_merged": 0,
+    "build_time_ms": 0.0
+  },
+  "prefab_ai_paths": [],
+  "prefab_instances": [],
+  "prefab_descriptors": {}
+}
