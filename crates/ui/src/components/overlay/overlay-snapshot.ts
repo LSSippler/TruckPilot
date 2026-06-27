@@ -22,6 +22,15 @@ import fixtureJson from "./overlay-snapshot.fixture.json";
 export type StatusVerdict = "safe_cold" | "hot" | "unavailable";
 export type LaneDataSource = "mock" | "route_blackboard";
 
+export interface CoreReadinessSnapshot {
+  graph_ready: boolean | null;
+  spline_index_ready: boolean | null;
+  plugins_ready: boolean | null;
+  lane_detection_ready: boolean | null;
+  truckpilot_system_ready: boolean | null;
+  available: boolean;
+}
+
 export interface MapPoint2D {
   x: number;
   z: number;
@@ -56,6 +65,7 @@ export interface OverlayStatusSnapshot {
   waypoint_count: number;
   verdict: StatusVerdict;
   reasons?: string[];
+  core_readiness?: CoreReadinessSnapshot;
 }
 
 export interface LaneDebugSnapshot {
@@ -140,6 +150,32 @@ function parseLaneSource(v: unknown): LaneDataSource | null {
   return null;
 }
 
+function parseOptionalBool(v: unknown): boolean | null {
+  if (v === true) return true;
+  if (v === false) return false;
+  return null;
+}
+
+function parseCoreReadiness(v: unknown): CoreReadinessSnapshot | undefined {
+  if (!isRecord(v)) return undefined;
+  return {
+    graph_ready: parseOptionalBool(v.graph_ready),
+    spline_index_ready: parseOptionalBool(v.spline_index_ready),
+    plugins_ready: parseOptionalBool(v.plugins_ready),
+    lane_detection_ready: parseOptionalBool(v.lane_detection_ready),
+    truckpilot_system_ready: parseOptionalBool(v.truckpilot_system_ready),
+    available: v.available === true,
+  };
+}
+
+function coreReadyLabel(v: boolean | null | undefined): string {
+  if (v === true) return "yes";
+  if (v === false) return "no";
+  return "unknown";
+}
+
+export { coreReadyLabel };
+
 /** Parse JSON from `truckpilot-status --overlay`. Returns null on malformed input. */
 export function parseOverlaySnapshot(raw: string): OverlaySnapshot | null {
   if (!raw.trim()) return null;
@@ -210,6 +246,7 @@ export function parseOverlaySnapshot(raw: string): OverlaySnapshot | null {
       reasons: Array.isArray(statusObj.reasons)
         ? statusObj.reasons.filter((r): r is string => typeof r === "string")
         : undefined,
+      core_readiness: parseCoreReadiness(statusObj.core_readiness),
     },
     lane: {
       lane_model_valid,

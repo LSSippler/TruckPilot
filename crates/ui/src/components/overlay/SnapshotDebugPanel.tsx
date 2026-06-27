@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Panel, Row } from "./Panel";
 import {
   saveOverlaySnapshotToStorage,
+  coreReadyLabel,
   type OverlaySnapshot,
 } from "./overlay-snapshot";
 
@@ -54,6 +55,7 @@ export function SnapshotDebugPanel({
 
   const status = snapshot?.status;
   const lane = snapshot?.lane;
+  const readiness = status?.core_readiness;
   const isMock = lane?.source === "mock";
   const resolverLine = status
     ? status.resolver_off
@@ -103,6 +105,22 @@ export function SnapshotDebugPanel({
           <Row label="Diag-Level" value={status?.diag_level ?? "—"} />
           <Row label="Resolver" value={resolverLine} />
           <Row label="Route valid" value={status?.route_valid ? "yes" : "no"} />
+          {readiness ? (
+            <>
+              <Row label="Graph" value={coreReadyLabel(readiness.graph_ready)} />
+              <Row label="Spline" value={coreReadyLabel(readiness.spline_index_ready)} />
+              <Row label="Plugins" value={coreReadyLabel(readiness.plugins_ready)} />
+              <Row
+                label="Lane detection"
+                value={coreReadyLabel(readiness.lane_detection_ready)}
+              />
+              <Row
+                label="System ready"
+                value={coreReadyLabel(readiness.truckpilot_system_ready)}
+                hint="not engage authorization"
+              />
+            </>
+          ) : null}
           <Row label="Frame cb max" value={`${status?.frame_cb_us_max ?? 0} µs`} />
           <Row label="Lane source" value={lane?.source ?? "—"} />
           <Row

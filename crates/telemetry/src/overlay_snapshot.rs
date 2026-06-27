@@ -80,6 +80,7 @@ mod tests {
         assert_eq!(parsed["lane"]["source"], "mock");
         assert_eq!(parsed["lane_keeper_allowed"], false);
         assert!(parsed["status"]["dll_active"].as_bool().unwrap());
+        assert_eq!(parsed["status"]["core_readiness"]["available"], false);
     }
 
     #[cfg(windows)]
