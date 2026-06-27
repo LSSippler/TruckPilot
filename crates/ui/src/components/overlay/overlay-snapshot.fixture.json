@@ -23,7 +23,15 @@
     "verdict": "unavailable",
     "reasons": [
       "keine TruckPilot-SHM gefunden (ETS2 aus oder DLL nicht geladen)"
-    ]
+    ],
+    "core_readiness": {
+      "graph_ready": null,
+      "spline_index_ready": null,
+      "plugins_ready": null,
+      "lane_detection_ready": null,
+      "truckpilot_system_ready": null,
+      "available": false
+    }
   },
   "lane": {
     "lane_model_valid": false,

@@ -22,6 +22,18 @@ describe("parseOverlaySnapshot", () => {
     expect(snap!.lane.spline_segments.length).toBe(4);
   });
 
+  it("parses core_readiness from status block", () => {
+    const snap = parseOverlaySnapshot(JSON.stringify(fixtureJson));
+    expect(snap!.status.core_readiness).toEqual({
+      graph_ready: null,
+      spline_index_ready: null,
+      plugins_ready: null,
+      lane_detection_ready: null,
+      truckpilot_system_ready: null,
+      available: false,
+    });
+  });
+
   it("returns null for malformed JSON", () => {
     expect(parseOverlaySnapshot("")).toBeNull();
     expect(parseOverlaySnapshot("{")).toBeNull();

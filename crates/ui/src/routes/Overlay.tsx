@@ -6,6 +6,7 @@ import { StatePanel } from "@/components/overlay/StatePanel";
 import { NotificationBar } from "@/components/overlay/NotificationBar";
 import { NavPanel } from "@/components/overlay/NavPanel";
 import { VehiclePanel } from "@/components/overlay/VehiclePanel";
+import { ReadinessPanel } from "@/components/overlay/ReadinessPanel";
 import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
 import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
 import {
@@ -58,6 +59,7 @@ export function Overlay() {
       <div className="absolute left-3 top-3 flex max-h-[calc(100vh-1.5rem)] w-60 flex-col gap-2 overflow-hidden">
         <NotificationBar />
         <AccPanel />
+        {!snapshotStandalone ? <ReadinessPanel /> : null}
         {snapshotDebugMode ? (
           <SnapshotDebugPanel
             snapshot={snapshot}

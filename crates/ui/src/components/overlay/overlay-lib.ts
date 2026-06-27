@@ -21,6 +21,11 @@ export const OVERLAY_BB_KEYS = [
   "telemetry.engine_gear",
   "telemetry.reverse_gear",
   "telemetry.fuel_liters",
+  "graph_ready",
+  "spline_index_ready",
+  "plugins_ready",
+  "lane_detection_ready",
+  "truckpilot_system_ready",
 ] as const;
 
 /// Subscribe to a single blackboard value (raw stringified form).
@@ -41,4 +46,11 @@ export function fmt0(n: number | null): string {
 
 export function fmt2(n: number | null): string {
   return n == null ? "—" : n.toFixed(2);
+}
+
+/** Tri-state display for daemon readiness blackboard keys (`true` / `false` / unknown). */
+export function bbReadyTri(v: string | undefined): string {
+  if (v === "true") return "yes";
+  if (v === "false") return "no";
+  return "unknown";
 }

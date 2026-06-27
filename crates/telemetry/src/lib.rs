@@ -19,6 +19,7 @@ pub mod http;
 pub mod lane_debug;
 pub mod memory;
 pub mod nav_route;
+pub mod core_readiness;
 pub mod overlay_snapshot;
 pub mod route_distance_log;
 pub mod route_log_analyze;

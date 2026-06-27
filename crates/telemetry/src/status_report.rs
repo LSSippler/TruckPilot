@@ -5,6 +5,7 @@
 
 #[cfg(windows)]
 use crate::dll_perf::{diag_level_name, DllPerfReader, DllPerfSnapshot};
+use crate::core_readiness::{format_core_readiness_human, CoreReadiness};
 use crate::nav_route::{
     route_resolve_status_name, RouteBlackboardReader, RouteSnapshot,
     RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE,
@@ -82,6 +83,8 @@ pub struct StatusReport {
     pub verdict: StatusVerdict,
     /// Why the verdict is `Hot` (empty otherwise).
     pub reasons: Vec<String>,
+    /// Core daemon readiness (blackboard); unavailable when CLI has no daemon connection.
+    pub core_readiness: CoreReadiness,
 }
 
 /// Map a verdict to the process exit code for CLI tools.
@@ -141,6 +144,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
             waypoint_count: 0,
             verdict: StatusVerdict::Unavailable,
             reasons: vec!["keine TruckPilot-SHM gefunden (ETS2 aus oder DLL nicht geladen)".into()],
+            core_readiness: CoreReadiness::unavailable(),
         };
     }
 
@@ -250,6 +254,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         waypoint_count,
         verdict,
         reasons,
+        core_readiness: CoreReadiness::unavailable(),
     }
 }
 
@@ -269,7 +274,10 @@ pub fn format_status_human(r: &StatusReport) -> String {
              keine TruckPilot-SHM gefunden.\n  \
              Ursachen: ETS2 läuft nicht · truckpilot_telemetry.dll nicht geladen · DLL hat SHM nicht erstellt.\n  \
              ────────────────────────────────────────────\n  \
-             GESAMT: UNAVAILABLE (exit 1)"
+             GESAMT: UNAVAILABLE (exit 1)\n  \
+             ────────────────────────────────────────────\n  \
+             {}",
+            format_core_readiness_human(&r.core_readiness),
         );
     }
 
@@ -335,6 +343,8 @@ pub fn format_status_human(r: &StatusReport) -> String {
          Route gültig:     {} (waypoints={})\n  \
          Telemetry-SHM:    {}\n  \
          ────────────────────────────────────────────\n  \
+         {}\n  \
+         ────────────────────────────────────────────\n  \
          {}",
         yes_no(r.dll_active),
         yes_no(r.perf_shm_available),
@@ -353,6 +363,7 @@ pub fn format_status_human(r: &StatusReport) -> String {
             "nicht gefunden"
         },
         verdict_line,
+        format_core_readiness_human(&r.core_readiness),
     )
 }
 
@@ -427,5 +438,6 @@ mod tests {
         let r = evaluate_status(&RawStatusInputs::default());
         assert_eq!(r.verdict, StatusVerdict::Unavailable);
         assert_eq!(status_exit_code(r.verdict), 1);
+        assert!(!r.core_readiness.available);
     }
 }
