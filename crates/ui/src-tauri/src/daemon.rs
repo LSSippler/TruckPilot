@@ -186,7 +186,7 @@ impl DaemonManager {
         *self.binary.lock().unwrap() = Some(binary);
 
         // Post-spawn: the IPC port (:8765) is bound only AFTER the daemon parses
-        // graph.json (Roads 366k / Nodes 1.1M — several seconds). Poll briefly
+        // graph.json (Roads 366k / Nodes 1.1M — several seconds of CPU/IO). Poll
         // for an optimistic fast-path, but treat ONLY an actual child exit as
         // failure. If the child is alive but the port isn't up yet, adopt it and
         // let the IpcBridge reconnect loop connect once loading finishes —

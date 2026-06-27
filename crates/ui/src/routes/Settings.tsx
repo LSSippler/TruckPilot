@@ -127,7 +127,7 @@ function GlobalHotkeyCard() {
 
 function DaemonCard() {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
-  const [autoStart, setAutoStart] = useState<boolean>(true);
+  const [autoStart, setAutoStart] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -189,7 +189,8 @@ function DaemonCard() {
           <div>
             <Label className="text-sm">Auto-start daemon on launch</Label>
             <p className="text-xs text-muted-foreground">
-              Spawn truckpilot-core when the UI starts.
+              Spawn truckpilot-core 3s after the main window opens. Prefer starting
+              manually before driving — graph load can stutter ETS2.
             </p>
           </div>
           <Switch checked={autoStart} onCheckedChange={(v) => void toggleAuto(v)} />

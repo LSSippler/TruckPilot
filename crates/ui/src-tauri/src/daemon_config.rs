@@ -2,7 +2,8 @@
 //!
 //! Stored alongside other Tauri app data at
 //! `%LOCALAPPDATA%/com.truckpilot.app/daemon.json` on Windows. Read by the
-//! Rust setup hook before frontend boot; written by `daemon_set_auto_start`.
+//! frontend (not the Tauri setup hook) so overlay snapshot mode and delayed
+//! start avoid graph/plugin load spikes while ETS2 is in the foreground.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +18,10 @@ pub struct DaemonConfig {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        Self { auto_start: true }
+        // Off by default: truckpilot-core loads graph.json + all plugins synchronously
+        // at spawn — a multi-second CPU/IO spike. Enable in Settings or start manually
+        // before driving (see App.tsx deferred auto-start).
+        Self { auto_start: false }
     }
 }
 
@@ -55,4 +59,14 @@ pub fn save(app: &AppHandle, cfg: &DaemonConfig) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("write daemon.json: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_auto_start_is_false() {
+        assert!(!DaemonConfig::default().auto_start);
+    }
 }

@@ -13,15 +13,20 @@ import { ExternalDashboard } from "@/routes/ExternalDashboard";
 import { Overlay } from "@/routes/Overlay";
 import { isOverlaySnapshotStandaloneMode } from "@/components/overlay/overlay-snapshot";
 import { initIpcSubscriptions } from "@/lib/ipc";
+import { daemonGetAutoStart, daemonStart } from "@/lib/tauri-bridge";
 import { HotkeyHandler } from "@/components/HotkeyHandler";
 import { AutopilotToastWatcher } from "@/components/AutopilotToastWatcher";
 
+/** Defer daemon spawn so UI paints first; graph.json load is CPU-heavy. */
+const DAEMON_AUTOSTART_DELAY_MS = 3_000;
+
 export function App() {
   const location = useLocation();
+  const isOverlayRoute = location.pathname.startsWith("/overlay");
   const skipIpc = useMemo(() => {
-    if (!location.pathname.startsWith("/overlay")) return false;
+    if (!isOverlayRoute) return false;
     return isOverlaySnapshotStandaloneMode(new URLSearchParams(location.search));
-  }, [location.pathname, location.search]);
+  }, [isOverlayRoute, location.search]);
 
   useEffect(() => {
     if (skipIpc) return;
@@ -31,9 +36,31 @@ export function App() {
     };
   }, [skipIpc]);
 
+  // Only the main window may auto-start the daemon. Overlay webviews (fixture or
+  // live) must never spawn truckpilot-core — start manually or from Settings.
+  useEffect(() => {
+    if (isOverlayRoute || skipIpc) return;
+
+    let cancelled = false;
+    let timeoutId: number | undefined;
+
+    void (async () => {
+      const enabled = await daemonGetAutoStart();
+      if (!enabled || cancelled) return;
+      timeoutId = window.setTimeout(() => {
+        if (!cancelled) void daemonStart();
+      }, DAEMON_AUTOSTART_DELAY_MS);
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [isOverlayRoute, skipIpc]);
+
   // The overlay window renders chrome-less and must NOT mount global chrome
   // (toasts/hotkeys) — it shares this App but lives in its own webview.
-  const isOverlay = location.pathname.startsWith("/overlay");
+  const isOverlay = isOverlayRoute;
 
   return (
     <>

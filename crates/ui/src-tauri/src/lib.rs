@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use ipc_bridge::IpcBridge;
 use tauri::{Manager, RunEvent};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::daemon::DaemonManager;
 
@@ -35,28 +35,19 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .manage(daemon.clone())
-        .setup({
-            let daemon = daemon.clone();
-            move |app| {
-                let bridge = IpcBridge::spawn(app.handle().clone());
-                app.manage(bridge);
+        .setup(move |app| {
+            let bridge = IpcBridge::spawn(app.handle().clone());
+            app.manage(bridge);
 
-                let cfg = daemon_config::load(app.handle());
-                if cfg.auto_start {
-                    match daemon.start() {
-                        Ok(status) => info!("daemon auto-start: {:?}", status.state),
-                        Err(err) => warn!("daemon auto-start failed: {err}"),
-                    }
-                } else {
-                    info!("daemon auto-start disabled by config");
-                }
+            // Daemon auto-start is handled by the main UI window (App.tsx) with a
+            // delay when enabled in Settings — not here. Spawning during setup caused
+            // graph.json + plugin on_load spikes while ETS2 was in the foreground.
 
-                let hk = hotkey_config::load(app.handle());
-                if let Err(e) = hotkey_manager::apply(app.handle(), &hk.engage, &hk.disengage) {
-                    warn!("global hotkey registration failed: {e}");
-                }
-                Ok(())
+            let hk = hotkey_config::load(app.handle());
+            if let Err(e) = hotkey_manager::apply(app.handle(), &hk.engage, &hk.disengage) {
+                warn!("global hotkey registration failed: {e}");
             }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::send_command,
