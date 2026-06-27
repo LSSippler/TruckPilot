@@ -17,6 +17,7 @@ use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 mod heading_stage;
 mod ipc;
 mod plugin_manager;
+mod ready_state;
 mod startup_trace;
 mod state_machine;
 mod watchdog;
@@ -687,14 +688,19 @@ async fn run_daemon() {
     startup_trace::phase("graph_json_load"); // = graph parse done (after graph_read_done)
     let graph = Arc::new(build_router_graph(&map_graph));
     startup_trace::phase("router_graph_build");
-    startup_trace::phase("spline_index_start");
-    let spline_index_opt = build_spline_index_for_hud(&map_graph);
-    startup_trace::phase("spline_index_build"); // = spline_index done
-    // MapGraph can be dropped after both consumers are built.
-    drop(map_graph);
 
     let mut manager = PluginManager::new(plugin_dir, plugin_configs);
     startup_trace::phase("blackboard_init");
+    ready_state::seed_all_false(&manager.blackboard);
+    ready_state::set_graph_ready(&manager.blackboard, true);
+
+    startup_trace::phase("spline_index_start");
+    let spline_index_opt = build_spline_index_for_hud(&map_graph);
+    startup_trace::phase("spline_index_build"); // = spline_index done
+    ready_state::set_spline_index_ready(&manager.blackboard, spline_index_opt.is_some());
+    // MapGraph can be dropped after both consumers are built.
+    drop(map_graph);
+
     manager.graph = Some(Arc::clone(&graph));
     if let Some((index, road_seg_count)) = spline_index_opt {
         manager.spline_index = Some(Arc::new(index));
@@ -706,6 +712,8 @@ async fn run_daemon() {
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     startup_trace::phase("plugin_load");
+    ready_state::set_plugins_ready(&manager.blackboard, true);
+    ready_state::refresh_dynamic(&manager.blackboard);
     info!("Loaded {} plugin(s)", manager.list().len());
 
     // Phase 2h: seed the lane-keeper offset calibration constant from [steering].
@@ -832,6 +840,7 @@ async fn run_daemon() {
         // see fresh `telemetry.*` values when their `tick` runs. The
         // blackboard has its own Mutex; no contention with the manager.
         publish_telemetry_to_blackboard(telemetry.as_ref(), &blackboard);
+        ready_state::refresh_dynamic(&blackboard);
 
         // IPC broadcast: real telemetry → UI clients, gated to one
         // frame per 50 ms. Compile-time off when `mock_telemetry` is
