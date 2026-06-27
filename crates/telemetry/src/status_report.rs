@@ -54,6 +54,8 @@ pub struct StatusReport {
     pub resolver_off: bool,
     /// Human-readable resolve status name from the route blackboard.
     pub resolve_status: String,
+    /// Raw resolve status code from route SHM (`reserved[1]`), when mapped.
+    pub resolve_status_code: Option<u32>,
     /// Cumulative resolver activation count (>0 means hot).
     pub resolver_attempts: u32,
     /// `true` when `input_enabled == false` (game input intercepted by DLL).
@@ -132,6 +134,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
             diag_level: "unknown".into(),
             resolver_off: false,
             resolve_status: "unavailable".into(),
+            resolve_status_code: None,
             resolver_attempts: 0,
             input_disabled: false,
             input_enabled: false,
@@ -195,8 +198,10 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         .or_else(|| route.map(|r| r.frame_cb_count))
         .unwrap_or(0);
 
-    let resolve_status = route
-        .map(|r| route_resolve_status_name(r.resolve_status).to_string())
+    let resolve_status_code = route.map(|r| r.resolve_status);
+    let resolve_status = resolve_status_code
+        .map(route_resolve_status_name)
+        .map(str::to_string)
         .unwrap_or_else(|| "unknown".into());
     let resolver_off = route
         .map(|r| r.resolve_status == RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE)
@@ -243,6 +248,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         diag_level,
         resolver_off,
         resolve_status,
+        resolve_status_code,
         resolver_attempts,
         input_disabled,
         input_enabled,

@@ -17,6 +17,7 @@ use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 mod heading_stage;
 mod ipc;
 mod plugin_manager;
+mod preflight_display;
 mod ready_state;
 mod startup_trace;
 mod state_machine;
@@ -841,6 +842,7 @@ async fn run_daemon() {
         // blackboard has its own Mutex; no contention with the manager.
         publish_telemetry_to_blackboard(telemetry.as_ref(), &blackboard);
         ready_state::refresh_dynamic(&blackboard);
+        preflight_display::refresh_shm_display_keys(&blackboard);
 
         // IPC broadcast: real telemetry → UI clients, gated to one
         // frame per 50 ms. Compile-time off when `mock_telemetry` is

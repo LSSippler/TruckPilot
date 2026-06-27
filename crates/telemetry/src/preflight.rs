@@ -4,6 +4,7 @@
 //! Missing daemon blackboard data stays `null` / unknown — never affects CLI exit codes.
 
 use crate::core_readiness::CoreReadiness;
+use crate::resolver_safe::{evaluate_resolver_safe, resolver_safe_label, ResolverSafeInputs};
 use crate::status_report::StatusReport;
 
 /// Tri-state bool for JSON (`true` / `false` / `null` = unknown).
@@ -126,11 +127,13 @@ pub fn evaluate_preflight(status: &StatusReport) -> PreflightDisplay {
     // Live lane validity requires daemon blackboard — not available in SHM-only CLI.
     let lane_model_valid = None;
 
-    let resolver_safe = if status.route_bb_available || status.perf_shm_available {
-        Some(status.resolver_off && status.resolver_attempts == 0)
-    } else {
-        None
-    };
+    let resolver_safe = evaluate_resolver_safe(&ResolverSafeInputs::from_status_report(
+        status.route_bb_available,
+        status.perf_shm_available,
+        status.resolve_status_code,
+        status.resolver_attempts,
+        status.pattern_scan_count,
+    ));
 
     let input_allowed = if status.perf_shm_available {
         Some(status.input_enabled)
@@ -169,7 +172,10 @@ pub fn format_preflight_human(p: &PreflightDisplay) -> String {
         "no"
     };
     format!(
-        "Preflight drive allowed (display): {drive}\n  Reason: {}",
+        "Preflight drive allowed (display): {drive}\n  \
+         Resolver safe: {}\n  \
+         Reason: {}",
+        resolver_safe_label(p.resolver_safe),
         if p.reasons.is_empty() {
             "none".to_string()
         } else {
@@ -222,6 +228,8 @@ mod tests {
         assert_eq!(p.route_valid, Some(false));
         assert!(!p.drive_allowed_display);
         assert!(p.reasons.iter().any(|r| r.contains("route invalid")));
+        assert_eq!(p.resolver_safe, Some(true));
+        assert!(!p.reasons.iter().any(|r| r.contains("resolver safe unknown")));
     }
 
     #[test]

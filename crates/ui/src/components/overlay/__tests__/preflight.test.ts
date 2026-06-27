@@ -4,6 +4,7 @@ import {
   inputAllowedFromBb,
   laneModelValidFromBb,
   preflightLabel,
+  resolverSafeFromBb,
   telemetryFreshFromBb,
 } from "@/components/overlay/preflight";
 
@@ -55,6 +56,12 @@ describe("computePreflightView", () => {
 });
 
 describe("preflight helpers", () => {
+  it("resolverSafeFromBb maps blackboard mirror", () => {
+    expect(resolverSafeFromBb("true")).toBe(true);
+    expect(resolverSafeFromBb("false")).toBe(false);
+    expect(resolverSafeFromBb(undefined)).toBe(null);
+  });
+
   it("telemetryFreshFromBb prefers engage precondition", () => {
     expect(telemetryFreshFromBb("false", "true")).toBe(false);
     expect(telemetryFreshFromBb(undefined, "true")).toBe(true);
