@@ -518,11 +518,18 @@ fn load_map_graph_or_exit() -> truckpilot_map_parser::graph::MapGraph {
     }
     let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
     eprintln!("INFO: Loading graph from {:?}", abs);
-    let json = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+    // Read raw bytes and parse with `from_slice` instead of
+    // `read_to_string` + `from_str`. graph.json is large (hundreds of MB);
+    // `read_to_string` forces a full UTF-8 validation pass over every byte
+    // and a same-size String allocation. `from_slice` skips both (serde_json
+    // validates UTF-8 lazily inside string tokens only) for an identical
+    // `MapGraph`. Mirrors the loader the lane-follower plugin already uses.
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         eprintln!("ERROR: Cannot read graph.json: {e}");
         std::process::exit(1);
     });
-    serde_json::from_str::<truckpilot_map_parser::graph::MapGraph>(&json).unwrap_or_else(|e| {
+    startup_trace::phase("graph_read_done");
+    serde_json::from_slice::<truckpilot_map_parser::graph::MapGraph>(&bytes).unwrap_or_else(|e| {
         eprintln!("ERROR: Cannot parse graph.json: {e}");
         std::process::exit(1);
     })
@@ -677,11 +684,12 @@ async fn run_daemon() {
     // ── Phase 6.5q.1: load routing graph + Phase 6.9: SplineIndex ─────
     // Load MapGraph once; derive both RouterGraph and SplineIndex from it.
     let map_graph = load_map_graph_or_exit();
-    startup_trace::phase("graph_json_load");
+    startup_trace::phase("graph_json_load"); // = graph parse done (after graph_read_done)
     let graph = Arc::new(build_router_graph(&map_graph));
     startup_trace::phase("router_graph_build");
+    startup_trace::phase("spline_index_start");
     let spline_index_opt = build_spline_index_for_hud(&map_graph);
-    startup_trace::phase("spline_index_build");
+    startup_trace::phase("spline_index_build"); // = spline_index done
     // MapGraph can be dropped after both consumers are built.
     drop(map_graph);
 
@@ -692,6 +700,9 @@ async fn run_daemon() {
         manager.spline_index = Some(Arc::new(index));
         manager.spline_index_road_seg_count = road_seg_count;
     }
+    // Shared graph + spline are now wired into the manager; every plugin's
+    // on_load below sees them via PluginContext (no per-plugin re-read).
+    startup_trace::phase("shared_graph_ready");
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
     startup_trace::phase("plugin_load");
