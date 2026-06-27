@@ -4,7 +4,10 @@
 //! offset, path curvature, semaphores) without copying ETS2LA code. v1 is
 //! display-only — no steering, engage, or resolver activation.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use truckpilot_map_parser::graph::{GraphEdge, GraphNode, MapGraph, PrefabAiPath};
 
 /// Where planned path geometry was sourced from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +380,251 @@ pub fn with_safety(mut data: PlannedPathData, safety: PlannedPathSafety) -> Plan
     data
 }
 
+// ---------------------------------------------------------------------------
+// Offline map-graph → PlannedPathData (read-only, display only)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_LANE_WIDTH_M: f64 = 3.7;
+
+fn dist2(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// Menger curvature (1/m) through three XZ points; `0.0` if degenerate.
+fn menger_curvature(p0: (f64, f64), p1: (f64, f64), p2: (f64, f64)) -> f64 {
+    let denom = dist2(p0, p1) * dist2(p1, p2) * dist2(p2, p0);
+    if denom < 1e-9 {
+        return 0.0;
+    }
+    // 2 * signed triangle area (cross product of the two edge vectors).
+    let cross = (p1.0 - p0.0) * (p2.1 - p0.1) - (p2.0 - p0.0) * (p1.1 - p0.1);
+    (2.0 * cross.abs()) / denom
+}
+
+/// Per-point curvature along an XZ polyline (endpoints copy their neighbour).
+fn polyline_curvatures(pts: &[(f64, f64)]) -> Vec<f64> {
+    let n = pts.len();
+    let mut out = vec![0.0; n];
+    for i in 1..n.saturating_sub(1) {
+        out[i] = menger_curvature(pts[i - 1], pts[i], pts[i + 1]);
+    }
+    if n >= 2 {
+        out[0] = out[1];
+        out[n - 1] = out[n - 2];
+    }
+    out
+}
+
+/// Sample a prefab AI-path spline into [`PathPoint`]s, lerping the lane offset
+/// from `start_off` to `end_off`. Returns the points plus the max curvature.
+fn points_from_spline(
+    spline: &[[f32; 3]],
+    start_off: f64,
+    end_off: f64,
+) -> (Vec<PathPoint>, f64) {
+    let xz: Vec<(f64, f64)> = spline.iter().map(|p| (p[0] as f64, p[2] as f64)).collect();
+    let curv = polyline_curvatures(&xz);
+    let mut out = Vec::with_capacity(spline.len());
+    let mut dist = 0.0;
+    let mut prev: Option<(f64, f64)> = None;
+    let last = spline.len().saturating_sub(1).max(1);
+    for (i, p) in spline.iter().enumerate() {
+        let (x, z) = (p[0] as f64, p[2] as f64);
+        if let Some(pv) = prev {
+            dist += dist2(pv, (x, z));
+        }
+        let heading = prev.map(|pv| (x - pv.0).atan2(z - pv.1));
+        prev = Some((x, z));
+        let t = i as f64 / last as f64;
+        out.push(PathPoint {
+            x,
+            y: p[1] as f64,
+            z,
+            distance_m: dist,
+            heading_rad: heading,
+            lane_offset_m: Some(start_off + (end_off - start_off) * t),
+            curvature_1pm: Some(curv[i]),
+        });
+    }
+    let max_c = curv.iter().copied().fold(0.0_f64, f64::max);
+    (out, max_c)
+}
+
+/// Straight road-edge geometry between two graph nodes at constant curvature.
+fn points_from_edge(a: &GraphNode, b: &GraphNode, steps: usize, lane_off: f64, curvature: f64) -> Vec<PathPoint> {
+    let heading = (b.x - a.x).atan2(b.z - a.z);
+    (0..=steps)
+        .map(|i| {
+            let t = i as f64 / steps as f64;
+            let x = a.x + (b.x - a.x) * t;
+            let z = a.z + (b.z - a.z) * t;
+            PathPoint {
+                x,
+                y: a.y + (b.y - a.y) * t,
+                z,
+                distance_m: (x - a.x).hypot(z - a.z),
+                heading_rad: Some(heading),
+                lane_offset_m: Some(lane_off),
+                curvature_1pm: Some(curvature),
+            }
+        })
+        .collect()
+}
+
+fn item_from_prefab_ai_path(
+    id: u32,
+    a: u64,
+    b: u64,
+    pap: &PrefabAiPath,
+    graph: &MapGraph,
+) -> PlannedPathItem {
+    let kind = if pap.start_lane_idx != pap.end_lane_idx {
+        PlannedPathItemKind::LaneChange
+    } else if !pap.curve_indices.is_empty() {
+        PlannedPathItemKind::NavCurve
+    } else if pap.semaphore_id.is_some() {
+        PlannedPathItemKind::Junction
+    } else {
+        PlannedPathItemKind::PrefabPath
+    };
+    let start_off = pap.start_lane_idx as f64 * DEFAULT_LANE_WIDTH_M;
+    let end_off = pap.end_lane_idx as f64 * DEFAULT_LANE_WIDTH_M;
+    let (points, curvature) = points_from_spline(&pap.spline_points, start_off, end_off);
+    let prefab_uid = graph
+        .prefabs
+        .iter()
+        .find(|p| p.connected_node_uids.contains(&a) && p.connected_node_uids.contains(&b))
+        .map(|p| p.uid);
+
+    PlannedPathItem {
+        id,
+        kind,
+        node_uid_start: Some(a),
+        node_uid_end: Some(b),
+        prefab_uid,
+        curve_index: pap.curve_indices.first().map(|c| *c as u32),
+        length_m: pap.length_m as f64,
+        lane_index: Some(pap.end_lane_idx as u32),
+        lane_count: None,
+        lane_width_m: Some(DEFAULT_LANE_WIDTH_M),
+        lateral_offset_m: Some(end_off),
+        curvature_1pm: Some(curvature),
+        speed_hint_kmh: pap.speed_kmh.map(|s| s as f64),
+        semaphore_hint: pap.semaphore_id.map(|id| format!("semaphore #{id}")),
+        points,
+    }
+}
+
+fn item_from_edge(id: u32, edge: &GraphEdge, a: &GraphNode, b: &GraphNode, curvature: f64) -> PlannedPathItem {
+    let lane_off = edge.road_offset_m as f64;
+    PlannedPathItem {
+        id,
+        kind: PlannedPathItemKind::RoadEdge,
+        node_uid_start: Some(edge.from),
+        node_uid_end: Some(edge.to),
+        prefab_uid: None,
+        curve_index: None,
+        length_m: edge.distance_m,
+        lane_index: Some(0),
+        lane_count: Some(edge.lanes as u32),
+        lane_width_m: Some(edge.lane_width_m as f64),
+        lateral_offset_m: Some(lane_off),
+        curvature_1pm: Some(curvature),
+        speed_hint_kmh: edge.speed_limit_kmh,
+        semaphore_hint: None,
+        points: points_from_edge(a, b, 6, lane_off, curvature),
+    }
+}
+
+/// Build read-only [`PlannedPathData`] from a routing [`MapGraph`] along an
+/// ordered list of node UIDs. Prefab AI-paths take precedence over plain road
+/// edges for a hop; missing hops are skipped. `source = OfflineGraph`.
+///
+/// Geometry only — the caller attaches a display-only [`PlannedPathSafety`].
+pub fn planned_path_from_map_graph(graph: &MapGraph, route_node_uids: &[u64]) -> PlannedPathData {
+    let node_by_uid: HashMap<u64, &GraphNode> = graph.nodes.iter().map(|n| (n.uid, n)).collect();
+    let mut items = Vec::new();
+    let mut id = 0u32;
+
+    for (idx, w) in route_node_uids.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        if let Some(pap) = graph
+            .prefab_ai_paths
+            .iter()
+            .find(|p| p.from_node_uid == a && p.to_node_uid == b)
+        {
+            id += 1;
+            items.push(item_from_prefab_ai_path(id, a, b, pap, graph));
+        } else if let (Some(edge), Some(na), Some(nb)) = (
+            graph.edges.iter().find(|e| e.from == a && e.to == b),
+            node_by_uid.get(&a),
+            node_by_uid.get(&b),
+        ) {
+            // Road-edge curvature = bend at the start node (prev, a, b).
+            let curvature = idx
+                .checked_sub(1)
+                .and_then(|i| node_by_uid.get(&route_node_uids[i]))
+                .map(|prev| menger_curvature((prev.x, prev.z), (na.x, na.z), (nb.x, nb.z)))
+                .unwrap_or(0.0);
+            id += 1;
+            items.push(item_from_edge(id, edge, na, nb, curvature));
+        }
+    }
+
+    PlannedPathData {
+        valid: !items.is_empty(),
+        source: PlannedPathSource::OfflineGraph,
+        route_id: None,
+        current_index: 0,
+        lookahead_m: 80.0,
+        items,
+        nearest: None,
+        // Display-only: no live gates here → drive display stays false.
+        safety: PlannedPathSafety {
+            route_valid: false,
+            lane_model_valid: false,
+            resolver_safe: true,
+            telemetry_fresh: false,
+            input_allowed: false,
+            drive_allowed_display_only: false,
+            reasons: vec!["offline graph fixture (display only)".into()],
+        },
+    }
+}
+
+/// Build a v1 path from the embedded minimal offline-graph fixture
+/// (`tests/fixtures/offline_graph_mini.json`). `source = OfflineGraph`.
+pub fn build_offline_fixture_v1() -> PlannedPathData {
+    const FIXTURE: &str = include_str!("../tests/fixtures/offline_graph_mini.json");
+    let graph: MapGraph =
+        serde_json::from_str(FIXTURE).expect("embedded offline_graph_mini fixture must parse");
+    let route = [10001u64, 10002, 10003, 10004, 10005, 10006];
+    let mut data = planned_path_from_map_graph(&graph, &route);
+    data.route_id = Some("offline-graph-mini-v1".into());
+    data.current_index = 1;
+    data.nearest = Some(NearestPathPoint {
+        item_id: 2,
+        distance_along_m: 12.0,
+        crosstrack_m: -0.08,
+        heading_error_rad: 0.03,
+        confidence: 0.9,
+    });
+    data.safety = PlannedPathSafety {
+        route_valid: false,
+        lane_model_valid: false,
+        resolver_safe: true,
+        telemetry_fresh: true,
+        input_allowed: false,
+        drive_allowed_display_only: false,
+        reasons: vec![
+            "route invalid".into(),
+            "lane model invalid".into(),
+            "input disabled".into(),
+        ],
+    };
+    data
+}
+
 /// Aggregate stats for overlay debug panels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedPathDebugStats {
@@ -513,5 +761,77 @@ mod tests {
         assert!(data.valid);
         // Changing display flag must not imply path items changed.
         assert_eq!(data.items.len(), 5);
+    }
+
+    // ---- offline-graph fixture ------------------------------------------
+
+    #[test]
+    fn offline_fixture_source_is_offline_graph_not_mock() {
+        let data = build_offline_fixture_v1();
+        assert_eq!(data.source, PlannedPathSource::OfflineGraph);
+        assert_ne!(data.source, PlannedPathSource::Mock);
+        assert!(data.valid);
+        assert_eq!(data.route_id.as_deref(), Some("offline-graph-mini-v1"));
+    }
+
+    #[test]
+    fn offline_fixture_covers_road_junction_lanechange_navcurve() {
+        let data = build_offline_fixture_v1();
+        let kinds: Vec<_> = data.items.iter().map(|i| i.kind).collect();
+        // 2 road edges + junction + lane change + nav curve.
+        assert_eq!(data.items.len(), 5);
+        assert!(kinds.contains(&PlannedPathItemKind::RoadEdge));
+        assert!(kinds.contains(&PlannedPathItemKind::Junction));
+        assert!(kinds.contains(&PlannedPathItemKind::LaneChange));
+        assert!(kinds.contains(&PlannedPathItemKind::NavCurve));
+    }
+
+    #[test]
+    fn offline_fixture_carries_real_node_uids_and_prefab() {
+        let data = build_offline_fixture_v1();
+        // Node UIDs threaded from the graph fixture.
+        assert_eq!(data.items[0].node_uid_start, Some(10_001));
+        assert_eq!(data.items[4].node_uid_end, Some(10_006));
+        // Junction item resolves its prefab uid from the graph.
+        let junction = data
+            .items
+            .iter()
+            .find(|i| i.kind == PlannedPathItemKind::Junction)
+            .expect("junction item");
+        assert_eq!(junction.prefab_uid, Some(9001));
+    }
+
+    #[test]
+    fn offline_fixture_curvature_and_counts_visible() {
+        let data = build_offline_fixture_v1();
+        let stats = planned_path_debug_stats(&data);
+        // Curvature populated and a curved segment present.
+        assert!(stats.curvature_max_1pm.unwrap_or(0.0) > 0.0);
+        // Junction/prefab and semaphore counts surfaced.
+        assert_eq!(stats.junction_prefab_count, 1);
+        assert_eq!(stats.semaphore_hint_count, 2);
+    }
+
+    #[test]
+    fn offline_fixture_drive_display_false_when_gates_missing() {
+        let data = build_offline_fixture_v1();
+        assert!(!data.safety.drive_allowed_display_only);
+        assert!(!data.safety.reasons.is_empty());
+    }
+
+    #[test]
+    fn offline_fixture_json_roundtrip_keeps_source_and_curvature() {
+        let data = build_offline_fixture_v1();
+        let json = planned_path_to_json(&data);
+        // Source is the snake_case offline_graph in JSON.
+        assert!(json.contains("\"source\": \"offline_graph\""));
+        let parsed: PlannedPathData = serde_json::from_str(&json).expect("roundtrip");
+        assert_eq!(parsed.source, PlannedPathSource::OfflineGraph);
+        assert_eq!(parsed.items.len(), data.items.len());
+        assert!(parsed
+            .items
+            .iter()
+            .filter_map(|i| i.curvature_1pm)
+            .any(|c| c > 0.0));
     }
 }

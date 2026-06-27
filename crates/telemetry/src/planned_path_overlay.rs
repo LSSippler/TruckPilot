@@ -1,10 +1,11 @@
 //! Build read-only [`PlannedPathData`] for overlay / CLI from existing SHM status.
 //!
-//! v1 uses the mock fixture for geometry and mirrors preflight safety from
+//! v1 geometry comes from the embedded offline map-graph fixture
+//! (`source = offline_graph`) and mirrors preflight safety from
 //! [`StatusReport`] — no resolver activation, no ETS2 memory reads.
 
 use truckpilot_plugin_api::planned_path::{
-    build_mock_fixture_v1, with_safety, PlannedPathData, PlannedPathSafety,
+    build_offline_fixture_v1, with_safety, PlannedPathData, PlannedPathSafety,
 };
 
 use crate::lane_debug::LaneDebugSnapshot;
@@ -24,7 +25,7 @@ pub fn safety_from_preflight(p: &PreflightDisplay) -> PlannedPathSafety {
     }
 }
 
-/// Build overlay planned path: mock geometry + live safety mirror.
+/// Build overlay planned path: offline-graph fixture geometry + live safety mirror.
 pub fn build_planned_path_overlay(
     status: &StatusReport,
     lane: &LaneDebugSnapshot,
@@ -38,7 +39,7 @@ pub fn build_planned_path_overlay(
             safety.drive_allowed_display_only = false;
         }
     }
-    with_safety(build_mock_fixture_v1(), safety)
+    with_safety(build_offline_fixture_v1(), safety)
 }
 
 #[cfg(test)]
@@ -75,16 +76,22 @@ mod tests {
     }
 
     #[test]
-    fn overlay_planned_path_uses_mock_source() {
+    fn overlay_planned_path_uses_offline_graph_source() {
         let status = safe_off_status();
         let lane = build_lane_debug(None, &status);
         let ppd = build_planned_path_overlay(&status, &lane);
         assert!(ppd.valid);
-        assert_eq!(ppd.source, PlannedPathSource::Mock);
+        assert_eq!(ppd.source, PlannedPathSource::OfflineGraph);
+        assert_ne!(ppd.source, PlannedPathSource::Mock);
         assert!(
             ppd.items
                 .iter()
                 .any(|i| i.kind == PlannedPathItemKind::LaneChange)
+        );
+        assert!(
+            ppd.items
+                .iter()
+                .any(|i| i.kind == PlannedPathItemKind::Junction)
         );
     }
 
@@ -102,7 +109,7 @@ mod tests {
         let json = format_overlay_json(&snap);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(parsed["planned_path"]["valid"], true);
-        assert_eq!(parsed["planned_path"]["source"], "mock");
+        assert_eq!(parsed["planned_path"]["source"], "offline_graph");
         assert_eq!(
             parsed["planned_path"]["safety"]["drive_allowed_display_only"],
             false

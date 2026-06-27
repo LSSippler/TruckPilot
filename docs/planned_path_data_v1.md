@@ -32,14 +32,31 @@ without reading ETS2 process memory.
 
 | `PlannedPathSource` | Status |
 |---------------------|--------|
-| `mock` | **Active** — synthetic fixture (`build_mock_fixture_v1`) |
-| `offline_graph` | Planned — graph.json route |
+| `offline_graph` | **Active** — minimal `MapGraph` fixture (`build_offline_fixture_v1`) |
+| `mock` | Available — synthetic fixture (`build_mock_fixture_v1`) |
 | `route_blackboard` | Planned — ETS2 SHM waypoints |
-| `prefab_ai_path` / `navcurve` | Planned — map-parser segments |
+| `prefab_ai_path` / `navcurve` | Folded into `offline_graph` items (per-segment `kind`) |
 
-Overlay / `truckpilot-status --overlay` currently attach **mock geometry**
-plus a **live safety mirror** from SHM preflight (`route_valid`,
-`resolver_safe`, `input_allowed`, …).
+Overlay / `truckpilot-status --overlay` attach **offline-graph fixture
+geometry** (real node UIDs, prefab AI-path splines, computed curvature) plus
+a **live safety mirror** from SHM preflight (`route_valid`, `resolver_safe`,
+`input_allowed`, …).
+
+### Offline-graph fixture
+
+`build_offline_fixture_v1()` deserialises the embedded minimal `MapGraph`
+fixture `crates/plugin-api/tests/fixtures/offline_graph_mini.json` (6 nodes,
+2 road edges, 3 prefab AI-paths) and walks a fixed node-UID route via
+`planned_path_from_map_graph`. Item kinds are derived from graph data:
+
+- road edge / curved road edge → `RoadEdge` (curvature = Menger curvature at
+  the start node)
+- prefab AI-path with `start_lane_idx != end_lane_idx` → `LaneChange`
+- prefab AI-path with `curve_indices` → `NavCurve`
+- prefab AI-path with a `semaphore_id` → `Junction` (+ `prefab_uid`)
+
+The full ETS2 `graph.json` (~hundreds of MB) is **never** committed; only the
+small fixture under `tests/fixtures/` lives in the repo.
 
 ## Safety block
 

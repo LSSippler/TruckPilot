@@ -41,4 +41,25 @@ describe("plannedPathViewStats", () => {
   it("returns null when planned path missing", () => {
     expect(plannedPathViewStats(undefined)).toBeNull();
   });
+
+  it("surfaces offline_graph source with curvature and junction counts", () => {
+    const offline: PlannedPathData = {
+      ...MOCK,
+      source: "offline_graph",
+      route_id: "offline-graph-mini-v1",
+      items: [
+        { id: 1, kind: "road_edge", length_m: 120, curvature_1pm: 0 },
+        { id: 2, kind: "road_edge", length_m: 63.6, curvature_1pm: 0.0083 },
+        { id: 3, kind: "junction", length_m: 50, semaphore_hint: "semaphore #7" },
+        { id: 4, kind: "lane_change", length_m: 28.3, curvature_1pm: 0.001 },
+        { id: 5, kind: "nav_curve", length_m: 75, curvature_1pm: 0.002, semaphore_hint: "semaphore #12" },
+      ],
+    };
+    const stats = plannedPathViewStats(offline);
+    expect(stats).not.toBeNull();
+    expect(stats!.source).toBe("offline_graph");
+    expect(stats!.junctionPrefabCount).toBe(1);
+    expect(stats!.semaphoreHintCount).toBe(2);
+    expect(stats!.curvatureRange).not.toBe("—");
+  });
 });
