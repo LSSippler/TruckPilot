@@ -23,7 +23,6 @@ pub mod core_readiness;
 pub mod overlay_snapshot;
 pub mod planned_path_overlay;
 pub mod preflight;
-pub mod resolver_safe;
 pub mod route_distance_log;
 pub mod route_log_analyze;
 pub mod shm;
