@@ -1,0 +1,102 @@
+{
+  "nodes": [
+    { "uid": 10001, "x": 0.0, "y": 0.0, "z": 0.0, "rotation": [0.0, 0.0, 0.0, 0.0] },
+    { "uid": 10002, "x": 0.0, "y": 0.0, "z": 120.0, "rotation": [0.0, 0.0, 0.0, 0.0] },
+    { "uid": 10003, "x": 45.0, "y": 0.0, "z": 165.0, "rotation": [0.0, 0.0, 0.0, 0.0] },
+    { "uid": 10004, "x": 95.0, "y": 0.0, "z": 165.0, "rotation": [0.0, 0.0, 0.0, 0.0] },
+    { "uid": 10005, "x": 115.0, "y": 0.0, "z": 185.0, "rotation": [0.0, 0.0, 0.0, 0.0] },
+    { "uid": 10006, "x": 115.0, "y": 0.0, "z": 260.0, "rotation": [0.0, 0.0, 0.0, 0.0] }
+  ],
+  "edges": [
+    {
+      "uid": 20001,
+      "from": 10001,
+      "to": 10002,
+      "distance_m": 120.0,
+      "speed_limit_kmh": 80.0,
+      "lanes": 2,
+      "direction": "forward",
+      "dlc_guard": 0,
+      "is_hidden": false,
+      "gps_avoid": false,
+      "road_look_token": 0,
+      "lanes_opposite": 2,
+      "lane_width_m": 3.7,
+      "road_offset_m": 0.0
+    },
+    {
+      "uid": 20002,
+      "from": 10002,
+      "to": 10003,
+      "distance_m": 63.64,
+      "speed_limit_kmh": 60.0,
+      "lanes": 2,
+      "direction": "forward",
+      "dlc_guard": 0,
+      "is_hidden": false,
+      "gps_avoid": false,
+      "road_look_token": 0,
+      "lanes_opposite": 2,
+      "lane_width_m": 3.7,
+      "road_offset_m": 0.5
+    }
+  ],
+  "signs": [],
+  "prefabs": [
+    { "uid": 9001, "template_token": 123456789, "connected_node_uids": [10003, 10004] }
+  ],
+  "stats": {
+    "node_count": 6,
+    "edge_count": 2,
+    "sign_count": 0,
+    "prefab_count": 1,
+    "sectors_merged": 1,
+    "build_time_ms": 0.0
+  },
+  "prefab_ai_paths": [
+    {
+      "from_node_uid": 10003,
+      "to_node_uid": 10004,
+      "start_lane_idx": 0,
+      "end_lane_idx": 0,
+      "spline_points": [[45.0, 0.0, 165.0], [60.0, 0.0, 166.0], [78.0, 0.0, 166.0], [95.0, 0.0, 165.0]],
+      "length_m": 50.0,
+      "speed_kmh": 30,
+      "blinker": null,
+      "curve_indices": [],
+      "semaphore_id": 7,
+      "start_rotation": [0.0, 0.0, 0.0, 0.0],
+      "end_rotation": [0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "from_node_uid": 10004,
+      "to_node_uid": 10005,
+      "start_lane_idx": 1,
+      "end_lane_idx": 2,
+      "spline_points": [[95.0, 0.0, 165.0], [103.0, 0.0, 172.0], [110.0, 0.0, 179.0], [115.0, 0.0, 185.0]],
+      "length_m": 28.3,
+      "speed_kmh": 60,
+      "blinker": null,
+      "curve_indices": [],
+      "semaphore_id": null,
+      "start_rotation": [0.0, 0.0, 0.0, 0.0],
+      "end_rotation": [0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "from_node_uid": 10005,
+      "to_node_uid": 10006,
+      "start_lane_idx": 1,
+      "end_lane_idx": 1,
+      "spline_points": [[115.0, 0.0, 185.0], [116.5, 0.0, 210.0], [115.5, 0.0, 235.0], [115.0, 0.0, 260.0]],
+      "length_m": 75.0,
+      "speed_kmh": 70,
+      "blinker": null,
+      "curve_indices": [128],
+      "semaphore_id": 12,
+      "start_rotation": [0.0, 0.0, 0.0, 0.0],
+      "end_rotation": [0.0, 0.0, 0.0, 0.0]
+    }
+  ],
+  "prefab_instances": [],
+  "prefab_descriptors": {}
+}

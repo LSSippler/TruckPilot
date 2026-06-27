@@ -21,7 +21,7 @@ export function PlannedPathDebugPanel({
       className="min-w-[13rem] ring-violet-400/25 pointer-events-auto"
     >
       <div className="mb-1 rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wider text-violet-200">
-        READ-ONLY · MOCK GEOMETRY
+        READ-ONLY · {stats.source.replace(/_/g, " ").toUpperCase()}
       </div>
       <Row label="Valid" value={stats.valid ? "yes" : "no"} />
       <Row label="Source" value={stats.source} />
