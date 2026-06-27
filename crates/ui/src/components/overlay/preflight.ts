@@ -117,6 +117,11 @@ export function inputAllowedFromBb(
   return null;
 }
 
+/** Tri-state from optional blackboard mirror (`true` / `false` / unknown). */
+export function resolverSafeFromBb(v: string | undefined): PreflightTri {
+  return parseBbTri(v);
+}
+
 /** Telemetry fresh: prefer state-machine precondition, fall back to telemetry.available. */
 export function telemetryFreshFromBb(
   engagePrecondition: string | undefined,

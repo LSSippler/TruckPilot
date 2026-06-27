@@ -8,6 +8,7 @@ import {
   inputAllowedFromBb,
   laneModelValidFromBb,
   preflightLabel,
+  resolverSafeFromBb,
   telemetryFreshFromBb,
 } from "./preflight";
 
@@ -27,6 +28,7 @@ export function PreflightPanel() {
   const outputSink = useBB("output.sink.configured");
   const vjoyConnected = useBB("vjoy.connected");
   const scsConnected = useBB("scs_sdk_output.connected");
+  const resolverSafeRaw = useBB("preflight.resolver_safe");
 
   const view = useMemo(() => {
     const systemReady =
@@ -46,8 +48,7 @@ export function PreflightPanel() {
       telemetryFresh: telemetryFreshFromBb(telemetryFreshRaw, telemetryAvailable),
       routeValid,
       laneModelValid: laneModelValidFromBb(laneConfidence, laneLeft, laneRight),
-      // Resolver status is not on the daemon blackboard yet — SHM-only via truckpilot-status.
-      resolverSafe: null,
+      resolverSafe: resolverSafeFromBb(resolverSafeRaw),
       inputAllowed: inputAllowedFromBb(outputSink, vjoyConnected, scsConnected),
       autopilotState: autopilotState ?? null,
     });
@@ -59,6 +60,7 @@ export function PreflightPanel() {
     outputSink,
     routePlanned,
     routerActive,
+    resolverSafeRaw,
     scsConnected,
     systemReadyRaw,
     telemetryAvailable,
@@ -75,11 +77,7 @@ export function PreflightPanel() {
       <Row label="Telemetry fresh" value={preflightLabel(view.telemetryFresh)} />
       <Row label="Route valid" value={preflightLabel(view.routeValid)} />
       <Row label="Lane model valid" value={preflightLabel(view.laneModelValid)} />
-      <Row
-        label="Resolver safe"
-        value={preflightLabel(view.resolverSafe)}
-        hint="Overlay: unknown (see truckpilot-status / ETS2 SHM)"
-      />
+      <Row label="Resolver safe" value={preflightLabel(view.resolverSafe)} />
       <Row label="Input allowed" value={preflightLabel(view.inputAllowed)} />
       <Row
         label="Autopilot state"

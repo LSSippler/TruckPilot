@@ -35,6 +35,7 @@ export const OVERLAY_BB_KEYS = [
   "output.sink.configured",
   "vjoy.connected",
   "scs_sdk_output.connected",
+  "preflight.resolver_safe",
 ] as const;
 
 /// Subscribe to a single blackboard value (raw stringified form).
