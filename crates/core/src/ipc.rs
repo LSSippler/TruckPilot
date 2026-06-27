@@ -14,6 +14,7 @@ use truckpilot_ipc_protocol::{
 };
 
 use crate::plugin_manager::PluginManager;
+use crate::startup_trace;
 
 pub type SharedManager = Arc<Mutex<PluginManager>>;
 
@@ -33,6 +34,7 @@ const V: u32 = CoreMessage::VERSION;
 pub async fn start_ipc_server(manager: SharedManager, tx: broadcast::Sender<CoreMessage>) {
     let addr = "127.0.0.1:8765";
     let listener = TcpListener::bind(addr).await.expect("bind websocket");
+    startup_trace::phase("ws_bind");
     info!("IPC WebSocket server listening on {}", addr);
 
     spawn_mock_telemetry(tx.clone());
