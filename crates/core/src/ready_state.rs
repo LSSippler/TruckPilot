@@ -10,6 +10,25 @@
 //! - `truckpilot_system_ready` — daemon subsystem startup complete (AND of the
 //!   component flags below). **Not** an Engage/autopilot clearance.
 //!
+//! ## `truckpilot_system_ready` is NOT a drive / engage authorization
+//!
+//! `truckpilot_system_ready` means **only** that the subsystems finished
+//! loading/initialising (graph, spline index, plugins, lane-detection model).
+//! It must **never** be read as permission to steer or to engage the autopilot.
+//!
+//! Engaging requires *additional runtime checks* that this contract
+//! deliberately does not cover, evaluated later in the state machine / engage
+//! path, e.g.:
+//!
+//! - **telemetry fresh** — a recent, sane telemetry frame is arriving
+//! - **route_valid** — a planned route exists for the current position
+//! - **lane_model_valid** — a *current* lane detection (live confidence /
+//!   fresh frame), not merely a loaded model
+//! - **resolver safe** — the spline/route resolver is in a safe state
+//! - **input allowed** — the output sink / input path is permitted to act
+//!
+//! In short: `system_ready` is "subsystems up"; engage is "safe to act now".
+//!
 //! **v1 scope:** Core publishes flags during daemon startup and refreshes
 //! `lane_detection_ready` / `truckpilot_system_ready` each tick. No engage or
 //! steering behaviour changes yet.
@@ -122,12 +141,45 @@ mod tests {
     }
 
     #[test]
+    fn system_ready_false_while_any_single_flag_false() {
+        // With every other component flag true, flipping exactly one to false
+        // must drop the aggregate to false — the AND has no shortcuts.
+        let components = [
+            GRAPH_READY,
+            SPLINE_INDEX_READY,
+            PLUGINS_READY,
+            LANE_DETECTION_READY,
+        ];
+        for missing in components {
+            let bb = SharedBlackboard::new();
+            for key in components {
+                bb.set(key, if key == missing { "false" } else { "true" });
+            }
+            refresh_system_ready(&bb);
+            assert_eq!(
+                bb.get(SYSTEM_READY).as_deref(),
+                Some("false"),
+                "system_ready must be false when {missing} is false"
+            );
+        }
+    }
+
+    #[test]
     fn lane_detection_requires_load_ok_when_plugin_loaded() {
         let bb = bb_with_plugins("lane-detection,lane-keeper");
         bb.set("lane.diag.load_ok", "false");
         assert!(!compute_lane_detection_ready(&bb));
         bb.set("lane.diag.load_ok", "true");
         assert!(compute_lane_detection_ready(&bb));
+    }
+
+    #[test]
+    fn lane_detection_false_when_load_ok_key_missing() {
+        // lane-detection loaded but the diag key was never published yet →
+        // detector is not ready (missing is treated like not-ok).
+        let bb = bb_with_plugins("lane-detection,router");
+        assert!(bb.get("lane.diag.load_ok").is_none());
+        assert!(!compute_lane_detection_ready(&bb));
     }
 
     #[test]
