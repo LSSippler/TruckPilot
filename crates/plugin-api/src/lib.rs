@@ -17,6 +17,7 @@
 
 pub mod graph;
 pub mod pid;
+pub mod planned_path;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};

@@ -40,6 +40,52 @@ describe("parseOverlaySnapshot", () => {
     expect(parseOverlaySnapshot('{"verdict":"nope"}')).toBeNull();
   });
 
+  it("parses snapshot without planned_path (backward compatible)", () => {
+    const minimal = {
+      verdict: "unavailable",
+      lane_keeper_allowed: false,
+      status: {
+        dll_active: false,
+        perf_shm_available: false,
+        route_bb_available: false,
+        telemetry_shm_present: false,
+        diag_level: "unknown",
+        resolver_off: false,
+        resolve_status: "unavailable",
+        resolver_attempts: 0,
+        input_disabled: false,
+        input_enabled: false,
+        worker_asleep: false,
+        worker_walk_count: 0,
+        worker_wake_set_event_count: 0,
+        worker_parked_skip_count: 0,
+        pattern_scan_count: 0,
+        frame_cb_count: 0,
+        frame_cb_us_max: 0,
+        frame_cb_over_1000us: 0,
+        route_valid: false,
+        waypoint_count: 0,
+        verdict: "unavailable",
+      },
+      lane: {
+        lane_model_valid: false,
+        ego_offset_m: 0,
+        centerline_points: [{ x: 0, z: 0 }],
+        left_lane_points: [{ x: -1, z: 0 }],
+        right_lane_points: [{ x: 1, z: 0 }],
+        curvature: 0,
+        lookahead_m: 80,
+        node_ids: [1],
+        spline_segments: [],
+        source: "mock",
+        confidence: 0,
+      },
+    };
+    const snap = parseOverlaySnapshot(JSON.stringify(minimal));
+    expect(snap).not.toBeNull();
+    expect(snap!.planned_path).toBeUndefined();
+  });
+
   it("lane_keeper_allowed false when route or lane invalid", () => {
     const snap = loadOverlaySnapshotFixture();
     expect(snap.lane_keeper_allowed).toBe(false);
