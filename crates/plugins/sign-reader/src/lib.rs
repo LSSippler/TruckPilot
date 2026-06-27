@@ -16,7 +16,9 @@
 //! | `sign.speed_limit_kmh` | sign-reader | speed-controller |
 //! | `sign.source`          | sign-reader | UI / dashboard   |
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 use truckpilot_map_parser::signs::{SignKind, TrafficSign};
 use truckpilot_plugin_api::{ControlOutput, Plugin, PluginContext, Telemetry, TickPhase};
@@ -31,6 +33,19 @@ pub struct SignReaderPlugin {
     signs: Vec<TrafficSign>,
     graph_path: PathBuf,
     loaded: bool,
+    /// Set when the background warmup could not be started or did not finish
+    /// cleanly (spawn error or thread panic). The plugin then becomes a
+    /// permanent no-op — it never falls back to a synchronous load on the
+    /// daemon's hot path. Safe-Off semantics: no signs are published, so
+    /// speed-controller uses its own fallback; no steering is ever touched.
+    unavailable: bool,
+    /// Handle to the background sign-loading thread spawned in `on_load`.
+    /// `Some` while the warmup is in flight; polled each tick via the
+    /// non-blocking [`JoinHandle::is_finished`] and joined (cheap, already
+    /// finished) once ready. Yields the loaded signs plus the thread's
+    /// measured work time in ms. `JoinHandle` is `Send + Sync`, so the
+    /// plugin stays object-safe for the host's `Plugin: Send + Sync` bound.
+    warmup_handle: Option<JoinHandle<(Vec<TrafficSign>, u128)>>,
 }
 
 impl Default for SignReaderPlugin {
@@ -39,44 +54,55 @@ impl Default for SignReaderPlugin {
             signs: Vec::new(),
             graph_path: PathBuf::from(DEFAULT_GRAPH_PATH),
             loaded: false,
+            unavailable: false,
+            warmup_handle: None,
         }
     }
 }
 
+/// Collapse whitespace in an error string to underscores so it stays a single
+/// `key=value` token on the space-separated `startup.phase=...` log line.
+fn sanitize_error(msg: &str) -> String {
+    msg.split_whitespace().collect::<Vec<_>>().join("_")
+}
+
+/// Read + parse `graph.json` and extract the SpeedLimit signs attached to a
+/// node. Pure function so it can run on a background thread (owns its path)
+/// and be unit-tested without a plugin instance. Returns an empty vec on any
+/// I/O or parse error (logged), never panics.
+fn load_signs_from_path(graph_path: &Path) -> Vec<TrafficSign> {
+    let data = match std::fs::read_to_string(graph_path) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("[sign-reader] cannot read {:?}: {e}", graph_path);
+            return Vec::new();
+        }
+    };
+
+    let graph: truckpilot_map_parser::MapGraph = match serde_json::from_str(&data) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!("[sign-reader] cannot parse graph JSON: {e}");
+            return Vec::new();
+        }
+    };
+
+    // Keep only SpeedLimit signs that are attached to a node.
+    let signs: Vec<TrafficSign> = graph
+        .signs
+        .into_iter()
+        .filter(|s| s.kind == SignKind::SpeedLimit && s.nearest_node_uid.is_some())
+        .collect();
+
+    tracing::info!(
+        "[sign-reader] loaded {} speed-limit signs from {:?}",
+        signs.len(),
+        graph_path
+    );
+    signs
+}
+
 impl SignReaderPlugin {
-    /// Load signs from the graph JSON file.
-    fn load_signs(&mut self) {
-        let data = match std::fs::read_to_string(&self.graph_path) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!("[sign-reader] cannot read {:?}: {e}", self.graph_path);
-                return;
-            }
-        };
-
-        let graph: truckpilot_map_parser::MapGraph = match serde_json::from_str(&data) {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::warn!("[sign-reader] cannot parse graph JSON: {e}");
-                return;
-            }
-        };
-
-        // Keep only SpeedLimit signs that are attached to a node.
-        self.signs = graph
-            .signs
-            .into_iter()
-            .filter(|s| s.kind == SignKind::SpeedLimit && s.nearest_node_uid.is_some())
-            .collect();
-
-        tracing::info!(
-            "[sign-reader] loaded {} speed-limit signs from {:?}",
-            self.signs.len(),
-            self.graph_path
-        );
-        self.loaded = true;
-    }
-
     /// Find the lowest speed limit within `LOOKAHEAD_M` meters of `(tx, tz)`.
     fn lowest_limit(&self, tx: f64, tz: f64) -> Option<f32> {
         self.signs
@@ -126,11 +152,47 @@ impl Plugin for SignReaderPlugin {
         if let Some(p) = ctx.blackboard.get("sign_reader.graph_path") {
             self.graph_path = PathBuf::from(p);
         }
-        self.load_signs();
-        tracing::info!("[sign-reader] loaded");
+
+        // Reading + parsing the full graph.json (the same multi-hundred-MB file
+        // the daemon already loaded) takes ~13 s of pure I/O + serde. Doing it
+        // here blocked daemon startup and stuttered ETS2. Move it to a detached
+        // background thread; the plugin returns instantly and `tick` picks up
+        // the signs once the warmup thread finishes. Until then the plugin is a
+        // no-op (it only publishes speed-limit hints, never steering — Safe-Off
+        // stays safe).
+        let path = self.graph_path.clone();
+        match std::thread::Builder::new()
+            .name("sign-reader-warmup".into())
+            .spawn(move || {
+                let t0 = Instant::now();
+                let signs = load_signs_from_path(&path);
+                (signs, t0.elapsed().as_millis())
+            }) {
+            Ok(handle) => {
+                self.warmup_handle = Some(handle);
+                eprintln!("startup.phase=plugin_deferred name=sign-reader");
+            }
+            Err(e) => {
+                // Thread spawn failed. Do NOT load synchronously on the daemon's
+                // start path — mark the plugin unavailable and stay a no-op.
+                self.unavailable = true;
+                tracing::error!(
+                    "[sign-reader] warmup thread spawn failed: {e}; plugin unavailable (no-op)"
+                );
+                eprintln!(
+                    "startup.phase=plugin_warmup_failed name=sign-reader error=spawn_failed:{}",
+                    sanitize_error(&e.to_string())
+                );
+            }
+        }
+        tracing::info!("[sign-reader] loaded (signs warming up in background)");
     }
 
     fn on_unload(&mut self) {
+        // Drop the handle without joining: joining would block on the ~13 s
+        // load. The detached thread finishes its work and exits on its own;
+        // its result is simply discarded.
+        self.warmup_handle = None;
         tracing::info!("[sign-reader] unloaded");
     }
 
@@ -144,9 +206,61 @@ impl Plugin for SignReaderPlugin {
         _output: &mut ControlOutput,
         ctx: &PluginContext,
     ) {
-        // Lazy-load on first tick if on_load didn't find the file yet.
+        // Permanent no-op once the sign source is known unavailable (warmup
+        // could not start or panicked). Never loads synchronously here.
+        if self.unavailable {
+            ctx.blackboard.remove("sign.speed_limit_kmh");
+            ctx.blackboard.remove("sign.source");
+            return;
+        }
+
+        // Pick up the background warmup result when it lands. Until then the
+        // plugin stays a no-op so the hot path is never blocked by the load.
+        // No code path here ever loads signs synchronously.
         if !self.loaded {
-            self.load_signs();
+            // Scope the immutable borrow so the later `take()` is conflict-free.
+            // `is_finished` is non-blocking — we only join once it is done, so
+            // the join returns immediately.
+            let ready = match self.warmup_handle.as_ref() {
+                Some(h) => h.is_finished(),
+                None => {
+                    // No warmup in flight and nothing loaded (e.g. a bare
+                    // instance) — publish nothing, never block.
+                    ctx.blackboard.remove("sign.speed_limit_kmh");
+                    ctx.blackboard.remove("sign.source");
+                    return;
+                }
+            };
+            if !ready {
+                // Still warming up — publish nothing this tick.
+                ctx.blackboard.remove("sign.speed_limit_kmh");
+                ctx.blackboard.remove("sign.source");
+                return;
+            }
+            let handle = self.warmup_handle.take().unwrap();
+            match handle.join() {
+                Ok((signs, elapsed_ms)) => {
+                    self.signs = signs;
+                    self.loaded = true;
+                    eprintln!(
+                        "startup.phase=plugin_warmup_done name=sign-reader elapsed_ms={elapsed_ms}"
+                    );
+                }
+                Err(_) => {
+                    // Warmup thread panicked: mark unavailable and stay a no-op.
+                    // Do NOT load synchronously.
+                    self.unavailable = true;
+                    tracing::error!(
+                        "[sign-reader] warmup thread panicked; plugin unavailable (no-op)"
+                    );
+                    eprintln!(
+                        "startup.phase=plugin_warmup_failed name=sign-reader error=thread_panicked"
+                    );
+                    ctx.blackboard.remove("sign.speed_limit_kmh");
+                    ctx.blackboard.remove("sign.source");
+                    return;
+                }
+            }
         }
 
         let Some(t) = telemetry else {
@@ -189,6 +303,8 @@ mod tests {
             signs,
             graph_path: PathBuf::from("nonexistent.json"),
             loaded: true,
+            unavailable: false,
+            warmup_handle: None,
         }
     }
 
@@ -241,8 +357,14 @@ mod tests {
 
     #[test]
     fn missing_graph_file_does_not_panic() {
-        let mut p = SignReaderPlugin::default();
-        p.load_signs(); // file doesn't exist → warn, no panic
-        assert!(p.signs.is_empty());
+        // The loader is a pure function now; a missing file yields no signs
+        // and never panics. No synchronous load path remains on the plugin.
+        let signs = load_signs_from_path(Path::new("nonexistent.json"));
+        assert!(signs.is_empty());
+    }
+
+    #[test]
+    fn sanitize_error_collapses_whitespace() {
+        assert_eq!(sanitize_error("a b\tc\nd"), "a_b_c_d");
     }
 }
