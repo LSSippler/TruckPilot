@@ -1200,6 +1200,27 @@ mod frame_store_tests {
         }
     }
 
+    /// Dummy `Library` handle for injected test plugins. PIE executables
+    /// (default on Linux) cannot be `dlopen`'d, so we pin any loaded
+    /// system `.so` instead of `current_exe()`.
+    fn dummy_test_library() -> Library {
+        #[cfg(unix)]
+        {
+            unsafe {
+                Library::new("libdl.so.2")
+                    .or_else(|_| Library::new("libc.so.6"))
+                    .expect("system .so for dummy Library handle in plugin_manager tests")
+            }
+        }
+        #[cfg(windows)]
+        {
+            unsafe {
+                Library::new("kernel32.dll")
+                    .expect("kernel32 for dummy Library handle in plugin_manager tests")
+            }
+        }
+    }
+
     /// Manually inject a `Plugin` into `PluginManager` without going
     /// through the cdylib loader. Runs `on_load` against the manager's
     /// real `frame_store`. Leaks the plugin box on drop (no destroy_fn).
@@ -1214,11 +1235,7 @@ mod frame_store_tests {
         #[allow(improper_ctypes_definitions)]
         unsafe extern "C" fn noop_destroy(_p: *mut dyn Plugin) {}
 
-        // A dummy `Library`: we need *some* `Library` value to satisfy
-        // `LoadedPlugin._lib`. Load ourselves (the test binary) — that
-        // is guaranteed to exist and the handle is benign.
-        let lib = unsafe { Library::new(std::env::current_exe().unwrap()) }
-            .expect("self-load for dummy Library handle");
+        let lib = dummy_test_library();
 
         mgr.plugins.push(LoadedPlugin {
             name,
@@ -1239,8 +1256,7 @@ mod frame_store_tests {
         #[allow(improper_ctypes_definitions)]
         unsafe extern "C" fn noop_destroy(_p: *mut dyn Plugin) {}
 
-        let lib = unsafe { Library::new(std::env::current_exe().unwrap()) }
-            .expect("self-load for dummy Library handle");
+        let lib = dummy_test_library();
 
         mgr.plugins.push(LoadedPlugin {
             name,
