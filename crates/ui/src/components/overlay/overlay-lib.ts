@@ -26,6 +26,15 @@ export const OVERLAY_BB_KEYS = [
   "plugins_ready",
   "lane_detection_ready",
   "truckpilot_system_ready",
+  "telemetry.available",
+  "state.engage_precondition_telemetry_fresh",
+  "state.engage_precondition_route_planned",
+  "lane.confidence",
+  "lane.left_visible",
+  "lane.right_visible",
+  "output.sink.configured",
+  "vjoy.connected",
+  "scs_sdk_output.connected",
 ] as const;
 
 /// Subscribe to a single blackboard value (raw stringified form).

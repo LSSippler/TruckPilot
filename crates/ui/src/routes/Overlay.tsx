@@ -7,6 +7,7 @@ import { NotificationBar } from "@/components/overlay/NotificationBar";
 import { NavPanel } from "@/components/overlay/NavPanel";
 import { VehiclePanel } from "@/components/overlay/VehiclePanel";
 import { ReadinessPanel } from "@/components/overlay/ReadinessPanel";
+import { PreflightPanel } from "@/components/overlay/PreflightPanel";
 import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
 import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
 import {
@@ -60,6 +61,7 @@ export function Overlay() {
         <NotificationBar />
         <AccPanel />
         {!snapshotStandalone ? <ReadinessPanel /> : null}
+        {!snapshotStandalone ? <PreflightPanel /> : null}
         {snapshotDebugMode ? (
           <SnapshotDebugPanel
             snapshot={snapshot}

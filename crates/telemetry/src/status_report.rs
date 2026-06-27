@@ -6,6 +6,7 @@
 #[cfg(windows)]
 use crate::dll_perf::{diag_level_name, DllPerfReader, DllPerfSnapshot};
 use crate::core_readiness::{format_core_readiness_human, CoreReadiness};
+use crate::preflight::{evaluate_preflight, format_preflight_human, PreflightDisplay};
 use crate::nav_route::{
     route_resolve_status_name, RouteBlackboardReader, RouteSnapshot,
     RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE,
@@ -85,6 +86,8 @@ pub struct StatusReport {
     pub reasons: Vec<String>,
     /// Core daemon readiness (blackboard); unavailable when CLI has no daemon connection.
     pub core_readiness: CoreReadiness,
+    /// Display-only preflight (why drive/engage is not allowed); optional in JSON consumers.
+    pub preflight: PreflightDisplay,
 }
 
 /// Map a verdict to the process exit code for CLI tools.
@@ -121,7 +124,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
     let route_bb_available = inp.route.is_some();
 
     if !perf_shm_available && !route_bb_available {
-        return StatusReport {
+        return attach_preflight(StatusReport {
             dll_active: false,
             perf_shm_available: false,
             route_bb_available: false,
@@ -145,7 +148,8 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
             verdict: StatusVerdict::Unavailable,
             reasons: vec!["keine TruckPilot-SHM gefunden (ETS2 aus oder DLL nicht geladen)".into()],
             core_readiness: CoreReadiness::unavailable(),
-        };
+            preflight: PreflightDisplay::unavailable(),
+        });
     }
 
     let route = inp.route.as_ref();
@@ -231,7 +235,7 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         StatusVerdict::Hot
     };
 
-    StatusReport {
+    attach_preflight(StatusReport {
         dll_active,
         perf_shm_available,
         route_bb_available,
@@ -255,7 +259,13 @@ pub fn evaluate_status(inp: &RawStatusInputs) -> StatusReport {
         verdict,
         reasons,
         core_readiness: CoreReadiness::unavailable(),
-    }
+        preflight: PreflightDisplay::unavailable(),
+    })
+}
+
+fn attach_preflight(mut report: StatusReport) -> StatusReport {
+    report.preflight = evaluate_preflight(&report);
+    report
 }
 
 fn yes_no(b: bool) -> &'static str {
@@ -276,8 +286,11 @@ pub fn format_status_human(r: &StatusReport) -> String {
              ────────────────────────────────────────────\n  \
              GESAMT: UNAVAILABLE (exit 1)\n  \
              ────────────────────────────────────────────\n  \
+             {}\n  \
+             ────────────────────────────────────────────\n  \
              {}",
             format_core_readiness_human(&r.core_readiness),
+            format_preflight_human(&r.preflight),
         );
     }
 
@@ -345,6 +358,8 @@ pub fn format_status_human(r: &StatusReport) -> String {
          ────────────────────────────────────────────\n  \
          {}\n  \
          ────────────────────────────────────────────\n  \
+         {}\n  \
+         ────────────────────────────────────────────\n  \
          {}",
         yes_no(r.dll_active),
         yes_no(r.perf_shm_available),
@@ -364,6 +379,7 @@ pub fn format_status_human(r: &StatusReport) -> String {
         },
         verdict_line,
         format_core_readiness_human(&r.core_readiness),
+        format_preflight_human(&r.preflight),
     )
 }
 
