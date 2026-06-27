@@ -56,7 +56,16 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(parsed["core_readiness"]["available"], false);
         assert!(parsed["core_readiness"]["graph_ready"].is_null());
+        assert_eq!(parsed["preflight"]["drive_allowed_display"], false);
         assert_eq!(r.verdict, StatusVerdict::Unavailable);
+    }
+
+    #[test]
+    fn json_includes_preflight_object() {
+        let r = evaluate_status(&RawStatusInputs::default());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&format_status_json(&r)).expect("valid json");
+        assert!(parsed["preflight"]["reasons"].is_array());
     }
 
     #[test]
