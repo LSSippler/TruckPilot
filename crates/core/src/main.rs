@@ -17,6 +17,7 @@ use truckpilot_plugin_api::{ControlOutput, SharedBlackboard, Telemetry};
 mod heading_stage;
 mod ipc;
 mod plugin_manager;
+mod startup_trace;
 mod state_machine;
 mod watchdog;
 
@@ -632,10 +633,12 @@ async fn main() {
 }
 
 async fn run_daemon() {
+    startup_trace::begin();
     info!("TruckPilot Core — daemon mode");
 
     // Load config before anything else so plugin enable-flags are available.
     let app_config = load_config();
+    startup_trace::phase("config_load");
     // Capture the steering calibration constant before the config is consumed below.
     let lane_offset_cal_m = app_config.steering.lane_offset_cal_m;
     // Keep the set of configured plugin names before consuming the map so we
@@ -674,12 +677,16 @@ async fn run_daemon() {
     // ── Phase 6.5q.1: load routing graph + Phase 6.9: SplineIndex ─────
     // Load MapGraph once; derive both RouterGraph and SplineIndex from it.
     let map_graph = load_map_graph_or_exit();
+    startup_trace::phase("graph_json_load");
     let graph = Arc::new(build_router_graph(&map_graph));
+    startup_trace::phase("router_graph_build");
     let spline_index_opt = build_spline_index_for_hud(&map_graph);
+    startup_trace::phase("spline_index_build");
     // MapGraph can be dropped after both consumers are built.
     drop(map_graph);
 
     let mut manager = PluginManager::new(plugin_dir, plugin_configs);
+    startup_trace::phase("blackboard_init");
     manager.graph = Some(Arc::clone(&graph));
     if let Some((index, road_seg_count)) = spline_index_opt {
         manager.spline_index = Some(Arc::new(index));
@@ -687,6 +694,7 @@ async fn run_daemon() {
     }
     let route_node_ids = Arc::clone(&manager.route_node_ids);
     manager.load_all();
+    startup_trace::phase("plugin_load");
     info!("Loaded {} plugin(s)", manager.list().len());
 
     // Phase 2h: seed the lane-keeper offset calibration constant from [steering].
@@ -722,6 +730,7 @@ async fn run_daemon() {
     // see. Used by `publish_telemetry_to_blackboard` each tick.
     let blackboard = manager.blackboard.clone();
     let manager = Arc::new(Mutex::new(manager));
+    startup_trace::phase("plugin_start");
 
     // Broadcast channel that carries `CoreMessage`s out to every
     // connected UI client. Producers: this loop (real telemetry frames)
@@ -730,6 +739,7 @@ async fn run_daemon() {
     // stalls without dropping frames.
     let (ipc_tx, _ipc_rx) = broadcast::channel::<CoreMessage>(256);
     tokio::spawn(ipc::start_ipc_server(manager.clone(), ipc_tx.clone()));
+    startup_trace::phase("ws_spawn");
 
     #[cfg(feature = "mock_telemetry")]
     warn!(
@@ -779,12 +789,32 @@ async fn run_daemon() {
     let mut heading_stage_mgr = heading_stage::HeadingStageManager::new();
 
     info!("Running — press Ctrl+C to stop");
+    startup_trace::phase("control_loop_enter");
+
+    let mut first_tick_logged = false;
+    let mut first_tick_t0: Option<Instant> = None;
 
     loop {
+        // First-tick: record wall-clock start and log the checkpoint so
+        // we can measure how long each sub-phase of the first tick takes.
+        if first_tick_t0.is_none() {
+            first_tick_t0 = Some(Instant::now());
+            startup_trace::phase("first_tick_start");
+        }
+
         // Read telemetry off the async executor — see `read_telemetry_async`
         // doc comment in `crates/telemetry/src/lib.rs` for the rationale.
         // Reading before locking the manager keeps the lock window small.
         let telemetry = truckpilot_telemetry::read_telemetry_async().await;
+
+        if !first_tick_logged {
+            if let Some(t0) = first_tick_t0.as_ref() {
+                eprintln!(
+                    "startup.phase=first_tick_telemetry elapsed_ms={}",
+                    t0.elapsed().as_millis()
+                );
+            }
+        }
 
         // Mirror the frame onto the blackboard *before* taking the
         // manager lock so plugins like `fuel-stops` and `stats-logger`
@@ -821,6 +851,7 @@ async fn run_daemon() {
         // they see the most recent value via ctx helpers. Engage/disengage
         // requests arrive through the blackboard (set by IPC handlers
         // and any hotkey path).
+        let sm_t0 = if !first_tick_logged { Some(Instant::now()) } else { None };
         let status_payload = {
             let lock_start = Instant::now();
             let mut sm = state_machine.lock().await;
@@ -884,6 +915,13 @@ async fn run_daemon() {
             }
         }
 
+        if let Some(t) = sm_t0 {
+            eprintln!(
+                "startup.phase=first_tick_state_machine elapsed_ms={}",
+                t.elapsed().as_millis()
+            );
+        }
+        let plugins_t0 = if !first_tick_logged { Some(Instant::now()) } else { None };
         let lock_start = Instant::now();
         let mut mgr = manager.lock().await;
         let lock_elapsed = lock_start.elapsed();
@@ -908,6 +946,13 @@ async fn run_daemon() {
         }
         drop(mgr);
 
+        if let Some(t) = plugins_t0 {
+            eprintln!(
+                "startup.phase=first_tick_plugins elapsed_ms={}",
+                t.elapsed().as_millis()
+            );
+        }
+
         // Phase 6.5s: evaluate heading stage after plugins (gets fresh lane_keeper.error_rad)
         heading_stage_mgr.evaluate(&blackboard);
 
@@ -926,6 +971,17 @@ async fn run_daemon() {
         // Bump heartbeat *after* a full tick completed so the watchdog
         // measures end-to-end progress, not just async-task entry.
         heartbeat.store(daemon_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+        if !first_tick_logged {
+            first_tick_logged = true;
+            if let Some(t0) = first_tick_t0.as_ref() {
+                eprintln!(
+                    "startup.phase=first_tick_total elapsed_ms={}",
+                    t0.elapsed().as_millis()
+                );
+            }
+            startup_trace::phase("first_ready");
+        }
 
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

@@ -229,6 +229,7 @@ impl PluginManager {
     }
 
     fn load_plugin(&mut self, path: &Path) {
+        let load_t0 = Instant::now();
         match unsafe { load_plugin_from_path(path) } {
             Ok(mut loaded) => {
                 // Apply enabled flag from config; default to true for backwards compat.
@@ -254,8 +255,13 @@ impl PluginManager {
                         loaded.name, loaded.version
                     );
                 }
+                let plugin_name = loaded.name.clone();
                 self.plugins.push(loaded);
                 self.publish_loaded_names();
+                eprintln!(
+                    "startup.phase=plugin_load_plugin name={plugin_name} elapsed_ms={}",
+                    load_t0.elapsed().as_millis()
+                );
             }
             Err(e) => {
                 error!("Failed to load plugin {:?}: {}", path, e);
@@ -521,6 +527,13 @@ impl PluginManager {
                     tick_count
                 );
             }
+            if tick_count == 1 {
+                eprintln!(
+                    "startup.phase=first_tick_plugin name={} elapsed_ms={}",
+                    p.name,
+                    plugin_elapsed.as_millis()
+                );
+            }
         }
 
         // Refresh the blackboard list if any plugin was panic-disabled above.
@@ -602,6 +615,13 @@ impl PluginManager {
                             p.name,
                             plugin_elapsed.as_millis(),
                             tick_count
+                        );
+                    }
+                    if tick_count == 1 {
+                        eprintln!(
+                            "startup.phase=first_tick_plugin name={} elapsed_ms={}",
+                            p.name,
+                            plugin_elapsed.as_millis()
                         );
                     }
                     if let Err(panic) = tick_result {
