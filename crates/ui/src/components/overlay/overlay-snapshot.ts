@@ -86,9 +86,52 @@ export interface LaneDebugSnapshot {
 export interface OverlaySnapshot {
   status: OverlayStatusSnapshot;
   lane: LaneDebugSnapshot;
+  /** Optional planned path v1 (mock geometry + safety mirror). */
+  planned_path?: PlannedPathData;
   /** Display-only gate indicator; must NOT enable lane keeper from the UI. */
   lane_keeper_allowed: boolean;
   verdict: StatusVerdict;
+}
+
+export type PlannedPathSource =
+  | "mock"
+  | "offline_graph"
+  | "route_blackboard"
+  | "prefab_ai_path"
+  | "navcurve"
+  | "unknown";
+
+export interface PlannedPathSafety {
+  route_valid: boolean;
+  lane_model_valid: boolean;
+  resolver_safe: boolean;
+  telemetry_fresh: boolean;
+  input_allowed: boolean;
+  drive_allowed_display_only: boolean;
+  reasons: string[];
+}
+
+export interface PlannedPathData {
+  valid: boolean;
+  source: PlannedPathSource;
+  route_id?: string;
+  current_index: number;
+  lookahead_m: number;
+  items: Array<{
+    id: number;
+    kind: string;
+    length_m: number;
+    curvature_1pm?: number;
+    semaphore_hint?: string;
+  }>;
+  nearest?: {
+    item_id: number;
+    distance_along_m: number;
+    crosstrack_m: number;
+    heading_error_rad: number;
+    confidence: number;
+  };
+  safety: PlannedPathSafety;
 }
 
 export const OVERLAY_SNAPSHOT_STORAGE_KEY = "truckpilot.overlay_snapshot_json";
@@ -176,6 +219,95 @@ function coreReadyLabel(v: boolean | null | undefined): string {
 
 export { coreReadyLabel };
 
+function parsePlannedPathSource(v: unknown): PlannedPathSource | null {
+  if (
+    v === "mock" ||
+    v === "offline_graph" ||
+    v === "route_blackboard" ||
+    v === "prefab_ai_path" ||
+    v === "navcurve" ||
+    v === "unknown"
+  ) {
+    return v;
+  }
+  return null;
+}
+
+function parsePlannedPath(v: unknown): PlannedPathData | undefined {
+  if (!isRecord(v)) return undefined;
+  const source = parsePlannedPathSource(v.source);
+  if (!source) return undefined;
+  if (!isRecord(v.safety)) return undefined;
+  const safetyObj = v.safety;
+  const reasonsRaw = safetyObj.reasons;
+  const reasons = Array.isArray(reasonsRaw)
+    ? reasonsRaw.filter((r): r is string => typeof r === "string")
+    : [];
+  const itemsRaw = v.items;
+  if (!Array.isArray(itemsRaw)) return undefined;
+  const items: PlannedPathData["items"] = [];
+  for (const item of itemsRaw) {
+    if (!isRecord(item)) return undefined;
+    const id = num(item.id);
+    const kind = str(item.kind);
+    const length_m = num(item.length_m);
+    if (id == null || !kind || length_m == null) return undefined;
+    items.push({
+      id,
+      kind,
+      length_m,
+      curvature_1pm: num(item.curvature_1pm) ?? undefined,
+      semaphore_hint: str(item.semaphore_hint) ?? undefined,
+    });
+  }
+  const current_index = num(v.current_index);
+  const lookahead_m = num(v.lookahead_m);
+  if (current_index == null || lookahead_m == null) return undefined;
+
+  let nearest: PlannedPathData["nearest"];
+  if (isRecord(v.nearest)) {
+    const item_id = num(v.nearest.item_id);
+    const distance_along_m = num(v.nearest.distance_along_m);
+    const crosstrack_m = num(v.nearest.crosstrack_m);
+    const heading_error_rad = num(v.nearest.heading_error_rad);
+    const confidence = num(v.nearest.confidence);
+    if (
+      item_id != null &&
+      distance_along_m != null &&
+      crosstrack_m != null &&
+      heading_error_rad != null &&
+      confidence != null
+    ) {
+      nearest = {
+        item_id,
+        distance_along_m,
+        crosstrack_m,
+        heading_error_rad,
+        confidence,
+      };
+    }
+  }
+
+  return {
+    valid: v.valid === true,
+    source,
+    route_id: str(v.route_id) ?? undefined,
+    current_index,
+    lookahead_m,
+    items,
+    nearest,
+    safety: {
+      route_valid: safetyObj.route_valid === true,
+      lane_model_valid: safetyObj.lane_model_valid === true,
+      resolver_safe: safetyObj.resolver_safe === true,
+      telemetry_fresh: safetyObj.telemetry_fresh === true,
+      input_allowed: safetyObj.input_allowed === true,
+      drive_allowed_display_only: safetyObj.drive_allowed_display_only === true,
+      reasons,
+    },
+  };
+}
+
 /** Parse JSON from `truckpilot-status --overlay`. Returns null on malformed input. */
 export function parseOverlaySnapshot(raw: string): OverlaySnapshot | null {
   if (!raw.trim()) return null;
@@ -221,6 +353,7 @@ export function parseOverlaySnapshot(raw: string): OverlaySnapshot | null {
   return {
     verdict,
     lane_keeper_allowed: parsed.lane_keeper_allowed === true,
+    planned_path: parsePlannedPath(parsed.planned_path),
     status: {
       dll_active: statusObj.dll_active === true,
       perf_shm_available: statusObj.perf_shm_available === true,

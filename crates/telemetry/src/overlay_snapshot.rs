@@ -3,7 +3,9 @@
 //! No steering, no daemon, no new SHM layouts — uses existing readers only.
 
 use crate::lane_debug::{build_lane_debug, lane_keeper_allowed, LaneDebugSnapshot};
+use crate::planned_path_overlay::build_planned_path_overlay;
 use crate::status_report::{StatusReport, StatusVerdict};
+use truckpilot_plugin_api::planned_path::PlannedPathData;
 
 /// Full read-only overlay backend payload.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -12,6 +14,9 @@ pub struct OverlaySnapshot {
     pub status: StatusReport,
     /// Lane geometry model built from the route blackboard or mock fixtures.
     pub lane: LaneDebugSnapshot,
+    /// Read-only planned path (mock geometry + live safety mirror in v1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_path: Option<PlannedPathData>,
     /// Lane keeper must remain disabled unless all safety gates pass.
     pub lane_keeper_allowed: bool,
     /// Duplicate of `status.verdict` for quick UI consumption.
@@ -23,11 +28,13 @@ pub fn read_overlay_snapshot() -> OverlaySnapshot {
     let raw = crate::status_report::read_raw_inputs();
     let status = crate::status_report::evaluate_status(&raw);
     let lane = build_lane_debug(raw.route.as_ref(), &status);
+    let planned_path = Some(build_planned_path_overlay(&status, &lane));
     let lane_keeper_allowed = lane_keeper_allowed(&status, &lane);
     let verdict = status.verdict;
     OverlaySnapshot {
         status,
         lane,
+        planned_path,
         lane_keeper_allowed,
         verdict,
     }
@@ -45,6 +52,7 @@ mod tests {
     use crate::dll_perf::{DllPerfSnapshot, DLL_PERF_MAGIC, DLL_PERF_VERSION};
     use crate::lane_debug::LaneDataSource;
     use crate::nav_route::{RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE, RouteSnapshot};
+    use crate::planned_path_overlay::build_planned_path_overlay;
     use crate::status_report::{evaluate_status, RawStatusInputs};
 
     #[cfg(windows)]
@@ -71,8 +79,9 @@ mod tests {
         let snap = OverlaySnapshot {
             lane_keeper_allowed: lane_keeper_allowed(&status, &lane),
             verdict: status.verdict,
-            status,
-            lane,
+            status: status.clone(),
+            lane: lane.clone(),
+            planned_path: Some(build_planned_path_overlay(&status, &lane)),
         };
         let json = format_overlay_json(&snap);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");

@@ -8,6 +8,7 @@ import { NavPanel } from "@/components/overlay/NavPanel";
 import { VehiclePanel } from "@/components/overlay/VehiclePanel";
 import { ReadinessPanel } from "@/components/overlay/ReadinessPanel";
 import { PreflightPanel } from "@/components/overlay/PreflightPanel";
+import { PlannedPathDebugPanel } from "@/components/overlay/PlannedPathDebugPanel";
 import { LaneDebugCanvas } from "@/components/overlay/LaneDebugCanvas";
 import { SnapshotDebugPanel } from "@/components/overlay/SnapshotDebugPanel";
 import {
@@ -67,6 +68,9 @@ export function Overlay() {
             snapshot={snapshot}
             onSnapshotImported={setSnapshot}
           />
+        ) : null}
+        {snapshot?.planned_path ? (
+          <PlannedPathDebugPanel snapshot={snapshot} />
         ) : null}
         <StatePanel />
         <NavPanel />
