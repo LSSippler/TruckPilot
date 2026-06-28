@@ -5,6 +5,7 @@ mod hotkey_config;
 mod hotkey_manager;
 mod ipc_bridge;
 mod overlay_snap;
+mod overlay_snapshot_file;
 mod steam_detect;
 mod window_manager;
 
@@ -58,6 +59,7 @@ pub fn run() {
             commands::close_external_dashboard,
             commands::toggle_overlay,
             commands::overlay_set_layout_editor,
+            commands::read_overlay_snapshot_file,
             commands::daemon_status,
             commands::daemon_start,
             commands::daemon_stop,

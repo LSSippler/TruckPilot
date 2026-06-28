@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import { isTauriRuntime, readOverlaySnapshotFile } from "@/lib/tauri-bridge";
 import {
   createLiveOverlaySnapshotShell,
-  readOverlaySnapshotFromStorage,
   resolveOverlaySnapshotFeed,
   resolveOverlaySnapshotForFeed,
   type OverlaySnapshot,
   type OverlaySnapshotFeed,
 } from "./overlay-snapshot";
+import { pollLiveOverlaySnapshotAsync } from "./overlay-snapshot-live";
 
-const LIVE_STORAGE_POLL_MS = 2000;
+const LIVE_POLL_MS = 2000;
 
 function resolveInitialSnapshot(
   search: URLSearchParams,
@@ -39,22 +40,25 @@ export function useOverlaySnapshotFeed(
       return;
     }
 
-    const refresh = () => {
-      const fromStorage = readOverlaySnapshotFromStorage();
-      if (fromStorage) {
-        setSnapshot(fromStorage);
-        return;
-      }
-      if (internalVisualization) {
-        setSnapshot(createLiveOverlaySnapshotShell());
-      } else {
-        setSnapshot(null);
-      }
+    let cancelled = false;
+
+    const refresh = async () => {
+      const snap = await pollLiveOverlaySnapshotAsync({
+        internalVisualization,
+        readOverlaySnapshotFile,
+        isTauriRuntime,
+      });
+      if (!cancelled) setSnapshot(snap);
     };
 
-    refresh();
-    const id = window.setInterval(refresh, LIVE_STORAGE_POLL_MS);
-    return () => window.clearInterval(id);
+    void refresh();
+    const id = window.setInterval(() => {
+      void refresh();
+    }, LIVE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [feed, internalVisualization, search]);
 
   return { snapshot, feed, setSnapshot };

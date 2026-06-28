@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ConnectionStatusEvent, CoreMessage, UiCommand } from "@/lib/types";
 
@@ -33,6 +33,21 @@ export async function toggleOverlay(): Promise<void> {
 /** Enable overlay layout editor: window accepts mouse input (Tauri overlay only). */
 export async function overlaySetLayoutEditor(enabled: boolean): Promise<void> {
   return invokeCommand("overlay_set_layout_editor", { enabled });
+}
+
+/** True when running inside a Tauri webview (not Vite browser). */
+export function isTauriRuntime(): boolean {
+  return isTauri();
+}
+
+/** Read overlay snapshot JSON from telemetry `--overlay-loop` file (read-only). */
+export async function readOverlaySnapshotFile(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invokeCommand<string | null>("read_overlay_snapshot_file", {});
+  } catch {
+    return null;
+  }
 }
 
 export type DaemonState = "runningmanaged" | "runningexternal" | "stopped" | "crashed";

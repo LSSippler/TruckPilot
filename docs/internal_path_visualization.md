@@ -41,7 +41,7 @@ On the normal overlay route the panel uses the **live feed**: it polls
 continuous CLI producer (`--overlay-loop`) every 2s. Blackboard panels (ACC,
 preflight, etc.) continue to update via IPC in parallel.
 
-Continuous read-only producer (CLI — Tauri file bridge is a follow-up):
+Continuous read-only producer (CLI + Tauri file bridge):
 
 ```
 cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay-loop
@@ -49,7 +49,9 @@ cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay-loop
 
 Writes overlay JSON (including `planned_path`, `source=offline_graph`) every 2s
 to `%LOCALAPPDATA%/TruckPilot/overlay_snapshot.json` (Windows) or
-`~/.local/share/TruckPilot/overlay_snapshot.json`. Optional:
+`~/.local/share/TruckPilot/overlay_snapshot.json`. The Tauri overlay polls this
+file via `read_overlay_snapshot_file` — no manual paste required when using the
+Tauri overlay window. Optional:
 
 ```
 --overlay-interval-ms 2000
@@ -165,8 +167,9 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 2. ~~Curvature/junction read-only stats in panel~~ ✓
 3. ~~Curvature heatmap along polylines (read-only overlay)~~ ✓
 4. Live overlay feed (storage poll + missing-path UI) ~~✓~~
-5. Continuous read-only `planned_path` via `truckpilot-status --overlay-loop` ~~✓~~ (Tauri file → localStorage bridge: follow-up)
-6. Richer junction/prefab coverage labels
+5. Continuous read-only `planned_path` via `truckpilot-status --overlay-loop` ~~✓~~
+6. Tauri file bridge into live overlay feed ~~✓~~
+7. Richer junction/prefab coverage labels
 
 ## Files
 
@@ -175,4 +178,5 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 | `internal-path-viz.ts` | bounds, transform, model builder |
 | `InternalPathVisualization.tsx` | SVG panel |
 | `useOverlaySnapshotFeed.ts` | fixture / storage / live snapshot resolution |
+| `overlay-snapshot-live.ts` | Tauri loop file → live feed poll + fallbacks |
 | `overlay-snapshot.fixture.json` | compact `planned_path` for dev |
