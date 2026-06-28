@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
 import { subscribeBlackboardKeys } from "@/lib/ipc";
 
@@ -46,15 +46,13 @@ import {
 
 import { useOverlayLayoutEditor } from "@/components/overlay/useOverlayLayoutEditor";
 
+import { useOverlaySnapshotFeed } from "@/components/overlay/useOverlaySnapshotFeed";
+
 import {
 
   isOverlaySnapshotDebugMode,
 
   isOverlaySnapshotStandaloneMode,
-
-  resolveOverlaySnapshot,
-
-  type OverlaySnapshot,
 
 } from "@/components/overlay/overlay-snapshot";
 
@@ -184,17 +182,16 @@ export function Overlay() {
 
   const internalVisualization = isInternalPathVisualizationEnabled(search);
 
-  const [snapshot, setSnapshot] = useState<OverlaySnapshot | null>(() =>
-
-    resolveOverlaySnapshot(search),
-
-  );
+  const { snapshot, feed, setSnapshot } = useOverlaySnapshotFeed(search, internalVisualization);
 
   const { editorMode, layoutState, viewport, persistPanel, resetLayout } =
 
     useOverlayLayoutEditor(search);
 
+  const showLaneDebugSnapshot =
+    snapshot != null && !internalVisualization && (feed === "fixture" || feed === "storage");
 
+  const showInternalViz = internalVisualization && snapshot != null;
 
   const internalVizLayout = useMemo(
 
@@ -312,7 +309,7 @@ export function Overlay() {
 
     >
 
-      {snapshot && !internalVisualization ? (
+      {showLaneDebugSnapshot ? (
 
         <OverlayPanel id="lane-debug" visible {...panelProps}>
 
@@ -322,13 +319,15 @@ export function Overlay() {
 
       ) : null}
 
-      {snapshot && internalVisualization ? (
+      {showInternalViz ? (
 
         <OverlayPanel id="internal-viz" visible {...panelProps}>
 
           <InternalPathVisualization
 
             snapshot={snapshot}
+
+            feed={feed}
 
             editorMode={editorMode}
 

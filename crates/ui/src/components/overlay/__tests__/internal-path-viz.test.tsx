@@ -14,16 +14,21 @@ import {
   createViewportTransform,
   DISPLAY_CURVATURE_HIGH_1PM,
   DISPLAY_CURVATURE_MEDIUM_1PM,
+  formatLiveSnapshotDebugLine,
   heatmapOverlayForSeverity,
   isInternalPathVisualizationEnabled,
   mapWorldToSvg,
   resolveCurrentItemMeta,
+  resolveFeedBadge,
   resolveHeatmapEnabledFromSearch,
+  resolveMissingPlannedPathMessage,
+  resolveSourceBadge,
   segmentStyleForKind,
 } from "@/components/overlay/internal-path-viz";
 import {
   loadOverlaySnapshotFixture,
   parseOverlaySnapshot,
+  createLiveOverlaySnapshotShell,
   type OverlaySnapshot,
 } from "@/components/overlay/overlay-snapshot";
 
@@ -33,6 +38,17 @@ function renderInternalViz(
 ) {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[`/overlay?${search}`]}>{ui}</MemoryRouter>,
+  );
+}
+
+function renderInternalVizWithFeed(
+  snapshot: OverlaySnapshot,
+  feed: "fixture" | "storage" | "live",
+  search = "overlay_visualization=internal",
+) {
+  return renderInternalViz(
+    <InternalPathVisualization snapshot={snapshot} feed={feed} />,
+    search,
   );
 }
 
@@ -64,10 +80,11 @@ describe("internal-path-viz utilities", () => {
 
   it("buildInternalVizModel highlights current item and offline badge", () => {
     const snap = loadOverlaySnapshotFixture();
-    const model = buildInternalVizModel(snap, 420, 380);
+    const model = buildInternalVizModel(snap, 420, 380, 28, 1, true, "fixture");
     expect(model.hasPlannedPath).toBe(true);
     expect(model.plannedSegments.length).toBe(5);
     expect(model.plannedSegments.some((s) => s.isCurrent)).toBe(true);
+    expect(model.feedBadge).toBe("FIXTURE");
     expect(model.sourceBadge).toBe("OFFLINE");
     expect(model.driveDisplay).toBe("no");
   });
@@ -119,6 +136,60 @@ describe("curvature stats", () => {
     expect(
       model.plannedSegments.some((s) => s.severity === "high" && s.style.width >= 3),
     ).toBe(true);
+  });
+});
+
+describe("live snapshot feed", () => {
+  it("resolveFeedBadge maps feed modes", () => {
+    expect(resolveFeedBadge("fixture")).toBe("FIXTURE");
+    expect(resolveFeedBadge("live")).toBe("LIVE");
+    expect(resolveFeedBadge("storage")).toBe("STORAGE");
+    expect(resolveFeedBadge("off")).toBeNull();
+  });
+
+  it("resolveMissingPlannedPathMessage distinguishes live vs fixture", () => {
+    expect(resolveMissingPlannedPathMessage("live", false)).toBe(
+      "No PlannedPathData in live snapshot",
+    );
+    expect(resolveMissingPlannedPathMessage("fixture", false)).toBe("No PlannedPathData");
+    expect(resolveMissingPlannedPathMessage("live", true)).toBeNull();
+  });
+
+  it("formatLiveSnapshotDebugLine reports snapshot sections", () => {
+    const line = formatLiveSnapshotDebugLine(createLiveOverlaySnapshotShell());
+    expect(line).toContain("lane yes");
+    expect(line).toContain("status yes");
+    expect(line).toContain("preflight no");
+  });
+
+  it("live shell renders LIVE badge and missing planned_path message", () => {
+    const html = renderInternalVizWithFeed(createLiveOverlaySnapshotShell(), "live");
+    expect(html).toContain("LIVE");
+    expect(html).toContain("No PlannedPathData in live snapshot");
+    expect(html).toContain("Snap: lane yes");
+    expect(html).toContain("Drive (display): no");
+  });
+
+  it("live feed with planned_path shows LIVE and OFFLINE source badges", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const html = renderInternalVizWithFeed(snap, "live");
+    expect(html).toContain("LIVE");
+    expect(html).toContain("OFFLINE");
+    expect(html).toContain("Curv 1/m");
+    expect(html).not.toContain("No PlannedPathData in live snapshot");
+  });
+
+  it("resolveSourceBadge uses explicit planned_path source only", () => {
+    expect(resolveSourceBadge(undefined)).toBeNull();
+    expect(
+      resolveSourceBadge({ ...loadOverlaySnapshotFixture().planned_path!, source: "mock" }),
+    ).toBe("MOCK");
+    expect(
+      resolveSourceBadge({
+        ...loadOverlaySnapshotFixture().planned_path!,
+        source: "route_blackboard",
+      }),
+    ).toBe("LIVE");
   });
 });
 
@@ -211,15 +282,16 @@ describe("InternalPathVisualization", () => {
       ...loadOverlaySnapshotFixture(),
       planned_path: undefined,
     };
-    const html = renderInternalViz(<InternalPathVisualization snapshot={minimal} />);
+    const html = renderInternalVizWithFeed(minimal, "fixture");
     expect(html).toContain("No PlannedPathData");
     expect(html).toContain("Internal Visualization");
     expect(html).not.toContain("Curv 1/m");
   });
 
-  it("renders fixture with stats, OFFLINE badge, heatmap legend, and drive display no", () => {
+  it("renders fixture with stats, FIXTURE/OFFLINE badges, heatmap legend, and drive display no", () => {
     const snap = loadOverlaySnapshotFixture();
-    const html = renderInternalViz(<InternalPathVisualization snapshot={snap} />);
+    const html = renderInternalVizWithFeed(snap, "fixture");
+    expect(html).toContain("FIXTURE");
     expect(html).toContain("OFFLINE");
     expect(html).not.toContain(">MOCK<");
     expect(html).toContain("n10001");
