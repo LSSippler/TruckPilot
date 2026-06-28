@@ -63,6 +63,17 @@ cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay
 
 MOCK sources show a **MOCK** badge; `offline_graph` shows **OFFLINE**. Invalid lane model → dashed lines.
 
+## Curvature and junction stats (read-only)
+
+The panel shows compact diagnostics derived from `planned_path.items`:
+
+- Curvature min / max / average / |max| and L/M/H severity counts (display thresholds only)
+- Item kind counts (road, junction, lane change, nav curve, prefab_uid, semaphore, curve_index)
+- Current item metadata (nodes, prefab, curve index, semaphore hint, κ, length)
+- High-severity segments use a warning stroke and midpoint ring — not a drive gate
+
+Display thresholds (1/m): low &lt; 0.005, medium ≥ 0.005, high ≥ 0.01.
+
 ## Why not steering
 
 Visualization is a debug lens on PlannedPathData v1. LaneAssist/ACC must not
@@ -72,10 +83,9 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 ## Next steps
 
 1. ~~Fill PlannedPath from offline graph fixture (real node UIDs)~~ ✓
-2. Richer junction/prefab coverage labels
-3. Curvature heat along polylines
-4. Optional full-screen dev route (not in-game overlay)
-5. Lane-Keeper / ACC integration much later
+2. ~~Curvature/junction read-only stats in panel~~ ✓
+3. Curvature heatmap along polylines (follow-up)
+4. Richer junction/prefab coverage labels
 
 ## Files
 
