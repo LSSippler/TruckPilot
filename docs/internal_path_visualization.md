@@ -168,8 +168,52 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 3. ~~Curvature heatmap along polylines (read-only overlay)~~ ✓
 4. Live overlay feed (storage poll + missing-path UI) ~~✓~~
 5. Continuous read-only `planned_path` via `truckpilot-status --overlay-loop` ~~✓~~
-6. Tauri file bridge into live overlay feed ~~✓~~
-7. Richer junction/prefab coverage labels
+6. Tauri file bridge into live overlay feed ~~✓~~ (manual smoke pass documented below)
+7. Continuous live route `planned_path` from safe daemon/graph source
+8. Richer junction/prefab coverage labels
+
+## Manual smoke test — Tauri file bridge (2026-06-22)
+
+Read-only verification on `dev-clean-base` after MR !18. No code changes required.
+
+**Setup**
+
+1. Terminal A: `cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay-loop`
+   → writes `%LOCALAPPDATA%\TruckPilot\overlay_snapshot.json` every 2s (Linux:
+   `~/.local/share/TruckPilot/overlay_snapshot.json`)
+2. Terminal B: `cd crates/ui && npm run tauri dev`
+3. Open **Tauri TruckPilot window** (not a plain Chrome tab):
+   `/overlay?overlay_visualization=internal`
+
+**Verified chain**
+
+| Step | Check |
+|------|-------|
+| CLI producer | JSON includes `planned_path`, `source=offline_graph`, 5 items |
+| Tauri command | `read_overlay_snapshot_file` returns full JSON string |
+| Frontend poll | `pollLiveOverlaySnapshotAsync` → `planned_path.items.length === 5` |
+| Expected UI | Feed badge **LIVE** · source badge **OFFLINE**, segments + heatmap, `Drive (display): no` |
+
+**DevTools (Tauri webview only)**
+
+```js
+const raw = await window.__TAURI_INTERNALS__.invoke("read_overlay_snapshot_file");
+JSON.parse(raw).planned_path?.source; // "offline_graph"
+```
+
+Do **not** use `document.body.innerText` for badge checks — the panel renders in SVG;
+use `textContent` or visual confirmation instead.
+
+**Chrome / Vite browser tab (`localhost:1420` without Tauri)**
+
+`window.__TAURI__` is absent; the file bridge does not run. The live feed falls back to
+`localStorage` paste or an empty shell showing `No PlannedPathData in live snapshot`.
+This is expected — **Tauri WebView is required** for the bridge test.
+
+**Safety (unchanged)**
+
+Read-only: no steering, no engage, no lane-keeper/ACC activation, no resolver activation,
+no ETS2 memory reads, no SHM/DLL layout changes. Display-only overlay diagnostics.
 
 ## Files
 
