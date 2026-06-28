@@ -1,7 +1,7 @@
 # Live Route PlannedPath Smoke Report
 
-Date: 2026-06-28  
-Branch: feature/live-route-planned-path-smoke-report  
+Date: 2026-06-28
+Branch: feature/live-route-planned-path-smoke-report
 Base: dev-clean-base @ 7e4defc
 
 ## Goal
@@ -23,14 +23,14 @@ ETS2 route / SHM route snapshot
 
 This smoke test is read-only.
 
-No steering.  
-No engage.  
-No lane-keeper activation.  
-No ACC activation.  
-No resolver activation from this test.  
-No pattern scanning.  
-No new memory reads.  
-No DLL hotpath changes.  
+No steering.
+No engage.
+No lane-keeper activation.
+No ACC activation.
+No resolver activation from this test.
+No pattern scanning.
+No new memory reads.
+No DLL hotpath changes.
 No SHM layout changes.
 
 ## Setup
