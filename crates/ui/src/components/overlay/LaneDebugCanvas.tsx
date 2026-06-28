@@ -130,7 +130,7 @@ export function LaneDebugCanvas({ snapshot }: { snapshot: OverlaySnapshot }) {
       ref={canvasRef}
       width={BOX_W}
       height={BOX_H}
-      className="pointer-events-none absolute bottom-3 right-3 rounded-md shadow-lg ring-1 ring-white/10"
+      className="rounded-md shadow-lg ring-1 ring-white/10"
       aria-label="Lane debug schematic"
     />
   );

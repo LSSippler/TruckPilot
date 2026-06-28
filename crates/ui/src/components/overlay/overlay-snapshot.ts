@@ -117,13 +117,7 @@ export interface PlannedPathData {
   route_id?: string;
   current_index: number;
   lookahead_m: number;
-  items: Array<{
-    id: number;
-    kind: string;
-    length_m: number;
-    curvature_1pm?: number;
-    semaphore_hint?: string;
-  }>;
+  items: PlannedPathItemSnapshot[];
   nearest?: {
     item_id: number;
     distance_along_m: number;
@@ -132,6 +126,25 @@ export interface PlannedPathData {
     confidence: number;
   };
   safety: PlannedPathSafety;
+}
+
+export interface PathPointSnapshot {
+  x: number;
+  y?: number;
+  z: number;
+}
+
+export interface PlannedPathItemSnapshot {
+  id: number;
+  kind: string;
+  length_m: number;
+  node_uid_start?: number;
+  node_uid_end?: number;
+  curve_index?: number;
+  prefab_uid?: number;
+  curvature_1pm?: number;
+  semaphore_hint?: string;
+  points?: PathPointSnapshot[];
 }
 
 export const OVERLAY_SNAPSHOT_STORAGE_KEY = "truckpilot.overlay_snapshot_json";
@@ -245,19 +258,41 @@ function parsePlannedPath(v: unknown): PlannedPathData | undefined {
     : [];
   const itemsRaw = v.items;
   if (!Array.isArray(itemsRaw)) return undefined;
-  const items: PlannedPathData["items"] = [];
+  const items: PlannedPathItemSnapshot[] = [];
   for (const item of itemsRaw) {
     if (!isRecord(item)) return undefined;
     const id = num(item.id);
     const kind = str(item.kind);
     const length_m = num(item.length_m);
     if (id == null || !kind || length_m == null) return undefined;
+
+    let points: PathPointSnapshot[] | undefined;
+    if (Array.isArray(item.points)) {
+      points = [];
+      for (const pt of item.points) {
+        if (!isRecord(pt)) return undefined;
+        const x = num(pt.x);
+        const z = num(pt.z);
+        if (x == null || z == null) return undefined;
+        points.push({
+          x,
+          z,
+          y: num(pt.y) ?? undefined,
+        });
+      }
+    }
+
     items.push({
       id,
       kind,
       length_m,
+      node_uid_start: num(item.node_uid_start) ?? undefined,
+      node_uid_end: num(item.node_uid_end) ?? undefined,
+      curve_index: num(item.curve_index) ?? undefined,
+      prefab_uid: num(item.prefab_uid) ?? undefined,
       curvature_1pm: num(item.curvature_1pm) ?? undefined,
       semaphore_hint: str(item.semaphore_hint) ?? undefined,
+      points,
     });
   }
   const current_index = num(v.current_index);

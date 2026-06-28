@@ -30,6 +30,11 @@ export async function toggleOverlay(): Promise<void> {
   return invokeCommand("toggle_overlay");
 }
 
+/** Enable overlay layout editor: window accepts mouse input (Tauri overlay only). */
+export async function overlaySetLayoutEditor(enabled: boolean): Promise<void> {
+  return invokeCommand("overlay_set_layout_editor", { enabled });
+}
+
 export type DaemonState = "runningmanaged" | "runningexternal" | "stopped" | "crashed";
 
 export interface DaemonStatus {

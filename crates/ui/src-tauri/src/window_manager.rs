@@ -75,3 +75,11 @@ pub fn toggle_overlay(app: &AppHandle) -> tauri::Result<()> {
         open_overlay(app)
     }
 }
+
+/// Layout editor needs mouse input on the overlay webview (drag panels, viz zoom).
+pub fn set_overlay_layout_editor(app: &AppHandle, enabled: bool) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        window.set_ignore_cursor_events(!enabled)?;
+    }
+    Ok(())
+}
