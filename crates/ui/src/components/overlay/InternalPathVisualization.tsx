@@ -8,13 +8,15 @@ import {
   resolveHeatmapEnabledFromSearch,
   resolveTruckWorldPoint,
   type InternalVizModel,
+  type VizFeedBadge,
+  type VizSourceBadge,
 } from "./internal-path-viz";
 import {
   clampVizZoom,
   nudgeVizZoom,
   VIZ_ZOOM_STEP,
 } from "./overlay-layout";
-import type { OverlaySnapshot } from "./overlay-snapshot";
+import type { OverlaySnapshot, OverlaySnapshotFeed } from "./overlay-snapshot";
 import { cn } from "@/lib/utils";
 
 const BOX_W = 420;
@@ -178,7 +180,9 @@ function segmentMidpoint(points: [number, number][]): [number, number] | null {
 
 function StatsBlock({ model }: { model: InternalVizModel }) {
   if (!model.hasPlannedPath) return null;
-  let y = model.sourceBadge ? 90 : 78;
+  let y = model.feedBadge || model.sourceBadge ? 102 : 78;
+  if (model.feedBadge && model.sourceBadge) y = 102;
+  else if (model.feedBadge || model.sourceBadge) y = 90;
   const lines = [
     model.curvatureStatsLine,
     model.kindStatsLine,
@@ -199,32 +203,45 @@ function StatsBlock({ model }: { model: InternalVizModel }) {
   );
 }
 
-function SourceBadge({ badge }: { badge: InternalVizModel["sourceBadge"] }) {
-  if (badge === "OFFLINE") {
-    return (
-      <text x={12} y={32} fill="rgba(134, 239, 172, 0.95)" fontSize={10} fontWeight={700}>
-        OFFLINE
-      </text>
-    );
-  }
-  if (badge === "MOCK") {
-    return (
-      <text x={12} y={32} fill="rgba(251, 191, 36, 0.95)" fontSize={10} fontWeight={700}>
-        MOCK
-      </text>
-    );
-  }
-  return null;
+function FeedBadge({ badge }: { badge: VizFeedBadge }) {
+  if (!badge) return null;
+  const colors: Record<NonNullable<VizFeedBadge>, string> = {
+    FIXTURE: "rgba(196, 181, 253, 0.95)",
+    STORAGE: "rgba(148, 163, 184, 0.95)",
+    LIVE: "rgba(56, 189, 248, 0.95)",
+  };
+  return (
+    <text x={12} y={32} fill={colors[badge]} fontSize={10} fontWeight={700}>
+      {badge}
+    </text>
+  );
+}
+
+function SourceBadge({ badge, y = 32 }: { badge: VizSourceBadge; y?: number }) {
+  if (!badge) return null;
+  const colors: Record<NonNullable<VizSourceBadge>, string> = {
+    OFFLINE: "rgba(134, 239, 172, 0.95)",
+    MOCK: "rgba(251, 191, 36, 0.95)",
+    LIVE: "rgba(56, 189, 248, 0.95)",
+    UNKNOWN: "rgba(161, 161, 170, 0.9)",
+  };
+  return (
+    <text x={12} y={y} fill={colors[badge]} fontSize={10} fontWeight={700}>
+      {badge}
+    </text>
+  );
 }
 
 /// Read-only top-down path visualization (PlannedPath + lane debug). No control side effects.
 export function InternalPathVisualization({
   snapshot,
+  feed = "fixture",
   editorMode = false,
   zoom = 1,
   onZoomChange,
 }: {
   snapshot: OverlaySnapshot;
+  feed?: OverlaySnapshotFeed;
   editorMode?: boolean;
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
@@ -238,15 +255,16 @@ export function InternalPathVisualization({
   }, [heatmapFromUrl]);
   const heatmapEnabled = editorMode ? editorHeatmap : heatmapFromUrl;
   const model = useMemo(
-    () => buildInternalVizModel(snapshot, BOX_W, BOX_H, 28, mapZoom, heatmapEnabled),
-    [snapshot, mapZoom, heatmapEnabled],
+    () => buildInternalVizModel(snapshot, BOX_W, BOX_H, 28, mapZoom, heatmapEnabled, feed),
+    [snapshot, mapZoom, heatmapEnabled, feed],
   );
   const toggleHeatmap = useCallback(() => {
     setEditorHeatmap((v) => !v);
   }, []);
   const position = formatPositionLabel(resolveTruckWorldPoint(snapshot));
   const speed = formatSpeedLabel(snapshot);
-  const headerY = model.sourceBadge ? 46 : 34;
+  const hasBadges = model.feedBadge != null || model.sourceBadge != null;
+  const headerY = hasBadges ? (model.feedBadge && model.sourceBadge ? 58 : 46) : 34;
 
   const onWheel = useCallback(
     (e: React.WheelEvent<HTMLDivElement>) => {
@@ -292,7 +310,8 @@ export function InternalPathVisualization({
           interactive={editorMode}
           onToggle={toggleHeatmap}
         />
-        <SourceBadge badge={model.sourceBadge} />
+        <FeedBadge badge={model.feedBadge} />
+        <SourceBadge badge={model.sourceBadge} y={model.feedBadge ? 44 : 32} />
         <text x={12} y={headerY} fill="rgba(255,255,255,0.6)" fontSize={10}>
           Speed: {speed} · Pos: {position}
         </text>
@@ -301,9 +320,14 @@ export function InternalPathVisualization({
             Zoom: {mapZoom.toFixed(2)}× · Mausrad / + −
           </text>
         ) : null}
-        {!model.hasPlannedPath ? (
+        {model.missingPlannedPathMessage ? (
           <text x={12} y={62} fill="rgba(255,255,255,0.55)" fontSize={10}>
-            No PlannedPathData
+            {model.missingPlannedPathMessage}
+          </text>
+        ) : null}
+        {model.liveDebugLine ? (
+          <text x={12} y={74} fill="rgba(180,200,220,0.65)" fontSize={8}>
+            {model.liveDebugLine}
           </text>
         ) : null}
         {model.nearestText ? (

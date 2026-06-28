@@ -481,20 +481,84 @@ export function saveOverlaySnapshotToStorage(raw: string): OverlaySnapshot | nul
   return snap;
 }
 
+/** How the overlay route resolves snapshot JSON (fixture / storage paste / live). */
+export type OverlaySnapshotFeed = "fixture" | "storage" | "live" | "off";
+
+/** Resolve snapshot feed from URL params. Normal `/overlay` uses live (Tauri + optional storage paste). */
+export function resolveOverlaySnapshotFeed(search: URLSearchParams): OverlaySnapshotFeed {
+  const mode = search.get("overlay_snapshot");
+  if (mode === "fixture" || mode === "mock" || mode === "1") return "fixture";
+  if (mode === "storage" || mode === "local") return "storage";
+  if (mode === "live") return "live";
+  if (mode === "off" || mode === "0") return "off";
+  return "live";
+}
+
+/** Load snapshot JSON for a feed mode (does not synthesize live shell). */
+export function resolveOverlaySnapshotForFeed(
+  _search: URLSearchParams,
+  feed: OverlaySnapshotFeed,
+): OverlaySnapshot | null {
+  switch (feed) {
+    case "fixture":
+      return loadOverlaySnapshotFixture();
+    case "storage":
+      return readOverlaySnapshotFromStorage();
+    case "live":
+      return readOverlaySnapshotFromStorage();
+    case "off":
+      return null;
+  }
+}
+
+/** Empty read-only shell for live overlay before CLI paste or future live feed. */
+export function createLiveOverlaySnapshotShell(): OverlaySnapshot {
+  return {
+    verdict: "unavailable",
+    lane_keeper_allowed: false,
+    status: {
+      dll_active: false,
+      perf_shm_available: false,
+      route_bb_available: false,
+      telemetry_shm_present: false,
+      diag_level: "unknown",
+      resolver_off: false,
+      resolve_status: "unavailable",
+      resolver_attempts: 0,
+      input_disabled: false,
+      input_enabled: false,
+      worker_asleep: false,
+      worker_walk_count: 0,
+      worker_wake_set_event_count: 0,
+      worker_parked_skip_count: 0,
+      pattern_scan_count: 0,
+      frame_cb_count: 0,
+      frame_cb_us_max: 0,
+      frame_cb_over_1000us: 0,
+      route_valid: false,
+      waypoint_count: 0,
+      verdict: "unavailable",
+    },
+    lane: {
+      lane_model_valid: false,
+      ego_offset_m: 0,
+      centerline_points: [],
+      left_lane_points: [],
+      right_lane_points: [],
+      curvature: 0,
+      lookahead_m: 0,
+      node_ids: [],
+      spline_segments: [],
+      source: "mock",
+      confidence: 0,
+    },
+  };
+}
+
 /** Resolve snapshot source from overlay route search params. */
 export function resolveOverlaySnapshot(search: URLSearchParams): OverlaySnapshot | null {
-  const mode = search.get("overlay_snapshot");
-  if (mode === "fixture" || mode === "mock" || mode === "1") {
-    return loadOverlaySnapshotFixture();
-  }
-  if (mode === "storage" || mode === "local") {
-    return readOverlaySnapshotFromStorage();
-  }
-  if (mode === "off" || mode === "0") {
-    return null;
-  }
-  // Implicit storage when user pasted JSON without an explicit mode flag.
-  return readOverlaySnapshotFromStorage();
+  const feed = resolveOverlaySnapshotFeed(search);
+  return resolveOverlaySnapshotForFeed(search, feed);
 }
 
 /** Map world X/Z points into a schematic box for read-only lane debug drawing. */

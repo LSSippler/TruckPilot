@@ -6,6 +6,7 @@ import {
   mapLanePointsToSchematic,
   parseOverlaySnapshot,
   resolveOverlaySnapshot,
+  resolveOverlaySnapshotFeed,
   type OverlaySnapshot,
 } from "@/components/overlay/overlay-snapshot";
 
@@ -91,6 +92,20 @@ describe("parseOverlaySnapshot", () => {
     expect(snap.lane_keeper_allowed).toBe(false);
     expect(snap.status.route_valid).toBe(false);
     expect(snap.lane.lane_model_valid).toBe(false);
+  });
+});
+
+describe("resolveOverlaySnapshotFeed", () => {
+  it("maps URL modes to fixture, storage, and live feeds", () => {
+    expect(resolveOverlaySnapshotFeed(new URLSearchParams("overlay_snapshot=fixture"))).toBe(
+      "fixture",
+    );
+    expect(resolveOverlaySnapshotFeed(new URLSearchParams("overlay_snapshot=storage"))).toBe(
+      "storage",
+    );
+    expect(resolveOverlaySnapshotFeed(new URLSearchParams("overlay_snapshot=live"))).toBe("live");
+    expect(resolveOverlaySnapshotFeed(new URLSearchParams(""))).toBe("live");
+    expect(resolveOverlaySnapshotFeed(new URLSearchParams("overlay_snapshot=off"))).toBe("off");
   });
 });
 

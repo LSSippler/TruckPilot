@@ -24,8 +24,41 @@ No daemon connection, no ETS2 memory reads, no new SHM layouts.
 
 ## Activation
 
+### Fixture mode (offline graph dev data)
+
 ```
 /overlay?overlay_snapshot=fixture&overlay_visualization=internal
+```
+
+### Live overlay mode (Tauri HUD + optional CLI paste)
+
+```
+/overlay?overlay_visualization=internal
+```
+
+On the normal overlay route the panel uses the **live feed**: it polls
+`localStorage` for JSON pasted from `truckpilot-status --overlay` every 2s.
+Blackboard panels (ACC, preflight, etc.) continue to update via IPC in parallel.
+
+Explicit live flag (same behavior):
+
+```
+/overlay?overlay_snapshot=live&overlay_visualization=internal
+```
+
+When no `planned_path` is present in the live snapshot, the panel shows:
+
+`No PlannedPathData in live snapshot`
+
+plus a compact debug line (`lane` / `status` / `preflight` present yes/no).
+This is read-only UI — no backend changes required until the daemon exposes
+live `planned_path` continuously.
+
+Storage paste workflow:
+
+```
+cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay
+→ localStorage → /overlay?overlay_snapshot=storage&overlay_visualization=internal
 ```
 
 ### Layout editor (panel positions + map zoom)
@@ -61,7 +94,9 @@ cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay
 | lane center | cyan overlay |
 | lane edges | orange |
 
-MOCK sources show a **MOCK** badge; `offline_graph` shows **OFFLINE**. Invalid lane model → dashed lines.
+MOCK sources show a **MOCK** badge; `offline_graph` shows **OFFLINE**. Feed badges:
+**FIXTURE** (embedded fixture), **STORAGE** (pasted JSON), **LIVE** (normal overlay route).
+Invalid lane model → dashed lines.
 
 ## Curvature and junction stats (read-only)
 
@@ -107,7 +142,9 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 1. ~~Fill PlannedPath from offline graph fixture (real node UIDs)~~ ✓
 2. ~~Curvature/junction read-only stats in panel~~ ✓
 3. ~~Curvature heatmap along polylines (read-only overlay)~~ ✓
-4. Richer junction/prefab coverage labels
+4. Live overlay feed (storage poll + missing-path UI) ~~✓~~
+5. Continuous live `planned_path` from daemon/telemetry (follow-up)
+6. Richer junction/prefab coverage labels
 
 ## Files
 
@@ -115,4 +152,5 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 |------|------|
 | `internal-path-viz.ts` | bounds, transform, model builder |
 | `InternalPathVisualization.tsx` | SVG panel |
+| `useOverlaySnapshotFeed.ts` | fixture / storage / live snapshot resolution |
 | `overlay-snapshot.fixture.json` | compact `planned_path` for dev |

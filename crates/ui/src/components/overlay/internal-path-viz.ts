@@ -2,6 +2,7 @@ import type {
   LaneDebugSnapshot,
   MapPoint2D,
   OverlaySnapshot,
+  OverlaySnapshotFeed,
   PlannedPathData,
 } from "./overlay-snapshot";
 
@@ -36,7 +37,9 @@ export type PlannedPathItemKind =
   | "junction"
   | "unknown";
 
-export type VizSourceBadge = "MOCK" | "OFFLINE" | null;
+export type VizSourceBadge = "MOCK" | "OFFLINE" | "LIVE" | "UNKNOWN" | null;
+
+export type VizFeedBadge = "FIXTURE" | "STORAGE" | "LIVE" | null;
 
 /** Display-only curvature bands (1/m) — not control gates. */
 export const DISPLAY_CURVATURE_MEDIUM_1PM = 0.005;
@@ -574,17 +577,59 @@ export function formatSpeedLabel(_snapshot: OverlaySnapshot): string {
   return "—";
 }
 
+export function resolveFeedBadge(feed: OverlaySnapshotFeed): VizFeedBadge {
+  if (feed === "fixture") return "FIXTURE";
+  if (feed === "storage") return "STORAGE";
+  if (feed === "live") return "LIVE";
+  return null;
+}
+
+/** Path-data source badge from planned_path.source (display-only, not inferred). */
 export function resolveSourceBadge(
   plannedPath: PlannedPathData | undefined,
 ): VizSourceBadge {
-  if (plannedPath?.source === "offline_graph") return "OFFLINE";
-  if (plannedPath?.source === "mock") return "MOCK";
-  return null;
+  if (!plannedPath) return null;
+  switch (plannedPath.source) {
+    case "offline_graph":
+      return "OFFLINE";
+    case "mock":
+      return "MOCK";
+    case "route_blackboard":
+    case "navcurve":
+    case "prefab_ai_path":
+      return "LIVE";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+export function formatLiveSnapshotDebugLine(snapshot: OverlaySnapshot): string {
+  const lane = snapshot.lane ? "yes" : "no";
+  const status = snapshot.status ? "yes" : "no";
+  const preflight =
+    snapshot.status != null &&
+    typeof snapshot.status === "object" &&
+    "preflight" in snapshot.status
+      ? "yes"
+      : "no";
+  return `Snap: lane ${lane} · status ${status} · preflight ${preflight}`;
+}
+
+export function resolveMissingPlannedPathMessage(
+  feed: OverlaySnapshotFeed,
+  hasPlannedPath: boolean,
+): string | null {
+  if (hasPlannedPath) return null;
+  if (feed === "live") return "No PlannedPathData in live snapshot";
+  return "No PlannedPathData";
 }
 
 export interface InternalVizModel {
   hasPlannedPath: boolean;
+  feedBadge: VizFeedBadge;
   sourceBadge: VizSourceBadge;
+  missingPlannedPathMessage: string | null;
+  liveDebugLine: string | null;
   dimmed: boolean;
   viewport: VizViewport;
   curvatureStats: CurvatureStats | null;
@@ -621,6 +666,7 @@ export function buildInternalVizModel(
   padding = 28,
   zoom = 1,
   heatmapEnabled = true,
+  feed: OverlaySnapshotFeed = "fixture",
 ): InternalVizModel {
   const pp = snapshot.planned_path;
   const lane = snapshot.lane;
@@ -632,7 +678,12 @@ export function buildInternalVizModel(
   );
 
   const dimmed = !lane.lane_model_valid || (pp != null && !pp.valid);
+  const feedBadge = resolveFeedBadge(feed);
   const sourceBadge = resolveSourceBadge(pp);
+  const hasPlannedPath = pp != null && pp.items.length > 0;
+  const missingPlannedPathMessage = resolveMissingPlannedPathMessage(feed, hasPlannedPath);
+  const liveDebugLine =
+    feed === "live" && !hasPlannedPath ? formatLiveSnapshotDebugLine(snapshot) : null;
   const curvatureStats = pp ? computeCurvatureStats(pp.items) : null;
   const kindStats = pp ? computePathKindStats(pp.items) : null;
   const currentItem = resolveCurrentItemMeta(pp);
@@ -703,8 +754,11 @@ export function buildInternalVizModel(
     : "no";
 
   return {
-    hasPlannedPath: pp != null && pp.items.length > 0,
+    hasPlannedPath,
+    feedBadge,
     sourceBadge,
+    missingPlannedPathMessage,
+    liveDebugLine,
     dimmed,
     heatmapEnabled,
     viewport,
