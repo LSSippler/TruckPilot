@@ -15,7 +15,7 @@ import type { OverlaySnapshot } from "./overlay-snapshot";
 import { cn } from "@/lib/utils";
 
 const BOX_W = 420;
-const BOX_H = 320;
+const BOX_H = 380;
 
 function GridLines({ model }: { model: InternalVizModel }) {
   const { viewport } = model;
@@ -96,6 +96,29 @@ function PolylinePath({
       strokeLinecap="round"
       strokeLinejoin="round"
     />
+  );
+}
+
+function StatsBlock({ model }: { model: InternalVizModel }) {
+  if (!model.hasPlannedPath) return null;
+  let y = model.sourceBadge ? 90 : 78;
+  const lines = [
+    model.curvatureStatsLine,
+    model.kindStatsLine,
+    model.currentItemLine,
+  ].filter(Boolean) as string[];
+  return (
+    <g aria-label="Path diagnostics">
+      {lines.map((line) => {
+        const el = (
+          <text x={12} y={y} fill="rgba(200,220,255,0.72)" fontSize={8}>
+            {line}
+          </text>
+        );
+        y += 11;
+        return <g key={line}>{el}</g>;
+      })}
+    </g>
   );
 }
 
@@ -196,6 +219,7 @@ export function InternalPathVisualization({
             {model.nearestText}
           </text>
         ) : null}
+        <StatsBlock model={model} />
         <text x={12} y={BOX_H - 10} fill="rgba(255,255,255,0.5)" fontSize={9}>
           Drive (display): {model.driveDisplay}
         </text>
@@ -247,6 +271,16 @@ export function InternalPathVisualization({
                 >
                   {seg.label}
                 </text>
+                {seg.severity === "high" && seg.points.length > 0 ? (
+                  <circle
+                    cx={seg.points[Math.floor(seg.points.length / 2)]![0]}
+                    cy={seg.points[Math.floor(seg.points.length / 2)]![1]}
+                    r={4}
+                    fill="none"
+                    stroke="rgba(248,113,113,0.9)"
+                    strokeWidth={1.5}
+                  />
+                ) : null}
               </>
             ) : null}
           </g>

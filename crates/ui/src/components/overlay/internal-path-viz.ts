@@ -38,10 +38,53 @@ export type PlannedPathItemKind =
 
 export type VizSourceBadge = "MOCK" | "OFFLINE" | null;
 
+/** Display-only curvature bands (1/m) — not control gates. */
+export const DISPLAY_CURVATURE_MEDIUM_1PM = 0.005;
+export const DISPLAY_CURVATURE_HIGH_1PM = 0.01;
+
+export type CurvatureSeverity = "low" | "medium" | "high" | "unknown";
+
+export interface CurvatureStats {
+  count: number;
+  min: number | null;
+  max: number | null;
+  average: number | null;
+  absMax: number | null;
+  lowCount: number;
+  mediumCount: number;
+  highCount: number;
+  unknownCount: number;
+}
+
+export interface PathKindStats {
+  total: number;
+  roadEdge: number;
+  junction: number;
+  laneChange: number;
+  navCurve: number;
+  prefabPath: number;
+  prefabUidCount: number;
+  semaphoreHint: number;
+  withCurveIndex: number;
+}
+
+export interface CurrentItemMeta {
+  id: number;
+  kind: string;
+  nodeRange: string | null;
+  prefabUid: number | null;
+  curveIndex: number | null;
+  semaphoreHint: string | null;
+  curvature1pm: number | null;
+  lengthM: number | null;
+  severity: CurvatureSeverity;
+}
+
 export interface SegmentStyle {
   stroke: string;
   width: number;
   dashed: boolean;
+  severity: CurvatureSeverity;
 }
 
 const DEFAULT_BOUNDS: VizBounds = {
@@ -183,15 +226,190 @@ export function normalizeKind(kind: string): PlannedPathItemKind {
   return "unknown";
 }
 
+/** Collect per-item curvature values (1/m) when present. */
+export function collectCurvatureValues(
+  items: PlannedPathData["items"] | undefined,
+): number[] {
+  if (!items?.length) return [];
+  return items
+    .map((i) => i.curvature_1pm)
+    .filter((c): c is number => c != null && Number.isFinite(c));
+}
+
+/** Display-only severity from item curvature (1/m). */
+export function classifyCurvatureSeverity(
+  curvature1pm: number | null | undefined,
+): CurvatureSeverity {
+  if (curvature1pm == null || !Number.isFinite(curvature1pm)) return "unknown";
+  const abs = Math.abs(curvature1pm);
+  if (abs >= DISPLAY_CURVATURE_HIGH_1PM) return "high";
+  if (abs >= DISPLAY_CURVATURE_MEDIUM_1PM) return "medium";
+  return "low";
+}
+
+/** Aggregate curvature diagnostics for overlay stats (read-only). */
+export function computeCurvatureStats(
+  items: PlannedPathData["items"] | undefined,
+): CurvatureStats {
+  const values = collectCurvatureValues(items);
+  const stats: CurvatureStats = {
+    count: values.length,
+    min: null,
+    max: null,
+    average: null,
+    absMax: null,
+    lowCount: 0,
+    mediumCount: 0,
+    highCount: 0,
+    unknownCount: 0,
+  };
+  for (const item of items ?? []) {
+    const sev = classifyCurvatureSeverity(item.curvature_1pm);
+    if (sev === "low") stats.lowCount += 1;
+    else if (sev === "medium") stats.mediumCount += 1;
+    else if (sev === "high") stats.highCount += 1;
+    else stats.unknownCount += 1;
+  }
+  if (values.length === 0) return stats;
+  let min = values[0]!;
+  let max = values[0]!;
+  let sum = 0;
+  let absMax = 0;
+  for (const v of values) {
+    min = Math.min(min, v);
+    max = Math.max(max, v);
+    sum += v;
+    absMax = Math.max(absMax, Math.abs(v));
+  }
+  stats.min = min;
+  stats.max = max;
+  stats.average = sum / values.length;
+  stats.absMax = absMax;
+  return stats;
+}
+
+/** Read-only kind / junction / prefab counters from planned path items. */
+export function computePathKindStats(
+  items: PlannedPathData["items"] | undefined,
+): PathKindStats {
+  const stats: PathKindStats = {
+    total: 0,
+    roadEdge: 0,
+    junction: 0,
+    laneChange: 0,
+    navCurve: 0,
+    prefabPath: 0,
+    prefabUidCount: 0,
+    semaphoreHint: 0,
+    withCurveIndex: 0,
+  };
+  if (!items?.length) return stats;
+  stats.total = items.length;
+  for (const item of items) {
+    switch (normalizeKind(item.kind)) {
+      case "road_edge":
+        stats.roadEdge += 1;
+        break;
+      case "junction":
+        stats.junction += 1;
+        break;
+      case "lane_change":
+        stats.laneChange += 1;
+        break;
+      case "nav_curve":
+        stats.navCurve += 1;
+        break;
+      case "prefab_path":
+        stats.prefabPath += 1;
+        break;
+      default:
+        break;
+    }
+    if (item.prefab_uid != null) stats.prefabUidCount += 1;
+    if (item.semaphore_hint) stats.semaphoreHint += 1;
+    if (item.curve_index != null) stats.withCurveIndex += 1;
+  }
+  return stats;
+}
+
+export function resolveCurrentItemMeta(
+  plannedPath: PlannedPathData | undefined,
+): CurrentItemMeta | null {
+  if (!plannedPath?.items.length) return null;
+  const idx = Math.min(
+    Math.max(plannedPath.current_index, 0),
+    plannedPath.items.length - 1,
+  );
+  const item = plannedPath.items[idx];
+  if (!item) return null;
+  const nodeRange =
+    item.node_uid_start != null && item.node_uid_end != null
+      ? `${item.node_uid_start}→${item.node_uid_end}`
+      : item.node_uid_start != null
+        ? String(item.node_uid_start)
+        : null;
+  return {
+    id: item.id,
+    kind: item.kind,
+    nodeRange,
+    prefabUid: item.prefab_uid ?? null,
+    curveIndex: item.curve_index ?? null,
+    semaphoreHint: item.semaphore_hint ?? null,
+    curvature1pm: item.curvature_1pm ?? null,
+    lengthM: item.length_m ?? null,
+    severity: classifyCurvatureSeverity(item.curvature_1pm),
+  };
+}
+
+export function formatCurvatureStatsLine(stats: CurvatureStats): string {
+  if (stats.count === 0) {
+    return `Curv: none (unknown ${stats.unknownCount})`;
+  }
+  return (
+    `Curv 1/m: min ${stats.min!.toFixed(4)} max ${stats.max!.toFixed(4)} ` +
+    `avg ${stats.average!.toFixed(4)} |abs| ${stats.absMax!.toFixed(4)} ` +
+    `· L${stats.lowCount} M${stats.mediumCount} H${stats.highCount}`
+  );
+}
+
+export function formatPathKindStatsLine(stats: PathKindStats): string {
+  if (stats.total === 0) return "Items: 0";
+  return (
+    `Items ${stats.total}: road ${stats.roadEdge} junc ${stats.junction} ` +
+    `lc ${stats.laneChange} nav ${stats.navCurve} pref ${stats.prefabUidCount} ` +
+    `sem ${stats.semaphoreHint} cidx ${stats.withCurveIndex}`
+  );
+}
+
+export function formatCurrentItemMetaLine(meta: CurrentItemMeta): string {
+  const parts = [`#${meta.id} ${meta.kind}`];
+  if (meta.nodeRange) parts.push(`n ${meta.nodeRange}`);
+  if (meta.prefabUid != null) parts.push(`pref ${meta.prefabUid}`);
+  if (meta.curveIndex != null) parts.push(`c ${meta.curveIndex}`);
+  if (meta.semaphoreHint) parts.push(meta.semaphoreHint);
+  if (meta.curvature1pm != null) {
+    parts.push(`κ ${meta.curvature1pm.toFixed(4)} (${meta.severity})`);
+  } else {
+    parts.push(`κ — (${meta.severity})`);
+  }
+  if (meta.lengthM != null) parts.push(`${meta.lengthM.toFixed(1)} m`);
+  return `Current: ${parts.join(" · ")}`;
+}
+
 /** Segment stroke styles by PlannedPath item kind (read-only debug palette). */
 export function segmentStyleForKind(
   kind: string,
-  options: { current: boolean; dimmed: boolean },
+  options: {
+    current: boolean;
+    dimmed: boolean;
+    severity?: CurvatureSeverity;
+  },
 ): SegmentStyle {
   const dashed = options.dimmed;
-  const width = options.current ? 3.5 : 2;
+  const severity = options.severity ?? "unknown";
+  let width = options.current ? 3.5 : 2;
 
-  const base: Record<PlannedPathItemKind, Omit<SegmentStyle, "dashed" | "width">> = {
+  const base: Record<PlannedPathItemKind, Omit<SegmentStyle, "dashed" | "width" | "severity">> = {
     road_edge: { stroke: options.current ? "#86efac" : "#6b7280" },
     prefab_path: { stroke: "#fb923c" },
     junction: { stroke: "#fbbf24" },
@@ -200,8 +418,24 @@ export function segmentStyleForKind(
     unknown: { stroke: "#a1a1aa" },
   };
 
-  const style = base[normalizeKind(kind)];
-  return { ...style, width, dashed };
+  let stroke = base[normalizeKind(kind)].stroke;
+  switch (severity) {
+    case "high":
+      width += 1;
+      stroke = options.current ? "#fda4af" : "#f87171";
+      break;
+    case "medium":
+      width += 0.5;
+      break;
+    case "unknown":
+      stroke = "#71717a";
+      break;
+    case "low":
+    default:
+      break;
+  }
+
+  return { stroke, width, dashed, severity };
 }
 
 export function resolveTruckWorldPoint(
@@ -265,6 +499,12 @@ export interface InternalVizModel {
   sourceBadge: VizSourceBadge;
   dimmed: boolean;
   viewport: VizViewport;
+  curvatureStats: CurvatureStats | null;
+  kindStats: PathKindStats | null;
+  curvatureStatsLine: string | null;
+  kindStatsLine: string | null;
+  currentItem: CurrentItemMeta | null;
+  currentItemLine: string | null;
   plannedSegments: Array<{
     id: number;
     kind: string;
@@ -272,6 +512,7 @@ export interface InternalVizModel {
     points: [number, number][];
     style: SegmentStyle;
     isCurrent: boolean;
+    severity: CurvatureSeverity;
   }>;
   lanePolylines: Array<{
     role: "center" | "left" | "right";
@@ -301,22 +542,33 @@ export function buildInternalVizModel(
 
   const dimmed = !lane.lane_model_valid || (pp != null && !pp.valid);
   const sourceBadge = resolveSourceBadge(pp);
+  const curvatureStats = pp ? computeCurvatureStats(pp.items) : null;
+  const kindStats = pp ? computePathKindStats(pp.items) : null;
+  const currentItem = resolveCurrentItemMeta(pp);
+  const curvatureStatsLine = curvatureStats
+    ? formatCurvatureStatsLine(curvatureStats)
+    : null;
+  const kindStatsLine = kindStats ? formatPathKindStatsLine(kindStats) : null;
+  const currentItemLine = currentItem ? formatCurrentItemMetaLine(currentItem) : null;
 
   const plannedSegments =
     pp?.items.map((item, idx) => {
       const worldPts = (item.points ?? []).map((p) => ({ x: p.x, z: p.z }));
       const svgPts = worldPts.map((p) => mapWorldToSvg(p, viewport));
       const isCurrent = idx === pp.current_index;
+      const severity = classifyCurvatureSeverity(item.curvature_1pm);
       const labelParts = [`#${item.id}`];
       if (item.node_uid_start != null) labelParts.push(`n${item.node_uid_start}`);
       if (item.curve_index != null) labelParts.push(`c${item.curve_index}`);
+      if (severity === "high") labelParts.push("H");
       return {
         id: item.id,
         kind: item.kind,
         label: labelParts.join(" "),
         points: svgPts,
-        style: segmentStyleForKind(item.kind, { current: isCurrent, dimmed }),
+        style: segmentStyleForKind(item.kind, { current: isCurrent, dimmed, severity }),
         isCurrent,
+        severity,
       };
     }) ?? [];
 
@@ -358,6 +610,12 @@ export function buildInternalVizModel(
     sourceBadge,
     dimmed,
     viewport,
+    curvatureStats,
+    kindStats,
+    curvatureStatsLine,
+    kindStatsLine,
+    currentItem,
+    currentItemLine,
     plannedSegments,
     lanePolylines,
     nodeMarkers,

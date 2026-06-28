@@ -39,7 +39,7 @@ const PANEL_BOX: Record<OverlayPanelId, { w: number; h: number }> = {
   nav: { w: 240, h: 72 },
   vehicle: { w: 240, h: 72 },
   "lane-debug": { w: 300, h: 200 },
-  "internal-viz": { w: 420, h: 320 },
+  "internal-viz": { w: 420, h: 380 },
 };
 
 /** Left-column stack defaults (matches legacy Overlay layout). */
