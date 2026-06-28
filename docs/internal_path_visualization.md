@@ -74,6 +74,28 @@ The panel shows compact diagnostics derived from `planned_path.items`:
 
 Display thresholds (1/m): low &lt; 0.005, medium ≥ 0.005, high ≥ 0.01.
 
+## Curvature heatmap (read-only)
+
+Optional visual layer on planned-path segments (default **on**):
+
+| Severity | Overlay |
+|----------|---------|
+| low | subtle green halo — kind colors stay primary |
+| medium | amber wider stroke + midpoint tick |
+| high | red halo + tick + midpoint ring |
+| unknown | dimmed base stroke, neutral gray halo |
+
+Legend shows low / medium / high / unknown and **display-only**. Thresholds are not ACC or lane-keeper gates — no control output, no engage side effects.
+
+**Toggle:** In production overlay (click-through), heatmap state is shown as text only (`Heatmap: on/off`). The button toggle is available in layout editor mode (`overlay_editor=1` or **F8**). Without editor, use URL:
+
+```
+&overlay_heatmap=0   # heatmap off
+&overlay_heatmap=1   # heatmap on (default)
+```
+
+When heatmap is off, segment styling falls back to the pre-heatmap severity strokes from the stats panel era.
+
 ## Why not steering
 
 Visualization is a debug lens on PlannedPathData v1. LaneAssist/ACC must not
@@ -84,7 +106,7 @@ the daemon/graph layer with explicit gates, not overlay URL flags.
 
 1. ~~Fill PlannedPath from offline graph fixture (real node UIDs)~~ ✓
 2. ~~Curvature/junction read-only stats in panel~~ ✓
-3. Curvature heatmap along polylines (follow-up)
+3. ~~Curvature heatmap along polylines (read-only overlay)~~ ✓
 4. Richer junction/prefab coverage labels
 
 ## Files

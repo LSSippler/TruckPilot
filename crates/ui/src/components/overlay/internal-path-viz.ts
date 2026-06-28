@@ -85,7 +85,31 @@ export interface SegmentStyle {
   width: number;
   dashed: boolean;
   severity: CurvatureSeverity;
+  opacity: number;
 }
+
+/** Read-only heatmap overlay on top of kind-colored segments (display-only). */
+export interface HeatmapOverlayStyle {
+  stroke: string;
+  width: number;
+  opacity: number;
+  showMidpointRing: boolean;
+  showTick: boolean;
+  dimBase: boolean;
+}
+
+export interface HeatmapLegendEntry {
+  severity: CurvatureSeverity;
+  color: string;
+  label: string;
+}
+
+export const CURVATURE_HEATMAP_LEGEND: HeatmapLegendEntry[] = [
+  { severity: "low", color: "rgba(134,239,172,0.55)", label: "low" },
+  { severity: "medium", color: "rgba(251,191,36,0.85)", label: "medium" },
+  { severity: "high", color: "rgba(248,113,113,0.95)", label: "high" },
+  { severity: "unknown", color: "rgba(113,113,122,0.55)", label: "unknown" },
+];
 
 const DEFAULT_BOUNDS: VizBounds = {
   minX: -10,
@@ -99,6 +123,16 @@ export function isInternalPathVisualizationEnabled(
   search: URLSearchParams,
 ): boolean {
   return search.get("overlay_visualization") === "internal";
+}
+
+/** Read-only heatmap on/off from `overlay_heatmap` URL param (default on). */
+export function resolveHeatmapEnabledFromSearch(
+  search: URLSearchParams,
+): boolean {
+  const v = search.get("overlay_heatmap");
+  if (v == null || v === "") return true;
+  if (v === "0" || v === "false" || v === "off") return false;
+  return true;
 }
 
 export function mapPointsToViz(points: MapPoint2D[]): VizPoint2D[] {
@@ -396,6 +430,53 @@ export function formatCurrentItemMetaLine(meta: CurrentItemMeta): string {
   return `Current: ${parts.join(" · ")}`;
 }
 
+/** Display-only heatmap overlay for a curvature severity band. */
+export function heatmapOverlayForSeverity(
+  severity: CurvatureSeverity,
+  heatmapEnabled: boolean,
+): HeatmapOverlayStyle | null {
+  if (!heatmapEnabled) return null;
+  switch (severity) {
+    case "low":
+      return {
+        stroke: "rgba(134,239,172,0.45)",
+        width: 4,
+        opacity: 0.35,
+        showMidpointRing: false,
+        showTick: false,
+        dimBase: false,
+      };
+    case "medium":
+      return {
+        stroke: "rgba(251,191,36,0.85)",
+        width: 6,
+        opacity: 0.5,
+        showMidpointRing: false,
+        showTick: true,
+        dimBase: false,
+      };
+    case "high":
+      return {
+        stroke: "rgba(248,113,113,0.95)",
+        width: 7,
+        opacity: 0.65,
+        showMidpointRing: true,
+        showTick: true,
+        dimBase: false,
+      };
+    case "unknown":
+    default:
+      return {
+        stroke: "rgba(113,113,122,0.45)",
+        width: 3,
+        opacity: 0.3,
+        showMidpointRing: false,
+        showTick: false,
+        dimBase: true,
+      };
+  }
+}
+
 /** Segment stroke styles by PlannedPath item kind (read-only debug palette). */
 export function segmentStyleForKind(
   kind: string,
@@ -403,13 +484,16 @@ export function segmentStyleForKind(
     current: boolean;
     dimmed: boolean;
     severity?: CurvatureSeverity;
+    heatmapEnabled?: boolean;
   },
 ): SegmentStyle {
   const dashed = options.dimmed;
   const severity = options.severity ?? "unknown";
+  const heatmapEnabled = options.heatmapEnabled ?? false;
   let width = options.current ? 3.5 : 2;
+  let opacity = 1;
 
-  const base: Record<PlannedPathItemKind, Omit<SegmentStyle, "dashed" | "width" | "severity">> = {
+  const base: Record<PlannedPathItemKind, Omit<SegmentStyle, "dashed" | "width" | "severity" | "opacity">> = {
     road_edge: { stroke: options.current ? "#86efac" : "#6b7280" },
     prefab_path: { stroke: "#fb923c" },
     junction: { stroke: "#fbbf24" },
@@ -419,23 +503,27 @@ export function segmentStyleForKind(
   };
 
   let stroke = base[normalizeKind(kind)].stroke;
-  switch (severity) {
-    case "high":
-      width += 1;
-      stroke = options.current ? "#fda4af" : "#f87171";
-      break;
-    case "medium":
-      width += 0.5;
-      break;
-    case "unknown":
-      stroke = "#71717a";
-      break;
-    case "low":
-    default:
-      break;
+  if (!heatmapEnabled) {
+    switch (severity) {
+      case "high":
+        width += 1;
+        stroke = options.current ? "#fda4af" : "#f87171";
+        break;
+      case "medium":
+        width += 0.5;
+        break;
+      case "unknown":
+        stroke = "#71717a";
+        break;
+      case "low":
+      default:
+        break;
+    }
+  } else if (severity === "unknown") {
+    opacity = 0.45;
   }
 
-  return { stroke, width, dashed, severity };
+  return { stroke, width, dashed, severity, opacity };
 }
 
 export function resolveTruckWorldPoint(
@@ -505,12 +593,14 @@ export interface InternalVizModel {
   kindStatsLine: string | null;
   currentItem: CurrentItemMeta | null;
   currentItemLine: string | null;
+  heatmapEnabled: boolean;
   plannedSegments: Array<{
     id: number;
     kind: string;
     label: string;
     points: [number, number][];
     style: SegmentStyle;
+    heatmap: HeatmapOverlayStyle | null;
     isCurrent: boolean;
     severity: CurvatureSeverity;
   }>;
@@ -530,6 +620,7 @@ export function buildInternalVizModel(
   height: number,
   padding = 28,
   zoom = 1,
+  heatmapEnabled = true,
 ): InternalVizModel {
   const pp = snapshot.planned_path;
   const lane = snapshot.lane;
@@ -566,7 +657,13 @@ export function buildInternalVizModel(
         kind: item.kind,
         label: labelParts.join(" "),
         points: svgPts,
-        style: segmentStyleForKind(item.kind, { current: isCurrent, dimmed, severity }),
+        style: segmentStyleForKind(item.kind, {
+          current: isCurrent,
+          dimmed,
+          severity,
+          heatmapEnabled,
+        }),
+        heatmap: heatmapOverlayForSeverity(severity, heatmapEnabled),
         isCurrent,
         severity,
       };
@@ -609,6 +706,7 @@ export function buildInternalVizModel(
     hasPlannedPath: pp != null && pp.items.length > 0,
     sourceBadge,
     dimmed,
+    heatmapEnabled,
     viewport,
     curvatureStats,
     kindStats,
