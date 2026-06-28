@@ -13,8 +13,9 @@
 //! ```
 //!
 //! `--overlay-loop` continuously writes read-only overlay JSON (including
-//! `planned_path` from the offline-graph fixture) to `--overlay-out` or the
-//! default `%LOCALAPPDATA%/TruckPilot/overlay_snapshot.json` on Windows.
+//! `planned_path` from route blackboard when safe, else offline-graph fixture)
+//! to `--overlay-out` or the default `%LOCALAPPDATA%/TruckPilot/overlay_snapshot.json`
+//! on Windows.
 //!
 //! Exit codes (DLL/SHM safety only — core readiness does not affect exit code):
 //! - `0` — DLL present and SAFE-COLD.
@@ -159,7 +160,7 @@ mod tests {
             parsed["planned_path"]["safety"]["drive_allowed_display_only"],
             false
         );
-        assert_eq!(parsed["planned_path_producer"]["status"], "attached");
+        assert_eq!(parsed["planned_path_producer"]["status"], "offline_fixture");
         assert_eq!(parsed["status"]["resolver_attempts"], 0);
     }
 }

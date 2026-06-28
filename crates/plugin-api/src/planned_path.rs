@@ -380,6 +380,158 @@ pub fn with_safety(mut data: PlannedPathData, safety: PlannedPathSafety) -> Plan
     data
 }
 
+/// One positioned route-blackboard waypoint for read-only path building.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RouteBlackboardWaypoint {
+    /// Graph node UID from ETS2 route blackboard SHM.
+    pub uid: i64,
+    /// World X (metres).
+    pub x: f64,
+    /// World Y (metres).
+    pub y: f64,
+    /// World Z (metres).
+    pub z: f64,
+}
+
+/// Build read-only [`PlannedPathData`] from route-blackboard waypoint geometry.
+///
+/// Each hop between consecutive waypoints becomes a [`PlannedPathItemKind::RoadEdge`]
+/// segment. No map graph, resolver, or steering — display-only polyline.
+pub fn planned_path_from_route_blackboard(
+    waypoints: &[RouteBlackboardWaypoint],
+    route_hash: u64,
+    truck_xz: Option<(f64, f64)>,
+) -> Option<PlannedPathData> {
+    if waypoints.len() < 2 {
+        return None;
+    }
+
+    let mut items = Vec::with_capacity(waypoints.len() - 1);
+    for (idx, pair) in waypoints.windows(2).enumerate() {
+        let a = &pair[0];
+        let b = &pair[1];
+        let id = (idx + 1) as u32;
+        let length_m = dist2((a.x, a.z), (b.x, b.z));
+        let heading = (b.x - a.x).atan2(b.z - a.z);
+        let curvature = if idx > 0 {
+            let prev = &waypoints[idx - 1];
+            menger_curvature((prev.x, prev.z), (a.x, a.z), (b.x, b.z))
+        } else {
+            0.0
+        };
+        let steps = 4usize;
+        let mut points = Vec::with_capacity(steps + 1);
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let x = a.x + (b.x - a.x) * t;
+            let y = a.y + (b.y - a.y) * t;
+            let z = a.z + (b.z - a.z) * t;
+            points.push(PathPoint {
+                x,
+                y,
+                z,
+                distance_m: length_m * t,
+                heading_rad: Some(heading),
+                lane_offset_m: Some(0.0),
+                curvature_1pm: Some(curvature),
+            });
+        }
+        items.push(PlannedPathItem {
+            id,
+            kind: PlannedPathItemKind::RoadEdge,
+            node_uid_start: Some(a.uid as u64),
+            node_uid_end: Some(b.uid as u64),
+            prefab_uid: None,
+            curve_index: None,
+            length_m,
+            lane_index: Some(0),
+            lane_count: Some(1),
+            lane_width_m: Some(DEFAULT_LANE_WIDTH_M),
+            lateral_offset_m: Some(0.0),
+            curvature_1pm: Some(curvature),
+            speed_hint_kmh: None,
+            semaphore_hint: None,
+            points,
+        });
+    }
+
+    let nearest = truck_xz.and_then(|truck| nearest_on_items(&items, truck));
+
+    Some(PlannedPathData {
+        valid: true,
+        source: PlannedPathSource::RouteBlackboard,
+        route_id: Some(format!("route-bb-{route_hash:016x}")),
+        current_index: nearest
+            .as_ref()
+            .and_then(|n| items.iter().position(|i| i.id == n.item_id))
+            .unwrap_or(0) as u32,
+        lookahead_m: 80.0,
+        items,
+        nearest,
+        safety: PlannedPathSafety {
+            route_valid: true,
+            lane_model_valid: false,
+            resolver_safe: true,
+            telemetry_fresh: truck_xz.is_some(),
+            input_allowed: false,
+            drive_allowed_display_only: false,
+            reasons: vec!["route blackboard polyline (display only)".into()],
+        },
+    })
+}
+
+fn nearest_on_items(items: &[PlannedPathItem], truck: (f64, f64)) -> Option<NearestPathPoint> {
+    let (tx, tz) = truck;
+    let mut best_item = None;
+    let mut best_dist = f64::INFINITY;
+    let mut best_along = 0.0;
+    let mut best_cross = 0.0;
+    let mut best_heading_err = 0.0;
+
+    for item in items {
+        let pts = &item.points;
+        if pts.len() < 2 {
+            continue;
+        }
+        for w in pts.windows(2) {
+            let a = &w[0];
+            let b = &w[1];
+            let abx = b.x - a.x;
+            let abz = b.z - a.z;
+            let len2 = abx * abx + abz * abz;
+            if len2 <= 1e-9 {
+                continue;
+            }
+            let t = ((tx - a.x) * abx + (tz - a.z) * abz) / len2;
+            let t = t.clamp(0.0, 1.0);
+            let px = a.x + abx * t;
+            let pz = a.z + abz * t;
+            let dx = tx - px;
+            let dz = tz - pz;
+            let dist = (dx * dx + dz * dz).sqrt();
+            if dist >= best_dist {
+                continue;
+            }
+            let cross = abx * (tz - a.z) - abz * (tx - a.x);
+            let signed = if cross >= 0.0 { dist } else { -dist };
+            let seg_heading = abx.atan2(abz);
+            best_dist = dist;
+            best_item = Some(item.id);
+            best_along = a.distance_m + (b.distance_m - a.distance_m) * t;
+            best_cross = signed;
+            best_heading_err = seg_heading;
+        }
+    }
+
+    best_item.map(|item_id| NearestPathPoint {
+        item_id,
+        distance_along_m: best_along,
+        crosstrack_m: best_cross,
+        heading_error_rad: best_heading_err,
+        confidence: 0.6,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Offline map-graph → PlannedPathData (read-only, display only)
 // ---------------------------------------------------------------------------
@@ -761,6 +913,37 @@ mod tests {
         assert!(data.valid);
         // Changing display flag must not imply path items changed.
         assert_eq!(data.items.len(), 5);
+    }
+
+    // ---- route blackboard polyline --------------------------------------
+
+    #[test]
+    fn route_blackboard_polyline_builds_road_edge_items() {
+        let wps = [
+            RouteBlackboardWaypoint {
+                uid: 1,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            RouteBlackboardWaypoint {
+                uid: 2,
+                x: 0.0,
+                y: 0.0,
+                z: 50.0,
+            },
+            RouteBlackboardWaypoint {
+                uid: 3,
+                x: 10.0,
+                y: 0.0,
+                z: 100.0,
+            },
+        ];
+        let data = planned_path_from_route_blackboard(&wps, 0x42, None).expect("path");
+        assert_eq!(data.source, PlannedPathSource::RouteBlackboard);
+        assert_eq!(data.items.len(), 2);
+        assert!(data.items.iter().all(|i| !i.points.is_empty()));
+        assert!(!data.safety.drive_allowed_display_only);
     }
 
     // ---- offline-graph fixture ------------------------------------------

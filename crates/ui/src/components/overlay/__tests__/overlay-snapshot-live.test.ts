@@ -73,7 +73,7 @@ describe("pollLiveOverlaySnapshot", () => {
   it("parses planned_path_producer from file JSON without failing", () => {
     const withProducer = {
       ...fixtureJson,
-      planned_path_producer: { status: "attached", source: "offline_graph" },
+      planned_path_producer: { status: "offline_fixture", source: "offline_graph" },
     };
     const snap = pollLiveOverlaySnapshot({
       tauriFileEnabled: true,

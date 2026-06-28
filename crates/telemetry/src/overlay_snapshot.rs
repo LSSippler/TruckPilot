@@ -13,7 +13,7 @@ use truckpilot_plugin_api::planned_path::PlannedPathData;
 /// Read-only status of the optional planned-path producer (display/debug only).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PlannedPathProducerStatus {
-    /// `attached` or `skipped`.
+    /// `offline_fixture`, `live_route_attached`, `live_route_unavailable`, etc.
     pub status: String,
     /// Producer label when attached (e.g. `offline_graph`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,7 +45,7 @@ pub struct OverlaySnapshot {
 pub fn build_overlay_snapshot(raw: &RawStatusInputs) -> OverlaySnapshot {
     let status = crate::status_report::evaluate_status(raw);
     let lane = build_lane_debug(raw.route.as_ref(), &status);
-    let planned = try_build_planned_path_overlay(&status, &lane);
+    let planned = try_build_planned_path_overlay(&status, &lane, raw.route.as_ref());
     let planned_path_producer = PlannedPathProducerStatus {
         status: planned.status.to_string(),
         source: planned.source.map(str::to_string),
@@ -123,7 +123,7 @@ mod tests {
         assert!(!pp.items.is_empty());
         assert!(pp.items.iter().any(|i| !i.points.is_empty()));
         assert!(!pp.safety.drive_allowed_display_only);
-        assert_eq!(snap.planned_path_producer.status, "attached");
+        assert_eq!(snap.planned_path_producer.status, "offline_fixture");
         assert_eq!(
             snap.planned_path_producer.source.as_deref(),
             Some("offline_graph")
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(parsed["planned_path"]["source"], "offline_graph");
         assert_eq!(
             parsed["planned_path_producer"]["status"],
-            "attached"
+            "offline_fixture"
         );
     }
 
@@ -172,18 +172,22 @@ mod tests {
         };
         let status = evaluate_status(&RawStatusInputs {
             perf: Some(perf),
-            route: Some(route),
+            route: Some(route.clone()),
             telemetry_shm_present: true,
         });
-        let lane = build_lane_debug(None, &status);
+        let lane = build_lane_debug(Some(&route), &status);
         let snap = OverlaySnapshot {
             lane_keeper_allowed: lane_keeper_allowed(&status, &lane),
             verdict: status.verdict,
             status: status.clone(),
             lane: lane.clone(),
-            planned_path: Some(build_planned_path_overlay(&status, &lane)),
+            planned_path: Some(build_planned_path_overlay(
+                &status,
+                &lane,
+                Some(&route),
+            )),
             planned_path_producer: PlannedPathProducerStatus {
-                status: "attached".into(),
+                status: "offline_fixture".into(),
                 source: Some("offline_graph".into()),
                 reason: None,
             },
