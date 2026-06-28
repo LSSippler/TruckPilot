@@ -57,6 +57,7 @@ pub fn run() {
             commands::open_external_dashboard,
             commands::close_external_dashboard,
             commands::toggle_overlay,
+            commands::overlay_set_layout_editor,
             commands::daemon_status,
             commands::daemon_start,
             commands::daemon_stop,

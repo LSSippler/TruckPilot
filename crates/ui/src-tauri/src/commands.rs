@@ -63,6 +63,12 @@ pub async fn toggle_overlay(app: AppHandle) -> Result<(), String> {
     window_manager::toggle_overlay(&app).map_err(|e| e.to_string())
 }
 
+/// When layout editor is active, the overlay must receive mouse events (drag/zoom).
+#[tauri::command]
+pub async fn overlay_set_layout_editor(app: AppHandle, enabled: bool) -> Result<(), String> {
+    window_manager::set_overlay_layout_editor(&app, enabled).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn daemon_status(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
     Ok(daemon.status())

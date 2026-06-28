@@ -37,38 +37,292 @@
     "lane_model_valid": false,
     "ego_offset_m": 0.0,
     "centerline_points": [
-      { "x": 0.0, "z": 0.0 },
-      { "x": 0.0, "z": 20.0 },
-      { "x": 5.0, "z": 40.0 },
-      { "x": 15.0, "z": 60.0 },
-      { "x": 30.0, "z": 80.0 }
+      {
+        "x": 0.0,
+        "z": 0.0
+      },
+      {
+        "x": 0.0,
+        "z": 20.0
+      },
+      {
+        "x": 5.0,
+        "z": 40.0
+      },
+      {
+        "x": 15.0,
+        "z": 60.0
+      },
+      {
+        "x": 30.0,
+        "z": 80.0
+      }
     ],
     "left_lane_points": [
-      { "x": -1.85, "z": 0.0 },
-      { "x": -1.85, "z": 20.0 },
-      { "x": 3.15, "z": 40.0 },
-      { "x": 13.15, "z": 60.0 },
-      { "x": 28.15, "z": 80.0 }
+      {
+        "x": -1.85,
+        "z": 0.0
+      },
+      {
+        "x": -1.85,
+        "z": 20.0
+      },
+      {
+        "x": 3.15,
+        "z": 40.0
+      },
+      {
+        "x": 13.15,
+        "z": 60.0
+      },
+      {
+        "x": 28.15,
+        "z": 80.0
+      }
     ],
     "right_lane_points": [
-      { "x": 1.85, "z": 0.0 },
-      { "x": 1.85, "z": 20.0 },
-      { "x": 6.85, "z": 40.0 },
-      { "x": 16.85, "z": 60.0 },
-      { "x": 31.85, "z": 80.0 }
+      {
+        "x": 1.85,
+        "z": 0.0
+      },
+      {
+        "x": 1.85,
+        "z": 20.0
+      },
+      {
+        "x": 6.85,
+        "z": 40.0
+      },
+      {
+        "x": 16.85,
+        "z": 60.0
+      },
+      {
+        "x": 31.85,
+        "z": 80.0
+      }
     ],
     "curvature": 0.002,
     "lookahead_m": 80.0,
-    "node_ids": [101, 102, 103, 104, 105],
+    "node_ids": [
+      101,
+      102,
+      103,
+      104,
+      105
+    ],
     "spline_segments": [
-      { "start_idx": 0, "end_idx": 1, "length_m": 20.0 },
-      { "start_idx": 1, "end_idx": 2, "length_m": 20.615528128088304 },
-      { "start_idx": 2, "end_idx": 3, "length_m": 22.360679774997898 },
-      { "start_idx": 3, "end_idx": 4, "length_m": 25.0 }
+      {
+        "start_idx": 0,
+        "end_idx": 1,
+        "length_m": 20.0
+      },
+      {
+        "start_idx": 1,
+        "end_idx": 2,
+        "length_m": 20.615528128088304
+      },
+      {
+        "start_idx": 2,
+        "end_idx": 3,
+        "length_m": 22.360679774997898
+      },
+      {
+        "start_idx": 3,
+        "end_idx": 4,
+        "length_m": 25.0
+      }
     ],
     "source": "mock",
     "confidence": 0.0
   },
   "lane_keeper_allowed": false,
-  "verdict": "unavailable"
+  "verdict": "unavailable",
+  "planned_path": {
+    "valid": true,
+    "source": "offline_graph",
+    "route_id": "offline-graph-mini-v1",
+    "current_index": 1,
+    "lookahead_m": 80.0,
+    "items": [
+      {
+        "id": 1,
+        "kind": "road_edge",
+        "node_uid_start": 10001,
+        "node_uid_end": 10002,
+        "length_m": 120.0,
+        "curvature_1pm": 0.0,
+        "points": [
+          {
+            "x": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 0.0,
+            "z": 20.0
+          },
+          {
+            "x": 0.0,
+            "z": 40.0
+          },
+          {
+            "x": 0.0,
+            "z": 60.0
+          },
+          {
+            "x": 0.0,
+            "z": 80.0
+          },
+          {
+            "x": 0.0,
+            "z": 100.0
+          },
+          {
+            "x": 0.0,
+            "z": 120.0
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "kind": "road_edge",
+        "node_uid_start": 10002,
+        "node_uid_end": 10003,
+        "length_m": 63.64,
+        "curvature_1pm": 0.00826898230594723,
+        "points": [
+          {
+            "x": 0.0,
+            "z": 120.0
+          },
+          {
+            "x": 7.5,
+            "z": 127.5
+          },
+          {
+            "x": 15.0,
+            "z": 135.0
+          },
+          {
+            "x": 22.5,
+            "z": 142.5
+          },
+          {
+            "x": 30.0,
+            "z": 150.0
+          },
+          {
+            "x": 37.5,
+            "z": 157.5
+          },
+          {
+            "x": 45.0,
+            "z": 165.0
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "kind": "junction",
+        "node_uid_start": 10003,
+        "node_uid_end": 10004,
+        "prefab_uid": 9001,
+        "length_m": 50.0,
+        "curvature_1pm": 0.004029605467546487,
+        "semaphore_hint": "semaphore #7",
+        "points": [
+          {
+            "x": 45.0,
+            "z": 165.0
+          },
+          {
+            "x": 60.0,
+            "z": 166.0
+          },
+          {
+            "x": 78.0,
+            "z": 166.0
+          },
+          {
+            "x": 95.0,
+            "z": 165.0
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "kind": "lane_change",
+        "node_uid_start": 10004,
+        "node_uid_end": 10005,
+        "length_m": 28.299999237060547,
+        "curvature_1pm": 0.010234765854455704,
+        "points": [
+          {
+            "x": 95.0,
+            "z": 165.0
+          },
+          {
+            "x": 103.0,
+            "z": 172.0
+          },
+          {
+            "x": 110.0,
+            "z": 179.0
+          },
+          {
+            "x": 115.0,
+            "z": 185.0
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "kind": "nav_curve",
+        "node_uid_start": 10005,
+        "node_uid_end": 10006,
+        "curve_index": 128,
+        "length_m": 75.0,
+        "curvature_1pm": 0.00398942948787271,
+        "semaphore_hint": "semaphore #12",
+        "points": [
+          {
+            "x": 115.0,
+            "z": 185.0
+          },
+          {
+            "x": 116.5,
+            "z": 210.0
+          },
+          {
+            "x": 115.5,
+            "z": 235.0
+          },
+          {
+            "x": 115.0,
+            "z": 260.0
+          }
+        ]
+      }
+    ],
+    "nearest": {
+      "item_id": 2,
+      "distance_along_m": 12.0,
+      "crosstrack_m": -0.08,
+      "heading_error_rad": 0.03,
+      "confidence": 0.9
+    },
+    "safety": {
+      "route_valid": false,
+      "lane_model_valid": false,
+      "resolver_safe": true,
+      "telemetry_fresh": true,
+      "input_allowed": false,
+      "drive_allowed_display_only": false,
+      "reasons": [
+        "route invalid",
+        "lane model invalid",
+        "input disabled"
+      ]
+    }
+  }
 }
