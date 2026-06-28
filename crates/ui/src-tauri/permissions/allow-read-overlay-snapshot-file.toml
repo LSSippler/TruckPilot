@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-read-overlay-snapshot-file"
+description = "Read overlay snapshot JSON from truckpilot-status --overlay-loop (read-only file read)."
+commands.allow = ["read_overlay_snapshot_file"]

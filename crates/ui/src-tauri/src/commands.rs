@@ -69,6 +69,12 @@ pub async fn overlay_set_layout_editor(app: AppHandle, enabled: bool) -> Result<
     window_manager::set_overlay_layout_editor(&app, enabled).map_err(|e| e.to_string())
 }
 
+/// Read overlay snapshot JSON written by `truckpilot-status --overlay-loop` (read-only).
+#[tauri::command]
+pub fn read_overlay_snapshot_file(path: Option<String>) -> Result<Option<String>, String> {
+    crate::overlay_snapshot_file::read_overlay_snapshot_file(path)
+}
+
 #[tauri::command]
 pub async fn daemon_status(daemon: State<'_, Arc<DaemonManager>>) -> Result<DaemonStatus, String> {
     Ok(daemon.status())

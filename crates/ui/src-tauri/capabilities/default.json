@@ -12,6 +12,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-close",
+    "allow-read-overlay-snapshot-file",
     "dialog:default",
     "fs:default",
     "fs:allow-write-text-file",
