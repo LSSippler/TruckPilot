@@ -41,8 +41,13 @@ crates/map-parser/tests/fixtures/*.bin
 
 # AI assistant history (per-user, not for the repo)
 .aider*
-.claude/settings.local.json
+.claude/
 .opencode/
+.cursor/
+
+# Local vision / ML artifacts (not in VCS; archive externally)
+tools/vision-training-collector/data/
+tools/ufld-test/models/
 
 # Operator-local one-off scripts (kept on disk, not in VCS)
 featherless-models.json
@@ -59,9 +64,7 @@ crates/ui/build/
 node_modules/
 
 # Compiled plugin DLLs / SOs at top-level (built artifacts)
-plugins/*.so
-plugins/*.dll
-plugins/*.dylib
+plugins/
 
 # Old-Rust-1.x experimentation
 hashfs_reader/target/
@@ -69,11 +72,15 @@ hashfs_reader/target/
 # Android Gradle wrapper artifacts handled per-project
 
 graph.json
+graph.*.json
 hashes.txt
 parse_full.txt
 
 # Phase 5.x diagnostic dumps written by `truckpilot-road-dump` etc.
 outputs/
+
+# Graphify AST cache (regenerated via `graphify update`)
+graphify-out/cache/
 
 # Diagnostic/tool-generated files at repo root (legacy locations)
 parse_output.txt
@@ -133,7 +140,8 @@ stats.db
 .claude/worktrees/
 
 # Test artifacts
-capture_frames/
+capture_frames*/
+baselines/
 tools/cvat-setup/vendor/
 tools/model-tools/sign_crops/
 tools/model-tools/sign_crops_labeled/
