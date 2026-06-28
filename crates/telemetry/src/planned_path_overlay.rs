@@ -208,12 +208,11 @@ pub fn try_build_planned_path_overlay(
 
     let gate_reason = live_route_gate_failure(route, status);
     let mut build = build_offline_fixture_path(safety);
-    if gate_reason == Some("resolver safe-off mode; live route not consumed") {
+    if gate_reason == Some("resolver safe-off mode; live route not consumed")
+        || gate_reason == Some("route blackboard SHM not available")
+    {
         build.status = producer_status::OFFLINE_FIXTURE;
-        build.skip_reason = None;
-    } else if gate_reason == Some("route blackboard SHM not available") {
-        build.status = producer_status::OFFLINE_FIXTURE;
-        build.skip_reason = None;
+        build.skip_reason = gate_reason;
     } else if let Some(reason) = gate_reason {
         build.status = producer_status::LIVE_ROUTE_UNAVAILABLE;
         build.skip_reason = Some(reason);
@@ -326,7 +325,11 @@ mod tests {
             build.data.as_ref().unwrap().source,
             PlannedPathSource::OfflineGraph
         );
-        assert!(build.skip_reason.is_none());
+        assert_eq!(
+            build.skip_reason,
+            Some("resolver safe-off mode; live route not consumed"),
+            "resolver-off reason must surface even for expected fallback"
+        );
     }
 
     #[test]
@@ -444,6 +447,85 @@ mod tests {
         let json = format_overlay_json(&snap);
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert!(parsed.get("planned_path").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Route blackboard availability diagnostics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn route_bb_unavailable_uses_offline_fixture_with_reason() {
+        // No route SHM → route_bb_available = false
+        let status = evaluate_status(&crate::status_report::RawStatusInputs::default());
+        let lane = build_lane_debug(None, &status);
+        let build = try_build_planned_path_overlay(&status, &lane, None);
+        assert_eq!(build.status, producer_status::OFFLINE_FIXTURE);
+        assert_eq!(build.source, Some(producer_source::OFFLINE_GRAPH));
+        assert_eq!(
+            build.skip_reason,
+            Some("route blackboard SHM not available"),
+            "BB unavailable reason must surface in producer.reason"
+        );
+    }
+
+    #[test]
+    fn route_invalid_in_shm_uses_live_route_unavailable_with_reason() {
+        // Route BB available, resolver active (not safe-mode), but valid=false.
+        // resolve_status != DISABLED_SAFE_MODE → resolver_off = false.
+        let route = RouteSnapshot {
+            bb_status: ROUTE_BB_STATUS_DLL_ACTIVE,
+            resolve_status: RESOLVE_WAYPOINTS_COLLECTED,
+            valid: false,
+            ..Default::default()
+        };
+        let status = evaluate_status(&crate::status_report::RawStatusInputs {
+            #[cfg(windows)]
+            perf: None,
+            route: Some(route.clone()),
+            telemetry_shm_present: true,
+        });
+        let lane = build_lane_debug(Some(&route), &status);
+        let build = try_build_planned_path_overlay(&status, &lane, Some(&route));
+        assert_eq!(build.status, producer_status::LIVE_ROUTE_UNAVAILABLE);
+        assert_eq!(build.source, Some(producer_source::OFFLINE_GRAPH));
+        assert_eq!(
+            build.skip_reason,
+            Some("route not valid in SHM"),
+            "invalid route reason must surface in producer.reason"
+        );
+    }
+
+    #[test]
+    fn route_no_positioned_waypoints_uses_live_route_candidate_with_reason() {
+        // Route BB available, resolver active, route valid, but waypoints have no positions.
+        let route = RouteSnapshot {
+            valid: true,
+            bb_status: ROUTE_BB_STATUS_DLL_ACTIVE,
+            resolve_status: RESOLVE_WAYPOINTS_COLLECTED,
+            waypoints: vec![
+                RouteWaypoint { uid: 1, flags: 0, ..Default::default() },
+                RouteWaypoint { uid: 2, flags: 0, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let status = evaluate_status(&crate::status_report::RawStatusInputs {
+            #[cfg(windows)]
+            perf: None,
+            route: Some(route.clone()),
+            telemetry_shm_present: true,
+        });
+        let lane = build_lane_debug(Some(&route), &status);
+        let build = try_build_planned_path_overlay(&status, &lane, Some(&route));
+        assert_eq!(build.status, producer_status::LIVE_ROUTE_CANDIDATE);
+        assert_eq!(build.source, Some(producer_source::OFFLINE_GRAPH));
+        assert!(
+            build.skip_reason.is_some(),
+            "no-position waypoints reason must surface in producer.reason"
+        );
+        assert!(
+            build.skip_reason.unwrap().contains("positioned"),
+            "reason must mention positioned waypoints"
+        );
     }
 
     #[test]

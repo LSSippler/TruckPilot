@@ -289,3 +289,65 @@ commit results on a new docs branch (do not reuse merged MRs).
 If attach fails despite route_bb_available=true, document producer_reason/resolver_off/waypoint_count
 before considering producer changes.
 ```
+
+## Route Blackboard Availability — Diagnostics Reference
+
+### GPS route in ETS2 is not sufficient
+
+A GPS route visible in ETS2 does NOT automatically mean `live_route_attached`. The route pipeline
+requires the telemetry DLL to publish waypoints into `Local\TruckPilotRouteBlackboard`.
+
+### Gate checks (in order)
+
+```text
+1. route_bb_available = false   → fallback: offline_fixture
+                                  producer.reason: "route blackboard SHM not available"
+                                  Cause: DLL not loaded, ETS2 not running, or SHM not created.
+
+2. resolver_off = true          → fallback: offline_fixture
+                                  producer.reason: "resolver safe-off mode; live route not consumed"
+                                  Cause: crash-safe mode active (default); no memory scans run.
+                                  resolve_status = route_resolver_disabled_safe_mode.
+
+3. verdict != safe_cold         → fallback: live_route_unavailable
+                                  producer.reason: "status verdict is not safe_cold"
+                                  Cause: resolver active (hot) or other hotness detected.
+
+4. route_valid = false          → fallback: live_route_unavailable
+                                  producer.reason: "route not valid in SHM"
+                                  Cause: DLL active but no valid route published.
+
+5. waypoints empty              → fallback: live_route_unavailable
+                                  producer.reason: "route has no waypoints"
+
+6. waypoints have no positions  → fallback: live_route_candidate (offline_graph geometry)
+                                  producer.reason: "route has UIDs but fewer than 2 positioned waypoints..."
+```
+
+### producer.reason is always set since 2026-06-28
+
+Previously, cases 1 and 2 (the two "expected" fallback states) swallowed `producer.reason` and it
+appeared absent in the overlay JSON. As of this branch, `producer.reason` is set for ALL gate
+failures, so the cause is always machine-readable.
+
+Example JSON showing the reason:
+
+```json
+{
+  "planned_path_producer": {
+    "status": "offline_fixture",
+    "source": "offline_graph",
+    "reason": "resolver safe-off mode; live route not consumed"
+  }
+}
+```
+
+### Checking via CLI
+
+```powershell
+cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay | ConvertFrom-Json | Select-Object -ExpandProperty planned_path_producer
+```
+
+```powershell
+cargo run -p truckpilot-telemetry --bin route-shm-dump -- --once
+```
