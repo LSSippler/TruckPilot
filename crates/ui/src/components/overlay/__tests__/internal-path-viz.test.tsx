@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import { InternalPathVisualization } from "@/components/overlay/InternalPathVisualization";
 import {
   buildInternalVizModel,
@@ -12,15 +14,27 @@ import {
   createViewportTransform,
   DISPLAY_CURVATURE_HIGH_1PM,
   DISPLAY_CURVATURE_MEDIUM_1PM,
+  heatmapOverlayForSeverity,
   isInternalPathVisualizationEnabled,
   mapWorldToSvg,
   resolveCurrentItemMeta,
+  resolveHeatmapEnabledFromSearch,
+  segmentStyleForKind,
 } from "@/components/overlay/internal-path-viz";
 import {
   loadOverlaySnapshotFixture,
   parseOverlaySnapshot,
   type OverlaySnapshot,
 } from "@/components/overlay/overlay-snapshot";
+
+function renderInternalViz(
+  ui: ReactElement,
+  search = "overlay_snapshot=fixture&overlay_visualization=internal",
+) {
+  return renderToStaticMarkup(
+    <MemoryRouter initialEntries={[`/overlay?${search}`]}>{ui}</MemoryRouter>,
+  );
+}
 
 describe("internal-path-viz utilities", () => {
   it("computeBounds returns default for empty path", () => {
@@ -98,13 +112,44 @@ describe("curvature stats", () => {
     expect(classifyCurvatureSeverity(0.02)).toBe("high");
   });
 
-  it("applies high severity styling on offline fixture segments", () => {
+  it("applies high severity styling on offline fixture segments when heatmap off", () => {
     const snap = loadOverlaySnapshotFixture();
-    const model = buildInternalVizModel(snap, 420, 380);
+    const model = buildInternalVizModel(snap, 420, 380, 28, 1, false);
     expect(model.plannedSegments.some((s) => s.severity === "high")).toBe(true);
     expect(
       model.plannedSegments.some((s) => s.severity === "high" && s.style.width >= 3),
     ).toBe(true);
+  });
+});
+
+describe("curvature heatmap", () => {
+  it("adds heatmap overlay for high curvature segments", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const model = buildInternalVizModel(snap, 420, 380, 28, 1, true);
+    const high = model.plannedSegments.filter((s) => s.severity === "high");
+    expect(high.length).toBeGreaterThan(0);
+    expect(high.every((s) => s.heatmap?.showMidpointRing)).toBe(true);
+    expect(high.every((s) => s.heatmap?.showTick)).toBe(true);
+  });
+
+  it("dims unknown curvature and keeps kind stroke readable with heatmap on", () => {
+    const style = segmentStyleForKind("junction", {
+      current: false,
+      dimmed: false,
+      severity: "unknown",
+      heatmapEnabled: true,
+    });
+    expect(style.stroke).toBe("#fbbf24");
+    expect(style.opacity).toBeLessThan(1);
+    const overlay = heatmapOverlayForSeverity("unknown", true);
+    expect(overlay?.dimBase).toBe(true);
+  });
+
+  it("disables heatmap overlays when toggled off in model", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const model = buildInternalVizModel(snap, 420, 380, 28, 1, false);
+    expect(model.heatmapEnabled).toBe(false);
+    expect(model.plannedSegments.every((s) => s.heatmap == null)).toBe(true);
   });
 });
 
@@ -145,23 +190,36 @@ describe("isInternalPathVisualizationEnabled", () => {
   });
 });
 
+describe("resolveHeatmapEnabledFromSearch", () => {
+  it("defaults to on and accepts overlay_heatmap=0/1", () => {
+    expect(resolveHeatmapEnabledFromSearch(new URLSearchParams(""))).toBe(true);
+    expect(
+      resolveHeatmapEnabledFromSearch(new URLSearchParams("overlay_heatmap=0")),
+    ).toBe(false);
+    expect(
+      resolveHeatmapEnabledFromSearch(new URLSearchParams("overlay_heatmap=1")),
+    ).toBe(true);
+    expect(
+      resolveHeatmapEnabledFromSearch(new URLSearchParams("overlay_heatmap=off")),
+    ).toBe(false);
+  });
+});
+
 describe("InternalPathVisualization", () => {
   it("renders without planned_path (lane only)", () => {
     const minimal: OverlaySnapshot = {
       ...loadOverlaySnapshotFixture(),
       planned_path: undefined,
     };
-    const html = renderToStaticMarkup(
-      <InternalPathVisualization snapshot={minimal} />,
-    );
+    const html = renderInternalViz(<InternalPathVisualization snapshot={minimal} />);
     expect(html).toContain("No PlannedPathData");
     expect(html).toContain("Internal Visualization");
     expect(html).not.toContain("Curv 1/m");
   });
 
-  it("renders fixture with stats, OFFLINE badge, and drive display no", () => {
+  it("renders fixture with stats, OFFLINE badge, heatmap legend, and drive display no", () => {
     const snap = loadOverlaySnapshotFixture();
-    const html = renderToStaticMarkup(<InternalPathVisualization snapshot={snap} />);
+    const html = renderInternalViz(<InternalPathVisualization snapshot={snap} />);
     expect(html).toContain("OFFLINE");
     expect(html).not.toContain(">MOCK<");
     expect(html).toContain("n10001");
@@ -169,6 +227,45 @@ describe("InternalPathVisualization", () => {
     expect(html).toContain("Curv 1/m");
     expect(html).toContain("Items 5");
     expect(html).toContain("Current:");
+    expect(html).toContain("Drive (display): no");
+    expect(html).toContain("κ heatmap");
+    expect(html).toContain("display-only");
+    expect(html).toContain("Heatmap: on");
+    expect(html).not.toContain("<button");
+  });
+
+  it("shows non-interactive heatmap off label when overlay_heatmap=0", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const html = renderInternalViz(
+      <InternalPathVisualization snapshot={snap} />,
+      "overlay_snapshot=fixture&overlay_visualization=internal&overlay_heatmap=0",
+    );
+    expect(html).toContain("Heatmap: off");
+    expect(html).not.toContain("κ heatmap");
+    expect(html).not.toContain("<button");
+  });
+
+  it("renders clickable heatmap toggle only in layout editor mode", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const html = renderInternalViz(
+      <InternalPathVisualization snapshot={snap} editorMode />,
+    );
+    expect(html).toContain("<button");
+    expect(html).toContain("Heatmap: on");
+  });
+
+  it("keeps item kind labels visible with heatmap enabled", () => {
+    const snap = loadOverlaySnapshotFixture();
+    const html = renderInternalViz(<InternalPathVisualization snapshot={snap} />);
+    expect(html).toContain("#4");
+    expect(html).toContain("n10004");
+    expect(html).toContain(" H");
+  });
+
+  it("does not change drive_allowed_display_only text", () => {
+    const snap = loadOverlaySnapshotFixture();
+    expect(snap.planned_path?.safety.drive_allowed_display_only).toBe(false);
+    const html = renderInternalViz(<InternalPathVisualization snapshot={snap} />);
     expect(html).toContain("Drive (display): no");
   });
 

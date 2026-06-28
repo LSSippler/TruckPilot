@@ -1,8 +1,11 @@
-import { useCallback, useMemo, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   buildInternalVizModel,
+  CURVATURE_HEATMAP_LEGEND,
   formatPositionLabel,
   formatSpeedLabel,
+  resolveHeatmapEnabledFromSearch,
   resolveTruckWorldPoint,
   type InternalVizModel,
 } from "./internal-path-viz";
@@ -73,16 +76,84 @@ function Legend() {
   );
 }
 
+function CurvatureHeatmapLegend({ enabled }: { enabled: boolean }) {
+  if (!enabled) return null;
+  return (
+    <g transform={`translate(${BOX_W - 118}, 132)`} aria-label="Curvature heatmap legend">
+      <text x={0} y={0} fill="rgba(255,255,255,0.5)" fontSize={8}>
+        κ heatmap
+      </text>
+      {CURVATURE_HEATMAP_LEGEND.map((e, i) => (
+        <g key={e.severity} transform={`translate(0, ${8 + i * 12})`}>
+          <line x1={0} y1={6} x2={12} y2={6} stroke={e.color} strokeWidth={3} strokeLinecap="round" />
+          <text x={16} y={9} fill="rgba(255,255,255,0.6)" fontSize={8}>
+            {e.label}
+          </text>
+        </g>
+      ))}
+      <text x={0} y={62} fill="rgba(255,255,255,0.4)" fontSize={7}>
+        display-only
+      </text>
+    </g>
+  );
+}
+
+function HeatmapControl({
+  enabled,
+  interactive,
+  onToggle,
+}: {
+  enabled: boolean;
+  interactive: boolean;
+  onToggle?: () => void;
+}) {
+  const label = `Heatmap: ${enabled ? "on" : "off"}`;
+  if (!interactive) {
+    return (
+      <text
+        x={BOX_W - 12}
+        y={16}
+        textAnchor="end"
+        fill={enabled ? "rgba(251, 191, 36, 0.75)" : "rgba(255,255,255,0.45)"}
+        fontSize={9}
+        aria-label={`Curvature heatmap ${enabled ? "on" : "off"} (display only)`}
+      >
+        {label}
+      </text>
+    );
+  }
+  return (
+    <foreignObject x={BOX_W - 108} y={4} width={96} height={22}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn(
+          "pointer-events-auto rounded px-1.5 py-0.5 text-[9px] font-medium leading-none",
+          enabled
+            ? "bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/40"
+            : "bg-white/5 text-white/50 ring-1 ring-white/10",
+        )}
+        aria-pressed={enabled}
+        aria-label={`Curvature heatmap ${enabled ? "on" : "off"}`}
+      >
+        {label}
+      </button>
+    </foreignObject>
+  );
+}
+
 function PolylinePath({
   points,
   stroke,
   width,
   dashed,
+  opacity = 1,
 }: {
   points: [number, number][];
   stroke: string;
   width: number;
   dashed: boolean;
+  opacity?: number;
 }) {
   if (points.length < 2) return null;
   const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p[0]} ${p[1]}`).join(" ");
@@ -92,11 +163,17 @@ function PolylinePath({
       fill="none"
       stroke={stroke}
       strokeWidth={width}
+      strokeOpacity={opacity}
       strokeDasharray={dashed ? "6 4" : undefined}
       strokeLinecap="round"
       strokeLinejoin="round"
     />
   );
+}
+
+function segmentMidpoint(points: [number, number][]): [number, number] | null {
+  if (points.length === 0) return null;
+  return points[Math.floor(points.length / 2)] ?? null;
 }
 
 function StatsBlock({ model }: { model: InternalVizModel }) {
@@ -152,11 +229,21 @@ export function InternalPathVisualization({
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
 }) {
+  const [searchParams] = useSearchParams();
+  const heatmapFromUrl = resolveHeatmapEnabledFromSearch(searchParams);
   const mapZoom = clampVizZoom(zoom);
+  const [editorHeatmap, setEditorHeatmap] = useState(heatmapFromUrl);
+  useEffect(() => {
+    setEditorHeatmap(heatmapFromUrl);
+  }, [heatmapFromUrl]);
+  const heatmapEnabled = editorMode ? editorHeatmap : heatmapFromUrl;
   const model = useMemo(
-    () => buildInternalVizModel(snapshot, BOX_W, BOX_H, 28, mapZoom),
-    [snapshot, mapZoom],
+    () => buildInternalVizModel(snapshot, BOX_W, BOX_H, 28, mapZoom, heatmapEnabled),
+    [snapshot, mapZoom, heatmapEnabled],
   );
+  const toggleHeatmap = useCallback(() => {
+    setEditorHeatmap((v) => !v);
+  }, []);
   const position = formatPositionLabel(resolveTruckWorldPoint(snapshot));
   const speed = formatSpeedLabel(snapshot);
   const headerY = model.sourceBadge ? 46 : 34;
@@ -200,6 +287,11 @@ export function InternalPathVisualization({
         <text x={12} y={18} fill="rgba(255,255,255,0.95)" fontSize={12} fontWeight={600}>
           Internal Visualization
         </text>
+        <HeatmapControl
+          enabled={heatmapEnabled}
+          interactive={editorMode}
+          onToggle={toggleHeatmap}
+        />
         <SourceBadge badge={model.sourceBadge} />
         <text x={12} y={headerY} fill="rgba(255,255,255,0.6)" fontSize={10}>
           Speed: {speed} · Pos: {position}
@@ -226,6 +318,7 @@ export function InternalPathVisualization({
 
         <GridLines model={model} />
         <Legend />
+        <CurvatureHeatmapLegend enabled={heatmapEnabled} />
 
         {model.lanePolylines.map((line) => (
           <PolylinePath
@@ -245,11 +338,21 @@ export function InternalPathVisualization({
 
         {model.plannedSegments.map((seg) => (
           <g key={`seg-${seg.id}`}>
+            {seg.heatmap ? (
+              <PolylinePath
+                points={seg.points}
+                stroke={seg.heatmap.stroke}
+                width={seg.heatmap.width}
+                dashed={false}
+                opacity={seg.heatmap.opacity}
+              />
+            ) : null}
             <PolylinePath
               points={seg.points}
               stroke={seg.style.stroke}
               width={seg.style.width}
               dashed={seg.style.dashed}
+              opacity={seg.style.opacity}
             />
             {seg.points.length > 0 ? (
               <>
@@ -260,7 +363,7 @@ export function InternalPathVisualization({
                     cy={p[1]}
                     r={seg.isCurrent ? 3 : 2}
                     fill={seg.style.stroke}
-                    opacity={0.85}
+                    opacity={seg.style.opacity * 0.85}
                   />
                 ))}
                 <text
@@ -271,16 +374,45 @@ export function InternalPathVisualization({
                 >
                   {seg.label}
                 </text>
-                {seg.severity === "high" && seg.points.length > 0 ? (
-                  <circle
-                    cx={seg.points[Math.floor(seg.points.length / 2)]![0]}
-                    cy={seg.points[Math.floor(seg.points.length / 2)]![1]}
-                    r={4}
-                    fill="none"
-                    stroke="rgba(248,113,113,0.9)"
-                    strokeWidth={1.5}
-                  />
-                ) : null}
+                {seg.heatmap?.showTick
+                  ? (() => {
+                      const mid = segmentMidpoint(seg.points);
+                      if (!mid) return null;
+                      return (
+                        <line
+                          x1={mid[0] - 3}
+                          y1={mid[1]}
+                          x2={mid[0] + 3}
+                          y2={mid[1]}
+                          stroke={seg.heatmap!.stroke}
+                          strokeWidth={2}
+                          strokeLinecap="round"
+                        />
+                      );
+                    })()
+                  : null}
+                {(seg.heatmap?.showMidpointRing ||
+                  (!heatmapEnabled && seg.severity === "high")) &&
+                seg.points.length > 0
+                  ? (() => {
+                      const mid = segmentMidpoint(seg.points);
+                      if (!mid) return null;
+                      return (
+                        <circle
+                          cx={mid[0]}
+                          cy={mid[1]}
+                          r={4}
+                          fill="none"
+                          stroke={
+                            seg.heatmap?.showMidpointRing
+                              ? seg.heatmap.stroke
+                              : "rgba(248,113,113,0.9)"
+                          }
+                          strokeWidth={1.5}
+                        />
+                      );
+                    })()
+                  : null}
               </>
             ) : null}
           </g>
