@@ -14,6 +14,11 @@
 //   paste into DevTools → localStorage.setItem("truckpilot.overlay_snapshot_json", `<json>`)
 //   open /overlay?overlay_snapshot=storage
 //
+// Continuous read-only producer (CLI, no Tauri yet):
+//   cargo run -p truckpilot-telemetry --bin truckpilot-status -- --overlay-loop
+//   writes JSON every 2s to %LOCALAPPDATA%/TruckPilot/overlay_snapshot.json (Windows)
+//   or ~/.local/share/TruckPilot/overlay_snapshot.json (Linux). Tauri live bridge follows.
+//
 // File import (SnapshotDebugPanel → "Import JSON"):
 //   validates via parseOverlaySnapshot, writes localStorage, re-renders like storage mode.
 

@@ -5,12 +5,29 @@
 //! [`StatusReport`] — no resolver activation, no ETS2 memory reads.
 
 use truckpilot_plugin_api::planned_path::{
-    build_offline_fixture_v1, with_safety, PlannedPathData, PlannedPathSafety,
+    build_offline_fixture_v1, with_safety, PlannedPathData, PlannedPathSafety, PlannedPathSource,
 };
 
 use crate::lane_debug::LaneDebugSnapshot;
 use crate::preflight::{evaluate_preflight, PreflightDisplay};
 use crate::status_report::StatusReport;
+
+/// Result of a read-only planned-path build for overlay snapshots.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedPathOverlayBuild {
+    /// Built path when geometry is valid; absent when skipped.
+    pub data: Option<PlannedPathData>,
+    /// `attached` when geometry is present; `skipped` when absent.
+    pub status: &'static str,
+    /// Producer label when attached (`offline_graph`).
+    pub source: Option<&'static str>,
+    /// Human-readable skip reason when `data` is absent.
+    pub skip_reason: Option<&'static str>,
+}
+
+fn planned_path_has_geometry(data: &PlannedPathData) -> bool {
+    !data.items.is_empty() && data.items.iter().any(|item| !item.points.is_empty())
+}
 
 /// Map preflight display fields into [`PlannedPathSafety`].
 pub fn safety_from_preflight(p: &PreflightDisplay) -> PlannedPathSafety {
@@ -25,11 +42,13 @@ pub fn safety_from_preflight(p: &PreflightDisplay) -> PlannedPathSafety {
     }
 }
 
-/// Build overlay planned path: offline-graph fixture geometry + live safety mirror.
-pub fn build_planned_path_overlay(
+/// Try to build overlay planned path: offline-graph fixture geometry + live safety mirror.
+///
+/// Never panics — returns `None` when embedded fixture geometry is empty.
+pub fn try_build_planned_path_overlay(
     status: &StatusReport,
     lane: &LaneDebugSnapshot,
-) -> PlannedPathData {
+) -> PlannedPathOverlayBuild {
     let preflight = evaluate_preflight(status);
     let mut safety = safety_from_preflight(&preflight);
     if preflight.lane_model_valid.is_none() {
@@ -39,7 +58,39 @@ pub fn build_planned_path_overlay(
             safety.drive_allowed_display_only = false;
         }
     }
-    with_safety(build_offline_fixture_v1(), safety)
+    let data = with_safety(build_offline_fixture_v1(), safety);
+    if !planned_path_has_geometry(&data) {
+        return PlannedPathOverlayBuild {
+            data: None,
+            status: "skipped",
+            source: None,
+            skip_reason: Some("offline fixture produced empty geometry"),
+        };
+    }
+    if data.source != PlannedPathSource::OfflineGraph {
+        return PlannedPathOverlayBuild {
+            data: None,
+            status: "skipped",
+            source: None,
+            skip_reason: Some("planned path source is not offline_graph"),
+        };
+    }
+    PlannedPathOverlayBuild {
+        data: Some(data),
+        status: "attached",
+        source: Some("offline_graph"),
+        skip_reason: None,
+    }
+}
+
+/// Build overlay planned path: offline-graph fixture geometry + live safety mirror.
+pub fn build_planned_path_overlay(
+    status: &StatusReport,
+    lane: &LaneDebugSnapshot,
+) -> PlannedPathData {
+    try_build_planned_path_overlay(status, lane)
+        .data
+        .expect("offline_graph fixture must always produce geometry")
 }
 
 #[cfg(test)]
@@ -49,7 +100,7 @@ mod tests {
     use crate::dll_perf::{DllPerfSnapshot, DLL_PERF_MAGIC, DLL_PERF_VERSION};
     use crate::lane_debug::build_lane_debug;
     use crate::nav_route::{RESOLVE_ROUTE_RESOLVER_DISABLED_SAFE_MODE, ROUTE_BB_STATUS_DLL_ACTIVE, RouteSnapshot};
-    use crate::overlay_snapshot::{format_overlay_json, OverlaySnapshot};
+    use crate::overlay_snapshot::{format_overlay_json, OverlaySnapshot, PlannedPathProducerStatus};
     use crate::status_report::{evaluate_status, RawStatusInputs};
     use crate::lane_debug::lane_keeper_allowed;
     use truckpilot_plugin_api::planned_path::{
@@ -103,6 +154,11 @@ mod tests {
             status: status.clone(),
             lane: lane.clone(),
             planned_path: Some(build_planned_path_overlay(&status, &lane)),
+            planned_path_producer: PlannedPathProducerStatus {
+                status: "attached".into(),
+                source: Some("offline_graph".into()),
+                reason: None,
+            },
             lane_keeper_allowed: lane_keeper_allowed(&status, &lane),
             verdict: status.verdict,
         };
@@ -114,6 +170,16 @@ mod tests {
             parsed["planned_path"]["safety"]["drive_allowed_display_only"],
             false
         );
+        assert!(parsed["planned_path"]["items"].as_array().unwrap().len() > 0);
+        let point_count: usize = parsed["planned_path"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["points"].as_array().map(|a| a.len()).unwrap_or(0))
+            .sum();
+        assert!(point_count > 0);
+        assert_eq!(parsed["planned_path_producer"]["status"], "attached");
+        assert_eq!(parsed["status"]["resolver_attempts"], 0);
     }
 
     #[test]
@@ -124,6 +190,11 @@ mod tests {
             status,
             lane,
             planned_path: None,
+            planned_path_producer: PlannedPathProducerStatus {
+                status: "skipped".into(),
+                source: None,
+                reason: Some("test skip".into()),
+            },
             lane_keeper_allowed: false,
             verdict: crate::status_report::StatusVerdict::SafeCold,
         };
