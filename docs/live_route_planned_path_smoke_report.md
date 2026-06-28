@@ -1,8 +1,8 @@
 # Live Route PlannedPath Smoke Report
 
 Date: 2026-06-28
-Branch: docs/live-route-planned-path-smoke-results
-Base: dev-clean-base @ 3f36361 (includes producer !20 + smoke template !21)
+Branch: docs/live-route-planned-path-ets2-route-results
+Base: dev-clean-base @ 1d1ee41 (includes smoke results !22)
 
 ## Goal
 
@@ -126,6 +126,8 @@ lane_keeper_allowed = false
 
 ## Test Case B — ETS2 route active
 
+Branch: `docs/live-route-planned-path-ets2-route-results` (Case-B measurement only — no code changes).
+
 Steps:
 
 1. Start ETS2.
@@ -146,33 +148,79 @@ Internal Viz badges: LIVE · ROUTE_BLACKBOARD or LIVE · LIVE
 Drive (display): no
 ```
 
-### Observed
+### Observed (2026-06-28, Case-B branch)
 
 ```text
-NOT EXECUTED — ETS2 process not running during this smoke session (2026-06-28).
-No route blackboard SHM present (route_bb_available = false).
-Cannot validate live_route_attached without active ETS2 route + telemetry DLL publishing waypoints.
+Environment: ETS2 process not running (Get-Process eurotrucks2 → empty).
+Telemetry/route SHM unavailable (verdict: unavailable).
+Fresh truckpilot-status --overlay on current dev-clean-base build (post !22).
+Tauri Internal Viz not opened — no live game session to validate LIVE · LIVE badges.
 
-Prior stale overlay-loop (started before producer !20 merge) showed legacy producer.status = attached
-with offline_graph — replaced by stopping process and re-running current build for Case A.
+Diagnosis block (overlay JSON):
+  planned_path_source = offline_graph
+  route_id = offline-graph-mini-v1
+  items = 5
+  first_item_points = 7
+  producer_status = offline_fixture
+  producer_source = offline_graph
+  producer_reason = (absent)
+  route_bb_available = False
+  route_valid = False
+  waypoint_count = 0
+  resolver_off = False
+  resolve_status = unavailable
+  verdict = unavailable
+  drive_display = False
+```
+
+Root cause from status fields (not guessed):
+
+```text
+route_bb_available = false  → no route blackboard SHM reader input
+route_valid = false         → no valid route in SHM
+waypoint_count = 0          → no waypoints published
+producer_reason = absent    → offline_fixture path (no live route candidate)
+resolver_off = false        → N/A (SHM absent, not safe-off mode)
+verdict = unavailable       → no telemetry/route SHM present
 ```
 
 ### overlay_snapshot.json excerpt
 
 ```json
 {
-  "note": "Case B requires ETS2 running with GPS route and telemetry DLL active.",
-  "observed_during_session": {
+  "planned_path": {
+    "valid": true,
+    "source": "offline_graph",
+    "route_id": "offline-graph-mini-v1",
+    "item_count": 5,
+    "first_item_points": 7
+  },
+  "planned_path_producer": {
+    "status": "offline_fixture",
+    "source": "offline_graph"
+  },
+  "status": {
     "route_bb_available": false,
     "route_valid": false,
     "waypoint_count": 0,
-    "planned_path.source": "offline_graph",
-    "planned_path_producer.status": "offline_fixture"
+    "resolver_off": false,
+    "resolve_status": "unavailable",
+    "verdict": "unavailable"
+  },
+  "preflight": {
+    "drive_allowed_display": false
   }
 }
 ```
 
-**Result:** BLOCKED (environment — not a code regression in Case A).
+**Result:** BLOCKED (environment — ETS2 + telemetry DLL + GPS route required).
+
+### Prior attempt (!22, same day)
+
+```text
+First Case B attempt (MR !22) also blocked — ETS2 not running.
+Same diagnosis fields; fallback offline_fixture confirmed stable.
+```
 
 ## Route Blackboard Fields
 
@@ -208,42 +256,36 @@ no steering/control activation
 Observed:
 
 ```text
-Case A JSON path verified on current build (offline_fixture + offline_graph).
-Tauri Internal Viz not re-run in this session (ETS2 absent).
-Prior bridge smoke (MR !18, 2026-06-22) confirmed LIVE · OFFLINE badges + 5 segments
-via pollLiveOverlaySnapshotAsync → items.length = 5 in Tauri webview.
-Case B visualization (LIVE · LIVE source badge for route_blackboard) pending ETS2 route session.
+Case A JSON path verified (offline_fixture + offline_graph, LIVE · OFFLINE in prior bridge smoke).
+Case B Tauri check not performed — ETS2 not running; overlay-loop/Tauri dev not started for live route session.
+LIVE · LIVE source badge for route_blackboard remains unverified.
 ```
 
 ## Problems / Findings
 
 ```text
-1. Long-running --overlay-loop must be restarted after merging producer !20 — old binary
-   still emitted planned_path_producer.status = attached instead of offline_fixture.
-2. Case B blocked: ETS2 not running; no route blackboard SHM during measurement window.
-3. truckpilot-status exits 1 when SHM unavailable — expected; JSON overlay output still valid.
-4. Live route attachment requires: ETS2 + telemetry DLL + valid route in SHM + resolver not
-   in safe-off mode — to be verified in a follow-up session with game running.
+1. Case B blocked twice (MR !22 + Case-B branch): ETS2 process absent during measurement.
+2. Without route_bb_available, producer correctly stays offline_fixture — not a UI/producer bug.
+3. truckpilot-status exits 1 when SHM unavailable — expected; overlay JSON still valid.
+4. Next Case B attempt requires: ETS2 running, profile loaded, GPS route set, telemetry DLL active,
+   fresh --overlay-loop after game is up, then Tauri /overlay?overlay_visualization=internal.
+5. If route_bb_available=true but live_route_attached still fails, record producer_reason,
+   resolver_off, and waypoint_count before any code changes.
 ```
 
 ## Conclusion
 
 ```text
-PARTIAL: fallback works on current build (offline_fixture + offline_graph, drive display false).
-Live route_blackboard attachment not verified — ETS2 route session required for Case B PASS.
+PARTIAL: fallback stable (Case A PASS). Case B BLOCKED — environment (no ETS2/route SHM).
+live_route_attached / route_blackboard not verified. No producer or UI fix attempted in this branch.
 ```
 
 ## Follow-up
 
-Possible next steps after this report:
-
 ```text
-Re-run Case B with ETS2 running, GPS route set, telemetry DLL loaded, and resolver publishing waypoints.
-Confirm planned_path.source = route_blackboard and producer.status = live_route_attached.
-Capture Tauri Internal Viz screenshot / textContent check for LIVE · LIVE badges.
-Improve route_blackboard segment classification once live path is confirmed.
-Add nearest/current item from truck position on live polyline.
-Add curvature from live route geometry.
-Add junction/prefab enrichment when MapGraph is available.
-Keep all changes read-only until gates are stable.
+Re-run Case B on Windows with ETS2 + GPS route + telemetry DLL + fresh --overlay-loop.
+If planned_path.source = route_blackboard and producer.status = live_route_attached,
+commit results on a new docs branch (do not reuse merged MRs).
+If attach fails despite route_bb_available=true, document producer_reason/resolver_off/waypoint_count
+before considering producer changes.
 ```
